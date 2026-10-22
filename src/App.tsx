@@ -8,6 +8,8 @@ import { CanvasPage } from './pages/CanvasPage'
 import { AuthPage } from './pages/AuthPage'
 import { DesktopHandoff } from './pages/DesktopHandoff'
 import { DesktopSignIn } from './pages/DesktopSignIn'
+import { DesktopConnect } from './pages/DesktopConnect'
+import { DESKTOP_CONNECT_PATH } from '../shared/desktopConnect'
 import { DesktopCodexSetup } from './pages/DesktopCodexSetup'
 import { CODEX_SETUP_PATH } from './lib/codexConnection'
 import { OAuthConsent } from './pages/OAuthConsent'
@@ -122,6 +124,17 @@ export function App() {
       <>
         <ShellDragBar />
         <DesktopSignIn signedIn={!!session} />
+      </>
+    )
+
+  /* a provider sent the system browser back for a connection the desktop
+     app started (shared/desktopConnect.ts) — the app finishes it under its
+     own account, so this browser's session does not matter */
+  if (path === DESKTOP_CONNECT_PATH)
+    return (
+      <>
+        <ShellDragBar />
+        <DesktopConnect />
       </>
     )
 

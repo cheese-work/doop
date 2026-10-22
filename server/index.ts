@@ -27,7 +27,7 @@ import { auth, initAuth, syncAdmins, getUserName, loginProvidersConfig } from '.
 import { adminRouter } from './admin.ts'
 import { communityRouter, parseListing, publishableFrames } from './community.ts'
 import { automationsRouter, startScheduler } from './automations.ts'
-import { integrationsRouter } from './integrations.ts'
+import { integrationsRouter, relayDesktopCallback } from './integrations.ts'
 import { extensions } from './extensions.ts'
 import * as workspaces from './workspaces.ts'
 import * as billing from './billing.ts'
@@ -587,6 +587,10 @@ declare global {
     }
   }
 }
+/* an OAuth redirect begun in the desktop app lands in the system browser,
+   whose session (if any) is not the app's: relay it back to the app before
+   the gate looks at that session (shared/desktopConnect.ts) */
+app.get('/api/integrations/:provider/callback', relayDesktopCallback)
 app.use('/api/live-activities', logLiveActivityRequests)
 app.use('/api', async (req, res, next) => {
   try {

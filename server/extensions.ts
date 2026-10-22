@@ -40,6 +40,32 @@ export interface ConnectRouteHelpers {
   respondWithStatus(req: express.Request, res: express.Response): Promise<void>
 }
 
+/** The query a provider's OAuth redirect carries, string values only. */
+export type OAuthCallbackQuery = Record<string, string>
+
+/** Thrown by an OAuth start the person cannot get past (the provider app
+ *  is not configured on this server): the core answers `status` with the
+ *  message. Any other error with a numeric `status` is answered the same. */
+export class OAuthStartError extends Error {
+  readonly status: number
+  constructor(message: string, status = 400) {
+    super(message)
+    this.status = status
+  }
+}
+
+/** An integration that connects through an OAuth round trip. The core owns
+ *  the routes (/start, /callback, and /complete for the desktop app, see
+ *  shared/desktopConnect.ts); the integration only knows its provider. */
+export interface OAuthConnect {
+  /** the provider's authorize URL, with a state bound to this user */
+  start(userId: string): Promise<string>
+  /** finish the round trip for this user, checking the state is theirs;
+   *  resolves to the in-app path to land on, carrying success or a
+   *  visible reason (`/integrations?<id>=connected`, `?<id>Error=…`) */
+  finish(userId: string, query: OAuthCallbackQuery): Promise<string>
+}
+
 /** The core's request helpers, handed to an extension's canvas routes.
  *  Both helpers answer the response themselves when they refuse. */
 export interface CanvasRouteHelpers {
@@ -75,6 +101,8 @@ export interface ServerExtension {
   startWorker?(): void
   /** merged into GET /api/integrations under `id` */
   connectionStatus?(userId: string): Promise<unknown>
+  /** the OAuth round trip; the core mounts /start, /callback, /complete */
+  oauth?: OAuthConnect
   /** mounted at /api/integrations/<id> (behind the session gate) */
   connectRouter?(helpers: ConnectRouteHelpers): express.Router
   /** mounted at /api/canvases/:id/<id> (behind the session gate) */

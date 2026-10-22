@@ -23,25 +23,20 @@ export const linearExtension: ServerExtension = {
         : { connected: false },
     }
   },
-  connectRouter: ({ respondWithStatus }) => {
-    const router = express.Router()
-    router.post('/start', async (req, res, next) => {
+  oauth: {
+    start: async (userId) => (await startInstall(userId)).url,
+    finish: async (userId, query) => {
       try {
-        res.json(await startInstall(req.user!.id))
-      } catch (error) {
-        if (error instanceof LinearError) return res.status(error.status).json({ error: error.message })
-        next(error)
-      }
-    })
-    router.get('/callback', async (req, res) => {
-      try {
-        await finishInstall(req.user!.id, String(req.query.state ?? ''), String(req.query.code ?? ''))
-        res.redirect('/integrations?linear=connected')
+        await finishInstall(userId, query.state ?? '', query.code ?? '')
+        return '/integrations?linear=connected'
       } catch (error) {
         const message = error instanceof LinearError ? error.message : 'Could not install the Linear agent.'
-        res.redirect(`/integrations?linearError=${encodeURIComponent(message)}`)
+        return `/integrations?linearError=${encodeURIComponent(message)}`
       }
-    })
+    },
+  },
+  connectRouter: ({ respondWithStatus }) => {
+    const router = express.Router()
     router.post('/token', async (req, res, next) => {
       const input = z.object({ token: z.string() }).safeParse(req.body)
       if (!input.success) return res.status(400).json({ error: 'Enter a Linear personal API key.' })
