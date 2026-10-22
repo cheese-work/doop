@@ -22,12 +22,26 @@ struct NativeCanvasView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 7) {
-                Circle().fill(model.connected ? .green : .orange).frame(width: 6, height: 6)
-                Text(model.connected ? "Live" : model.connecting ? "Connecting…" : "Disconnected")
+                Menu {
+                    Picker("Page", selection: Binding(get: { model.activePageID }, set: { model.selectPage($0) })) {
+                        ForEach(model.pages) { page in Text(page.name).tag(page.id) }
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Text(model.activePage.name).lineLimit(1)
+                        Image(systemName: "chevron.down").font(.caption2)
+                    }.foregroundStyle(.primary).frame(minHeight: 44)
+                }
+                .disabled(model.canvas == nil)
+                .accessibilityLabel("Page").accessibilityValue(model.activePage.name)
+                .accessibilityIdentifier("canvas.pagePicker")
                 Spacer()
-                if !model.presences.isEmpty { Label("\(model.presences.count) here", systemImage: "person.2") }
-                Text("\(model.canvas?.frames.count ?? 0) \(model.canvas?.frames.count == 1 ? "frame" : "frames")")
-            }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 18).padding(.vertical, 10)
+                Circle().fill(model.connected ? .green : .orange).frame(width: 6, height: 6)
+                    .accessibilityLabel(model.connected ? "Live" : model.connecting ? "Connecting" : "Disconnected")
+                if !model.pagePresences.isEmpty { Label("\(model.pagePresences.count) here", systemImage: "person.2") }
+                Text("\(model.pageFrames.count) \(model.pageFrames.count == 1 ? "frame" : "frames")")
+                    .accessibilityIdentifier("canvas.frameCount")
+            }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 18)
             if let error = model.error ?? model.connectionError {
                 HStack {
                     Text(error).font(.caption)
@@ -106,6 +120,10 @@ struct NativeCanvasView: View {
         .onDisappear { model.stop() }
         .onChange(of: scenePhase) { phase in if phase == .active { model.start() } else if phase == .background { model.stop() } }
         .onChange(of: model.deleted) { deleted in if deleted { dismiss() } }
+        .onChange(of: model.activePageID) { _ in
+            dismissedScope = nil
+            if sheet == .inspector || sheet == .export { sheet = nil }
+        }
     }
 
     private var canvasTools: some View {
@@ -147,19 +165,22 @@ struct NativeCanvasView: View {
     }
     private var framesPanel: some View {
         NavigationStack {
-            List(model.canvas?.frames ?? []) { frame in
-                Button {
-                    model.select(frame.id)
-                    sheet = nil
-                } label: {
-                    HStack {
-                        Image(systemName: "rectangle")
-                        VStack(alignment: .leading) { Text(frame.name); Text("\(Int(frame.width)) × \(Int(frame.height))").font(.caption).foregroundStyle(.secondary) }
-                        Spacer()
-                        if model.selectedID == frame.id { Image(systemName: "checkmark") }
-                    }.padding(.vertical, 5)
+            List {
+                if model.pageFrames.isEmpty { Text("No frames on this page.").foregroundStyle(.secondary) }
+                ForEach(model.pageFrames) { frame in
+                    Button {
+                        model.select(frame.id)
+                        sheet = nil
+                    } label: {
+                        HStack {
+                            Image(systemName: "rectangle")
+                            VStack(alignment: .leading) { Text(frame.name); Text("\(Int(frame.width)) × \(Int(frame.height))").font(.caption).foregroundStyle(.secondary) }
+                            Spacer()
+                            if model.selectedID == frame.id { Image(systemName: "checkmark") }
+                        }.padding(.vertical, 5)
+                    }
                 }
-            }.navigationTitle("Frames")
+            }.navigationTitle(model.activePage.name)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { sheet = nil } } }
         }
     }
@@ -287,9 +308,9 @@ private struct CommentsPanel: View {
                     if let element = model.selectedElement, !element.text.isEmpty {
                         Text(element.text).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                     }
-                    Picker("Frame", selection: $model.selectedID) {
+                    Picker("Frame", selection: Binding(get: { model.selectedID }, set: { model.select($0) })) {
                         Text("Choose a frame").tag(String?.none)
-                        ForEach(model.canvas?.frames ?? []) { Text($0.name).tag(Optional($0.id)) }
+                        ForEach(model.pageFrames) { Text($0.name).tag(Optional($0.id)) }
                     }
                     TextField("Leave feedback…", text: $text, axis: .vertical).lineLimit(2...5)
                     Button("Post comment") {
@@ -300,8 +321,8 @@ private struct CommentsPanel: View {
                     if let error { Text(error).foregroundStyle(.red) }
                 }
                 Section("Conversation") {
-                    if model.comments.isEmpty { Text("No comments yet.").foregroundStyle(.secondary) }
-                    ForEach(model.comments.sorted { $0.at > $1.at }) { comment in
+                    if model.pageComments.isEmpty { Text("No comments on this page yet.").foregroundStyle(.secondary) }
+                    ForEach(model.pageComments.sorted { $0.at > $1.at }) { comment in
                         VStack(alignment: .leading, spacing: 6) {
                             HStack { Text(comment.from).font(.subheadline.bold()); Spacer(); if comment.resolvedAt != nil { Image(systemName: "checkmark.circle").foregroundStyle(.green) } }
                             Text(comment.text)

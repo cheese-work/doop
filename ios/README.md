@@ -15,6 +15,11 @@ HTML/CSS engine (Stylo + Taffy + Parley), compiled into the app as a static libr
 - **Swift networking**: `DoopClient` talks to the existing REST API using session
   cookies. `CanvasModel` owns the canvas state and its authenticated WebSocket room,
   including reconnection, frame updates, agent tasks, comments and presence.
+  The page picker keeps each page's frames, comments, and collaborator cursors
+  separate. New frames are placed on the selected page; Undo reveals the page of
+  the frame it restores or edits. Reconnecting preserves the current page, and
+  deleting that page falls back to the first remaining page. Legacy canvases
+  without page metadata still open as Page 1.
   The initial WebSocket message supplies the canvas without a second REST download.
   Messages may be up to 64 MiB; larger messages and invalid payloads report a specific
   error instead of retrying forever. Backgrounding cancels the current connection,
