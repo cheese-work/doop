@@ -32,6 +32,21 @@ When a deploy ships a new client bundle, long-running windows get a
 "doop was updated — Reload" toast on WebSocket reconnect (see `serverBuild`
 in the `init` message).
 
+## Check for updates
+
+On macOS, **doop → Check for Updates…** compares the installed shell version
+with the stable universal DMG published at `https://doop.design/download/mac`.
+The check runs in the background and shows a native result dialog; when an
+update is available, **Download Update** opens the installer in the browser.
+Open the downloaded DMG and drag doop into Applications to replace the old app.
+Checks do not install updates automatically. Custom `DOOP_APP_URL` builds
+instead explain that an updated build must come from their provider.
+
+The check reads the download route’s redirect to
+`https://github.com/kgoedecke/doop/releases/download/desktop-vX.Y.Z/doop_X.Y.Z_universal.dmg`
+without downloading the installer. Keep that route current when publishing
+releases; a missing or unexpected redirect is shown as a failed check.
+
 ## Develop
 
 Requires the [Rust toolchain](https://rustup.rs) plus this directory's deps (via [bun](https://bun.sh)):

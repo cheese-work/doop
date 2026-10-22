@@ -42,6 +42,8 @@ use tauri::Emitter;
 mod claude;
 mod claude_extension;
 mod codex;
+#[cfg(target_os = "macos")]
+mod updates;
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -137,8 +139,8 @@ const CLOSE_TAB: &str = "close-tab";
 
 /// Tauri's default macOS menu minus "Close Window" (Cmd+W), which is replaced
 /// by "Close Tab" in the File menu. Everything else stays: the app menu
-/// (About/Services/Hide/Quit), Edit (the predefined items are what make
-/// Cmd+C/V/Z reach the webview at all), View and Window.
+/// (with Check for Updates added below About), Edit (the predefined items
+/// are what make Cmd+C/V/Z reach the webview at all), View and Window.
 #[cfg(target_os = "macos")]
 fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let pkg = app.package_info();
@@ -153,6 +155,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         true,
         &[
             &PredefinedMenuItem::about(app, None, Some(about))?,
+            &updates::menu_item(app)?,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::services(app, None)?,
             &PredefinedMenuItem::separator(app)?,
@@ -231,6 +234,8 @@ fn main() {
     let builder = builder.menu(build_menu).on_menu_event(|app, event| {
         if event.id() == CLOSE_TAB {
             let _ = app.emit(CLOSE_TAB, ());
+        } else if event.id() == updates::MENU_ID {
+            updates::check(app);
         }
     });
     builder
