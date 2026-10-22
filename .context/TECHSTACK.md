@@ -85,7 +85,9 @@
   completed gesture has its own undo entry. The Layers panel shows the drawing's `data-name`.
   Completed saves survive navigation; unfinished drafts are cancelled. Drawing shortcuts leave
   native fields and rich-text editors alone, except for the drawing textarea's save/cancel keys.
-- `DrawingMove.tsx` renders an unclipped drag preview and highlights the destination frame.
+- `ElementMove.tsx` renders an unclipped drawing preview and highlights the destination frame.
+  Ordinary HTML/SVG layers move in place through the runtime's geometry/style gesture bridge,
+  preserving layout and transforms and committing one undo step per drag.
   The iframe runtime hit-tests the pointer in browser paint order and measures CSS layout
   size separately from transformed bounds. Pending pointer events are buffered until its
   reply, so fast drags and cancellation remain reliable. `src/lib/drawingMove.ts` preserves markup and translates coordinates when

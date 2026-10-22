@@ -86,6 +86,8 @@ export type StylePatch = Record<string, string | null>
 
 export type GeometryEdit =
   | { kind: 'position'; axis: 'x' | 'y'; value: number }
+  /** Move both axes together to a rendered position in frame pixels. */
+  | { kind: 'move'; x: number; y: number }
   | { kind: 'align'; axis: 'x' | 'y'; edge: 'start' | 'center' | 'end' }
   | { kind: 'rotate'; value: number }
   | { kind: 'flip'; axis: 'x' | 'y' }

@@ -368,10 +368,12 @@ export const FRAME_BOOTSTRAP = `<!doctype html>
   /* Ask the browser which element is actually on top, including stacking
      contexts, clipping, and transformed hit regions. Keep layout dimensions
      separate from the rendered rectangle so a move does not apply scale twice. */
-  function drawingHit(x, y, standalone) {
+  function drawingHit(x, y, standalone, selected) {
     var top = elementAt(x, y)
     var el = standalone ? document.body.firstElementChild : top && top.closest('[data-doop-drawing]')
     if (!el || !el.matches('[data-doop-drawing]') || isLocked(el)) return null
+    var picked = styleTarget(selected)
+    if (!standalone && picked && picked !== el && picked.contains(el) && elementGeometry(picked).enabled) return null
     var rect = designRect(el)
     var css = getComputedStyle(el)
     var width = parseFloat(css.width)
@@ -448,6 +450,19 @@ export const FRAME_BOOTSTRAP = `<!doctype html>
     var el = elementAt(x, y)
     if (el) el = el.closest('[data-doop-drawing]') || el
     return el ? hitInfo(el) : null
+  }
+
+  function moveHit(x, y, selected) {
+    var el = elementAt(x, y)
+    var picked = styleTarget(selected)
+    // A selected group moves as a whole even when the press hits a child.
+    if (el && picked && picked.contains(el) && !isLocked(picked)) el = picked
+    while (el && el !== document.body && el !== document.documentElement) {
+      if (elementGeometry(el).enabled) return hitInfo(el)
+      // Inline text and SVG paths move with their containing box/SVG.
+      el = el.parentElement
+    }
+    return null
   }
 
   /* the Layers panel selects by selector rather than by point */
@@ -551,20 +566,26 @@ export const FRAME_BOOTSTRAP = `<!doctype html>
       return applyStyle(selector, { scale: (geometry.scaleX * (edit.axis === 'x' ? -1 : 1)) + ' '
         + (geometry.scaleY * (edit.axis === 'y' ? -1 : 1)) })
     }
-    var axis = edit.axis
-    if (axis !== 'x' && axis !== 'y') return false
     var rect = designRect(el)
-    var bounds = parentBounds(el)
-    var target
-    if (edit.kind === 'position' && isFinite(edit.value)) target = bounds[axis] + edit.value
-    else if (edit.kind === 'align' && geometry.canAlign) {
-      var size = axis === 'x' ? 'width' : 'height'
-      var fraction = { start: 0, center: 0.5, end: 1 }[edit.edge]
-      if (fraction === undefined) return false
-      target = bounds[axis] + (bounds[size] - rect[size]) * fraction
-    } else return false
-    var dx = axis === 'x' ? target - rect.x : 0
-    var dy = axis === 'y' ? target - rect.y : 0
+    var dx = 0, dy = 0
+    if (edit.kind === 'move' && isFinite(edit.x) && isFinite(edit.y)) {
+      dx = edit.x - rect.x
+      dy = edit.y - rect.y
+    } else {
+      var axis = edit.axis
+      if (axis !== 'x' && axis !== 'y') return false
+      var bounds = parentBounds(el)
+      var target
+      if (edit.kind === 'position' && isFinite(edit.value)) target = bounds[axis] + edit.value
+      else if (edit.kind === 'align' && geometry.canAlign) {
+        var size = axis === 'x' ? 'width' : 'height'
+        var fraction = { start: 0, center: 0.5, end: 1 }[edit.edge]
+        if (fraction === undefined) return false
+        target = bounds[axis] + (bounds[size] - rect[size]) * fraction
+      } else return false
+      dx = axis === 'x' ? target - rect.x : 0
+      dy = axis === 'y' ? target - rect.y : 0
+    }
     // Probe the local translation basis. This handles scaled/rotated ancestors and
     // percentage translations without flattening the element's existing transform.
     // All temporary styles are restored synchronously, before painting or saving.
@@ -876,7 +897,10 @@ export const FRAME_BOOTSTRAP = `<!doctype html>
       parent.postMessage({ type: 'doop:probe-result', reqId: d.reqId, hit: probe(d.x, d.y) }, '*')
     }
     if (d.type === 'doop:drawing-hit') {
-      parent.postMessage({ type: 'doop:drawing-hit-result', reqId: d.reqId, hit: drawingHit(d.x, d.y, d.standalone) }, '*')
+      parent.postMessage({ type: 'doop:drawing-hit-result', reqId: d.reqId, hit: drawingHit(d.x, d.y, d.standalone, d.selected) }, '*')
+    }
+    if (d.type === 'doop:move-hit') {
+      parent.postMessage({ type: 'doop:move-hit-result', reqId: d.reqId, hit: moveHit(d.x, d.y, d.selected) }, '*')
     }
     if (d.type === 'doop:path') {
       parent.postMessage({ type: 'doop:path-result', reqId: d.reqId, hit: pathInfo(d) }, '*')

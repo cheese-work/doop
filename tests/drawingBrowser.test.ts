@@ -13,11 +13,18 @@ declare global {
       camera: () => { x: number; y: number; zoom: number }
       peer: (cursor: { x: number; y: number }) => void
       page: (id: string) => void
-      state: () => { frames: Frame[]; tool: string; selectedElement: { frameId: string; selector: string } | null }
+      selectFrames: (ids: string[]) => void
+      state: () => {
+        frames: Frame[]
+        tool: string
+        selectedIds: string[]
+        selectedElement: { frameId: string; selector: string } | null
+      }
       undo: () => Promise<void>
       redo: () => Promise<void>
       pick: (el: { frameId: string; selector: string } | null) => void
     }
+    delayedLayerProbe: MessageEvent | null
   }
 }
 
@@ -65,6 +72,7 @@ describe.skipIf(!findBrowserPath())('drawing on the canvas', { timeout: 30_000 }
 
   beforeEach(async () => {
     await page.mouse.reset()
+    await page.keyboard.up('Shift')
     saved = []
     nextId = 0
     patchRequests = 0
@@ -114,7 +122,10 @@ describe.skipIf(!findBrowserPath())('drawing on the canvas', { timeout: 30_000 }
           id: 'c',
           name: 'Draw',
           frames,
-          pages: [{ id: 'first', name: 'Main' }],
+          pages: [
+            { id: 'first', name: 'Main' },
+            { id: 'second', name: 'Other' },
+          ],
           createdAt: 0,
           updatedAt: 0,
         }),
@@ -654,6 +665,319 @@ describe.skipIf(!findBrowserPath())('drawing on the canvas', { timeout: 30_000 }
     }
   })
 
+  const layerFrame = (body: string): Frame => ({
+    id: 'layers',
+    canvasId: 'c',
+    pageId: 'first',
+    name: 'Layers',
+    x: 70,
+    y: 50,
+    width: 700,
+    height: 500,
+    createdAt: 0,
+    updatedAt: 0,
+    updatedBy: 'User',
+    html: `<!doctype html><html><head><style>body { margin: 0 }</style></head><body>${body}</body></html>`,
+  })
+  const rectangle =
+    '<div id="rect" style="position:absolute;left:50px;top:60px;width:100px;height:80px;background:coral"></div>'
+
+  it.each(['none', 'frame', 'multiple'])(
+    'constrains a layer drag with Shift held before pressing (selection: %s)',
+    async (selection) => {
+      const source = layerFrame(rectangle)
+      const other = { ...source, id: 'other', name: 'Other', x: 850 }
+      await seedFrames([source, other])
+      await page.evaluate((selection) => {
+        window.drawingHarness.viewport({ x: 40, y: 20, zoom: 1 })
+        window.drawingHarness.selectFrames(
+          selection === 'none' ? [] : selection === 'frame' ? ['layers'] : ['other', 'layers'],
+        )
+      }, selection)
+      const before = await visibleDrawing('Layers', '#rect')
+      await page.keyboard.down('Shift')
+      await drag([before.x + 40, before.y + 40], [before.x + 100, before.y + 60])
+      await page.keyboard.up('Shift')
+      await expect.poll(() => saved[0]?.html).not.toBe(source.html)
+      const after = await visibleDrawing('Layers', '#rect')
+      expect(after.x - before.x).toBeCloseTo(60, 0)
+      expect(after.y).toBeCloseTo(before.y, 0)
+      expect(saved[0]).toMatchObject({ x: source.x, y: source.y })
+      expect(saved[1]).toEqual(other)
+      expect(await page.evaluate(() => window.drawingHarness.state().selectedElement?.selector)).toBe('#rect')
+    },
+  )
+
+  it('keeps Shift-click frame selection without moving or prematurely selecting its layer', async () => {
+    const source = layerFrame(rectangle)
+    const other = { ...source, id: 'other', name: 'Other', x: 850 }
+    await seedFrames([source, other])
+    await page.evaluate(() => {
+      window.drawingHarness.viewport({ x: 40, y: 20, zoom: 1 })
+      window.drawingHarness.selectFrames(['other'])
+    })
+    const rect = await visibleDrawing('Layers', '#rect')
+    await page.keyboard.down('Shift')
+    await page.mouse.move(rect.x + 40, rect.y + 40)
+    await page.mouse.down()
+    await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 100)))
+    expect(await page.evaluate(() => window.drawingHarness.state().selectedIds)).toEqual(['other'])
+    await page.mouse.up()
+    await page.waitForFunction(() => window.drawingHarness.state().selectedIds.includes('layers'))
+    expect(await page.evaluate(() => window.drawingHarness.state().selectedIds)).toEqual(['other', 'layers'])
+    await page.mouse.click(rect.x + 40, rect.y + 40)
+    await page.keyboard.up('Shift')
+    await page.waitForFunction(() => !window.drawingHarness.state().selectedIds.includes('layers'))
+    expect(await page.evaluate(() => window.drawingHarness.state().selectedIds)).toEqual(['other'])
+    expect(saved).toMatchObject([source, other])
+  })
+
+  it.each(['svg', 'drawing'])('constrains a %s vertically when Shift is held before the drag', async (kind) => {
+    const content =
+      kind === 'svg'
+        ? '<svg id="rect" style="position:absolute;left:50px;top:60px" width="100" height="80"><rect width="100" height="80" fill="coral"/></svg>'
+        : rectangle.replace('id="rect"', 'id="rect" data-doop-drawing="rectangle"')
+    const source = layerFrame(content)
+    await seedFrames([source])
+    await page.evaluate(() => window.drawingHarness.viewport({ x: 40, y: 20, zoom: 1 }))
+    const before = await visibleDrawing('Layers', '#rect')
+    await page.keyboard.down('Shift')
+    await drag([before.x + 40, before.y + 40], [before.x + 60, before.y + 100])
+    await page.keyboard.up('Shift')
+    await expect.poll(() => saved[0]?.html).not.toBe(source.html)
+    await expect.poll(async () => (await visibleDrawing('Layers', '#rect')).y).toBeCloseTo(before.y + 60, 0)
+    const after = await visibleDrawing('Layers', '#rect')
+    expect(after.x).toBeCloseTo(before.x, 0)
+    expect(after.y - before.y).toBeCloseTo(60, 0)
+    expect(saved[0]).toMatchObject({ x: source.x, y: source.y })
+  })
+
+  it.each(['timer', 'reply'])('keeps the drag selection when an earlier click has a pending %s', async (pending) => {
+    const source = layerFrame(
+      rectangle + rectangle.replace('id="rect"', 'id="second"').replace('left:50px', 'left:250px'),
+    )
+    await seedFrames([source])
+    await page.evaluate(() => window.drawingHarness.viewport({ x: 40, y: 20, zoom: 1 }))
+    const first = await visibleDrawing('Layers', '#rect')
+    const second = await visibleDrawing('Layers', '#second')
+    // Start with a settled selection so no initial locate response can cancel
+    // the next click's probe before this test controls its delivery.
+    await page.mouse.click(first.x + 40, first.y + 40)
+    await page.waitForFunction(() => window.drawingHarness.state().selectedElement?.selector === '#rect')
+    await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 350)))
+    await page.evaluate(() => {
+      window.delayedLayerProbe = null
+      window.addEventListener(
+        'message',
+        function hold(event) {
+          if (event.data?.type !== 'doop:probe-result' || event.data.hit?.selector !== '#rect') return
+          window.removeEventListener('message', hold, true)
+          window.delayedLayerProbe = event
+          event.stopImmediatePropagation()
+        },
+        true,
+      )
+    })
+    await page.mouse.click(first.x + 40, first.y + 40)
+    if (pending === 'reply') await page.waitForFunction(() => !!window.delayedLayerProbe)
+    await page.mouse.move(second.x + 40, second.y + 40)
+    await page.mouse.down()
+    await page.mouse.move(second.x + 100, second.y + 60, { steps: 3 })
+    await page.waitForFunction(() => window.drawingHarness.state().selectedElement?.selector === '#second')
+    await page.evaluate(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 350))
+      const event = window.delayedLayerProbe
+      if (event) window.dispatchEvent(new MessageEvent('message', { data: event.data, source: event.source }))
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+    })
+    expect(await page.evaluate(() => window.drawingHarness.state().selectedElement?.selector)).toBe('#second')
+    if (pending === 'timer') expect(await page.evaluate(() => !!window.delayedLayerProbe)).toBe(false)
+    await page.mouse.up()
+    await expect.poll(() => saved[0]?.html).not.toBe(source.html)
+    await expect.poll(async () => (await visibleDrawing('Layers', '#second')).x).toBeCloseTo(second.x + 60, 0)
+    const outline = await page.$eval('[data-resize-handles]', (el) => el.getBoundingClientRect().toJSON() as DOMRect)
+    expect(outline.x).toBeCloseTo(second.x + 60, 0)
+  })
+
+  it.each([0.5, 1, 2])('drags an HTML rectangle directly at zoom %s, saving once with undo/redo', async (zoom) => {
+    const source = layerFrame(rectangle + '<p id="sibling" style="margin:0">Keep me</p>')
+    await seedFrames([source])
+    await page.evaluate((zoom) => window.drawingHarness.viewport({ x: 40, y: 20, zoom }), zoom)
+    const before = await visibleDrawing('Layers', '#rect')
+    await page.mouse.move(before.x + before.width / 2, before.y + before.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(before.x + before.width / 2 + 40, before.y + before.height / 2 + 25, { steps: 5 })
+    await expect.poll(async () => (await visibleDrawing('Layers', '#rect')).x).toBeCloseTo(before.x + 40, 0)
+    expect(patchRequests).toBe(0)
+    await page.mouse.up()
+    await expect.poll(() => patchRequests).toBe(1)
+    const moved = await visibleDrawing('Layers', '#rect')
+    expect(moved.y).toBeCloseTo(before.y + 25, 0)
+    expect(saved[0]).toMatchObject({ x: source.x, y: source.y, width: source.width, height: source.height })
+    expect(saved[0]!.html).toContain('<p id="sibling" style="margin:0">Keep me</p>')
+    expect(await page.evaluate(() => window.drawingHarness.state().selectedElement?.selector)).toBe('#rect')
+    if (zoom === 1) await page.screenshot({ path: '/tmp/doop-layer-drag.png' })
+    await page.evaluate(() => window.drawingHarness.undo())
+    await expect.poll(async () => (await visibleDrawing('Layers', '#rect')).x).toBeCloseTo(before.x, 0)
+    await page.evaluate(() => window.drawingHarness.redo())
+    await expect.poll(async () => (await visibleDrawing('Layers', '#rect')).x).toBeCloseTo(moved.x, 0)
+  })
+
+  it('moves a transformed layer in screen space without changing its transform or siblings', async () => {
+    const source =
+      layerFrame(`<section style="position:absolute;left:100px;top:80px;transform:rotate(20deg) scale(1.2);transform-origin:0 0">
+      <div id="rect" style="width:100px;height:80px;background:coral;transform:rotate(10deg);translate:10px 5px"></div>
+      <div id="sibling" style="width:50px;height:40px;background:blue"></div></section>`)
+    await seedFrames([source])
+    await page.evaluate(() => window.drawingHarness.viewport({ x: 40, y: 20, zoom: 1 }))
+    const before = await visibleDrawing('Layers', '#rect')
+    const sibling = await visibleDrawing('Layers', '#sibling')
+    await drag(
+      [before.x + before.width / 2, before.y + before.height / 2],
+      [before.x + before.width / 2 + 60, before.y + before.height / 2 + 35],
+    )
+    await expect.poll(() => patchRequests).toBe(1)
+    const after = await visibleDrawing('Layers', '#rect')
+    expect(after.x - before.x).toBeCloseTo(60, 0)
+    expect(after.y - before.y).toBeCloseTo(35, 0)
+    expect(after.width).toBeCloseTo(before.width, 0)
+    expect(await visibleDrawing('Layers', '#sibling')).toEqual(sibling)
+    expect(saved[0]!.html).toContain('transform: rotate(10deg)')
+  })
+
+  it.each(['escape', 'pointer', 'blur', 'page', 'remote'])(
+    'cancels an HTML layer drag on %s without saving',
+    async (reason) => {
+      const source = layerFrame(rectangle)
+      await seedFrames([source])
+      await page.evaluate(() => window.drawingHarness.viewport({ x: 40, y: 20, zoom: 1 }))
+      const before = await visibleDrawing('Layers', '#rect')
+      await page.mouse.move(before.x + 40, before.y + 40)
+      await page.mouse.down()
+      await page.mouse.move(before.x + 100, before.y + 70, { steps: 5 })
+      await expect.poll(async () => (await visibleDrawing('Layers', '#rect')).x).toBeCloseTo(before.x + 60, 0)
+      if (reason === 'escape') await page.keyboard.press('Escape')
+      else if (reason === 'pointer')
+        await page.evaluate(() => window.dispatchEvent(new PointerEvent('pointercancel', { pointerId: 1 })))
+      else if (reason === 'blur') await page.evaluate(() => window.dispatchEvent(new Event('blur')))
+      else if (reason === 'page') await page.evaluate(() => window.drawingHarness.page('second'))
+      else await seedFrames([{ ...source, html: source.html.replace('</body>', '<p>Remote edit</p></body>') }])
+      await page.mouse.up()
+      if (reason === 'page')
+        await page.evaluate(() => {
+          window.drawingHarness.page('first')
+          window.drawingHarness.viewport({ x: 40, y: 20, zoom: 1 })
+        })
+      // Switching pages also fits the viewport; compare the layer in frame pixels.
+      await page.waitForSelector('iframe[title="Layers"]')
+      const restored = (await (await page.$('iframe[title="Layers"]'))!.contentFrame())!
+      await restored.waitForFunction(() => document.querySelector('#rect')?.getBoundingClientRect().x === 50)
+      expect(patchRequests).toBe(0)
+      if (reason === 'remote') expect(saved[0]!.html).toContain('Remote edit')
+    },
+  )
+
+  it.each([false, true])(
+    'drags a selected group from its child (drawing: %s) and constrains movement with Shift',
+    async (drawing) => {
+      const child = drawing ? rectangle.replace('id="rect"', 'id="rect" data-doop-drawing="rectangle"') : rectangle
+      const source = layerFrame(
+        `<div id="group" style="position:absolute;left:40px;top:40px;width:250px;height:200px;background:#eee">${child}</div>`,
+      )
+      await seedFrames([source])
+      await page.evaluate(() => window.drawingHarness.viewport({ x: 40, y: 20, zoom: 1 }))
+      const group = await visibleDrawing('Layers', '#group')
+      await page.mouse.click(group.x + 20, group.y + 20)
+      await page.waitForFunction(() => window.drawingHarness.state().selectedElement?.selector === '#group')
+      const before = await visibleDrawing('Layers', '#rect')
+      await page.mouse.move(before.x + 40, before.y + 40)
+      await page.mouse.down()
+      await page.keyboard.down('Shift')
+      await page.mouse.move(before.x + 110, before.y + 60, { steps: 5 })
+      await page.mouse.up()
+      await page.keyboard.up('Shift')
+      await expect.poll(async () => (await visibleDrawing('Layers', '#group')).x).toBeCloseTo(group.x + 70, 0)
+      const after = await visibleDrawing('Layers', '#rect')
+      expect(after.x - before.x).toBeCloseTo(70, 0)
+      expect(after.y).toBeCloseTo(before.y, 0)
+    },
+  )
+
+  it.each([
+    '<svg id="rect" width="100" height="80"><rect width="100" height="80" fill="coral"/></svg>',
+    '<p id="rect" style="width:100px;height:80px;margin:0"><span>Text layer</span></p>',
+    '<img id="rect" width="100" height="80" src="data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\'/%3E">',
+  ])('drags imported SVG, text and image layers: %s', async (content) => {
+    await seedFrames([layerFrame(content)])
+    await page.evaluate(() => window.drawingHarness.viewport({ x: 40, y: 20, zoom: 1 }))
+    const before = await visibleDrawing('Layers', '#rect')
+    await drag([before.x + 15, before.y + 10], [before.x + 55, before.y + 40])
+    await expect.poll(() => patchRequests).toBe(1)
+    const after = await visibleDrawing('Layers', '#rect')
+    expect(after.x - before.x).toBeCloseTo(40, 0)
+    expect(after.y - before.y).toBeCloseTo(30, 0)
+    expect(await page.evaluate(() => window.drawingHarness.state().selectedElement?.selector)).toBe('#rect')
+  })
+
+  it.each(['doop:move-hit', 'doop:style-gesture'])(
+    'keeps fast layer drags and cancellation correct while %s is delayed',
+    async (message) => {
+      for (const cancel of [false, true]) {
+        const source = layerFrame(rectangle)
+        await seedFrames([source])
+        await page.evaluate(() => window.drawingHarness.viewport({ x: 40, y: 20, zoom: 1 }))
+        const before = await visibleDrawing('Layers', '#rect')
+        const iframe = (await (await page.$('iframe[title="Layers"]'))!.contentFrame())!
+        await iframe.evaluate((message) => {
+          delete document.body.dataset.replied
+          window.addEventListener(
+            'message',
+            function delay(event) {
+              if (event.data?.type !== message || (message === 'doop:style-gesture' && event.data.phase !== 'begin'))
+                return
+              event.stopImmediatePropagation()
+              window.removeEventListener('message', delay, true)
+              setTimeout(() => {
+                window.dispatchEvent(new MessageEvent('message', { data: event.data, source: event.source }))
+                document.body.dataset.replied = 'true'
+              }, 250)
+            },
+            true,
+          )
+        }, message)
+        const savesBefore = patchRequests
+        await page.mouse.move(before.x + 40, before.y + 40)
+        await page.mouse.down()
+        await page.mouse.move(before.x + 100, before.y + 70, { steps: 3 })
+        if (cancel) await page.keyboard.press('Escape')
+        await page.mouse.up()
+        await iframe.waitForFunction(() => document.body.dataset.replied === 'true')
+        await expect
+          .poll(async () => (await visibleDrawing('Layers', '#rect')).x)
+          .toBeCloseTo(before.x + (cancel ? 0 : 60), 0)
+        await expect.poll(() => patchRequests).toBe(savesBefore + (cancel ? 0 : 1))
+      }
+    },
+  )
+
+  it('still enters text editing on double-click and moves the whole frame from its title', async () => {
+    const source = layerFrame('<p id="text" style="width:100px;height:80px;margin:50px">Edit me</p>')
+    await seedFrames([source])
+    await page.evaluate(() => window.drawingHarness.viewport({ x: 40, y: 20, zoom: 1 }))
+    const text = await visibleDrawing('Layers', '#text')
+    await page.mouse.click(text.x + 20, text.y + 10, { count: 2, delay: 60 })
+    const iframe = (await (await page.$('iframe[title="Layers"]'))!.contentFrame())!
+    await iframe.waitForSelector('style[data-v-edit]')
+    await iframe.click('#text')
+    await iframe.waitForSelector('#text[contenteditable]')
+    await page.keyboard.press('Escape')
+    await iframe.waitForFunction(() => !document.querySelector('style[data-v-edit]'))
+    const before = await page.$eval('iframe[title="Layers"]', (el) => el.getBoundingClientRect().toJSON() as DOMRect)
+    await drag([before.x + 20, before.y - 14], [before.x + 80, before.y + 16])
+    await expect.poll(() => saved[0]?.x).toBe(source.x + 60)
+    expect(saved[0]?.y).toBe(source.y + 30)
+  })
+
   it.each(['scale(2)', 'rotate(30deg) scale(1.5)'])(
     'preserves transformed shape geometry across moves: %s',
     async (transform) => {
@@ -931,13 +1255,17 @@ describe.skipIf(!findBrowserPath())('drawing on the canvas', { timeout: 30_000 }
       height: 300,
       createdAt: 0,
       updatedAt: 0,
-      html: '<div data-doop-drawing="rectangle" style="position:fixed;left:60px;top:60px;width:100px;height:100px;background:red"></div><div style="position:fixed;left:60px;top:60px;width:100px;height:100px;background:black;z-index:10">Cover</div>',
+      html: '<div data-doop-drawing="rectangle" style="position:fixed;left:60px;top:60px;width:100px;height:100px;background:red"></div><div id="cover" style="position:fixed;left:60px;top:60px;width:100px;height:100px;background:black;z-index:10">Cover</div>',
     }
     await seedFrames([source])
     const covered = await visibleDrawing('Covered')
     await drag([covered.x + 30, covered.y + 30], [covered.x + 70, covered.y + 50])
-    await page.waitForFunction(() => window.drawingHarness.state().frames[0]?.x !== 20)
-    expect(saved[0]).toMatchObject({ x: 40, y: 30, html: source.html })
+    await expect.poll(() => patchRequests).toBe(1)
+    expect(saved[0]).toMatchObject({ x: 20, y: 20 })
+    const cover = await visibleDrawing('Covered', '#cover')
+    expect(cover.x - covered.x).toBeCloseTo(40, 0)
+    expect(cover.y - covered.y).toBeCloseTo(20, 0)
+    expect(await visibleDrawing('Covered')).toEqual(covered)
     expect(saved).toHaveLength(1)
   })
 
