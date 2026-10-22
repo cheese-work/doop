@@ -320,6 +320,27 @@ export interface MovedElement {
   selector: string
 }
 
+/** Insert a clipboard layer as a sibling, keeping ids and SVG references unique. */
+export function insertElement(html: string, selector: string | null, outerHtml: string): MovedElement | null {
+  const doc = parse(html)
+  const at = selector ? find(doc, selector) : null
+  if (selector && (!at || !doc.body.contains(at) || at === doc.body)) return null
+  // A row needs a tbody context, a cell needs a tr, and SVG children need
+  // their namespace. Parsing a standalone document discards those wrappers.
+  const source = (at?.parentElement ?? doc.body).cloneNode(false) as Element
+  source.innerHTML = outerHtml
+  if (source.children.length !== 1) return null
+  if ([...source.childNodes].some((node) => node.nodeType === Node.TEXT_NODE && node.textContent?.trim())) return null
+  const copy = source.firstElementChild!
+  renameIds(doc, copy)
+  if (at) at.after(copy)
+  else doc.body.append(copy)
+  const next = serialize(doc)
+  const path = elementPath(copy)
+  if (find(parse(next), path)?.outerHTML !== copy.outerHTML) return null
+  return { html: next, selector: path }
+}
+
 /* the neighbouring layer the rail shows: markup that draws nothing is stepped over */
 function visibleSibling(el: Element, dir: -1 | 1): Element | null {
   let cur = dir === -1 ? el.previousElementSibling : el.nextElementSibling

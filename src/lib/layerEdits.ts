@@ -31,7 +31,7 @@ export function saveFrameHtml(frame: Frame, html: string) {
  *  or the rail: it can be selected in the Layers panel (so it can be
  *  unlocked) and nothing else. */
 export function isLayerLocked(frame: Frame, selector: string): boolean {
-  return isElementLocked(frame.html, selector)
+  return !!frame.locked || isElementLocked(frame.html, selector)
 }
 
 /** Set or clear the element's own lock; false when the selector no longer
@@ -124,6 +124,7 @@ export function deleteSelection(): boolean {
 }
 
 export function duplicateLayer(frame: Frame, selector: string) {
+  if (frame.locked || isLayerLocked(frame, selector)) return
   const html = duplicateElement(frame.html, selector)
   if (html !== null) saveFrameHtml(frame, html)
 }

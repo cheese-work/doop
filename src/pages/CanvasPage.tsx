@@ -49,7 +49,8 @@ import {
   pasteImagesCentered,
 } from '../lib/frameClipboard'
 import { clearHistory, redo, undo } from '../lib/history'
-import { deleteSelection, toggleLockSelection, toggleSelectionHidden } from '../lib/layerEdits'
+import { deleteSelection, duplicateLayer, toggleLockSelection, toggleSelectionHidden } from '../lib/layerEdits'
+import { copyLayer, hasElementClip, pasteLayer } from '../lib/elementClipboard'
 import { authClient } from '../lib/auth'
 import { posthog } from '../lib/posthog'
 import { useIsMobile } from '../hooks/use-mobile'
@@ -313,13 +314,21 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
         return
       }
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey) {
-        /* ⌘C and ⌘D act on the whole selection */
-        const frames = useStore.getState().canvas?.frames.filter((f) => selectedIds.includes(f.id)) ?? []
+        const state = useStore.getState()
+        const picked = state.selectedElement
+        const pickedFrame = state.canvas?.frames.find((f) => f.id === picked?.frameId)
+        const frames = state.canvas?.frames.filter((f) => selectedIds.includes(f.id)) ?? []
         /* don't hijack ⌘C when the user is copying selected text */
-        if (e.key === 'c' && frames.length && !window.getSelection()?.toString()) copyFrames(frames)
+        if (e.key === 'c' && !window.getSelection()?.toString()) {
+          if (picked && pickedFrame) {
+            e.preventDefault()
+            copyLayer(pickedFrame, picked.selector)
+          } else if (!picked && frames.length) copyFrames(frames)
+        }
         if (e.key === 'd' && frames.length) {
           e.preventDefault()
-          duplicateFrames(frames)
+          if (picked && pickedFrame) duplicateLayer(pickedFrame, picked.selector)
+          else if (!picked) duplicateFrames(frames)
         }
       }
     }
@@ -342,6 +351,12 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
           setToast(`Couldn’t paste image — ${err.message}`)
           window.setTimeout(() => setToast(null), 4000)
         })
+      } else if (hasElementClip()) {
+        e.preventDefault()
+        const state = useStore.getState()
+        const picked = state.selectedElement
+        const frame = state.canvas?.frames.find((f) => f.id === (picked?.frameId ?? state.selectedId))
+        if (frame) pasteLayer(frame, picked?.selector ?? null)
       } else if (hasFrameClip()) {
         e.preventDefault()
         pasteFrameCentered(canvasId)

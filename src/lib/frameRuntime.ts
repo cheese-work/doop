@@ -277,6 +277,15 @@ export const FRAME_BOOTSTRAP = `<!doctype html>
     editTimer = setTimeout(postEdited, 400)
   })
 
+  document.addEventListener('contextmenu', function (ev) {
+    if (!editing) return
+    ev.preventDefault()
+    ev.stopPropagation()
+    setEdit(false)
+    parent.postMessage({ type: 'doop:edit-esc' }, '*')
+    parent.postMessage({ type: 'doop:context-menu', x: ev.clientX, y: ev.clientY }, '*')
+  }, true)
+
   /* Escape pressed with focus inside the frame: the parent never sees the
      key event itself, so relay it (present mode closes on it) */
   document.addEventListener('keydown', function (ev) {
@@ -450,6 +459,15 @@ export const FRAME_BOOTSTRAP = `<!doctype html>
     var el = elementAt(x, y)
     if (el) el = el.closest('[data-doop-drawing]') || el
     return el ? hitInfo(el) : null
+  }
+
+  /* Right-click can reach a lock so the menu can unlock it. SVGs are one
+     layer in the rail, and their paths share that same context menu. */
+  function contextHit(x, y) {
+    var el = document.elementFromPoint(x, y)
+    if (!el || el === document.body || el === document.documentElement) return null
+    el = el.closest('[data-doop-locked]') || el.closest('[data-doop-drawing]') || el.closest('svg') || el
+    return hitInfo(el)
   }
 
   function moveHit(x, y, selected) {
@@ -895,6 +913,9 @@ export const FRAME_BOOTSTRAP = `<!doctype html>
     }
     if (d.type === 'doop:probe') {
       parent.postMessage({ type: 'doop:probe-result', reqId: d.reqId, hit: probe(d.x, d.y) }, '*')
+    }
+    if (d.type === 'doop:context-hit') {
+      parent.postMessage({ type: 'doop:context-hit-result', reqId: d.reqId, hit: contextHit(d.x, d.y) }, '*')
     }
     if (d.type === 'doop:drawing-hit') {
       parent.postMessage({ type: 'doop:drawing-hit-result', reqId: d.reqId, hit: drawingHit(d.x, d.y, d.standalone, d.selected) }, '*')

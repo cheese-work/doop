@@ -13,12 +13,10 @@ import { useStore } from '../lib/store'
 import { usePageCanvas } from '../lib/pages'
 import { PagesPanel, sectionHeading } from './PagesPanel'
 import { getIdentity } from '../lib/identity'
-import { copyElementLink } from '../lib/elementLink'
 import { deleteFramesTracked } from '../lib/history'
 import {
   ancestorsOf,
   buildLayerTree,
-  elementHtml,
   filterLayers,
   holdsChildren,
   type DropPlace,
@@ -28,14 +26,12 @@ import {
 import {
   deleteLayer,
   dropLayer,
-  duplicateLayer,
   setFrameHidden,
   setFramesLocked,
   setLayerHidden,
   setLayerLocked,
   shiftLayer,
 } from '../lib/layerEdits'
-import { MOD_KEY } from '../lib/keys'
 import { cn } from '@/lib/utils'
 import { AgentIcon } from './AgentIcon'
 import { LayerKindIcon } from './LayerKindIcon'
@@ -44,14 +40,8 @@ import { Panel, PanelBody, PanelClose, PanelHeader, type PanelResize } from './u
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Tooltip } from './ui/tooltip'
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuSeparator,
-  ContextMenuTrigger,
-} from './ui/context-menu'
-import { MenuHint } from './ui/menu'
+import { ContextMenu, ContextMenuTrigger } from './ui/context-menu'
+import { ElementContextMenu } from './ElementContextMenu'
 import {
   ChevronDownIcon,
   ChevronRightIcon,
@@ -631,47 +621,7 @@ function NodeRow({
           }}
         />
       </ContextMenuTrigger>
-      <ContextMenuContent>
-        <ContextMenuItem onSelect={() => setLayerHidden(frame, node.selector, !node.hidden)}>
-          {node.hidden ? 'Show' : 'Hide'}
-          <MenuHint>{MOD_KEY}⇧H</MenuHint>
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem
-          onSelect={() => {
-            const html = elementHtml(frame.html, node.selector)
-            if (html) navigator.clipboard.writeText(html).catch(console.error)
-          }}
-        >
-          Copy HTML
-        </ContextMenuItem>
-        <ContextMenuItem onSelect={() => navigator.clipboard.writeText(node.selector).catch(console.error)}>
-          Copy selector
-        </ContextMenuItem>
-        <ContextMenuItem onSelect={() => void copyElementLink(frame, node.selector)}>
-          Copy link to element
-        </ContextMenuItem>
-        <ContextMenuItem onSelect={() => duplicateLayer(frame, node.selector)}>Duplicate</ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem onSelect={() => shiftLayer(frame, node.selector, -1)}>
-          Move up
-          <MenuHint>⌥↑</MenuHint>
-        </ContextMenuItem>
-        <ContextMenuItem onSelect={() => shiftLayer(frame, node.selector, 1)}>
-          Move down
-          <MenuHint>⌥↓</MenuHint>
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem onSelect={() => setLayerLocked(frame, node.selector, !node.locked)}>
-          {node.locked ? 'Unlock' : 'Lock'}
-          <MenuHint>⌘⇧L</MenuHint>
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem tone="danger" disabled={node.locked} onSelect={() => deleteLayer(frame, node.selector)}>
-          Delete element
-          <MenuHint>⌫</MenuHint>
-        </ContextMenuItem>
-      </ContextMenuContent>
+      <ElementContextMenu frame={frame} selector={node.selector} />
     </ContextMenu>
   )
 }

@@ -6,7 +6,7 @@ import { useElementMove } from './ElementMove'
 import { PathEditor } from './PathEditor'
 import { loadPathEdit, type PathEditSource } from '../lib/pathEditing'
 import { currentPageCanvas } from '../lib/pages'
-import { registerFrameWindow, unregisterFrameWindow } from '../lib/frameBridge'
+import { registerFrameWindow, requestFrame, unregisterFrameWindow } from '../lib/frameBridge'
 import { api } from '../lib/api'
 import { copyElementLink } from '../lib/elementLink'
 import { sendWs } from '../lib/ws'
@@ -18,8 +18,9 @@ import { snapFrame } from '../lib/snap'
 import { gesture } from '../lib/gesture'
 import { resolvePointerAction } from '../lib/tools'
 import { FrameContextMenu } from './FrameContextMenu'
+import { ElementContextMenu } from './ElementContextMenu'
 import { CodePanel } from './CodePanel'
-import { ContextMenu, ContextMenuTrigger } from './ui/context-menu'
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from './ui/context-menu'
 import { DEFAULT_ROLE_ID } from '../../shared/agents'
 import { posthog } from '../lib/posthog'
 import { isResidentLimit } from './TeamAllowance'
@@ -148,6 +149,11 @@ interface HoverHit {
    `--zoom` CSS variable the Stage sets, so a viewport change never re-renders
    this component — memo holds as long as the frame and raster are unchanged. */
 export const FrameView = memo(function FrameView({ frame, raster }: { frame: Frame; raster: number }) {
+  const [menuTarget, setMenuTarget] = useState<'frame' | 'loading' | { selector: string | null; html: string }>('frame')
+  const [menuProbe, setMenuProbe] = useState<{ request: number; html: string; x: number; y: number } | null>(null)
+  const menuKind = useRef<'frame' | 'element'>('frame')
+  const menuRequest = useRef(0)
+  const surfaceRef = useRef<HTMLDivElement>(null)
   const elementMove = useElementMove(frame)
   const [pathEdit, setPathEdit] = useState<PathEditSource | null>(null)
   const editRequest = useRef(0)
@@ -156,6 +162,7 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
     setPathEdit(null)
   }, [])
   const selected = useStore((s) => s.selectedIds.includes(frame.id))
+  const contextMenuOpen = useStore((s) => s.ctxMenu?.frameId === frame.id)
   /* space held: the shield stays up even in edit mode, so the press reaches
      the Stage and pans instead of vanishing into the editable iframe */
   const panMode = useStore((s) => s.panMode)
@@ -393,6 +400,10 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
      place, so updates never white-flash the frame with a full reload. */
   const iframeRef = useRef<HTMLIFrameElement | null>(null)
   const localHtml = useRef<string | null>(null)
+  // A posted document is not ready for hit testing until the iframe has
+  // acknowledged it. Inline edits already live there and set this on save.
+  const htmlRequest = useRef(0)
+  const [runtimeDocument, setRuntimeDocument] = useState<{ html: string; request: number } | null>(null)
   /* where the last right-click landed, in screen coordinates: Paste drops the
      frame there, and the menu's own box is not that point once Radix has
      flipped or shifted it away from a viewport edge */
@@ -417,14 +428,46 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
   useEffect(() => {
     if (!runtimeReady || editing || suspendPost || html !== frame.html || html === localHtml.current) return
     localHtml.current = null
-    iframeRef.current?.contentWindow?.postMessage({ type: 'doop:html', html }, '*')
-  }, [runtimeReady, html, frame.html, editing, suspendPost])
+    const request = ++htmlRequest.current
+    let cancelled = false
+    void requestFrame(frame.id, 'doop:html', { html }).then((reply) => {
+      if (reply && !cancelled && request === htmlRequest.current) setRuntimeDocument({ html, request })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [runtimeReady, html, frame.html, frame.id, editing, suspendPost])
 
   /* ---- element comments ---- */
   const frameComments = useStore((s) => s.comments).filter((c) => c.frameId === frame.id)
   /* only thread roots get a pin; replies live inside the root's popover */
   const comments = frameComments.filter((c) => !c.parentId && !c.resolvedAt)
   const [probe, setProbe] = useState<ProbeHit | null>(null)
+  useEffect(() => {
+    // The request also distinguishes a return to previously rendered HTML
+    // while a newer document is still being delivered.
+    if (
+      !menuProbe ||
+      runtimeDocument?.html !== menuProbe.html ||
+      runtimeDocument.request !== htmlRequest.current ||
+      frame.html !== menuProbe.html
+    )
+      return
+    let cancelled = false
+    void requestFrame(frame.id, 'doop:context-hit', { x: menuProbe.x, y: menuProbe.y }).then((reply) => {
+      const store = useStore.getState()
+      const live = store.canvas?.frames.find((f) => f.id === frame.id)
+      if (cancelled || menuProbe.request !== menuRequest.current || store.ctxMenu?.frameId !== frame.id) return
+      const hit = live?.html === menuProbe.html ? (reply?.hit as ProbeHit | null) : null
+      setMenuTarget({ selector: hit?.selector ?? null, html: menuProbe.html })
+      setMenuProbe(null)
+      setProbe(hit ?? null)
+      store.setSelectedElement(hit ? { frameId: frame.id, selector: hit.selector } : null)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [menuProbe, runtimeDocument, frame.html, frame.id])
   /* element selected for text editing inside the iframe (edit mode only) */
   const [activeHit, setActiveHit] = useState<ProbeHit | null>(null)
   const [composing, setComposing] = useState(false)
@@ -792,6 +835,7 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
         // The runtime already has this document. Echoing it through the HTML
         // throttle can overwrite a newer style edit still waiting to save.
         localHtml.current = ev.data.html
+        setRuntimeDocument({ html: ev.data.html, request: ++htmlRequest.current })
         const before = useStore.getState().canvas?.frames.find((f) => f.id === frame.id)?.html
         useStore.getState().patchFrameLocal(frame.id, { html: ev.data.html })
         trackSave(api.updateFrame(frame.id, { html: ev.data.html }).catch(console.error))
@@ -802,6 +846,25 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
         setEditing(false)
         setSuspendPost(true)
         window.setTimeout(() => setSuspendPost(false), 500)
+      }
+      if (ev.data?.type === 'doop:context-menu') {
+        const { x, y } = ev.data as { x: number; y: number }
+        // Let the final text save and edit-mode exit render before opening.
+        window.requestAnimationFrame(() => {
+          const surface = surfaceRef.current
+          if (!surface) return
+          const rect = iframeRef.current?.getBoundingClientRect() ?? surface.getBoundingClientRect()
+          const zoom = useStore.getState().viewport.zoom
+          surface.dispatchEvent(
+            new MouseEvent('contextmenu', {
+              bubbles: true,
+              cancelable: true,
+              button: 2,
+              clientX: rect.left + x * zoom,
+              clientY: rect.top + y * zoom,
+            }),
+          )
+        })
       }
     }
     window.addEventListener('message', onMsg)
@@ -826,14 +889,19 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
     <ContextMenu
       onOpenChange={(open) => {
         const store = useStore.getState()
-        if (!open) return store.closeCtxMenu()
+        if (!open) {
+          menuRequest.current++
+          setMenuProbe(null)
+          return store.closeCtxMenu()
+        }
         /* deferPanel: when this right-click is what selects the frame, the
            Inspector waits until the menu closes — it must not slide in
            underneath the menu the user just opened */
         const alreadySelected = store.selectedIds.includes(frame.id)
         /* a right-click inside a group keeps the group, so Delete takes all */
-        if (!alreadySelected) select(frame.id)
+        if (!alreadySelected || menuKind.current === 'element') select(frame.id)
         closePopovers()
+        store.pickElement(null)
         store.openCtxMenu({ frameId: frame.id, deferPanel: !alreadySelected })
       }}
     >
@@ -862,9 +930,34 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
                one, does not open a second menu behind ours */
             e.stopPropagation()
             menuAt.current = { x: e.clientX, y: e.clientY }
+            const target = e.target as HTMLElement
+            const request = ++menuRequest.current
+            if (target.closest('[data-frame-title]')) {
+              if (editing) exitEdit()
+              menuKind.current = 'frame'
+              setMenuTarget('frame')
+              setMenuProbe(null)
+              return
+            }
+            const surface = target.closest('[data-frame-surface]')
+            if (!surface || editing || pathEdit) {
+              e.preventDefault()
+              return
+            }
+            menuKind.current = 'element'
+            setMenuTarget('loading')
+            const rect = iframeRef.current?.getBoundingClientRect() ?? surface.getBoundingClientRect()
+            const zoom = useStore.getState().viewport.zoom
+            setMenuProbe({
+              request,
+              html: frame.html,
+              x: (e.clientX - rect.left) / zoom,
+              y: (e.clientY - rect.top) / zoom,
+            })
           }}
         >
           <div
+            data-frame-title=""
             className={cn(
               'absolute -top-[26px] left-0 flex origin-bottom-left cursor-default select-none items-center gap-2 overflow-hidden whitespace-nowrap text-[12px] font-semibold text-ink-soft',
               /* the label is counter-scaled from its bottom-left corner, so
@@ -931,6 +1024,8 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
           </div>
 
           <div
+            data-frame-surface=""
+            ref={surfaceRef}
             className={cn(
               'absolute inset-0 overflow-hidden',
               isCanvasElement(frame.html) ? 'bg-transparent' : 'rounded-[6px] border border-line bg-white',
@@ -1143,7 +1238,7 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
                   )
                 })}
 
-                {anchor && selected && (
+                {anchor && selected && !contextMenuOpen && (
                   <div
                     className={cn('pointer-events-auto absolute z-[7] origin-top-left', POPOVER_SCALE)}
                     style={{
@@ -1246,7 +1341,20 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
           {pathEdit && <PathEditor frame={frame} initial={pathEdit} onClose={closePathEdit} />}
         </div>
       </ContextMenuTrigger>
-      <FrameContextMenu frame={frame} at={menuAt} />
+      {menuTarget === 'frame' ? (
+        <FrameContextMenu frame={frame} at={menuAt} />
+      ) : (menuProbe && menuProbe.html !== frame.html) ||
+        (typeof menuTarget === 'object' && menuTarget.html !== frame.html) ? (
+        <ContextMenuContent>
+          <ContextMenuItem disabled>Frame changed. Right-click again.</ContextMenuItem>
+        </ContextMenuContent>
+      ) : menuTarget === 'loading' ? (
+        <ContextMenuContent>
+          <ContextMenuItem disabled>Finding element…</ContextMenuItem>
+        </ContextMenuContent>
+      ) : (
+        <ElementContextMenu frame={frame} selector={menuTarget.selector} />
+      )}
     </ContextMenu>
   )
 })
