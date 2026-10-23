@@ -314,6 +314,14 @@ export interface DropTarget {
   place: DropPlace
 }
 
+/** Computed in the live document: match the slot's CSS order and remove
+ * transform translation without discarding its rotation or scale. */
+export interface FlowPlacement {
+  order: string
+  orderChanged?: boolean
+  transform?: string
+}
+
 export interface MovedElement {
   html: string
   /** the element's selector after the move — its path changes with its position */
@@ -357,12 +365,32 @@ function alreadyAt(el: Element, at: Element, where: DropPlace): boolean {
   return el === (first && HIDDEN_TAGS.has(first.tagName) ? visibleSibling(first, 1) : first)
 }
 
-function move(doc: Document, el: Element, at: Element, where: DropPlace): MovedElement | null {
-  if (el === at || el.contains(at) || alreadyAt(el, at, where)) return null
+function move(doc: Document, el: Element, at: Element, where: DropPlace, flow?: FlowPlacement): MovedElement | null {
+  if (el === at || el.contains(at)) return null
+  if (alreadyAt(el, at, where) && !flow?.orderChanged && flow?.transform === undefined) return null
   if (where === 'inside' && !holdsChildren(at.tagName)) return null
+  const parent = where === 'inside' ? at : at.parentElement
+  if (!parent || parent.closest(`[${LOCK_ATTR}]`) || !doc.body.contains(parent)) return null
   if (where === 'inside') at.prepend(el)
   else if (where === 'before') at.before(el)
   else at.after(el)
+  if (flow) {
+    // Keep size, rotation and scale, but let DOM order determine layout. Relative
+    // positioning also preserves the containing block for positioned descendants.
+    const style = (el as HTMLElement | SVGElement).style
+    for (const [name, value] of Object.entries({
+      position: 'relative',
+      inset: 'auto',
+      'inset-block': 'auto',
+      'inset-inline': 'auto',
+      translate: 'none',
+      float: 'none',
+      order: flow.order,
+      'grid-area': 'auto',
+    }))
+      style.setProperty(name, value, 'important')
+    if (flow.transform !== undefined) style.setProperty('transform', flow.transform, 'important')
+  }
   const html = serialize(doc)
   const selector = elementPath(el)
   /* the saved markup is what everyone re-parses: a move the parser would
@@ -375,12 +403,17 @@ function move(doc: Document, el: Element, at: Element, where: DropPlace): MovedE
  *  Null when either selector no longer resolves, the target sits inside the
  *  element (a node cannot hold itself), the target cannot hold it (an
  *  <input>, a <select>), or the element is already there. */
-export function moveElement(html: string, selector: string, target: DropTarget): MovedElement | null {
+export function moveElement(
+  html: string,
+  selector: string,
+  target: DropTarget,
+  flow?: FlowPlacement,
+): MovedElement | null {
   const doc = parse(html)
   const el = find(doc, selector)
   const at = find(doc, target.selector)
   if (!el || !at) return null
-  return move(doc, el, at, target.place)
+  return move(doc, el, at, target.place, flow)
 }
 
 /** The frame's HTML with the element swapped past the layer above (-1) or

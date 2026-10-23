@@ -14,6 +14,7 @@ import {
   setElementLocked,
   shiftElement,
   type DropTarget,
+  type FlowPlacement,
   type MovedElement,
 } from './layers'
 
@@ -23,7 +24,7 @@ export function saveFrameHtml(frame: Frame, html: string) {
   // Layer commands each need their own undo step, even when invoked rapidly.
   recordUpdate(frame.id, { html: frame.html }, { html }, true)
   useStore.getState().patchFrameLocal(frame.id, { html })
-  api.updateFrame(frame.id, { html }).catch(console.error)
+  trackSave(api.updateFrame(frame.id, { html }).catch(console.error))
 }
 
 /* ---- locks ---- */
@@ -211,9 +212,9 @@ function commitMove(frame: Frame, moved: MovedElement | null): boolean {
 }
 
 /** Drop the element next to, or into, another; false when nothing moved. */
-export function moveLayer(frame: Frame, selector: string, target: DropTarget): boolean {
+export function moveLayer(frame: Frame, selector: string, target: DropTarget, flow?: FlowPlacement): boolean {
   if (isLayerLocked(frame, selector)) return false
-  return commitMove(frame, moveElement(frame.html, selector, target))
+  return commitMove(frame, moveElement(frame.html, selector, target, flow))
 }
 
 /** Finish a drag that began on `pressed`: the element is moved in the frame
@@ -222,10 +223,10 @@ export function moveLayer(frame: Frame, selector: string, target: DropTarget): b
  *  different element (a same-tag sibling inserted above shifts every
  *  nth-of-type below it), so a changed frame drops nothing. False when
  *  nothing moved. */
-export function dropLayer(pressed: Frame, selector: string, target: DropTarget): boolean {
+export function dropLayer(pressed: Frame, selector: string, target: DropTarget, flow?: FlowPlacement): boolean {
   const frame = useStore.getState().canvas?.frames.find((f) => f.id === pressed.id)
   if (!frame || frame.html !== pressed.html) return false
-  return moveLayer(frame, selector, target)
+  return moveLayer(frame, selector, target, flow)
 }
 
 /** Step the element one layer up (-1) or down (1) among its siblings. */

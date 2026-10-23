@@ -4,6 +4,19 @@
  * page (the element properties panel) reaches the live document through
  * these calls instead of holding an iframe ref of its own.
  */
+import type { DropTarget, FlowPlacement } from './layers'
+
+export interface LayoutDrop {
+  target: DropTarget
+  styles: FlowPlacement
+  container: ElementInfo['rect']
+  line: ElementInfo['rect']
+}
+
+export async function elementMoveTarget(frameId: string, selector: string, x: number, y: number) {
+  const reply = await requestFrame(frameId, 'doop:move-target', { selector, x, y })
+  return reply?.result as { free: boolean; drop: LayoutDrop | null } | undefined
+}
 
 /** The runtime's summary of one element: computed styles resolved to what
  *  the Design panel shows, plus the inline styles the element already carries.

@@ -1137,6 +1137,7 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
               !editing &&
               !pathEdit &&
               !dragging &&
+              !elementMove.moving &&
               tool === 'select' &&
               probe.sizable &&
               !probe.locked &&
@@ -1240,7 +1241,7 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
                   )
                 })}
 
-                {anchor && selected && !contextMenuOpen && (
+                {anchor && selected && !contextMenuOpen && !elementMove.moving && (
                   <div
                     className={cn('pointer-events-auto absolute z-[7] origin-top-left', POPOVER_SCALE)}
                     style={{

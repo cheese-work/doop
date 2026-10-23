@@ -1,4 +1,5 @@
 import { FRAME_REPLAY_RUNTIME } from './frameReplayRuntime'
+import { FRAME_DROP_RUNTIME } from './frameDropRuntime'
 
 /**
  * Bootstrap document loaded once per frame iframe. The parent posts HTML in
@@ -10,6 +11,7 @@ export const FRAME_BOOTSTRAP = `<!doctype html>
 <html><head></head><body><script data-v-boot>
 (function () {
   ${FRAME_REPLAY_RUNTIME}
+  ${FRAME_DROP_RUNTIME}
   /* horizontal overscroll inside a frame must not chain to the parent page,
      where the browser turns it into a history back/forward swipe. Adopted
      sheet, not a <style> tag — the morph would wipe a tag from <head>. */
@@ -922,6 +924,9 @@ export const FRAME_BOOTSTRAP = `<!doctype html>
     }
     if (d.type === 'doop:move-hit') {
       parent.postMessage({ type: 'doop:move-hit-result', reqId: d.reqId, hit: moveHit(d.x, d.y, d.selected) }, '*')
+    }
+    if (d.type === 'doop:move-target') {
+      parent.postMessage({ type: 'doop:move-target-result', reqId: d.reqId, result: moveTarget(d.selector, d.x, d.y) }, '*')
     }
     if (d.type === 'doop:path') {
       parent.postMessage({ type: 'doop:path-result', reqId: d.reqId, hit: pathInfo(d) }, '*')

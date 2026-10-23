@@ -10,8 +10,16 @@ import {
   type DrawingHit,
   type DrawingRect,
 } from '../lib/drawingMove'
-import { editElementGeometry, requestFrame, styleGesture, type ElementInfo } from '../lib/frameBridge'
+import {
+  editElementGeometry,
+  elementMoveTarget,
+  requestFrame,
+  styleGesture,
+  type ElementInfo,
+  type LayoutDrop,
+} from '../lib/frameBridge'
 import { gesture } from '../lib/gesture'
+import { dropLayer } from '../lib/layerEdits'
 import { useStore } from '../lib/store'
 
 interface Preview {
@@ -39,7 +47,13 @@ export interface ElementMoveHit {
 export function useElementMove(frame: Frame) {
   const [preview, setPreview] = useState<Preview | null>(null)
   const [moving, setMoving] = useState(false)
+  const [layoutDrop, setLayoutDrop] = useState<{
+    drop: LayoutDrop
+    world: Element
+    origin: { x: number; y: number }
+  } | null>(null)
   const cleanup = useRef<(() => void) | null>(null)
+  const finishing = useRef<Promise<void>>(Promise.resolve())
   const lastClick = useRef<{ selector: string; at: number; x: number; y: number } | null>(null)
   useEffect(() => () => cleanup.current?.(), [])
 
@@ -63,6 +77,8 @@ export function useElementMove(frame: Frame) {
       return { x: (clientX - box.left - vp.x) / vp.zoom, y: (clientY - box.top - vp.y) / vp.zoom }
     }
     const origin = toWorld(e.clientX, e.clientY)
+    const contentBox = surface.querySelector('iframe')?.getBoundingClientRect()
+    const contentOrigin = contentBox ? toWorld(contentBox.left, contentBox.top) : { x: frame.x, y: frame.y }
     const press: Press = {
       ...e,
       currentTarget: surface,
@@ -87,7 +103,8 @@ export function useElementMove(frame: Frame) {
     let target: Frame | null = null
     let layer: ElementMoveHit | null = null
     let layerReady: Promise<ElementInfo | null> | null = null
-    let layerPoint: { x: number; y: number } | null = null
+    let layerPoint: { x: number; y: number; pointerX: number; pointerY: number } | null = null
+    let layerWork: Promise<void> = Promise.resolve()
     let inFlight = false
     let picked = false
 
@@ -129,14 +146,23 @@ export function useElementMove(frame: Frame) {
       if (closed || !layer || !layerPoint || inFlight) return
       if (!layerReady) {
         setMoving(true)
-        layerReady = styleGesture(frame.id, layer.selector, 'begin')
+        const selector = layer.selector
+        layerReady = finishing.current.then(() =>
+          sourceUnchanged() ? styleGesture(frame.id, selector, 'begin') : null,
+        )
       }
       inFlight = true
       const point = layerPoint
-      void layerReady.then(async (info) => {
+      layerWork = layerReady.then(async (info) => {
         if (closed) return
         if (!info) return cancel()
-        updateLayer(await editElementGeometry(frame.id, layer!.selector, { kind: 'move', ...point }))
+        const selector = layer!.selector
+        updateLayer(await editElementGeometry(frame.id, selector, { kind: 'move', x: point.x, y: point.y }))
+        if (closed) return
+        const result = await elementMoveTarget(frame.id, selector, point.pointerX, point.pointerY)
+        if (closed) return
+        if (layerPoint === point)
+          setLayoutDrop(result?.drop ? { drop: result.drop, world: world!, origin: contentOrigin } : null)
         inFlight = false
         if (layerPoint !== point) previewLayer()
       })
@@ -155,16 +181,29 @@ export function useElementMove(frame: Frame) {
       if (surface.hasPointerCapture(pointerId)) surface.releasePointerCapture(pointerId)
       cleanup.current = null
       setPreview(null)
+      setLayoutDrop(null)
       setMoving(false)
       // Finish after the asynchronous begin, even if a flick or Escape beat it.
       if (layerReady && layer) {
         const selector = layer.selector
         const final = layerPoint
-        void layerReady.then(async (info) => {
+        finishing.current = layerReady.then(async (info) => {
           if (!info) return
-          if (commit && final && sourceUnchanged())
-            updateLayer(await editElementGeometry(frame.id, selector, { kind: 'move', ...final }))
-          updateLayer(await styleGesture(frame.id, selector, commit && sourceUnchanged() ? 'commit' : 'cancel'))
+          // Drain a preview before restoring styles or saving. A slow hit-test
+          // must never repaint after Escape, or commit the previous pointer slot.
+          await layerWork
+          const result =
+            commit && final && sourceUnchanged()
+              ? await elementMoveTarget(frame.id, selector, final.pointerX, final.pointerY)
+              : undefined
+          if (commit && final && sourceUnchanged() && result?.free) {
+            updateLayer(await editElementGeometry(frame.id, selector, { kind: 'move', x: final.x, y: final.y }))
+            updateLayer(await styleGesture(frame.id, selector, sourceUnchanged() ? 'commit' : 'cancel'))
+          } else {
+            updateLayer(await styleGesture(frame.id, selector, 'cancel'))
+            if (commit && result?.drop && sourceUnchanged())
+              dropLayer(frame, selector, result.drop.target, result.drop.styles)
+          }
         })
       }
     }
@@ -183,7 +222,12 @@ export function useElementMove(frame: Frame) {
       }
       rect = { ...bounds, x: bounds.x + point.x - origin.x, y: bounds.y + point.y - origin.y }
       if (layer) {
-        layerPoint = { x: rect.x - frame.x, y: rect.y - frame.y }
+        layerPoint = {
+          x: rect.x - frame.x,
+          y: rect.y - frame.y,
+          pointerX: point.x - contentOrigin.x,
+          pointerY: point.y - contentOrigin.y,
+        }
         previewLayer()
         return
       }
@@ -251,14 +295,16 @@ export function useElementMove(frame: Frame) {
     surface.addEventListener('lostpointercapture', onLostCapture)
     cleanup.current = cancel
     const selected = s.selectedElement?.frameId === frame.id ? s.selectedElement.selector : undefined
-    const drawingHit = frame.html.includes('data-doop-drawing')
-      ? requestFrame(frame.id, 'doop:drawing-hit', {
-          x: origin.x - frame.x,
-          y: origin.y - frame.y,
-          standalone,
-          selected,
-        })
-      : Promise.resolve(null)
+    const drawingHit = finishing.current.then(() =>
+      frame.html.includes('data-doop-drawing')
+        ? requestFrame(frame.id, 'doop:drawing-hit', {
+            x: origin.x - frame.x,
+            y: origin.y - frame.y,
+            standalone,
+            selected,
+          })
+        : null,
+    )
     void drawingHit.then(async (reply) => {
       if (closed) return
       hit = (reply?.hit ?? null) as DrawingHit | null
@@ -298,36 +344,68 @@ export function useElementMove(frame: Frame) {
   return {
     start,
     moving,
-    preview:
-      preview &&
-      createPortal(
-        <div className="pointer-events-none absolute inset-0 z-40">
-          {preview.target && (
+    preview: (
+      <>
+        {layoutDrop &&
+          createPortal(
             <div
-              data-drawing-drop-target={preview.target.id}
-              className="absolute bg-brand/10 [box-shadow:0_0_0_calc(2px/var(--zoom,1))_var(--brand)]"
-              style={{
-                left: preview.target.x,
-                top: preview.target.y,
-                width: preview.target.width,
-                height: preview.target.height,
-              }}
-            />
+              className="pointer-events-none absolute inset-0 z-40"
+              style={{ left: layoutDrop.origin.x, top: layoutDrop.origin.y }}
+            >
+              <div
+                data-element-drop-target
+                className="absolute bg-brand/10 [box-shadow:0_0_0_calc(1px/var(--zoom,1))_var(--brand)]"
+                style={{
+                  left: layoutDrop.drop.container.x,
+                  top: layoutDrop.drop.container.y,
+                  width: layoutDrop.drop.container.width,
+                  height: layoutDrop.drop.container.height,
+                }}
+              />
+              <div
+                data-element-drop-indicator
+                className="absolute bg-brand"
+                style={{
+                  left: layoutDrop.drop.line.x,
+                  top: layoutDrop.drop.line.y,
+                  width: layoutDrop.drop.line.width || 'calc(2px / var(--zoom, 1))',
+                  height: layoutDrop.drop.line.height || 'calc(2px / var(--zoom, 1))',
+                }}
+              />
+            </div>,
+            layoutDrop.world,
           )}
-          <iframe
-            title="Moving drawing"
-            sandbox=""
-            srcDoc={preview.html}
-            className="absolute border-0 bg-transparent opacity-80 [box-shadow:0_0_0_calc(1px/var(--zoom,1))_var(--brand)]"
-            style={{
-              left: preview.rect.x,
-              top: preview.rect.y,
-              width: preview.rect.width,
-              height: preview.rect.height,
-            }}
-          />
-        </div>,
-        preview.world,
-      ),
+        {preview &&
+          createPortal(
+            <div className="pointer-events-none absolute inset-0 z-40">
+              {preview.target && (
+                <div
+                  data-drawing-drop-target={preview.target.id}
+                  className="absolute bg-brand/10 [box-shadow:0_0_0_calc(2px/var(--zoom,1))_var(--brand)]"
+                  style={{
+                    left: preview.target.x,
+                    top: preview.target.y,
+                    width: preview.target.width,
+                    height: preview.target.height,
+                  }}
+                />
+              )}
+              <iframe
+                title="Moving drawing"
+                sandbox=""
+                srcDoc={preview.html}
+                className="absolute border-0 bg-transparent opacity-80 [box-shadow:0_0_0_calc(1px/var(--zoom,1))_var(--brand)]"
+                style={{
+                  left: preview.rect.x,
+                  top: preview.rect.y,
+                  width: preview.rect.width,
+                  height: preview.rect.height,
+                }}
+              />
+            </div>,
+            preview.world,
+          )}
+      </>
+    ),
   }
 }
