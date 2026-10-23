@@ -530,7 +530,7 @@ export const FRAME_BOOTSTRAP = `<!doctype html>
      Capture its non-bubbling load event, including links added by later renders. */
   document.addEventListener('load', function (ev) {
     var el = ev.target
-    if (el && el.tagName === 'LINK' && el.relList.contains('stylesheet')) notifyFrameUpdated()
+    if (el && (el.tagName === 'IMG' || (el.tagName === 'LINK' && el.relList.contains('stylesheet')))) notifyFrameUpdated()
   }, true)
 
   function px(v) {
@@ -654,6 +654,56 @@ export const FRAME_BOOTSTRAP = `<!doctype html>
     return el.style.getPropertyValue(axis) || cs[axis]
   }
 
+  function imageFill(el, cs) {
+    if (el.tagName === 'IMG') return { kind: 'img', src: el.currentSrc || el.src || '', size: cs.objectFit, repeat: 'no-repeat' }
+    // A single CSS image fill; leave gradients and layered backgrounds intact.
+    var match = cs.backgroundImage.match(/^url\\("([^"]*)"\\)$/)
+    return match ? { kind: 'background', src: match[1], size: cs.backgroundSize, repeat: cs.backgroundRepeat } : null
+  }
+
+  function preserveImageSize(el, cs) {
+    // Keep the old intrinsic inputs, not the flex/grid layout's used size.
+    // This also works without Typed OM and leaves authored widths, heights,
+    // flex factors and responsive constraints in charge of the actual box.
+    // Already size-contained images (including earlier replacements) do not
+    // derive their layout from the file, so keep their existing overrides.
+    var contain = cs.contain
+    if (!el.naturalWidth || !el.naturalHeight || contain === 'strict' || contain.split(' ').indexOf('size') !== -1) return
+    var ratio = cs.aspectRatio
+    if (ratio.indexOf('auto') !== -1) {
+      ratio = el.naturalWidth + ' / ' + el.naturalHeight
+      // A natural ratio applies to the content box; a CSS ratio follows
+      // box-sizing. Preserve the current outer ratio for padded border boxes.
+      if (cs.boxSizing === 'border-box' && px(cs.width) > 0 && px(cs.height) > 0) ratio = px(cs.width) + ' / ' + px(cs.height)
+    }
+    el.style.setProperty('aspect-ratio', ratio, 'important')
+    el.style.setProperty('contain-intrinsic-size', el.naturalWidth + 'px ' + el.naturalHeight + 'px', 'important')
+    el.style.setProperty('contain', contain === 'none' ? 'size' : contain === 'content' ? 'size layout style paint' : contain + ' size', 'important')
+  }
+
+  function replaceImage(selector, expected, url) {
+    var el = styleTarget(selector)
+    if (!el || isLocked(el) || !expected || typeof url !== 'string' || !url) return false
+    var cs = getComputedStyle(el)
+    var image = imageFill(el, cs)
+    if (!image || image.kind !== expected.kind || image.src !== expected.src) return false
+    if (styleEdit) endStyleEdit(styleEdit.selector, false)
+    if (styleTimer) { clearTimeout(styleTimer); styleTimer = null; postEdited() }
+    if (image.kind === 'img') {
+      preserveImageSize(el, cs)
+      el.removeAttribute('srcset')
+      el.removeAttribute('sizes')
+      if (el.parentElement && el.parentElement.tagName === 'PICTURE') {
+        el.parentElement.querySelectorAll('source').forEach(function (source) { source.remove() })
+      }
+      el.src = url
+    } else {
+      el.style.setProperty('background-image', 'url(' + JSON.stringify(url) + ')', 'important')
+    }
+    postEdited(true)
+    return true
+  }
+
   function inspect(selector) {
     var el = null
     try { el = selector ? document.querySelector(selector) : null } catch (e) { /* bad selector */ }
@@ -732,6 +782,7 @@ export const FRAME_BOOTSTRAP = `<!doctype html>
       visibility: cs.visibility,
       clipsContent: /^(hidden|clip)$/.test(cs.overflowX) && /^(hidden|clip)$/.test(cs.overflowY),
       backgroundColor: cs.backgroundColor,
+      image: imageFill(el, cs),
       /* rounded: the crisp-render zoom snaps hairlines to device pixels */
       borderWidths: [
         Math.round(px(cs.borderTopWidth)),
@@ -855,6 +906,10 @@ export const FRAME_BOOTSTRAP = `<!doctype html>
     if (d.type === 'doop:style' && d.styles && typeof d.styles === 'object') {
       var applied = applyStyle(d.selector, d.styles)
       parent.postMessage({ type: 'doop:style-result', reqId: d.reqId, ok: applied, info: applied ? inspect(d.selector) : null }, '*')
+    }
+    if (d.type === 'doop:replace-image') {
+      var replaced = replaceImage(d.selector, d.image, d.url)
+      parent.postMessage({ type: 'doop:replace-image-result', reqId: d.reqId, info: replaced ? inspect(d.selector) : null }, '*')
     }
     if (d.type === 'doop:geometry') {
       var changed = editGeometry(d.selector, d.edit)

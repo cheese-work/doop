@@ -78,6 +78,7 @@ export interface ElementInfo {
   visibility: string
   clipsContent: boolean
   backgroundColor: string
+  image: { kind: 'img' | 'background'; src: string; size: string; repeat: string } | null
   /** top, right, bottom, left */
   borderWidths: [number | null, number | null, number | null, number | null]
   /** style and colour of the first side that draws */
@@ -209,6 +210,16 @@ export async function inspectElement(frameId: string, selector: string): Promise
  *  element's fresh properties. */
 export async function styleElement(frameId: string, selector: string, styles: StylePatch): Promise<ElementInfo | null> {
   return infoOf(await requestFrame(frameId, 'doop:style', { selector, styles }))
+}
+
+/** Replace image content through the same live edit/undo path as styles. */
+export async function replaceElementImage(
+  frameId: string,
+  selector: string,
+  image: NonNullable<ElementInfo['image']>,
+  url: string,
+): Promise<ElementInfo | null> {
+  return infoOf(await requestFrame(frameId, 'doop:replace-image', { selector, image, url }))
 }
 
 /** Preview a whole scrub locally, then save once or restore its original CSS. */
