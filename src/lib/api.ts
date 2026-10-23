@@ -19,7 +19,7 @@ import type {
   WorkspaceRole,
   WorkspaceSummary,
 } from '../../shared/types'
-import type { Automation, AutomationRun, Schedule, Step } from '../../shared/automations'
+import type { Automation, AutomationRun, AutomationTrigger, Schedule, Step } from '../../shared/automations'
 import type { BillingInterval, Plan } from '../../shared/billing'
 
 export type HomeActivity = ActivityItem & { canvasId: string; canvasName: string }
@@ -190,6 +190,7 @@ export interface AutomationInput {
   enabled?: boolean
   schedule?: Schedule
   steps?: Step[]
+  trigger?: AutomationTrigger
 }
 
 /** The Integrations page: per-provider connection state. A provider the
@@ -544,6 +545,7 @@ export const api = {
     }),
   /* integrations: per-user connections to outside services */
   integrations: () => req<IntegrationsStatus>('/api/integrations'),
+  automationLinearTeams: () => req<{ id: string; name: string; key: string }[]>('/api/integrations/linear/teams'),
   disconnectMeta: () => req<IntegrationsStatus>('/api/integrations/meta', { method: 'DELETE' }),
 }
 

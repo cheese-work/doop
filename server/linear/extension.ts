@@ -6,9 +6,15 @@ import { agentEnabled, agentToken, finishInstall, getInstallation, startInstall 
 import { disconnectAgent, startLinearWorker } from './jobs.ts'
 import { linearWebhookRouter } from './webhook.ts'
 import { getIssue, LinearError, listIssues, listIssuesInput } from './client.ts'
+import { automationTeams, createAutomationIssue } from './automation.ts'
+import { AutomationPullError } from '../extensions.ts'
 
 export const linearExtension: ServerExtension = {
   id: 'linear',
+  runAutomationAction: (step, ctx) => {
+    if (step.type !== 'linear') throw new Error('Expected a Linear step')
+    return createAutomationIssue(step, ctx.ownerId, ctx.context)
+  },
   webhookRouter: linearWebhookRouter,
   startWorker: startLinearWorker,
   connectionStatus: async (userId) => {
@@ -37,6 +43,15 @@ export const linearExtension: ServerExtension = {
   },
   connectRouter: ({ respondWithStatus }) => {
     const router = express.Router()
+    router.get('/teams', async (req, res, next) => {
+      try {
+        res.json(await automationTeams(req.user!.id))
+      } catch (error) {
+        if (error instanceof LinearError || error instanceof AutomationPullError)
+          return res.status(error instanceof LinearError ? error.status : 409).json({ error: error.message })
+        next(error)
+      }
+    })
     router.post('/token', async (req, res, next) => {
       const input = z.object({ token: z.string() }).safeParse(req.body)
       if (!input.success) return res.status(400).json({ error: 'Enter a Linear personal API key.' })

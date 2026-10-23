@@ -1441,13 +1441,14 @@ export function setFrameApproval(
 ): Frame | undefined {
   const current = store.getFrame(frameId)
   if (!current) return undefined
+  if (ready && current.approval?.status === 'ready_for_dev') return current
   const actor = resolveActor({ name: user.name, kind: 'user' })
   const approval = ready
     ? {
         status: 'ready_for_dev' as const,
         approvedBy: user.name,
         approvedByUserId: user.id,
-        approvedAt: Date.now(),
+        approvedAt: Math.max(Date.now(), current.updatedAt + 1),
         approvedFrameUpdatedAt: current.updatedAt,
       }
     : null

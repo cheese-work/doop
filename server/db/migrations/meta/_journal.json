@@ -239,6 +239,13 @@
       "when": 1792719758584,
       "tag": "0034_frame_approval",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1792742861394,
+      "tag": "0035_approval_automations",
+      "breakpoints": true
     }
   ]
 }

@@ -41,6 +41,7 @@ import { Panel, PanelBody, PanelClose, PanelHeader } from './ui/panel'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Tooltip } from './ui/tooltip'
+import { Toolbar, ToolbarControl } from './ui/toolbar'
 import { ContextMenu, ContextMenuTrigger } from './ui/context-menu'
 import { ElementContextMenu } from './ElementContextMenu'
 import {
@@ -456,33 +457,23 @@ export function LayersRailToggle() {
   const setLayersOpen = useStore((s) => s.setLayersOpen)
   const count = usePageCanvas()?.frames.length ?? 0
   return (
-    <nav
+    <Toolbar
       aria-label="Layers panel"
-      className="pointer-events-auto absolute top-2.5 left-3.5 z-[35] flex w-10 flex-col items-center gap-0.5 rounded-[12px] bg-surface p-[5px] shadow-float"
+      orientation="vertical"
+      className="pointer-events-auto absolute top-2.5 left-3.5 z-[35]"
     >
-      <Tooltip label="Expand panel" side="right">
-        <Button
-          variant="bare"
-          size="icon-sm"
-          className="size-7 rounded-[7px] text-ink-soft hover:bg-paper-deep hover:text-ink"
-          aria-label="Expand panel"
-          onClick={() => setLayersOpen(true)}
-        >
-          <PanelExpandIcon className="size-3.5" />
-        </Button>
-      </Tooltip>
-      <Tooltip label={`Layers · ${count} ${count === 1 ? 'frame' : 'frames'}`} side="right">
-        <Button
-          variant="bare"
-          size="icon-sm"
-          className="size-7 rounded-[7px] text-ink hover:bg-paper-deep"
-          aria-label={`Layers — ${count} frames`}
-          onClick={() => setLayersOpen(true)}
-        >
-          <LayersIcon className="size-3.5" />
-        </Button>
-      </Tooltip>
-    </nav>
+      <ToolbarControl label="Expand panel" side="right" onClick={() => setLayersOpen(true)}>
+        <PanelExpandIcon />
+      </ToolbarControl>
+      <ToolbarControl
+        label={`Layers · ${count} ${count === 1 ? 'frame' : 'frames'}`}
+        side="right"
+        className="text-ink"
+        onClick={() => setLayersOpen(true)}
+      >
+        <LayersIcon />
+      </ToolbarControl>
+    </Toolbar>
   )
 }
 

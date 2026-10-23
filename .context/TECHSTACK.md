@@ -39,6 +39,19 @@
 - `@electric-sql/pglite` 0.5.4 - embedded Postgres so `bun run dev` works with zero external
   services.
 - `pg` 8.22.0 - Postgres driver for the real-database path.
+- Automations (`shared/automations.ts`, `server/automations.ts`) support schedules and
+  approval triggers scoped to one canvas. The five-second worker groups up to ten signed-off
+  frames per run. `automation_approvals` retains dispatch receipts independently of the
+  pruned run log. Run state stores the approved source identities, frozen steps, current
+  step, task ID, summaries and result links; database leases serialize execution. Agent tasks
+  and their wait points commit together. The next step waits for completion, checks source
+  approvals and access again, and stops on failure or after one hour. Interrupted external
+  calls require a destination check rather than automatic replay. Integration-owned action
+  hooks create Linear issues or send Slack messages using the workflow owner's connection.
+  Approval presets create draft sizes, translations and companion assets on the watched canvas.
+  The worker queues independent workflows with concurrency four and keeps discovering work
+  while integrations await I/O. Receipt lookup is batched. Later agent briefs include earlier
+  draft-result links and completion summaries, so localization can build on generated sizes.
 
 ## 4. Canvas Drawing
 

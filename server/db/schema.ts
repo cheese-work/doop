@@ -11,7 +11,7 @@ import {
   jsonb,
 } from 'drizzle-orm/pg-core'
 import type { CanvasPageInfo, FrameApproval } from '../../shared/types.ts'
-import type { Schedule, Step } from '../../shared/automations.ts'
+import type { AutomationRunState, AutomationTrigger, Schedule, Step } from '../../shared/automations.ts'
 
 /** ActivityKit tokens are delivery secrets: never return them through read APIs. */
 export const liveActivities = pgTable('live_activities', {
@@ -618,6 +618,8 @@ export const automations = pgTable(
     name: text('name').notNull(),
     enabled: boolean('enabled').notNull().default(true),
     schedule: jsonb('schedule').$type<Schedule>().notNull(),
+    trigger: jsonb('trigger').$type<AutomationTrigger>().notNull().default({ type: 'schedule' }),
+    approvalSince: bigint('approval_since', { mode: 'number' }).notNull().default(0),
     steps: jsonb('steps').$type<Step[]>().notNull(),
     /** when the scheduler fires it next; null while disabled or incomplete */
     nextRunAt: bigint('next_run_at', { mode: 'number' }),
@@ -642,8 +644,21 @@ export const automationRuns = pgTable(
     canvasId: text('canvas_id'),
     /** 'reconnect' when the fix is re-authorising an integration */
     failure: text('failure'),
+    state: jsonb('state').$type<AutomationRunState>(),
+    leaseUntil: bigint('lease_until', { mode: 'number' }).notNull().default(0),
   },
   (t) => [index('automation_runs_automation_idx').on(t.automationId)],
+)
+
+/** Approval receipts outlive the run log so pruning cannot dispatch a design twice. */
+export const automationApprovals = pgTable(
+  'automation_approvals',
+  {
+    automationId: text('automation_id').notNull(),
+    frameId: text('frame_id').notNull(),
+    approvedAt: bigint('approved_at', { mode: 'number' }).notNull(),
+  },
+  (t) => [uniqueIndex('automation_approvals_event_idx').on(t.automationId, t.frameId, t.approvedAt)],
 )
 
 /** Local execution preference; Claude credentials never leave the desktop. */

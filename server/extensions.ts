@@ -2,8 +2,10 @@ import type express from 'express'
 import type { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type { Actor, Canvas, Frame } from '../shared/types.ts'
-import type { PullStep } from '../shared/automations.ts'
+import type { PullStep, SlackStep, LinearStep } from '../shared/automations.ts'
+import { figmaExtension } from './figma/extension.ts'
 import { linearExtension } from './linear/extension.ts'
+import { canvaExtension } from './canva/extension.ts'
 import { slackExtension } from './slack/extension.ts'
 
 /**
@@ -117,6 +119,10 @@ export interface ServerExtension {
     step: Extract<PullStep, { provider: string }>,
     ctx: { ownerId: string; actor: Actor },
   ): Promise<string>
+  runAutomationAction?(
+    step: SlackStep | LinearStep,
+    ctx: { ownerId: string; context: string },
+  ): Promise<{ summary: string; url?: string }>
 }
 
-export const extensions: ServerExtension[] = [linearExtension, slackExtension]
+export const extensions: ServerExtension[] = [figmaExtension, canvaExtension, linearExtension, slackExtension]
