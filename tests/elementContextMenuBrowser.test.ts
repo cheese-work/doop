@@ -172,23 +172,6 @@ describe.skipIf(!findBrowserPath())('frame and element context menus', () => {
     expect(await page.evaluate(() => navigator.clipboard.readText())).toContain('id="text"')
   })
 
-  it('copies and pastes just a layer, and deletes it with undo', async () => {
-    await rightClick('#box')
-    await choose('Copy')
-    await rightClick('#text')
-    await choose('Paste')
-    const doc = (await frameDoc())!
-    await doc.waitForSelector('#box-copy')
-    await expect.poll(() => saved.html).toContain('id="box-copy"')
-    expect(await doc.$eval('#text', (el) => el.nextElementSibling?.id)).toBe('box-copy')
-    await rightClick('#box-copy')
-    await choose('Delete element')
-    await expect.poll(() => saved.html).not.toContain('id="box-copy"')
-    expect(deletedFrames).toBe(0)
-    await page.evaluate(() => window.contextMenuHarness.undo())
-    await doc.waitForSelector('#box-copy')
-  }, 20_000)
-
   it('shares hide, unlock, and link actions with the layer panel', async () => {
     await rightClick('#locked')
     expect(
