@@ -1433,6 +1433,39 @@ export function updateFrame(
   return frame
 }
 
+/** Sign-off is a human action, separate from ordinary frame editing. */
+export function setFrameApproval(
+  frameId: string,
+  ready: boolean,
+  user: { id: string; name: string },
+): Frame | undefined {
+  const current = store.getFrame(frameId)
+  if (!current) return undefined
+  const actor = resolveActor({ name: user.name, kind: 'user' })
+  const approval = ready
+    ? {
+        status: 'ready_for_dev' as const,
+        approvedBy: user.name,
+        approvedByUserId: user.id,
+        approvedAt: Date.now(),
+        approvedFrameUpdatedAt: current.updatedAt,
+      }
+    : null
+  const frame = store.updateFrame(frameId, { approval }, user.name)!
+  broadcast(frame.canvasId, { type: 'frame:updated', frame, actor })
+  logActivity(
+    frame.canvasId,
+    actor,
+    ready ? `marked “${frame.name}” ready for dev` : `moved “${frame.name}” back to draft`,
+    frameId,
+  )
+  return frame
+}
+
+export function isFrameStreaming(frameId: string): boolean {
+  return streams.has(frameId) || reveals.has(frameId)
+}
+
 export function deleteFrame(frameId: string, actor: Actor): Frame | undefined {
   /* close any live stream or playback while the frame still exists,
      so their auto “Designing…” tasks end with it */

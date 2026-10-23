@@ -6,6 +6,8 @@ lists every file in this folder.
 
 ## Active
 
+- [frame-approval.md](frame-approval.md) - Human sign-off for development, revision checks,
+  automatic review invalidation, and approval metadata for MCP and resident agents.
 - [frame-versions.md](frame-versions.md) - Per-frame design history: burst-based snapshots of the
   HTML a redesign, stream or restore replaced, the `frame_versions` table, REST + MCP restore, and
   the history modal.

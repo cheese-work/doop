@@ -6,6 +6,8 @@ import { copyFramePng } from '../lib/frameExport'
 import { deleteFramesTracked } from '../lib/history'
 import { setFramesHidden, setFramesLocked } from '../lib/layerEdits'
 import { useStore } from '../lib/store'
+import { setFramesApproval } from '../lib/frameApproval'
+import { useFrameSaves } from '../lib/frameSaves'
 import { MOD_KEY } from '../lib/keys'
 import { ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from './ui/context-menu'
 import { MenuHint } from './ui/menu'
@@ -27,8 +29,13 @@ async function copyImageUrl(frame: Frame) {
 export function FrameContextMenu({ frame, at }: { frame: Frame; at: MutableRefObject<{ x: number; y: number }> }) {
   const [showExport, setShowExport] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
+  const [savingApproval, setSavingApproval] = useState(false)
   /* a right-click inside a multi-selection acts on the whole group */
-  const groupSize = useStore((s) => (s.selectedIds.includes(frame.id) ? s.selectedIds.length : 1))
+  const selectedIds = useStore((s) => s.selectedIds)
+  const groupIds = selectedIds.includes(frame.id) ? selectedIds : [frame.id]
+  const groupSize = groupIds.length
+  const pendingSave = useFrameSaves((s) => groupIds.some((id) => !!s.pending[id]))
+  const streaming = useStore((s) => groupIds.some((id) => !!s.streams[id]))
   /* Hide/Show reads as one item: the group shows when every frame in it is hidden */
   const allHidden = useStore((s) => {
     const ids = s.selectedIds.includes(frame.id) ? s.selectedIds : [frame.id]
@@ -49,6 +56,19 @@ export function FrameContextMenu({ frame, at }: { frame: Frame; at: MutableRefOb
   function deleteSelection() {
     /* locked frames stay, as they do on ⌫ */
     deleteFramesTracked(groupFrames().filter((f) => !f.locked))
+  }
+  const allReady = useStore((s) => {
+    const ids = s.selectedIds.includes(frame.id) ? s.selectedIds : [frame.id]
+    const group = s.canvas?.frames.filter((f) => ids.includes(f.id)) ?? [frame]
+    return group.every((f) => f.approval?.status === 'ready_for_dev')
+  })
+  async function changeApproval() {
+    setSavingApproval(true)
+    try {
+      await setFramesApproval(groupFrames(), allReady ? 'draft' : 'ready_for_dev')
+    } finally {
+      setSavingApproval(false)
+    }
   }
   return (
     <>
@@ -87,6 +107,14 @@ export function FrameContextMenu({ frame, at }: { frame: Frame; at: MutableRefOb
         <ContextMenuItem onSelect={() => void copyImageUrl(frame)}>Copy image URL</ContextMenuItem>
         <ContextMenuItem onSelect={() => setShowExport(true)}>Export…</ContextMenuItem>
         <ContextMenuItem onSelect={() => setHistoryOpen(true)}>Version history…</ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem
+          disabled={savingApproval || (!allReady && (pendingSave || streaming))}
+          onSelect={() => void changeApproval()}
+        >
+          {allReady ? 'Move to draft' : 'Mark ready for dev'}
+          {groupSize > 1 && <MenuHint>{groupSize} frames</MenuHint>}
+        </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem onSelect={() => setFramesLocked(groupFrames(), !allLocked)}>
           {allLocked ? 'Unlock' : 'Lock'}

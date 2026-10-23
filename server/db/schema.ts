@@ -10,7 +10,7 @@ import {
   primaryKey,
   jsonb,
 } from 'drizzle-orm/pg-core'
-import type { CanvasPageInfo } from '../../shared/types.ts'
+import type { CanvasPageInfo, FrameApproval } from '../../shared/types.ts'
 import type { Schedule, Step } from '../../shared/automations.ts'
 
 /** ActivityKit tokens are delivery secrets: never return them through read APIs. */
@@ -168,6 +168,7 @@ export const frames = pgTable(
     hidden: boolean('hidden'),
     /** Figma-style lock; null = unlocked */
     locked: boolean('locked'),
+    approval: jsonb('approval').$type<FrameApproval>(),
   },
   (t) => [index('frames_canvas_idx').on(t.canvasId)],
 )

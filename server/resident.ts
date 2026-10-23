@@ -103,6 +103,7 @@ Rules:
 - Queued cards are standalone work requests from the board. A card may be routed through several agents in turn — you own your stage of it and nothing else. If your specialty is to originate work: a new-asset card means create_frame sized for the job, a change request means editing the existing frame. One card, one deliverable.
 - Later stages inherit whatever earlier stages left. Read the frame as it is now; never undo a previous agent's work because you would have done it differently.
 - Resolve frame references against the numbered frame list in the request. A literal frame name wins; otherwise "Frame 1" means the first listed frame, and "the other frame" means the only remaining frame when there are two.
+- Each frame includes human approval metadata. Only ready_for_dev means the current design is approved for implementation; draft and needs_review are not approved. Content or size edits invalidate sign-off. Approval is context, not a new assignment: do only the requested work, and re-read the frame's approval before using it for implementation.
 - Choose a size-aware strategy. For documents over 60,000 characters, call inspect_frame before reading HTML. Use get_frame_html with a query or bounded range only when markup is needed.
 - For requests to copy, match, or borrow another frame's design: screenshot and inspect BOTH the target and reference before editing. Use the reference screenshot and computed design tokens as the source of visual truth. Read target HTML only when you need to preserve its content; do not load a large reference document just to learn its style. For a full redesign, use begin_frame_rewrite, append_frame_rewrite in chunks under 12,000 characters, and commit_frame_rewrite; then screenshot the changed frame.
 - Element comments are pinned to ONE element (you get its CSS selector and an HTML excerpt). Change that element or its immediate context — never rework unrelated parts of the frame because of an element comment.
@@ -386,7 +387,7 @@ async function runAgent(canvasId: string, agentName: string, stalled: Set<string
     const frameList = visibleFrames
       .map(
         (f, index) =>
-          `- Frame ${index + 1}: id=${f.id}, name="${f.name}", ${Math.round(f.width)}x${Math.round(f.height)} (last edit: ${f.updatedBy}, ${f.html.length} bytes${f.html.length > LARGE_HTML_CHARS ? '; large document — avoid a full read for visual-reference work' : ''})`,
+          `- Frame ${index + 1}: id=${f.id}, name="${f.name}", ${Math.round(f.width)}x${Math.round(f.height)} (last edit: ${f.updatedBy}, ${f.html.length} bytes${f.html.length > LARGE_HTML_CHARS ? '; large document — avoid a full read for visual-reference work' : ''}); approval=${JSON.stringify(f.approval ?? { status: 'draft' })}`,
       )
       .join('\n')
 
@@ -1235,13 +1236,20 @@ async function execTool(
         const f = store.getFrame(input.frame_id)
         if (!f || f.canvasId !== canvasId) return fail('frame not found on this canvas')
         const inspection = await inspectFrame(f)
-        return ok(JSON.stringify(inspection))
+        return ok(
+          JSON.stringify({
+            ...inspection,
+            approvalStatus: f.approval?.status ?? 'draft',
+            approval: f.approval ?? null,
+          }),
+        )
       }
       case 'get_frame_html': {
         const f = store.getFrame(input.frame_id)
         if (!f || f.canvasId !== canvasId) return fail('frame not found on this canvas')
         if (typeof f.html !== 'string') return fail('frame HTML is unavailable; retry after the frame reloads')
         const raw = block.input as { query?: string; offset?: number; limit?: number }
+        const approval = `Approval: ${JSON.stringify(f.approval ?? { status: 'draft' })}`
         const query = String(raw.query || '').trim()
         const limit = Math.max(1000, Math.min(Number(raw.limit) || 20_000, MAX_HTML_READ_CHARS))
         if (query) {
@@ -1263,13 +1271,13 @@ async function execTool(
             return `--- match ${match + 1} at ${index}, chars ${start}-${end} ---\n${f.html.slice(start, end)}`
           })
           return ok(
-            `Frame HTML: ${f.html.length} characters; ${matches.length} match(es) for "${query}".\n${snippets.join('\n')}`,
+            `Frame HTML: ${f.html.length} characters; ${matches.length} match(es) for "${query}".\n${approval}\n${snippets.join('\n')}`,
           )
         }
         const offset = Math.max(0, Math.min(Number(raw.offset) || 0, f.html.length))
         const end = Math.min(f.html.length, offset + limit)
         return ok(
-          `Frame HTML: ${f.html.length} characters. Returning chars ${offset}-${end}.${end < f.html.length ? ` Continue with offset=${end}, or use query for a targeted snippet.` : ''}\n\n${f.html.slice(offset, end)}`,
+          `Frame HTML: ${f.html.length} characters. Returning chars ${offset}-${end}.${end < f.html.length ? ` Continue with offset=${end}, or use query for a targeted snippet.` : ''}\n${approval}\n\n${f.html.slice(offset, end)}`,
         )
       }
       case 'edit_frame_html': {

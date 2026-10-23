@@ -187,6 +187,11 @@ Viewers watch designs assemble live. Stream with append_frame_html:
 
 ## Frames and HTML
 
+- Human sign-off: get_canvas and get_frame expose approvalStatus (draft, ready_for_dev,
+  needs_review) and approval attribution. Filter get_canvas with approval_status="ready_for_dev"
+  to find approved screens, then re-read get_frame before implementing. HTML and size edits
+  invalidate sign-off; needs_review requires another human approval. Approval alone does not
+  assign an implementation job — follow the human's request.
 - A frame renders a complete HTML document in a sandboxed iframe. Inline <style> and
   <script> work; Google Fonts via <link> work.
 - Always reset: * { margin: 0; box-sizing: border-box; } and design to the exact frame size.

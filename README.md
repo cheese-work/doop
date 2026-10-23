@@ -141,6 +141,31 @@ correct page. The URL includes the canvas ID, frame ID and URL-encoded CSS
 still apply. Selectors that use element IDs survive layout changes; selectors
 based on sibling positions can change when the HTML is restructured.
 
+## Approve screens for development
+
+Select a frame and turn on **Development → Mark as approved** in the inspector,
+or right-click one or more frames and choose **Mark ready for dev**. A green badge
+appears above the screen and in Layers. Hover the toggle row or a badge to see
+who approved it and when. Turn the toggle off to move an approved screen back to draft.
+
+Changing the HTML or frame dimensions switches an approved screen to **Needs review**;
+review it and turn **Mark as approved** on again. Moving, renaming, hiding, locking, or moving
+between pages keeps approval. Copies start as drafts. An approval checks the frame
+revision so a concurrent edit cannot accidentally be approved, and waits for live
+design streams to finish.
+
+Agents can read `approvalStatus` (`draft`, `ready_for_dev`, `needs_review`) and
+`approval` attribution in `get_canvas` and `get_frame`. Call
+`get_canvas({ canvas_id, approval_status: "ready_for_dev" })` to find approved
+screens, then re-read `get_frame` before implementing. Only `ready_for_dev` is
+current sign-off. Approval is set by people in the app; it does not automatically
+queue an implementation job.
+
+The REST equivalent is `PUT /api/frames/:id/approval` with
+`{ status: "ready_for_dev" | "draft", expectedUpdatedAt }`. The signed-in user's
+identity supplies the attribution; the endpoint uses the same canvas access rules
+as editing and returns `409` when the reviewed revision is stale.
+
 ## iPhone and iPad app
 
 The SwiftUI iOS app lives in [`ios/`](ios/README.md). Open `ios/Doop.xcodeproj`

@@ -1,4 +1,5 @@
 import { useStore } from './store'
+import { beginFrameSave } from './frameSaves'
 import type { LocalAgentPreference, LocalAgentJob, LocalAgentResult } from '../../shared/localAgent'
 import type { NotificationPrefs, NotificationSettings } from '../../shared/notifications'
 import type { WebhookDeliveryResult, WebhookEventType, WebhookInfo } from '../../shared/webhooks'
@@ -411,13 +412,24 @@ export const api = {
         actor: actor(),
       }),
     }),
-  updateFrame: (frameId: string, patch: Partial<Frame>, expectedUpdatedAt?: number) =>
-    req<Frame>('/api/frames/' + frameId, {
-      method: 'PATCH',
-      body: JSON.stringify({ ...patch, expectedUpdatedAt, actor: actor() }),
-    }),
+  updateFrame: async (frameId: string, patch: Partial<Frame>, expectedUpdatedAt?: number) => {
+    const finish = ['html', 'width', 'height'].some((key) => key in patch) ? beginFrameSave(frameId) : () => {}
+    try {
+      return await req<Frame>('/api/frames/' + frameId, {
+        method: 'PATCH',
+        body: JSON.stringify({ ...patch, expectedUpdatedAt, actor: actor() }),
+      })
+    } finally {
+      finish()
+    }
+  },
   deleteFrame: (frameId: string, expectedUpdatedAt?: number) =>
     req('/api/frames/' + frameId, { method: 'DELETE', body: JSON.stringify({ expectedUpdatedAt, actor: actor() }) }),
+  setFrameApproval: (frameId: string, status: 'ready_for_dev' | 'draft', expectedUpdatedAt: number) =>
+    req<Frame>(`/api/frames/${frameId}/approval`, {
+      method: 'PUT',
+      body: JSON.stringify({ status, expectedUpdatedAt }),
+    }),
   /* design history: the states earlier edits replaced, newest first (no HTML) */
   frameVersions: (frameId: string) => req<FrameVersionInfo[]>(`/api/frames/${frameId}/versions`),
   frameVersion: (frameId: string, versionId: string) =>

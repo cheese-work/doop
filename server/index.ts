@@ -1592,6 +1592,19 @@ app.patch('/api/frames/:id', (req, res) => {
   res.json(frame)
 })
 
+app.put('/api/frames/:id/approval', (req, res) => {
+  const current = requireFrame(req, res, req.params.id, req.body?.expectedUpdatedAt)
+  if (!current) return
+  const { status, expectedUpdatedAt } = req.body ?? {}
+  if (expectedUpdatedAt === undefined)
+    return res.status(400).json({ error: 'expectedUpdatedAt is required to approve the reviewed version' })
+  if (status !== 'ready_for_dev' && status !== 'draft')
+    return res.status(400).json({ error: 'status must be ready_for_dev or draft' })
+  if (status === 'ready_for_dev' && actions.isFrameStreaming(current.id))
+    return res.status(409).json({ error: 'Wait for the design to finish before approving it.' })
+  res.json(actions.setFrameApproval(current.id, status === 'ready_for_dev', req.user!))
+})
+
 app.post('/api/frames/:id/append', (req, res) => {
   if (!requireFrame(req, res, req.params.id)) return
   const { html_chunk, start, done } = req.body ?? {}

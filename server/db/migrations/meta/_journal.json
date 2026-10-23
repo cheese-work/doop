@@ -232,6 +232,13 @@
       "when": 1792198605115,
       "tag": "0033_canvas_comments",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1792719758584,
+      "tag": "0034_frame_approval",
+      "breakpoints": true
     }
   ]
 }

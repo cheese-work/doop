@@ -18,6 +18,7 @@ import { snapFrame } from '../lib/snap'
 import { gesture } from '../lib/gesture'
 import { resolvePointerAction } from '../lib/tools'
 import { FrameContextMenu } from './FrameContextMenu'
+import { FrameApprovalBadge } from './FrameApproval'
 import { ElementContextMenu } from './ElementContextMenu'
 import { CodePanel } from './CodePanel'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from './ui/context-menu'
@@ -1005,6 +1006,7 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
               </Tooltip>
             )}
             <span className="overflow-hidden text-ellipsis">{frame.name}</span>
+            <FrameApprovalBadge frame={frame} />
             <span className="flex gap-1">
               {stream && (
                 <span className={EDITOR_CHIP} style={{ background: stream.color }}>

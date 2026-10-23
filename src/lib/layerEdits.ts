@@ -20,7 +20,8 @@ import {
 /* ---- element edits shared by the Layers rail and the element panel ---- */
 
 export function saveFrameHtml(frame: Frame, html: string) {
-  recordUpdate(frame.id, { html: frame.html }, { html })
+  // Layer commands each need their own undo step, even when invoked rapidly.
+  recordUpdate(frame.id, { html: frame.html }, { html }, true)
   useStore.getState().patchFrameLocal(frame.id, { html })
   api.updateFrame(frame.id, { html }).catch(console.error)
 }

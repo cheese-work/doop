@@ -31,12 +31,14 @@ import { mentionedRole } from '../shared/agents.ts'
 import * as allowance from './allowance.ts'
 import { previewOf, previewToolMeta, registerFramePreview, type CanvasPreview } from './chatgptApp.ts'
 import * as persist from './db/persist.ts'
+import type { FrameApproval } from '../shared/types.ts'
 
 const INSTRUCTIONS = `Doop is a shared multiplayer design canvas: humans and AI agents design together in real time. Canvases contain frames — artboards that render complete HTML documents live for everyone viewing.
 
 You MUST call get_guide({ topic: "doop-instructions" }) once before using other Doop tools. Call it again if a long conversation may have compressed or dropped the guide text.
 
 - Context first: call get_canvas before adding or editing frames.
+- Implementation handoff: get_canvas and get_frame expose approvalStatus (draft, ready_for_dev, needs_review) and human approval attribution. Use get_canvas with approval_status="ready_for_dev" to find approved screens. Re-read get_frame before implementing; only ready_for_dev is current sign-off. HTML or size edits invalidate approval. Approval does not automatically start an implementation task; follow the human's implementation request.
 - Element links: /c/<canvas_id>?frame=<frame_id>&selector=<URL-encoded CSS selector> identifies a specific element. Decode selector, read get_canvas and get_frame, and locate that element in the frame HTML before applying the feedback. If it no longer matches, ask for an updated reference.
 - Identity: pick an agent_name and reuse the SAME name on every call — your presence and edits are attributed live.
 - Narrate: call set_status with a one-line summary when you start a task and whenever your focus shifts — people watching the canvas see it live next to your name.
@@ -195,11 +197,14 @@ function frameSummary(f: {
   demo?: boolean
   hidden?: boolean
   locked?: boolean
+  approval?: FrameApproval | null
 }) {
   return {
     id: f.id,
     pageId: f.pageId,
     name: f.name,
+    approvalStatus: f.approval?.status ?? 'draft',
+    approval: f.approval ?? null,
     ...(f.demo ? { demo: true } : {}),
     ...(f.hidden ? { hidden: true } : {}),
     ...(f.locked ? { locked: true } : {}),
@@ -385,11 +390,15 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       title: 'Get a canvas and its frames',
       _meta: previewToolMeta('Reading the canvas…', 'Canvas loaded'),
       description:
-        'Get a canvas: its name and every frame with position, size and metadata (not the HTML — use get_frame for that). Use this to see the current layout before adding or editing frames. Pass your agent_name so any human feedback waiting for you is delivered with the result.',
+        'Get a canvas: its name and frames with position, size, approvalStatus and human approval attribution (not the HTML — use get_frame for that). Filter approval_status to ready_for_dev to find screens approved for implementation. Use this to see the current layout before adding or editing frames. Pass your agent_name so any human feedback waiting for you is delivered with the result.',
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-      inputSchema: { canvas_id: z.string(), agent_name: agentName.optional() },
+      inputSchema: {
+        canvas_id: z.string(),
+        agent_name: agentName.optional(),
+        approval_status: z.enum(['draft', 'ready_for_dev', 'needs_review']).optional(),
+      },
     },
-    async ({ canvas_id, agent_name }) => {
+    async ({ canvas_id, agent_name, approval_status }) => {
       const c = canvasFor(canvas_id)
       if (!c) return noCanvas(canvas_id)
       arrive(canvas_id, agent_name)
@@ -424,7 +433,9 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
             /* demo frames (the Doop welcome show, seeded examples) are product
              content, not user work — hidden so agents never mistake them for
              the canvas's established style */
-            frames: c.frames.filter((f) => !f.demo).map(frameSummary),
+            frames: c.frames
+              .filter((f) => !f.demo && (!approval_status || (f.approval?.status ?? 'draft') === approval_status))
+              .map(frameSummary),
             guidelines: docs.map((d) => ({
               name: d.name,
               title: actions.guidelineTitle(d),
@@ -445,7 +456,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
           agent_name ? actorFrom(agent_name) : undefined,
         ),
         canvas_id,
-        c.frames.filter((f) => !f.demo),
+        c.frames.filter((f) => !f.demo && (!approval_status || (f.approval?.status ?? 'draft') === approval_status)),
       )
     },
   )

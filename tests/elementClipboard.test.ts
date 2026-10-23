@@ -1,10 +1,12 @@
 // @vitest-environment happy-dom
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Frame } from '../shared/types'
 import { copyLayer, hasElementClip, pasteLayer } from '../src/lib/elementClipboard'
 import { copyFrames, hasFrameClip } from '../src/lib/frameClipboard'
 import { insertElement } from '../src/lib/layers'
 import { useStore } from '../src/lib/store'
+import { deleteLayer } from '../src/lib/layerEdits'
+import { clearHistory, redo, undo } from '../src/lib/history'
 
 vi.mock('../src/lib/api', () => ({ api: { updateFrame: vi.fn().mockResolvedValue({}) } }))
 vi.mock('../src/lib/posthog', () => ({ posthog: { capture: vi.fn() } }))
@@ -24,11 +26,32 @@ const frame: Frame = {
 }
 
 beforeEach(() => {
+  clearHistory()
   localStorage.clear()
   useStore.getState().setCanvas({ id: 'c', name: 'Canvas', frames: [frame], createdAt: 0, updatedAt: 0 })
 })
 
+afterEach(() => vi.restoreAllMocks())
+
 describe('element clipboard', () => {
+  it('undoes a rapid paste and delete as separate actions', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1_000)
+    copyLayer(frame, '#source')
+    expect(pasteLayer(frame, '#target')).toBe(true)
+    const pasted = useStore.getState().canvas!.frames[0]!
+    expect(deleteLayer(pasted, '#source-copy')).toBe(true)
+    const deleted = useStore.getState().canvas!.frames[0]!.html
+
+    await undo()
+    expect(useStore.getState().canvas!.frames[0]!.html).toBe(pasted.html)
+    await undo()
+    expect(useStore.getState().canvas!.frames[0]!.html).toBe(frame.html)
+    await redo()
+    expect(useStore.getState().canvas!.frames[0]!.html).toBe(pasted.html)
+    await redo()
+    expect(useStore.getState().canvas!.frames[0]!.html).toBe(deleted)
+  })
+
   it('pastes one layer after the target, updates references, and selects the copy', () => {
     expect(copyLayer(frame, '#source')).toBe(true)
     expect(pasteLayer(frame, '#target')).toBe(true)

@@ -24,6 +24,18 @@ export interface Frame {
    *  deleted from the stage until it is unlocked (Layers panel, Inspector,
    *  ⌘⇧L, or an agent via update_frame) */
   locked?: boolean
+  /** Human sign-off for implementation. Missing/null means draft. Design
+   * edits retain the attribution but change the status to needs_review. */
+  approval?: FrameApproval | null
+}
+
+export interface FrameApproval {
+  status: 'ready_for_dev' | 'needs_review'
+  approvedBy: string
+  approvedByUserId: string
+  approvedAt: number
+  /** The frame revision the person reviewed before approving. */
+  approvedFrameUpdatedAt: number
 }
 
 /** One entry of a frame's design history: the HTML (and size) the frame had

@@ -347,6 +347,7 @@ async function writeFrame(f: Frame) {
     demo: f.demo ?? null,
     hidden: f.hidden ?? null,
     locked: f.locked ?? null,
+    approval: f.approval ?? null,
   }
   const { id, createdAt, ...set } = row
   await db.insert(t.frames).values(row).onConflictDoUpdate({ target: t.frames.id, set })

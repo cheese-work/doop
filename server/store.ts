@@ -152,6 +152,7 @@ class Store {
     const frames = sourceFrames.map((frame) => ({
       ...frame,
       id: frameIds.get(frame.id)!,
+      approval: null,
       canvasId,
       createdAt: now,
       updatedAt: now,
@@ -216,6 +217,7 @@ class Store {
       ...frame,
       id: nanoid(10),
       pageId: page.id,
+      approval: null,
       createdAt: now,
       updatedAt: now,
       updatedBy: by,
@@ -559,7 +561,9 @@ class Store {
 
   updateFrame(
     frameId: string,
-    patch: Partial<Pick<Frame, 'name' | 'pageId' | 'x' | 'y' | 'width' | 'height' | 'html' | 'hidden' | 'locked'>>,
+    patch: Partial<
+      Pick<Frame, 'name' | 'pageId' | 'x' | 'y' | 'width' | 'height' | 'html' | 'hidden' | 'locked' | 'approval'>
+    >,
     by: string,
   ): Frame | undefined {
     const frame = this.getFrame(frameId)
@@ -569,7 +573,14 @@ class Store {
       !canvasPages(this.canvases.get(frame.canvasId)!).some((p) => p.id === patch.pageId)
     )
       return undefined
+    const designChanged = (['html', 'width', 'height'] as const).some(
+      (key) => patch[key] !== undefined && patch[key] !== frame[key],
+    )
     Object.assign(frame, patch)
+    // All writers (including streams, sync and restores) invalidate sign-off.
+    if (designChanged && frame.approval?.status === 'ready_for_dev') {
+      frame.approval = { ...frame.approval, status: 'needs_review' }
+    }
     // Also serves as the optimistic-save version, including writes in the same millisecond.
     frame.updatedAt = Math.max(Date.now(), frame.updatedAt + 1)
     frame.updatedBy = by
