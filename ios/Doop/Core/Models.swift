@@ -39,7 +39,7 @@ public struct CanvasPage: Codable, Identifiable {
     public var name: String
 }
 
-public struct DesignFrame: Codable, Identifiable, Equatable {
+public struct DesignFrame: Codable, Identifiable, Equatable, Sendable {
     public var id: String
     public var canvasId: String
     public var name: String

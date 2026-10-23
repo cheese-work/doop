@@ -212,6 +212,20 @@ struct ConnectionChecks {
         failNext = true
         await model.addFrame()
         precondition(!model.canUndo, "A failed edit must not create undo history")
+        // Clipboard frame copies belong to the destination page and undo as one creation.
+        var copiedSource = original
+        copiedSource.locked = true; copiedSource.hidden = true
+        model.selectPage("design-page")
+        try await model.pasteFrame(copiedSource)
+        precondition(model.selected?.id != original.id && model.selected?.pageId == "design-page")
+        precondition(model.selected?.html == original.html && model.selected?.width == original.width)
+        precondition(model.selected?.name == original.name + " copy")
+        precondition(model.selected?.hidden != true && model.selected?.locked != true)
+        await model.undo()
+        precondition(!model.canUndo && model.canvas?.frames.isEmpty == true)
+        failNext = true
+        do { try await model.pasteFrame(original); preconditionFailure("Expected paste failure") } catch {}
+        precondition(!model.canUndo && model.canvas?.frames.isEmpty == true)
         try await model.comment("Saved without a socket echo", frameID: "f1")
         precondition(model.comments.count == 1)
         let echo = try JSONSerialization.data(withJSONObject: ["type": "comment", "comment": ["id": "posted", "frameId": "f1", "from": "Tester", "text": "Saved without a socket echo", "at": 30]])
@@ -329,6 +343,11 @@ struct ConnectionChecks {
         precondition(model.activePageID == "a" && model.pageFrames.map(\.id) == ["a1", "legacy"])
         model.select("a1")
         model.selectedElement = SelectedElement(frameID: "a1", nodeID: 1, selector: "p", label: "p", text: "a1", rect: .zero, htmlHash: model.selected!.html.hashValue)
+        let pickedElement = model.selectedElement
+        model.select("a1")
+        precondition(model.selectedID == "a1" && model.selectedElement == nil && model.promptScope?.isElement == false,
+                     "Choosing the current frame clears the element scope for whole-frame actions")
+        model.selectedElement = pickedElement
         let fit = model.viewportCommand
         model.selectPage("b")
         precondition(model.pageFrames.map(\.id) == ["b1"] && model.selectedID == nil && model.selectedElement == nil && model.promptScope == nil)

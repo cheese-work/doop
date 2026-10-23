@@ -10,9 +10,23 @@ struct NativeCanvasView: View {
     @State private var sending = false
     /// The scope key the person dismissed with the chip's ×; a new selection brings the chip back.
     @State private var dismissedScope: String?
-    @State private var exportURL: URL?
+    @State private var actionBusy = false
+    @State private var clipboardAvailable = CanvasClipboard.isAvailable
+    @State private var copiedSelection = false
     private let summary: CanvasSummary
-    private enum Panel: String, Identifiable { case frames, inspector, tasks, comments, export; var id: String { rawValue } }
+    private enum Panel: Identifiable {
+        case frames, inspector, tasks, comments
+        case export(CanvasSelection)
+        var id: String {
+            switch self {
+            case .frames: return "frames"
+            case .inspector: return "inspector"
+            case .tasks: return "tasks"
+            case .comments: return "comments"
+            case .export: return "export"
+            }
+        }
+    }
 
     init(summary: CanvasSummary, client: DoopClient) {
         self.summary = summary
@@ -51,17 +65,8 @@ struct NativeCanvasView: View {
             }
             ZStack(alignment: .bottom) {
                 VStack(spacing: 10) {
-                    if let element = model.selectedElement {
-                        HStack(spacing: 10) {
-                            Image(systemName: "scope").foregroundStyle(.tint)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(element.label).font(.callout.monospaced().bold()).lineLimit(1)
-                                Text(element.text.isEmpty ? element.selector : element.text).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                            }
-                            Spacer()
-                            Button("Comment") { sheet = .comments }.font(.callout.bold())
-                            Button { model.selectedElement = nil } label: { Image(systemName: "xmark") }.accessibilityLabel("Clear element selection")
-                        }.padding(.horizontal, 16).padding(.vertical, 12).modifier(FloatingGlass())
+                    if model.selected != nil || clipboardAvailable {
+                        selectionActions
                     }
                     HStack(spacing: 10) {
                         if let scope = promptScope {
@@ -96,7 +101,7 @@ struct NativeCanvasView: View {
                     Button { sheet = .tasks } label: { Label("Agent tasks", systemImage: "sparkles") }
                     Button { sheet = .comments } label: { Label("Comments", systemImage: "bubble.left.and.bubble.right") }
                     ShareLink(item: model.client.server.origin.appendingPathComponent("c/\(model.id)")) { Label("Share canvas link", systemImage: "square.and.arrow.up") }
-                    if model.selected != nil { Button("Export selected frame HTML") { exportFrame() } }
+                    if model.selected != nil { Button("Export selection") { openExport() } }
                 } label: { Image(systemName: "ellipsis.circle") }.accessibilityLabel("Canvas actions")
             }
         }
@@ -107,22 +112,22 @@ struct NativeCanvasView: View {
                 if let frame = model.selected { FrameInspector(model: model, original: frame) }
             case .tasks: TasksPanel(model: model)
             case .comments: CommentsPanel(model: model)
-            case .export:
-                NavigationStack {
-                    VStack(spacing: 24) {
-                        Image(systemName: "doc.text").font(.largeTitle)
-                        if let exportURL { ShareLink("Save or share HTML", item: exportURL).buttonStyle(.borderedProminent) }
-                    }.navigationTitle("Export frame").toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { sheet = nil } } }
-                }
+            case .export(let selection):
+                SelectionExportPanel(selection: selection, origin: model.client.server.origin)
             }
         }
-        .onAppear { if scenePhase == .active { model.start() } }
+        .onAppear { clipboardAvailable = CanvasClipboard.isAvailable; if scenePhase == .active { model.start() } }
         .onDisappear { model.stop() }
-        .onChange(of: scenePhase) { phase in if phase == .active { model.start() } else if phase == .background { model.stop() } }
+        .onChange(of: scenePhase) { phase in if phase == .active { clipboardAvailable = CanvasClipboard.isAvailable; model.start() } else if phase == .background { model.stop() } }
+        .onReceive(NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)) { _ in
+            clipboardAvailable = CanvasClipboard.isAvailable
+            copiedSelection = false
+        }
+        .onChange(of: model.promptScope?.key) { _ in copiedSelection = false }
         .onChange(of: model.deleted) { deleted in if deleted { dismiss() } }
         .onChange(of: model.activePageID) { _ in
             dismissedScope = nil
-            if sheet == .inspector || sheet == .export { sheet = nil }
+            if sheet?.id == "inspector" || sheet?.id == "export" { sheet = nil }
         }
     }
 
@@ -184,14 +189,66 @@ struct NativeCanvasView: View {
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { sheet = nil } } }
         }
     }
-    private func exportFrame() {
-        guard let frame = model.selected else { return }
-        do {
-            let destination = try ExportDirectory().destination(suggestedFilename: frame.name + ".html")
-            try Data(frame.html.utf8).write(to: destination, options: .atomic)
-            exportURL = destination
-            sheet = .export
-        } catch { model.error = error.localizedDescription }
+    private var selectionActions: some View {
+        actionButtons
+        .fixedSize(horizontal: false, vertical: true)
+        .modifier(FloatingGlass())
+        .frame(maxWidth: 360)
+        .padding(.horizontal, 12)
+        .disabled(actionBusy)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Selection actions")
+        .accessibilityIdentifier("canvas.selectionActions")
+    }
+
+    private var actionButtons: some View {
+        HStack(spacing: 0) {
+            selectionAction(copiedSelection ? "Copied" : "Copy", symbol: copiedSelection ? "checkmark" : "doc.on.doc", id: "copy", disabled: model.selection == nil) {
+                guard let selection = model.selection else { return }
+                runSelectionAction { try await model.copySelection(selection); clipboardAvailable = true; copiedSelection = true }
+            }
+            selectionAction("Paste", symbol: "doc.on.clipboard", id: "paste", disabled: !clipboardAvailable || !model.canEdit) {
+                let selection = model.selection
+                runSelectionAction { try await model.pasteSelection(selection) }
+            }
+            selectionAction("Duplicate", symbol: "plus.square.on.square", id: "duplicate", disabled: !canEditSelection) {
+                guard let selection = model.selection else { return }
+                runSelectionAction { try await model.duplicateSelection(selection) }
+            }
+            selectionAction("Delete", symbol: "trash", id: "delete", disabled: !canEditSelection) {
+                guard let selection = model.selection else { return }
+                runSelectionAction { try await model.deleteSelection(selection) }
+            }
+            selectionAction("Comment", symbol: "bubble.left", id: "comment", disabled: model.selection == nil) { sheet = .comments }
+            selectionAction("Export", symbol: "square.and.arrow.up", id: "export", disabled: model.selection == nil) { openExport() }
+        }.padding(.horizontal, 4).padding(.vertical, 5)
+    }
+
+    private var canEditSelection: Bool { model.canEdit && model.selected != nil && model.selected?.locked != true }
+
+    private func selectionAction(_ title: String, symbol: String, id: String, disabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol).font(.system(size: 19))
+            .frame(minWidth: 44, maxWidth: .infinity, minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .accessibilityLabel(title)
+        .accessibilityIdentifier("canvas." + id)
+        .help(title)
+    }
+
+    private func runSelectionAction(_ action: @escaping () async throws -> Void) {
+        actionBusy = true
+        Task {
+            do { try await action() } catch { model.error = error.localizedDescription }
+            actionBusy = false
+        }
+    }
+
+    private func openExport() {
+        if let selection = model.selection { sheet = .export(selection) }
     }
 }
 

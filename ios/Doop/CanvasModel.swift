@@ -167,7 +167,9 @@ final class CanvasModel: ObservableObject {
         if let id, let canvas, let frame = canvas.frames.first(where: { $0.id == id }) {
             selectPage(canvas.pageID(for: frame))
         }
-        if id != selectedID { selectedElement = nil }
+        // Choosing a frame explicitly (including the current row in Frames)
+        // switches actions from its picked element to the whole frame.
+        selectedElement = nil
         selectedID = id
         Task { try? await send(["type": "editing", "frameId": id as Any? ?? NSNull()]) }
     }
@@ -264,6 +266,23 @@ final class CanvasModel: ObservableObject {
         let frame = try JSONDecoder().decode(DesignFrame.self, from: data)
         if canvas != nil { upsert(frame, into: &canvas!.frames) }
         if let before { recordUpdate(before: before, after: frame, keys: Array(patch.keys)) }
+    }
+
+    func pasteFrame(_ source: DesignFrame) async throws {
+        guard canEdit else { throw CanvasEditError.busy }
+        pendingEdits += 1
+        defer { pendingEdits -= 1 }
+        let pageID = activePageID
+        let right = pageFrames.map { $0.x + $0.width }.max() ?? -80
+        var body: [String: Any] = ["name": source.name + " copy", "html": source.html,
+                                   "x": right + 80, "y": selected?.y ?? 0,
+                                   "width": source.width, "height": source.height]
+        if canvas?.pages?.isEmpty == false { body["pageId"] = pageID }
+        let data = try await client.data("/api/canvases/\(id)/frames", method: "POST", body: body)
+        let frame = try JSONDecoder().decode(DesignFrame.self, from: data)
+        if canvas != nil { upsert(frame, into: &canvas!.frames) }
+        record(UndoEntry(kind: .create, frameID: frame.id, body: [:]))
+        if activePageID == pageID { select(frame.id); viewportCommand += 1 }
     }
 
     func moveFrame(_ frameID: String, x: Double, y: Double) async {
@@ -451,7 +470,7 @@ struct PromptScope: Equatable {
 }
 
 /// An element picked inside a frame by the Blitz hit test.
-struct SelectedElement: Equatable {
+struct SelectedElement: Equatable, Sendable {
     var frameID: String
     var nodeID: UInt64
     /// A CSS path that doop's comment anchors and agents resolve.
