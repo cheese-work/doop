@@ -233,11 +233,49 @@ export function setElementLocked(html: string, selector: string, locked: boolean
 
 /** The frame's HTML with the element removed, or null when the selector no longer resolves. */
 export function removeElement(html: string, selector: string): string | null {
+  return removeElements(html, [selector])
+}
+
+/* Every selector resolved against one document before anything changes: the
+   paths are positional, so removing or inserting one element would shift the
+   nth-of-type steps of the others. Null when any of them is gone. */
+function findAll(doc: Document, selectors: string[]): Element[] | null {
+  const found: Element[] = []
+  for (const selector of selectors) {
+    const el = find(doc, selector)
+    if (!el) return null
+    if (!found.includes(el)) found.push(el)
+  }
+  return found
+}
+
+/* the picked elements that are not inside another picked one — a box that
+   goes (or is copied) takes its children with it */
+function outermost(els: Element[]): Element[] {
+  return els.filter((el) => !els.some((other) => other !== el && other.contains(el)))
+}
+
+/** The elements in document order, outermost only. */
+function inDocumentOrder(els: Element[]): Element[] {
+  return outermost(els).sort((a, b) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1))
+}
+
+/** The frame's HTML with every element removed, or null when any selector no longer resolves. */
+export function removeElements(html: string, selectors: string[]): string | null {
   const doc = parse(html)
-  const el = find(doc, selector)
-  if (!el) return null
-  el.remove()
+  const els = findAll(doc, selectors)
+  if (!els?.length) return null
+  for (const el of outermost(els)) el.remove()
   return serialize(doc)
+}
+
+/** The elements' markup in document order, outermost only, for the clipboard. */
+export function elementsHtml(html: string, selectors: string[]): string | null {
+  const els = findAll(parse(html), selectors)
+  if (!els?.length) return null
+  return inDocumentOrder(els)
+    .map((el) => el.outerHTML)
+    .join('')
 }
 
 /** The frame's HTML with the element's markup swapped for `outerHtml`. */
@@ -294,15 +332,37 @@ export function setElementHidden(html: string, selector: string, hidden: boolean
   return serialize(doc)
 }
 
+/** The frame's HTML with every element hidden or shown, null when any
+ *  selector no longer resolves. */
+export function setElementsHidden(html: string, selectors: string[], hidden: boolean): string | null {
+  let next = html
+  // Hiding marks attributes only, so the positional paths hold between steps.
+  for (const selector of selectors) {
+    const step = setElementHidden(next, selector, hidden)
+    if (step === null) return null
+    next = step
+  }
+  return next
+}
+
 /** The frame's HTML with a copy of the element inserted right after it. */
 export function duplicateElement(html: string, selector: string): string | null {
+  return duplicateElements(html, [selector])?.html ?? null
+}
+
+/** The frame's HTML with a copy of each element inserted right after it,
+ *  and the copies' paths in document order; a picked element inside another
+ *  picked one is copied with its box. The copies share one id renaming, so
+ *  a label copied with its input points at the copied input. */
+export function duplicateElements(html: string, selectors: string[]): { html: string; selectors: string[] } | null {
   const doc = parse(html)
-  const el = find(doc, selector)
-  if (!el) return null
-  const copy = el.cloneNode(true) as Element
-  renameIds(doc, copy)
-  el.after(copy)
-  return serialize(doc)
+  const els = findAll(doc, selectors)
+  if (!els?.length) return null
+  const originals = inDocumentOrder(els)
+  const copies = originals.map((el) => el.cloneNode(true) as Element)
+  renameIds(doc, copies)
+  originals.forEach((el, i) => el.after(copies[i]!))
+  return { html: serialize(doc), selectors: copies.map(elementPath) }
 }
 
 /** Where a moved element lands relative to its target: as its previous or
@@ -330,6 +390,19 @@ export interface MovedElement {
 
 /** Insert a clipboard layer as a sibling, keeping ids and SVG references unique. */
 export function insertElement(html: string, selector: string | null, outerHtml: string): MovedElement | null {
+  const inserted = insertElements(html, selector, outerHtml)
+  const [only, ...more] = inserted?.selectors ?? []
+  return inserted && only && !more.length ? { html: inserted.html, selector: only } : null
+}
+
+/** Insert the clipboard's layers, in order, as siblings after `selector` (or
+ *  at the end of the body); null when the markup holds loose text, does not
+ *  survive a round trip, or the target is gone. */
+export function insertElements(
+  html: string,
+  selector: string | null,
+  outerHtml: string,
+): { html: string; selectors: string[] } | null {
   const doc = parse(html)
   const at = selector ? find(doc, selector) : null
   if (selector && (!at || !doc.body.contains(at) || at === doc.body)) return null
@@ -337,16 +410,21 @@ export function insertElement(html: string, selector: string | null, outerHtml: 
   // their namespace. Parsing a standalone document discards those wrappers.
   const source = (at?.parentElement ?? doc.body).cloneNode(false) as Element
   source.innerHTML = outerHtml
-  if (source.children.length !== 1) return null
+  if (!source.children.length) return null
   if ([...source.childNodes].some((node) => node.nodeType === Node.TEXT_NODE && node.textContent?.trim())) return null
-  const copy = source.firstElementChild!
-  renameIds(doc, copy)
-  if (at) at.after(copy)
-  else doc.body.append(copy)
+  const copies = [...source.children]
+  renameIds(doc, copies)
+  let after = at
+  for (const copy of copies) {
+    if (after) after.after(copy)
+    else doc.body.append(copy)
+    after = copy
+  }
   const next = serialize(doc)
-  const path = elementPath(copy)
-  if (find(parse(next), path)?.outerHTML !== copy.outerHTML) return null
-  return { html: next, selector: path }
+  const selectors = copies.map(elementPath)
+  const reparsed = parse(next)
+  if (copies.some((copy, i) => find(reparsed, selectors[i]!)?.outerHTML !== copy.outerHTML)) return null
+  return { html: next, selectors }
 }
 
 /* the neighbouring layer the rail shows: markup that draws nothing is stepped over */
@@ -439,16 +517,17 @@ const ID_REF_ATTRS = new Set([
 /* SVG paint servers, clips, masks, filters and markers: url(#id), in any attribute or inline style */
 const URL_REF = /url\(\s*(['"]?)#([^'")\s]+)\1\s*\)/g
 
-/** Give every id inside `copy` a fresh name and point the copy's own
+/** Give every id inside `copies` a fresh name and point the copies' own
  *  references at the new names: label for, #fragment links, aria relations,
  *  SVG use/href and url(#…) paints. Ids must stay unique — a copied id makes
  *  selectors resolve to the original subtree — and a reference left on the
- *  old name would keep wiring the copy to the original. References to ids
- *  outside the copy are left alone. */
-function renameIds(doc: Document, copy: Element) {
+ *  old name would keep wiring the copy to the original. Copies made together
+ *  share one renaming, so references between them follow along; references
+ *  to ids outside the copies are left alone. */
+function renameIds(doc: Document, copies: Element[]) {
   const renamed = new Map<string, string>()
   const taken = new Set<string>()
-  const withId = [copy, ...copy.querySelectorAll('[id]')].filter((n) => n.id)
+  const withId = copies.flatMap((copy) => [copy, ...copy.querySelectorAll('[id]')]).filter((n) => n.id)
   for (const node of withId) {
     let next = `${node.id}-copy`
     for (let n = 2; doc.getElementById(next) || taken.has(next); n++) next = `${node.id}-copy-${n}`
@@ -458,7 +537,7 @@ function renameIds(doc: Document, copy: Element) {
   }
   if (renamed.size === 0) return
   const rename = (id: string) => renamed.get(id) ?? id
-  for (const node of [copy, ...copy.querySelectorAll('*')]) {
+  for (const node of copies.flatMap((copy) => [copy, ...copy.querySelectorAll('*')])) {
     for (const { name, value } of [...node.attributes]) {
       let next = value
       if (name === 'href' || name === 'xlink:href') {

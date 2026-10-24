@@ -5,11 +5,12 @@ import {
   useState,
   type HTMLAttributes,
   type KeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react'
 import type { Frame } from '../../shared/types'
-import { useStore } from '../lib/store'
+import { pickedSelectors, useStore } from '../lib/store'
 import { usePageCanvas } from '../lib/pages'
 import { PagesPanel, sectionHeading } from './PagesPanel'
 import { getIdentity } from '../lib/identity'
@@ -24,7 +25,7 @@ import {
   type LayerNode,
 } from '../lib/layers'
 import {
-  deleteLayer,
+  deleteLayers,
   dropLayer,
   setFrameHidden,
   setFramesLocked,
@@ -168,6 +169,16 @@ export function LayersPanel({
   const frames = useMemo(() => pageCanvas?.frames ?? [], [pageCanvas])
   const selectedId = useStore((s) => s.selectedId)
   const selectedElement = useStore((s) => s.selectedElement)
+  /* every row of a multi-element pick is highlighted; a string key keeps
+     the selection identity-stable between store updates */
+  const pickedKeys = useStore((s) =>
+    s.selectedElement
+      ? pickedSelectors(s)
+          .map((selector) => rowKey(s.selectedElement!.frameId, selector))
+          .join('\n')
+      : '',
+  )
+  const pickedRows = useMemo(() => new Set(pickedKeys.split('\n')), [pickedKeys])
   const setLayersOpen = useStore((s) => s.setLayersOpen)
   const [query, setQuery] = useState('')
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
@@ -221,10 +232,16 @@ export function LayersPanel({
 
   /* a layer row opens the element properties panel; a frame row closes it
      and leaves the frame's own inspector to the frame-name click */
-  function activate(row: VisibleRow) {
+  function activate(row: VisibleRow, toggle = false) {
     const s = useStore.getState()
+    /* ⇧/⌘-click adds a layer to the frame's picked set, or drops it */
+    if (toggle && row.kind === 'node' && s.selectedElement?.frameId === row.frame.id) {
+      s.toggleElement({ frameId: row.frame.id, selector: row.node.selector })
+      return
+    }
     s.select(row.frame.id)
-    s.pickElement(row.kind === 'node' ? { frameId: row.frame.id, selector: row.node.selector } : null)
+    /* a plain click narrows a multi-element pick to this row, as on the canvas */
+    s.pickElement(row.kind === 'node' ? { frameId: row.frame.id, selector: row.node.selector } : null, true)
   }
 
   /* the drop under the pointer: a row of the dragged element's frame that is
@@ -326,10 +343,10 @@ export function LayersPanel({
         /* a held key repeats: once the element is gone the frame row would
            be next, so only the first press deletes */
         if (e.repeat) break
-        /* a locked frame stays (deleteLayer refuses a locked element itself) */
+        /* a locked frame stays (deleteLayers refuses a locked element itself) */
         if (row?.kind === 'frame') {
           if (!row.frame.locked) deleteFramesTracked([row.frame])
-        } else if (row) deleteLayer(row.frame, row.node.selector)
+        } else if (row) deleteLayers(row.frame, pickedSelectors(useStore.getState()))
         break
       default:
         return
@@ -424,11 +441,11 @@ export function LayersPanel({
             <NodeRow
               key={row.key}
               row={row}
-              selected={row.key === currentKey}
+              selected={pickedRows.has(row.key)}
               dragging={drag?.key === row.key}
               drop={drop?.key === row.key ? drop.place : undefined}
               onToggle={() => setOpen(row.key, !row.open)}
-              onActivate={() => activate(row)}
+              onActivate={(toggle) => activate(row, toggle)}
               onPointerDown={(e) => onRowPointerDown(e, row)}
             />
           ),
@@ -571,7 +588,7 @@ function NodeRow({
   dragging: boolean
   drop?: DropPlace
   onToggle: () => void
-  onActivate: () => void
+  onActivate: (toggle: boolean) => void
   onPointerDown: (e: ReactPointerEvent<HTMLDivElement>) => void
 }) {
   const { frame, node } = row
@@ -595,8 +612,8 @@ function NodeRow({
           locked={node.locked}
           onToggleLocked={() => setLayerLocked(frame, node.selector, !node.locked)}
           className={cn(dragging && 'opacity-40')}
-          onClick={onActivate}
-          onContextMenu={onActivate}
+          onClick={(e) => onActivate(e.shiftKey || e.metaKey || e.ctrlKey)}
+          onContextMenu={() => onActivate(false)}
           onPointerDown={onPointerDown}
           /* the row under the pointer is outlined on the canvas too, as a
              hover over the frame itself would */
@@ -637,7 +654,7 @@ type RowProps = Omit<HTMLAttributes<HTMLDivElement>, 'onClick'> & {
   locked?: boolean
   /** the lock next to the eye; it shows on hover, and stays while locked */
   onToggleLocked?: () => void
-  onClick: () => void
+  onClick: (e: ReactMouseEvent<HTMLDivElement>) => void
 }
 
 function Row({

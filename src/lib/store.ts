@@ -71,6 +71,11 @@ interface State {
    *  surface and a click on a Layers row both land here, so the outline in
    *  the frame and the highlighted row stay in step */
   selectedElement: { frameId: string; selector: string } | null
+  /** every element picked in `selectedElement`'s frame, the primary last:
+   *  ⇧-click on the surface or ⇧/⌘-click in the Layers rail adds to it.
+   *  Read it through `pickedSelectors`, which ignores a list that no longer
+   *  holds the primary */
+  selectedElements: string[]
   /** the element under the pointer in the Layers panel — its frame outlines
    *  it on the canvas, the same as a hover over the frame itself */
   hoveredLayer: { frameId: string; selector: string } | null
@@ -197,7 +202,10 @@ interface State {
   /** an element picked by the user — on the frame surface or in the Layers
    *  rail: selects it and opens its properties panel; picking nothing clears
    *  the selection and closes the panel */
-  pickElement(el: { frameId: string; selector: string } | null): void
+  pickElement(el: { frameId: string; selector: string } | null, only?: boolean): void
+  /** add the element to the picked set of its frame, or drop it from the
+   *  set; an element in another frame starts a new set */
+  toggleElement(el: { frameId: string; selector: string }): void
   setElementPanelOpen(v: boolean): void
   setLayersOpen(v: boolean): void
   toggleUiHidden(): void
@@ -246,6 +254,7 @@ export const useStore = create<State>((set, get) => ({
   inspectorOpen: false,
   ctxMenu: null,
   selectedElement: null,
+  selectedElements: [],
   hoveredLayer: null,
   elementPanelOpen: false,
   layersOpen: readLayersOpen(),
@@ -546,19 +555,41 @@ export const useStore = create<State>((set, get) => ({
         ? s
         : { hoveredLayer },
     ),
+  /* re-pointing at the primary keeps the set (the frame resolving a pick
+     lands here too); any other element starts a set of its own */
   setSelectedElement: (selectedElement) =>
     set((s) =>
       s.selectedElement?.frameId === selectedElement?.frameId &&
       s.selectedElement?.selector === selectedElement?.selector
         ? s
-        : { selectedElement },
+        : { selectedElement, selectedElements: selectedElement ? [selectedElement.selector] : [] },
     ),
-  pickElement: (el) =>
+  /* `only` collapses a set onto the element — a plain click on one that is
+     already picked */
+  pickElement: (el, only = false) =>
     set((s) => {
-      if (!el) return s.selectedElement || s.elementPanelOpen ? { selectedElement: null, elementPanelOpen: false } : s
+      if (!el)
+        return s.selectedElement || s.elementPanelOpen
+          ? { selectedElement: null, selectedElements: [], elementPanelOpen: false }
+          : s
       const same = s.selectedElement?.frameId === el.frameId && s.selectedElement?.selector === el.selector
-      if (same && s.elementPanelOpen) return s
-      return { selectedElement: same ? s.selectedElement : el, elementPanelOpen: true }
+      const collapse = only && pickedSelectors(s).length > 1
+      if (same && s.elementPanelOpen && !collapse) return s
+      return same && !collapse
+        ? { elementPanelOpen: true }
+        : { selectedElement: el, selectedElements: [el.selector], elementPanelOpen: true }
+    }),
+  toggleElement: (el) =>
+    set((s) => {
+      const picked = s.selectedElement?.frameId === el.frameId ? pickedSelectors(s) : []
+      if (!picked.includes(el.selector)) {
+        return { selectedElement: el, selectedElements: [...picked, el.selector], elementPanelOpen: true }
+      }
+      const rest = picked.filter((x) => x !== el.selector)
+      const primary = rest.at(-1)
+      return primary
+        ? { selectedElement: { frameId: el.frameId, selector: primary }, selectedElements: rest }
+        : { selectedElement: null, selectedElements: [], elementPanelOpen: false }
     }),
   setElementPanelOpen: (elementPanelOpen) => set({ elementPanelOpen }),
   setLayersOpen: (layersOpen) => {
@@ -597,3 +628,12 @@ export const useStore = create<State>((set, get) => ({
     }, 1200)
   },
 }))
+
+/** The picked elements' selectors in `selectedElement`'s frame, the primary
+ *  last; empty when nothing is picked. A path that set the primary alone
+ *  leaves a stale list behind, which counts as a set of one. */
+export function pickedSelectors(s: Pick<State, 'selectedElement' | 'selectedElements'>): string[] {
+  const primary = s.selectedElement?.selector
+  if (!primary) return []
+  return s.selectedElements.at(-1) === primary ? s.selectedElements : [primary]
+}

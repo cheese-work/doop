@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import type { ElementComment, Frame } from '../../shared/types'
-import { useStore } from '../lib/store'
+import { pickedSelectors, useStore } from '../lib/store'
 import { isCanvasElement } from '../lib/drawing'
 import { useElementMove } from './ElementMove'
 import { PathEditor } from './PathEditor'
@@ -139,6 +139,12 @@ interface ProbeHit {
   locked?: boolean
 }
 
+/* what a surface click's probe is for; see `probeIntent` */
+type ProbeIntent = 'toolbar' | 'comment' | 'toggle'
+
+/* `doop:locate` request ids for the outlines of a multi-element pick */
+const PICK_REQ = '__pick__:'
+
 type DragRect = { id: string; x: number; y: number; width: number; height: number }
 
 interface HoverHit {
@@ -267,9 +273,21 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
        frame at its origin and keep dragging this one — same net effect as
        Figma's "drag off a duplicate", without retargeting the drag */
     const duplicating = mode === 'move' && e.altKey && e.shiftKey
-    /* plain ⇧-click adds to (or drops from) the selection; a dropped frame
-       does not start a drag */
-    if (mode === 'move' && e.shiftKey && !e.altKey) {
+    /* ⇧-click on the surface of the one selected frame adds the element
+       under the pointer to the picked set (or drops it) once the press
+       turns out to be a click; elsewhere plain ⇧-click adds the frame to
+       (or drops it from) the selection, and a dropped frame does not start
+       a drag */
+    const togglesElement =
+      mode === 'move' &&
+      probeOnClick &&
+      e.shiftKey &&
+      !e.altKey &&
+      s.selectedIds.length === 1 &&
+      s.selectedIds[0] === frame.id
+    if (togglesElement) {
+      /* the frame stays selected: a drag moves it, a click picks */
+    } else if (mode === 'move' && e.shiftKey && !e.altKey) {
       useStore.getState().toggleSelect(frame.id)
       if (!useStore.getState().selectedIds.includes(frame.id)) return
     } else if (!useStore.getState().selectedIds.includes(frame.id)) {
@@ -384,7 +402,7 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
       else recordUpdates(updates)
       /* a click (no drag) on the frame surface targets the element under
          the cursor: probe it and show the element toolbar */
-      if (!moved && probeOnClick) probeAt(off.x, off.y)
+      if (!moved && probeOnClick) probeAt(off.x, off.y, togglesElement ? 'toggle' : 'toolbar')
       else if (moved) closePopovers()
       /* a click (no drag) on the frame name opens the details panel */
       if (!moved && panelOnClick) useStore.getState().setInspectorOpen(true)
@@ -477,9 +495,10 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
   const [pinPos, setPinPos] = useState<Record<string, { x: number; y: number } | null>>({})
   const probeReq = useRef(0)
   const probeTimer = useRef<number | null>(null)
-  /* what the pending probe is for: the element toolbar, or (Comment tool) a
-     composer opened straight away on the hit */
-  const probeIntent = useRef<'toolbar' | 'comment'>('toolbar')
+  /* what the pending probe is for: the element toolbar, (Comment tool) a
+     composer opened straight away on the hit, or (⇧-click) adding the hit
+     to the picked set or dropping it */
+  const probeIntent = useRef<ProbeIntent>('toolbar')
   const activeSelRef = useRef<string | null>(null)
 
   /* ---- hover inspection (paper.design-style element outlines) ---- */
@@ -551,7 +570,7 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
   /* delayed slightly so the second click of a double-click (→ edit mode)
      cancels it instead of flashing the toolbar; a comment click has no
      double-click to wait out, so it probes at once */
-  function probeAt(x: number, y: number, intent: 'toolbar' | 'comment' = 'toolbar') {
+  function probeAt(x: number, y: number, intent: ProbeIntent = 'toolbar') {
     if (!frame.html || editing) return
     /* the current pick stays until the probe answers: clearing it here would
        close the element panel and reopen it a beat later on the next
@@ -564,7 +583,7 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
         probeReq.current += 1
         iframeRef.current?.contentWindow?.postMessage({ type: 'doop:probe', reqId: probeReq.current, x, y }, '*')
       },
-      intent === 'comment' ? 0 : 250,
+      intent === 'toolbar' ? 250 : 0,
     )
   }
 
@@ -653,6 +672,24 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
        removes the previous element's toolbar and outline. */
     if (!wantedSel) setProbe(null)
   }
+  /* the rest of a multi-element pick: each is outlined like the primary,
+     re-located whenever the document changes. A string key keeps the
+     selection identity-stable, so memo holds. */
+  const pickedKey = useStore((s) =>
+    s.selectedElement?.frameId === frame.id ? JSON.stringify(pickedSelectors(s)) : '[]',
+  )
+  const picked = JSON.parse(pickedKey) as string[]
+  const multiPick = picked.length > 1
+  const [pickRects, setPickRects] = useState<Record<string, ProbeHit['rect'] | null>>({})
+  useEffect(() => {
+    if (!runtimeReady) return
+    for (const selector of JSON.parse(pickedKey) as string[]) {
+      iframeRef.current?.contentWindow?.postMessage(
+        { type: 'doop:locate', reqId: `${PICK_REQ}${selector}`, selector },
+        '*',
+      )
+    }
+  }, [runtimeReady, html, pickedKey])
   const selectReq = useRef(0)
   const selectSel = useRef<string | null>(null)
   useEffect(() => {
@@ -681,6 +718,14 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
       if (ev.source !== iframeRef.current?.contentWindow) return
       if (ev.data?.type === 'doop:probe-result' && ev.data.reqId === probeReq.current) {
         const hit = (ev.data.hit ?? null) as ProbeHit | null
+        if (probeIntent.current === 'toggle') {
+          /* the store moves the primary; the frame resolves it like a Layers pick */
+          if (hit) useStore.getState().toggleElement({ frameId: frame.id, selector: hit.selector })
+          return
+        }
+        /* a plain click on one of several picked elements leaves it alone picked */
+        if (hit && probeIntent.current === 'toolbar')
+          useStore.getState().pickElement({ frameId: frame.id, selector: hit.selector }, true)
         setProbe(hit)
         /* the Comment tool skips the element toolbar: the composer opens on
            the hit, the same one the toolbar's own Comment button opens */
@@ -738,6 +783,12 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
           const tag = (selector.split('>').at(-1) ?? '').trim().split(/[:.#[]/)[0] ?? ''
           hoverKey.current = null
           setHover(rect ? { tag, rect } : null)
+          return
+        }
+        if (ev.data.reqId.startsWith(PICK_REQ)) {
+          const selector = ev.data.reqId.slice(PICK_REQ.length)
+          const rect = ev.data.rect as ProbeHit['rect'] | null
+          setPickRects((m) => ({ ...m, [selector]: rect }))
           return
         }
         if (ev.data.reqId === '__probe__') {
@@ -1130,9 +1181,30 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
                 style={{ left: probe.rect.x, top: probe.rect.y, width: probe.rect.width, height: probe.rect.height }}
               />
             )}
+            {selected &&
+              !editing &&
+              !pathEdit &&
+              !dragging &&
+              picked
+                .filter((selector) => selector !== probe?.selector)
+                .map((selector) => {
+                  const rect = pickRects[selector]
+                  return (
+                    rect && (
+                      <div
+                        key={selector}
+                        data-picked-element=""
+                        className="pointer-events-none absolute z-[3] shadow-[inset_0_0_0_calc(1px/var(--zoom,1))_#3c82f6]"
+                        style={{ left: rect.x, top: rect.y, width: rect.width, height: rect.height }}
+                      />
+                    )
+                  )
+                })}
             {/* the grips: only where a drag can change the box, and never on
-                a locked layer or frame, or under the Comment tool */}
+                a locked layer or frame, or under the Comment tool — nor on a
+                multi-element pick, where a drag would size only one */}
             {probe &&
+              !multiPick &&
               selected &&
               !editing &&
               !pathEdit &&
@@ -1241,7 +1313,7 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
                   )
                 })}
 
-                {anchor && selected && !contextMenuOpen && !elementMove.moving && (
+                {anchor && (editing || !multiPick) && selected && !contextMenuOpen && !elementMove.moving && (
                   <div
                     className={cn('pointer-events-auto absolute z-[7] origin-top-left', POPOVER_SCALE)}
                     style={{

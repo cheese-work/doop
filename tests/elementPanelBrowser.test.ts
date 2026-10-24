@@ -16,6 +16,7 @@ declare global {
       select: (selector: string) => void
       selectFrame: () => void
       deselect: () => void
+      picked: () => string[]
       setTool: (tool: 'select' | 'hand') => void
       setZoom: (zoom: number) => void
       undo: () => Promise<void>
