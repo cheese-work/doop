@@ -238,3 +238,13 @@ the source for all platform icons. After replacing it:
 npx tauri icon app-icon.png
 rm -rf src-tauri/icons/ios src-tauri/icons/android
 ```
+
+Then rebuild `icon.ico` largest-first. Tauri embeds only the **first** image of the `.ico` as
+the Windows window icon (title bar and taskbar), so a small first entry gets upscaled and looks
+pixelated on high-DPI screens. The rest of the sizes serve the `.exe` and shortcuts:
+
+```sh
+sizes="256 128 64 48 40 32 24 20 16"
+for s in $sizes; do magick app-icon.png -filter Lanczos -resize ${s}x${s} -strip PNG32:/tmp/doop-$s.png; done
+magick $(for s in $sizes; do echo /tmp/doop-$s.png; done) src-tauri/icons/icon.ico
+```
