@@ -344,6 +344,13 @@
   button {
     font-family: inherit;
   }
+  /* Windows draws a native select's popup from the select's own colours: a
+     transparent select gets a white list while its options inherit the dark
+     theme's light ink. Paint the options from the tokens instead. */
+  option {
+    background-color: var(--surface);
+    color: var(--ink);
+  }
 }
 
 .dark {
