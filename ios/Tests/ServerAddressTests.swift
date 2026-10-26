@@ -12,6 +12,9 @@ struct ServerAddressChecks {
         try checks.testExportDestinations()
         try checks.testServerResponseContracts()
         checks.testCardScopeBody()
+        checks.testCardAgentAssignmentBody()
+        checks.testPromptContext()
+        try checks.testAgentModelMenu()
         try checks.testAgentActivityStates()
         FrameSnappingChecks.run()
         try PendingFrameMoveChecks.run()
@@ -95,6 +98,59 @@ struct ServerAddressChecks {
         let element = CardScope(frameId: "f1", selector: "body > main > h1:nth-of-type(1)").body
         checkEqual(element["selector"] as? String, "body > main > h1:nth-of-type(1)")
         checkTrue(JSONSerialization.isValidJSONObject(["title": "Make it bolder", "scope": element]))
+    }
+
+    func testAgentModelMenu() throws {
+        let connected = try JSONDecoder().decode(AgentModelAccount.self, from: Data(#"{"connected":true,"kind":"chatgpt","model":"model-b","menus":{"chatgpt":[{"id":"model-a","name":"Model A"},{"id":"model-b","name":"Model B","blurb":"Everyday model"}],"anthropic-key":[{"id":"other","name":"Other"}]}}"#.utf8))
+        checkEqual(connected.options.map(\.id), ["model-a", "model-b"])
+        checkEqual(connected.label, "Model B")
+        let disconnected = try JSONDecoder().decode(AgentModelAccount.self, from: Data(#"{"connected":false}"#.utf8))
+        checkEqual(disconnected.options.count, 0)
+        checkEqual(disconnected.label, "Auto")
+        let olderServer = try JSONDecoder().decode(AgentModelAccount.self, from: Data(#"{"connected":true,"kind":"chatgpt","model":"custom"}"#.utf8))
+        checkEqual(olderServer.options.count, 0)
+        checkEqual(olderServer.label, "custom")
+    }
+
+    func testPromptContext() {
+        checkEqual(PromptContextReference.mentionQuery(in: "@"), "")
+        checkEqual(PromptContextReference.mentionQuery(in: "Rewrite @Welcome card"), "Welcome card")
+        checkNil(PromptContextReference.mentionQuery(in: "hello@example.com"), "Email is not a mention query")
+        checkNil(PromptContextReference.mentionQuery(in: "@Page\nMore text"), "A newline ends mention completion")
+        checkEqual(PromptContextReference.removingMentionQuery(from: "Rewrite @Welcome"), "Rewrite ")
+        checkEqual(PromptContextReference.removingMentionQuery(from: "hello@example.com"), "hello@example.com")
+        checkEqual(PromptContextReference.taskTitle("Rewrite", references: []), "Rewrite")
+        let frame = PromptContextReference(kind: .frame, sourceID: "frame-1", name: "Welcome card")
+        let title = PromptContextReference.taskTitle("Rewrite", references: [frame])
+        checkTrue(title.contains("frame: \"Welcome card\" (id: \"frame-1\")"))
+        let request = CardQueueRequest(title: title, scope: CardScope(frameId: "frame-1"), assignment: .specialist(.copy)).body
+        checkEqual(request["title"] as? String, title)
+        checkEqual(request["agents"] as? [String], ["copy"])
+        checkEqual((request["scope"] as? [String: String])?["frameId"], "frame-1")
+    }
+
+    func testCardAgentAssignmentBody() {
+        let automatic = CardQueueRequest(title: "Make it clearer", scope: nil).body
+        checkEqual(automatic["title"] as? String, "Make it clearer")
+        checkNil(automatic["agents"], "Auto leaves the server's default pipeline unchanged")
+
+        let scopedAutomatic = CardQueueRequest(
+            title: "Make this frame clearer",
+            scope: CardScope(frameId: "frame-1")
+        ).body
+        checkNil(scopedAutomatic["agents"], "Auto keeps the default pipeline for scoped tasks")
+        checkEqual((scopedAutomatic["scope"] as? [String: String])?["frameId"], "frame-1")
+
+        let scoped = CardQueueRequest(
+            title: "Rewrite this heading",
+            scope: CardScope(frameId: "frame-1", selector: "main h1"),
+            assignment: .specialist(.copy)
+        ).body
+        checkEqual(scoped["agents"] as? [String], ["copy"])
+        checkEqual((scoped["scope"] as? [String: String])?["frameId"], "frame-1")
+        checkEqual((scoped["scope"] as? [String: String])?["selector"], "main h1")
+        checkTrue(JSONSerialization.isValidJSONObject(scoped))
+        checkEqual(SpecialistAgent.allCases.map(\.id), ["ux", "copy", "brand", "a11y", "polish"])
     }
 
     func testAgentActivityStates() throws {
