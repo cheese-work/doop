@@ -646,7 +646,10 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
                   width: layersWidth,
                   min: LAYERS_MIN,
                   max: panels.layersMax,
-                  onResize: (layers) => setPanelWidths((widths) => ({ ...widths, layers })),
+                  /* the other panel keeps the width it shows, not a larger saved
+                     one the window had squeezed */
+                  onResize: (layers) =>
+                    setPanelWidths((widths) => ({ layers, agents: showActivity ? panels.agents : widths.agents })),
                 }}
               />
             ) : (
@@ -684,7 +687,8 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
                 width: agentsWidth,
                 min: AGENTS_MIN,
                 max: panels.agentsMax,
-                onResize: (agents) => setPanelWidths((widths) => ({ ...widths, agents })),
+                onResize: (agents) =>
+                  setPanelWidths((widths) => ({ agents, layers: layersOpen ? panels.layers : widths.layers })),
               }}
             />
           )}
