@@ -27,17 +27,8 @@ lists every file in this folder.
 - [comment-notifications.md](comment-notifications.md) - Email for comments and replies people
   were not in the room to see: the canvas event bus, recipient rules, 2-minute coalescing, the
   per-user opt-out, and the `?frame=&comment=` deep link.
-- [psd-import-export.md](psd-import-export.md) - Photoshop interchange: .psd import to editable
-  frames (layers as elements, live text, artboards) and pixel-perfect layered .psd export of any
-  frame, over ag-psd + the headless-Chrome render stack.
 - [share-link-roles.md](share-link-roles.md) - View-only, comment-only and edit share links:
   `canvasRole` and the read/comment/edit gates across REST, the WebSocket room and MCP, and the
   editor's read-only mode.
 - [workspaces-billing.md](workspaces-billing.md) - Shared workspaces (org-level canvas access with
   roles) and the per-seat Team plan on Stripe: data model, entitlement rules, API, webhook flow.
-- [figma-import.md](figma-import.md) - Figma integration: per-user connection (OAuth or personal
-  access token), frame listing and import routes, and how Figma nodes map to editable HTML.
-- [figma-import-architecture.md](figma-import-architecture.md) - Where the importer goes long
-  term: extraction into `packages/figma-import` behind a Host interface, a shape IR between
-  Figma's API and the emitters, and the pixel-regression harness that keeps "pixel perfect"
-  true under contributions.

@@ -48,8 +48,8 @@ describe('desktop connect links', () => {
   })
 
   it('reads the relay page query without its provider field', () => {
-    expect(parseDesktopConnectQuery('?state=s&code=c&provider=figma')).toEqual({
-      provider: 'figma',
+    expect(parseDesktopConnectQuery('?state=s&code=c&provider=meta')).toEqual({
+      provider: 'meta',
       query: { state: 's', code: 'c' },
     })
     expect(parseDesktopConnectQuery('?state=s&code=c')).toBeNull()
@@ -87,25 +87,25 @@ describe('pending desktop connection', () => {
   it('recognises only the remembered provider, until forgotten', () => {
     expect(rememberPendingConnect('slack')).toBe(true)
     expect(isPendingConnect('slack')).toBe(true)
-    expect(isPendingConnect('figma')).toBe(false)
+    expect(isPendingConnect('meta')).toBe(false)
     forgetPendingConnect('slack')
     expect(isPendingConnect('slack')).toBe(false)
   })
 
   it('keeps one connection waiting while another starts', () => {
     rememberPendingConnect('slack')
-    rememberPendingConnect('figma')
+    rememberPendingConnect('meta')
     expect(isPendingConnect('slack')).toBe(true)
-    expect(isPendingConnect('figma')).toBe(true)
-    forgetPendingConnect('figma')
+    expect(isPendingConnect('meta')).toBe(true)
+    forgetPendingConnect('meta')
     expect(isPendingConnect('slack')).toBe(true)
-    expect(isPendingConnect('figma')).toBe(false)
+    expect(isPendingConnect('meta')).toBe(false)
   })
 
   it('drops expired entries when a new connection starts', () => {
     rememberPendingConnect('slack', 1_000)
-    rememberPendingConnect('figma', 2_000 + PENDING_CONNECT_TTL_MS)
-    expect(JSON.parse(shim.get('doop-desktop-connect') ?? '{}')).toEqual({ figma: 2_000 + PENDING_CONNECT_TTL_MS })
+    rememberPendingConnect('meta', 2_000 + PENDING_CONNECT_TTL_MS)
+    expect(JSON.parse(shim.get('doop-desktop-connect') ?? '{}')).toEqual({ meta: 2_000 + PENDING_CONNECT_TTL_MS })
   })
 
   it('ignores a corrupt record', () => {

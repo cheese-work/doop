@@ -4,6 +4,7 @@ import { useStore } from '../lib/store'
 import { gesture } from '../lib/gesture'
 import { visibleGuides } from '../lib/guides'
 import { guideDelta } from '../lib/snap'
+import { flexSizeAxis } from '../lib/flexLayout'
 import { styleElement, styleGesture, type ElementInfo, type StylePatch } from '../lib/frameBridge'
 import {
   RESIZE_CORNERS,
@@ -93,6 +94,7 @@ export function ElementResizeHandles({
     /* the size the live document shows after the last applied move */
     let current: Size | null = null
     let original: StylePatch | null = null
+    let flexAxis: 'width' | 'height' | null = null
     /* a scaled element renders larger than its layout box: the pointer's
        travel is divided by that scale so the box follows the pointer */
     let scale = { x: 1, y: 1 }
@@ -102,7 +104,10 @@ export function ElementResizeHandles({
     const ready = styleGesture(frame.id, selector, 'begin').then((info) => {
       if (!info) return false
       base = { width: info.width ?? info.rect.width, height: info.height ?? info.rect.height }
-      original = { width: info.inline['width'] ?? null, height: info.inline['height'] ?? null }
+      original = Object.fromEntries(
+        ['width', 'height', 'flex-grow', 'flex-shrink', 'flex-basis'].map((key) => [key, info.inline[key] ?? null]),
+      )
+      flexAxis = flexSizeAxis(info)
       scale = info.scale
       return true
     })
@@ -140,18 +145,19 @@ export function ElementResizeHandles({
     /** the styles the pointer's current place asks for; null before the
      *  gesture has travelled far enough to count as a drag */
     function patchFor(pos: { x: number; y: number; shift: boolean; alt: boolean }): StylePatch | null {
-      if (!base) return null
-      if (!moved && Math.abs(pos.x - origin.x) + Math.abs(pos.y - origin.y) < MOVE_THRESHOLD_PX) return null
-      moved = true
+      if (!base || !moved) return null
       const zoom = useStore.getState().viewport.zoom
       const world = snapToGuides({ dx: (pos.x - origin.x) / zoom, dy: (pos.y - origin.y) / zoom }, zoom, pos.alt)
       const delta = { dx: world.dx / scale.x, dy: world.dy / scale.y }
       const keepRatio = pos.shift
       if (keepRatio) ratioUsed = true
-      const patch = resizePatch(handle, resizedSize(handle, base, delta, { keepRatio }), { keepRatio })
+      const patch = resizePatch(handle, resizedSize(handle, base, delta, { keepRatio }), { keepRatio, flexAxis })
       if (ratioUsed && !keepRatio && original) {
         if (!movesWidth(handle)) patch.width = original.width ?? null
         if (!movesHeight(handle)) patch.height = original.height ?? null
+        if ((flexAxis === 'width' && !movesWidth(handle)) || (flexAxis === 'height' && !movesHeight(handle))) {
+          for (const key of ['flex-grow', 'flex-shrink', 'flex-basis']) patch[key] = original[key] ?? null
+        }
       }
       return patch
     }
@@ -179,6 +185,11 @@ export function ElementResizeHandles({
     }
     void ready.then(preview)
 
+    /* Pointer travel counts even while the runtime is still opening the gesture. */
+    function trackPointer(ev: PointerEvent) {
+      last = { x: ev.clientX, y: ev.clientY, shift: ev.shiftKey, alt: ev.altKey }
+      if (Math.abs(ev.clientX - origin.x) + Math.abs(ev.clientY - origin.y) >= MOVE_THRESHOLD_PX) moved = true
+    }
     function onMove(ev: PointerEvent) {
       if (ev.pointerId !== pointerId) return
       if (gesture.pinching) {
@@ -193,7 +204,7 @@ export function ElementResizeHandles({
         last = null
         return
       }
-      last = { x: ev.clientX, y: ev.clientY, shift: ev.shiftKey, alt: ev.altKey }
+      trackPointer(ev)
       preview()
     }
     function finish() {
@@ -223,6 +234,12 @@ export function ElementResizeHandles({
     }
     function onUp(ev: PointerEvent) {
       if (ev.pointerId !== pointerId) return
+      if (ev.type === 'pointercancel') {
+        cancel()
+        return
+      }
+      // Release can carry a position/modifier change newer than the last move.
+      if (!gesture.pinching) trackPointer(ev)
       finish()
       end(moved ? 'commit' : 'cancel')
     }

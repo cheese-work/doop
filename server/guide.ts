@@ -407,7 +407,7 @@ ${DESIGN_QUALITY}
 ${PROTOTYPES}
 - Frame ids come from get_canvas.
 
-## Exporting frames (images, PDF, PSD)
+## Exporting frames (images, PDF)
 
 Every frame response includes an image_url — a public, hotlinkable render of the frame's
 CURRENT html (/i/<frameId>.png?scale=2; use .jpg?quality=90 for JPEG, append &download
@@ -418,7 +418,6 @@ For print, a client handoff or a deck, export_frame with format "pdf" returns th
 (an embedded application/pdf resource, not a URL): vector, text selectable, one page per frame
 at the frame's own size. Pass frame_ids to bind several frames of one canvas into one multi-page
 PDF; pages follow the order given (frame_id first, then frame_ids as listed).
-format "psd" returns a URL to a layered Photoshop file.
 
 ## Multiplayer etiquette
 

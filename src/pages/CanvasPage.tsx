@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { canEditOpenCanvas, pickedSelectors, roleOf, useStore } from '../lib/store'
 import { MOD_KEY, isHideUiShortcut } from '../lib/keys'
 import { canHideUi, hideUiHinted } from '../lib/hideUi'
@@ -39,14 +39,11 @@ import { LayersPanel, LayersRailToggle } from '../components/LayersPanel'
 import { Onboarding } from '../components/Onboarding'
 import { ShareModal } from '../components/ShareModal'
 import { ExportModal } from '../components/ExportModal'
-import { FigmaExportModal } from '../integrations/figma/ExportModal'
 import { canvasPages, pageFrames } from '../../shared/pages'
 import { flowStartFrame } from '../../shared/prototype'
 import type { Frame } from '../../shared/types'
-import { clientIntegrations } from '../integrations'
-import { CanvaMark, ImportStepFooter, ImportStepHeader, PhotoshopMark, SourcePicker } from '../components/ImportSources'
+import { ImportStepFooter, ImportStepHeader, SourcePicker } from '../components/ImportSources'
 import { importSources } from '../components/importSourceList'
-import { canvaApi, isCanvaDesignUrl } from '../integrations/canva/api'
 import { PresentMode } from '../components/PresentMode'
 import { getIdentity, setName } from '../lib/identity'
 import {
@@ -82,7 +79,6 @@ import {
   RadioTowerIcon,
   ShareIcon,
   ShareUpIcon,
-  UploadIcon,
   WebIcon,
   XIcon,
 } from '../components/ui/icons'
@@ -100,12 +96,13 @@ import { Modal, ModalActions, ModalEyebrow, ModalLede, ModalTitle } from '../com
 import { createCenteredFrame } from '../lib/framePlacement'
 import { RULER_PX } from '../components/Rulers'
 import { NO_CANVAS, onViewCommand, syncViewMenu } from '../lib/viewMenu'
+import { AGENTS_MIN, LAYERS_MIN, fitPanelWidths } from '../lib/panelWidths'
 
 /* The floating chrome's geometry, in px from the canvas area's edges. The
-   panels sit 14px in from the edge; on the right the Agents panel (280)
+   panels sit 14px in from the edge; on the right the resizable Agents panel
    always hugs the edge, the Inspector (244) opens to its left, and the icon
    islands (40) sit left of whatever is open. On the left the tool rail follows the Layers
-   panel (264), or its collapsed 40px island. --chrome-left/--chrome-right
+   panel, or its collapsed 40px island. --chrome-left/--chrome-right
    mark where the open canvas begins and ends, for the zoom pill and toasts.
    With rulers on, the chrome layer starts RULER_PX further in on the top
    and left; --chrome-top and --rail-left include that, these offsets do not. */
@@ -114,19 +111,39 @@ const LAYERS_W = 264
 const RAIL_W = 40
 const INSPECTOR_W = 244
 const AGENTS_W = 280
+const PANEL_WIDTH_KEY = 'doop:canvas-panel-widths'
+
+function readPanelWidths(): { layers: number; agents: number } {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(PANEL_WIDTH_KEY) ?? 'null')
+    if (saved && typeof saved === 'object' && 'layers' in saved && 'agents' in saved) {
+      return {
+        layers: typeof saved.layers === 'number' && Number.isFinite(saved.layers) ? saved.layers : LAYERS_W,
+        agents: typeof saved.agents === 'number' && Number.isFinite(saved.agents) ? saved.agents : AGENTS_W,
+      }
+    }
+  } catch {
+    /* Unavailable or invalid storage must not prevent opening a canvas. */
+  }
+  return { layers: LAYERS_W, agents: AGENTS_W }
+}
 
 function chromeLayout({
   layersOpen,
   propertiesShown,
   agentsOpen,
+  layersWidth,
+  agentsWidth,
 }: {
   layersOpen: boolean
   propertiesShown: boolean
   agentsOpen: boolean
+  layersWidth: number
+  agentsWidth: number
 }) {
-  const toolRail = layersOpen ? EDGE + LAYERS_W + 12 : EDGE + RAIL_W + 10
-  const properties = agentsOpen ? EDGE + AGENTS_W + 8 : EDGE
-  const island = propertiesShown ? properties + INSPECTOR_W + 10 : agentsOpen ? EDGE + AGENTS_W + 10 : EDGE
+  const toolRail = layersOpen ? EDGE + layersWidth + 12 : EDGE + RAIL_W + 10
+  const properties = agentsOpen ? EDGE + agentsWidth + 8 : EDGE
+  const island = propertiesShown ? properties + INSPECTOR_W + 10 : agentsOpen ? EDGE + agentsWidth + 10 : EDGE
   return { toolRail, properties, island, left: toolRail + RAIL_W + 16, right: island + RAIL_W + 10 }
 }
 
@@ -166,6 +183,20 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
   const role = useStore(roleOf)
   const readOnly = useStore((s) => !canEditOpenCanvas(s))
   const isMobile = useIsMobile()
+  const [panelWidths, setPanelWidths] = useState(readPanelWidths)
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth)
+  useEffect(() => {
+    const updateWidth = () => setViewportWidth(window.innerWidth)
+    window.addEventListener('resize', updateWidth)
+    return () => window.removeEventListener('resize', updateWidth)
+  }, [])
+  useEffect(() => {
+    try {
+      localStorage.setItem(PANEL_WIDTH_KEY, JSON.stringify(panelWidths))
+    } catch {
+      /* Resizing still works when preferences cannot be saved. */
+    }
+  }, [panelWidths])
   const [showActivity, setShowActivity] = useState(() => !window.matchMedia('(max-width: 900px)').matches)
   /* ?connect=1 (the "connect your agent" email) lands on the Connect AI
      modal; the flag comes off the URL once the page is up so a reload or a
@@ -216,10 +247,7 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
     history.replaceState(history.state, '', `${url.pathname}${url.search}${url.hash}`)
   }, [])
   const [showImport, setShowImport] = useState(!!ghInstallPass || !!ghInstallError || !!importRequested)
-  /* the page's frames and the selection when Export opened — a snapshot,
-     so canvas changes mid-flow don't swap what the checklist shows */
   const [exporting, setExporting] = useState<{ frames: Frame[]; selected: string[] } | null>(null)
-  const [figmaFrames, setFigmaFrames] = useState<Frame[] | null>(null)
   const [showMobileActions, setShowMobileActions] = useState(false)
   const [showMobileLayers, setShowMobileLayers] = useState(false)
   const [renaming, setRenaming] = useState(false)
@@ -441,7 +469,6 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
   const panelElement = elementPanelOpen && selectedElement?.frameId === selectedFrame?.id ? selectedElement : null
   /* the frame Inspector or the element panel, whichever has the slot */
   const propertiesShown = !readOnly && !!selectedFrame && !deferPanel && (!!panelElement || inspectorOpen)
-  const chrome = chromeLayout({ layersOpen, propertiesShown, agentsOpen: showActivity })
   /* ⇧R docks the rulers on the canvas's top and left edges; the bar and the
      floating chrome step in past them (the same test Stage draws them by) */
   const rulers = useStore((s) => s.rulers)
@@ -449,6 +476,24 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
   const rulersShown = rulers && !chromeHidden && !isMobile
   const rulerInset = rulersShown ? RULER_PX : 0
   const hasSelection = useStore((s) => s.selectedIds.length > 0)
+
+  const fixedChrome = chromeLayout({
+    layersOpen,
+    propertiesShown,
+    agentsOpen: showActivity,
+    layersWidth: 0,
+    agentsWidth: 0,
+  })
+  const panels = fitPanelWidths({
+    saved: panelWidths,
+    viewport: viewportWidth,
+    reserved: fixedChrome.left + fixedChrome.right + rulerInset,
+    layersOpen,
+    agentsOpen: showActivity,
+  })
+  const layersWidth = panels.layers
+  const agentsWidth = panels.agents
+  const chrome = chromeLayout({ layersOpen, propertiesShown, agentsOpen: showActivity, layersWidth, agentsWidth })
 
   /* the desktop shell's View menu: its toggles act here, and it mirrors
      their state; leaving the canvas disables its canvas items */
@@ -585,12 +630,7 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
                 <BarDivider className="mx-0.5" />
               </>
             )}
-            <Button
-              variant="bare"
-              className={barPillBtn}
-              onClick={openExport}
-              title="Export frames to Photoshop, Canva or Figma"
-            >
+            <Button variant="bare" className={barPillBtn} onClick={openExport} title="Export frames as a PDF">
               <ExportIcon className="size-3.5" />
               Export
             </Button>
@@ -636,7 +676,7 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
             </Tooltip>
           </BarPill>
           {/* the bar's one black action — it opens the MCP connection modal */}
-          <Button variant="primary" className={barPrimaryBtn} onClick={openConnect}>
+          <Button variant="primary" className={cn(barPrimaryBtn, 'shadow-ring')} onClick={openConnect}>
             <PlusIcon className="size-3.5" strokeWidth={1.4} />
             Connect AI
           </Button>
@@ -651,7 +691,7 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
               <PeerAvatars others={others} />
             </span>
           </div>
-          <Button variant="primary" className={barPrimaryBtn} onClick={openConnect}>
+          <Button variant="primary" className={cn(barPrimaryBtn, 'shadow-ring')} onClick={openConnect}>
             <PlusIcon className="size-3.5" strokeWidth={1.4} />
             <span className="max-sm:hidden">Connect AI</span>
             <span className="sm:hidden">AI</span>
@@ -732,7 +772,25 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
               line; this per-agent stack is only for windows too narrow for it */}
           <WorkingNow style={{ left: chrome.left }} className="min-[1180px]:hidden" />
           <Onboarding canvasId={canvasId} />
-          {!isMobile && (layersOpen ? <LayersPanel onAddFrame={addFrame} /> : <LayersRailToggle />)}
+          {!isMobile &&
+            (layersOpen ? (
+              <LayersPanel
+                onAddFrame={addFrame}
+                resize={{
+                  label: 'Resize Layers panel',
+                  edge: 'right',
+                  width: layersWidth,
+                  min: LAYERS_MIN,
+                  max: panels.layersMax,
+                  /* the other panel keeps the width it shows, not a larger saved
+                     one the window had squeezed */
+                  onResize: (layers) =>
+                    setPanelWidths((widths) => ({ layers, agents: showActivity ? panels.agents : widths.agents })),
+                }}
+              />
+            ) : (
+              <LayersRailToggle />
+            ))}
           {isMobile && !showActivity && (
             <MobilePanelTabs
               onOpen={(tab) => {
@@ -755,7 +813,20 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
             <Inspector frame={selectedFrame} style={{ right: chrome.properties }} />
           )}
           {!isMobile && showActivity && (
-            <ActivityPanel canvasId={canvasId} onClose={() => setShowActivity(false)} style={{ right: EDGE }} />
+            <ActivityPanel
+              canvasId={canvasId}
+              onClose={() => setShowActivity(false)}
+              style={{ right: EDGE }}
+              resize={{
+                label: 'Resize Agents panel',
+                edge: 'left',
+                width: agentsWidth,
+                min: AGENTS_MIN,
+                max: panels.agentsMax,
+                onResize: (agents) =>
+                  setPanelWidths((widths) => ({ agents, layers: layersOpen ? panels.layers : widths.layers })),
+              }}
+            />
           )}
           {!isMobile && (
             <SideRail
@@ -818,16 +889,6 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
                     <ImportIcon /> Import website
                   </Button>
                 )}
-                <Button
-                  variant="ghost"
-                  className="h-11 justify-start gap-2.5 border-line bg-surface px-4"
-                  onClick={() => {
-                    setShowMobileActions(false)
-                    openExport()
-                  }}
-                >
-                  <ExportIcon /> Export frames
-                </Button>
                 <Button
                   variant="ghost"
                   className="h-11 justify-start gap-2.5 border-line bg-surface px-4"
@@ -927,13 +988,8 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
           frames={exporting.frames}
           initialSelection={exporting.selected}
           onClose={() => setExporting(null)}
-          onSendToFigma={(frames) => {
-            setFigmaFrames(frames)
-            setExporting(null)
-          }}
         />
       )}
-      {figmaFrames && <FigmaExportModal frames={figmaFrames} onClose={() => setFigmaFrames(null)} />}
       {showImport && (
         <ImportModal
           canvasId={canvasId}
@@ -949,10 +1005,6 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
             select(frameIds[0] ?? null)
             const imported = frameIds.length === 1 ? '1 item imported' : `${frameIds.length} items imported`
             showToast(failedCount ? `${imported} · ${failedCount} failed` : imported)
-          }}
-          onImporting={(frameCount) => {
-            setShowImport(false)
-            showToast(`Importing ${frameCount} ${frameCount === 1 ? 'frame' : 'frames'} from Figma — Doop is on it`)
           }}
           onQueued={(cardCount) => {
             setShowImport(false)
@@ -988,7 +1040,6 @@ function ImportModal({
   onClose,
   onDone,
   onQueued,
-  onImporting,
 }: {
   canvasId: string
   installPass: string | null
@@ -999,8 +1050,6 @@ function ImportModal({
   onDone: (frameIds: string[], failedCount: number) => void
   /** a repo import queues cards on the board instead of landing frames */
   onQueued: (cardCount: number) => void
-  /** a Figma import runs on as a task — frames land while the canvas is open */
-  onImporting: (frameCount: number) => void
 }) {
   /* which source's screen is open — null is the picker; landing back from
      GitHub's install flow jumps straight to that screen */
@@ -1010,7 +1059,7 @@ function ImportModal({
   const [discovery, setDiscovery] = useState<DiscoveredSite | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [busy, setBusy] = useState<'discovering' | 'importing' | null>(null)
-  const [error, setError] = useState<ReactNode | null>(null)
+  const [error, setError] = useState<string | null>(null)
   /* a connected repo's screen manifest under review — the modal's third view */
   const [repoReview, setRepoReview] = useState<{ connection: GithubConnectionInfo; manifest: RepoManifest } | null>(
     null,
@@ -1018,8 +1067,6 @@ function ImportModal({
   const [repoSelected, setRepoSelected] = useState<Set<string>>(new Set())
   const [extractSystem, setExtractSystem] = useState(true)
   const [showPages, setShowPages] = useState(false)
-  /* an integration's frames under review (the modal's whole view swaps) */
-  const [integrationReview, setIntegrationReview] = useState<ReactNode | null>(null)
 
   function errorMessage(caught: unknown, fallback: string) {
     if (caught instanceof ApiError) return String(caught.body.error ?? fallback)
@@ -1035,10 +1082,8 @@ function ImportModal({
     if (!url.trim() || busy) return
     setBusy('importing')
     setError(null)
-    const target = normalizedUrl()
-    if (isCanvaDesignUrl(target)) return runCanvaImport(target)
     try {
-      const frame = await api.importPage(canvasId, target)
+      const frame = await api.importPage(canvasId, normalizedUrl())
       posthog.capture('page_imported')
       onDone([frame.id], 0)
     } catch (e) {
@@ -1047,43 +1092,8 @@ function ImportModal({
     }
   }
 
-  /* a canva.com/design link goes through the Canva integration — pages land
-     as frames instead of a page snapshot. Caller has already set busy. */
-  async function runCanvaImport(designUrl: string) {
-    try {
-      const result = await canvaApi.importDesign(canvasId, designUrl)
-      if (result.created.length === 0 && result.skipped > 0) {
-        setError('Every page of that design is already on this canvas')
-        setBusy(null)
-        return
-      }
-      posthog.capture('canva_design_imported', { page_count: result.pages, created_count: result.created.length })
-      onDone(
-        result.created.map((f) => f.id),
-        0,
-      )
-    } catch (e) {
-      if (e instanceof ApiError && e.body.error === 'canva_not_connected') {
-        setError(
-          <>
-            Connect Canva on the{' '}
-            <a href="/integrations" target="_blank" rel="noreferrer" className="underline">
-              Integrations page
-            </a>{' '}
-            first, then paste the link again.
-          </>,
-        )
-      } else {
-        setError(errorMessage(e, 'Canva import failed'))
-      }
-      setBusy(null)
-    }
-  }
-
   async function discover() {
     if (!url.trim() || busy) return
-    /* a Canva design link has no site to crawl — it is the import */
-    if (isCanvaDesignUrl(normalizedUrl())) return runSinglePage()
     setBusy('discovering')
     setError(null)
     try {
@@ -1191,7 +1201,6 @@ function ImportModal({
   }
 
   const selectedCount = selected.size
-  const canvaLink = isCanvaDesignUrl(normalizedUrl())
   const laneLabel: Record<RepoScreen['source'], string> = {
     static: 'from repo',
     placeholder: 'agent sketch',
@@ -1208,9 +1217,7 @@ function ImportModal({
   return (
     <Modal size="xl" className="sm:max-w-[820px]" onClose={() => !busy && onClose()}>
       <>
-        {integrationReview ? (
-          integrationReview
-        ) : repoReview ? (
+        {repoReview ? (
           <>
             <div className="flex flex-col items-start justify-between gap-2.5 sm:flex-row sm:gap-6">
               <div className="flex flex-col gap-[5px]">
@@ -1399,11 +1406,6 @@ function ImportModal({
                   }
                   description="Find public pages on the same site, then review the list."
                 />
-                {busy === 'importing' && canvaLink && (
-                  <p className={cn(importNoteCls, 'text-accent-ink')}>
-                    Importing from Canva — each page lands as a frame; this can take a minute…
-                  </p>
-                )}
                 {error && <p className={errorNoteCls}>{error}</p>}
                 <ImportStepFooter
                   note="Snapshots stay editable and commentable. Scripts are removed."
@@ -1419,57 +1421,12 @@ function ImportModal({
                       ? 'Finding pages…'
                       : busy === 'importing'
                         ? 'Importing…'
-                        : canvaLink
-                          ? 'Import design'
-                          : wholeSite
-                            ? 'Discover pages'
-                            : 'Import page'}
+                        : wholeSite
+                          ? 'Discover pages'
+                          : 'Import page'}
                   </Button>
                 </ImportStepFooter>
               </>
-            ) : source === 'canva' ? (
-              <>
-                <ImportStepHeader icon={<CanvaMark size={26} />} title="Import a Canva design" />
-                <ModalLede>
-                  Paste a link to a Canva design. Every page of the design lands as its own editable frame.
-                </ModalLede>
-                <Field className="mt-[22px]" label="Design link" labelVariant="form" htmlFor="import-canva-url">
-                  <Input
-                    id="import-canva-url"
-                    variant="well"
-                    inputSize="lg"
-                    className="font-mono"
-                    autoFocus
-                    placeholder="https://www.canva.com/design/…"
-                    value={url}
-                    disabled={!!busy}
-                    onChange={(e) => {
-                      setUrl(e.target.value)
-                      setError(null)
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && canvaLink) void runSinglePage()
-                    }}
-                  />
-                </Field>
-                {busy === 'importing' && (
-                  <p className={cn(importNoteCls, 'text-accent-ink')}>
-                    Importing from Canva — each page lands as a frame; this can take a minute…
-                  </p>
-                )}
-                {error && <p className={errorNoteCls}>{error}</p>}
-                <ImportStepFooter
-                  note="Needs Canva connected once on the Integrations page. Text and layout stay editable."
-                  onBack={() => setSource(null)}
-                  backDisabled={!!busy}
-                >
-                  <Button variant="primary" disabled={!!busy || !canvaLink} onClick={runSinglePage}>
-                    {busy === 'importing' ? 'Importing…' : 'Import design'}
-                  </Button>
-                </ImportStepFooter>
-              </>
-            ) : source === 'psd' ? (
-              <PsdSection canvasId={canvasId} onDone={onDone} onBack={() => setSource(null)} />
             ) : source === 'liveapp' ? (
               <SyncKeysSection canvasId={canvasId} onBack={() => setSource(null)} />
             ) : source === 'github' ? (
@@ -1480,21 +1437,7 @@ function ImportModal({
                 onReview={openRepoReview}
                 onBack={() => setSource(null)}
               />
-            ) : (
-              clientIntegrations.map(
-                (integration) =>
-                  integration.id === source &&
-                  integration.ImportSection && (
-                    <integration.ImportSection
-                      key={integration.id}
-                      canvasId={canvasId}
-                      setReview={setIntegrationReview}
-                      onImporting={onImporting}
-                      onBack={() => setSource(null)}
-                    />
-                  ),
-              )
-            )}
+            ) : null}
           </>
         ) : (
           <>
@@ -1654,101 +1597,6 @@ function RenameSelfModal({ current, onClose }: { current: string; onClose: () =>
 /* Design sync: mint write-only snippet keys so an app pushes its live screens
    onto this canvas — the import path for products behind SSO/VPN where the
    server-side importer can't go. */
-/* Photoshop as an import source: a .psd file becomes editable frames — every
-   layer an element, every artboard a frame. The raw file streams to the
-   server; nothing is added until conversion succeeds. */
-function PsdSection({
-  canvasId,
-  onDone,
-  onBack,
-}: {
-  canvasId: string
-  onDone: (frameIds: string[], failedCount: number) => void
-  onBack: () => void
-}) {
-  const fileRef = useRef<HTMLInputElement>(null)
-  const [busy, setBusy] = useState(false)
-  const [over, setOver] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  async function pick(file: File | undefined) {
-    if (!file || busy) return
-    setBusy(true)
-    setError(null)
-    try {
-      const result = await api.importPsd(canvasId, file)
-      posthog.capture('psd_imported', { frame_count: result.frames.length, warning_count: result.warnings.length })
-      onDone(
-        result.frames.map((frame) => frame.id),
-        0,
-      )
-    } catch (e) {
-      setError(e instanceof ApiError ? String(e.body.error ?? 'PSD import failed') : 'PSD import failed')
-      setBusy(false)
-    }
-  }
-
-  return (
-    <>
-      <ImportStepHeader icon={<PhotoshopMark size={26} />} title="Import a Photoshop file" />
-      <ModalLede>
-        Every layer becomes an editable element. Images stay positioned, text stays text, and groups, opacity and blend
-        modes carry over. Artboards land as separate frames.
-      </ModalLede>
-      <input
-        ref={fileRef}
-        type="file"
-        accept=".psd"
-        className="hidden"
-        onChange={(e) => {
-          void pick(e.target.files?.[0])
-          e.target.value = ''
-        }}
-      />
-      <button
-        type="button"
-        disabled={busy}
-        className={cn(
-          'mt-[22px] flex min-h-[190px] w-full flex-col items-center justify-center gap-3 rounded-[12px] border border-dashed px-6 py-8 outline-none transition-colors',
-          over
-            ? 'border-ink bg-paper'
-            : 'border-line bg-paper/40 hover:border-ink-faint focus-visible:border-ink-faint',
-        )}
-        onClick={() => fileRef.current?.click()}
-        onDragOver={(e) => {
-          e.preventDefault()
-          setOver(true)
-        }}
-        onDragLeave={() => setOver(false)}
-        onDrop={(e) => {
-          e.preventDefault()
-          setOver(false)
-          void pick(e.dataTransfer.files?.[0])
-        }}
-      >
-        <span className="flex size-11 items-center justify-center rounded-[11px] border border-line bg-surface text-ink">
-          <UploadIcon className="size-[18px]" />
-        </span>
-        <span className="text-[14px] font-semibold tracking-[-0.012em]">
-          {busy ? (
-            'Importing…'
-          ) : (
-            <>
-              Drop a .psd here, or <span className="text-brand underline underline-offset-2">choose a file</span>
-            </>
-          )}
-        </span>
-        <span className="text-caption text-ink-faint">PSD · layers stay editable</span>
-      </button>
-      {error && <p className={errorNoteCls}>{error}</p>}
-      <ImportStepFooter onBack={onBack} backDisabled={busy}>
-        <Button variant="primary" disabled={busy} onClick={() => fileRef.current?.click()}>
-          {busy ? 'Importing…' : 'Upload'}
-        </Button>
-      </ImportStepFooter>
-    </>
-  )
-}
 
 function SyncKeysSection({ canvasId, onBack }: { canvasId: string; onBack: () => void }) {
   const [keys, setKeys] = useState<SyncKeyInfo[] | null>(null)

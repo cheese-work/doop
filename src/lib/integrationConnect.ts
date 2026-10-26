@@ -15,7 +15,7 @@ function startConnect(provider: string, desktop: boolean) {
 }
 
 /**
- * Begin connecting an OAuth integration (Meta, Figma, Canva, Linear, Slack).
+ * Begin connecting an OAuth integration (Meta, Linear, Slack).
  * In a browser this leaves for the provider and lands back on Integrations.
  * In the desktop shell the provider page opens in the system browser, and
  * the browser hands the outcome back over a doop:// link (see

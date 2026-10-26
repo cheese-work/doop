@@ -164,8 +164,7 @@ export function selectPdfFrames(canvas: Canvas, request: { frameIds?: string[]; 
   return { ok: true, frames }
 }
 
-/* Every page is a full browser render: meter exports per account, the way
-   PSD exports are metered per IP. */
+/* Every page is a full browser render: meter exports per account. */
 const PDF_EXPORTS_PER_MIN = 6
 const exportHits = new Map<string, number[]>()
 

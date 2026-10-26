@@ -24,8 +24,8 @@ webhooks, automations and live activities stay out of reach of link visitors.
   route that forgets to name one does not compile. Reads (canvas GET, members, sync flow, doc
   history, frame versions, screenshots) need `view`; comment create, reply and resolve need
   `comment`; everything else that writes needs `edit`: frames, append, delete, approval, version
-  restore, pages, rename, publish, docs, references, proposals, assets, imports (web, PSD, Figma,
-  Canva), board cards, task feedback and agent retries. A refused role answers 403 with the
+  restore, pages, rename, publish, docs, references, proposals, assets, imports (web and the
+  integrations' importers), board cards, task feedback and agent retries. A refused role answers 403 with the
   caller's `role`. Extension canvas routes receive the same helper.
 - An `@mention` turns a comment into a command the resident agent carries out on frames, so a
   comment or reply that mentions an agent needs `edit` (REST and MCP `reply_to_comment`).

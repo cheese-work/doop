@@ -41,7 +41,7 @@ page's top-left visible frame (`flowStartFrame`).
 
 **Inert outside the player.** The frame runtime ignores the attributes until the parent sends
 `doop:proto { on: true }`, which only the player does; text-edit mode also suppresses them. On the
-canvas a click therefore still selects. The attributes have no effect on PNG/JPG/PSD exports.
+canvas a click therefore still selects. The attributes have no effect on PNG/JPG/PDF exports.
 
 ## Player
 

@@ -50,7 +50,7 @@ in `.github/actions/setup-desktop`:
   approve it via System Settings -> Privacy & Security.
 - The Windows installer is unsigned (no Authenticode certificate configured): SmartScreen warns on
   first run and users click "More info" -> "Run anyway".
-- Connecting an OAuth integration (Meta, Figma, Canva, Linear, Slack) from the app opens the
+- Connecting an OAuth integration (Meta, Linear, Slack) from the app opens the
   provider in the system browser and returns over a `doop://integration/<id>` link; the app
   finishes it under its own session (`shared/desktopConnect.ts`). This is web-only: shells from
   0.2.1 already deliver any `doop://` link, and older shells open Integrations in the browser.

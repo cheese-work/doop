@@ -60,7 +60,7 @@ const PENDING_KEY = 'doop-desktop-connect'
 export const PENDING_CONNECT_TTL_MS = 10 * 60 * 1000
 
 /** When each provider's connection was started, by provider id: one entry
- *  per provider, so starting Figma while Slack is still in the browser
+ *  per provider, so starting Meta while Slack is still in the browser
  *  leaves Slack's way back open. */
 type PendingConnects = Record<string, number>
 

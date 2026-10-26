@@ -1,6 +1,6 @@
+import { clientIntegrations } from '../integrations'
 import { useEffect, useRef, useState } from 'react'
 import type { CanvasMeta } from '../../shared/types'
-import { clientIntegrations } from '../integrations'
 import { AGENT_ROLES, roleById, roleName } from '../../shared/agents'
 import {
   AUTOMATION_EXAMPLES,
@@ -17,7 +17,6 @@ import {
   type Automation,
   type AutomationExample,
   type AutomationRun,
-  type MetaPullStep,
   type PullStep,
   type Schedule,
   type Step,
@@ -334,7 +333,6 @@ export function AutomationEditor({ automationId }: { automationId: string }) {
     const canvasId =
       draft.trigger.type === 'approval' ? draft.trigger.canvasId : (draft.steps[draft.steps.length - 1]?.canvasId ?? '')
     const preset = AUTOMATION_EXAMPLES.find((e) => e.id === kind)?.steps[0]
-    const integration = kind.startsWith('pull:') ? kind.slice('pull:'.length) : undefined
     const step: Step = preset
       ? ({ ...preset, id, canvasId } as Step)
       : kind === 'slack'
@@ -347,11 +345,9 @@ export function AutomationEditor({ automationId }: { automationId: string }) {
           }
         : kind === 'linear'
           ? { id, type: 'linear', canvasId, teamId: '', title: 'Follow up on approved designs', description: '' }
-          : integration
-            ? ({ id, type: 'pull', provider: integration, url: '', canvasId } as Step)
-            : kind === 'pull'
-              ? { id, type: 'pull', provider: 'meta', accountId: '', filter: 'active', canvasId }
-              : { id, type: 'agent', title: '', prompt: '', roles: ['doop'], canvasId }
+          : kind === 'pull'
+            ? { id, type: 'pull', provider: 'meta', accountId: '', filter: 'active', canvasId }
+            : { id, type: 'agent', title: '', prompt: '', roles: ['doop'], canvasId }
     setDraft({ ...draft, steps: [...draft.steps, step] })
     setAdding(false)
   }
@@ -887,20 +883,9 @@ function PullNode({
   step: PullStep
   canvases: CanvasMeta[]
   integrations: IntegrationsStatus | null
-  onChange: (patch: Partial<MetaPullStep & { url: string }>) => void
+  onChange: (patch: Partial<PullStep>) => void
   onRemove: () => void
 }) {
-  if (step.provider !== 'meta') {
-    return (
-      <ExtensionPullNode
-        step={step}
-        canvases={canvases}
-        integrations={integrations}
-        onChange={onChange}
-        onRemove={onRemove}
-      />
-    )
-  }
   const meta = integrations?.meta
   const accounts = meta?.accounts ?? []
   return (
@@ -944,10 +929,7 @@ function PullNode({
               ))}
             </SelectContent>
           </Select>
-          <Select
-            value={step.filter}
-            onValueChange={(filter) => onChange({ filter: filter as MetaPullStep['filter'] })}
-          >
+          <Select value={step.filter} onValueChange={(filter) => onChange({ filter: filter as PullStep['filter'] })}>
             <SelectTrigger size="sm" className="w-full" aria-label="Which ads">
               <SelectValue />
             </SelectTrigger>
@@ -957,79 +939,6 @@ function PullNode({
             </SelectContent>
           </Select>
         </div>
-      )}
-      <CanvasPicker
-        word="into"
-        value={step.canvasId}
-        canvases={canvases}
-        onChange={(canvasId) => onChange({ canvasId })}
-      />
-    </div>
-  )
-}
-
-/** A pull owned by a registered integration (see src/integrations): one
- *  source field, the integration's own tile and connection state. */
-function ExtensionPullNode({
-  step,
-  canvases,
-  integrations,
-  onChange,
-  onRemove,
-}: {
-  step: Extract<PullStep, { provider: string }>
-  canvases: CanvasMeta[]
-  integrations: IntegrationsStatus | null
-  onChange: (patch: Partial<{ url: string; canvasId: string }>) => void
-  onRemove: () => void
-}) {
-  const integration = clientIntegrations.find((i) => i.id === step.provider)
-  const pull = integration?.automationPull
-  if (!integration || !pull) {
-    return (
-      <div data-pan-node className={nodeCls}>
-        <Port side="in" />
-        <Port side="out" />
-        <div className="text-body text-ink-faint">No integration handles a “{step.provider}” pull.</div>
-        <RemoveStep onRemove={onRemove} />
-      </div>
-    )
-  }
-  const connected = integrations ? integration.isConnected(integrations) : false
-  const source = 'url' in step ? step.url : ''
-  return (
-    <div data-pan-node className={nodeCls}>
-      <Port side="in" />
-      <Port side="out" />
-      <div className="flex items-center gap-[9px]">
-        {integration.Tile && <integration.Tile size={24} />}
-        <div className="min-w-0">
-          <div className={kCls}>Pull · {integration.name}</div>
-          <div className="text-copy font-semibold tracking-[-0.012em]">{pull.subtitle}</div>
-        </div>
-        {integrations && (
-          <StatusLabel tone={connected ? 'done' : 'muted'} className="ml-auto">
-            {connected ? 'connected' : 'not connected'}
-          </StatusLabel>
-        )}
-        <RemoveStep onRemove={onRemove} />
-      </div>
-      {integrations && !connected ? (
-        <div className="mt-2.5 flex items-center gap-3">
-          <span className="text-body text-ink-soft">Not connected yet</span>
-          <Button variant="solid" size="sm" className="ml-auto h-8" onClick={() => navigate('/integrations')}>
-            Connect {integration.name}
-          </Button>
-        </div>
-      ) : (
-        <Input
-          aria-label={`${integration.name} link`}
-          variant="well"
-          className="mt-2.5 text-body"
-          placeholder={pull.placeholder}
-          value={source}
-          onChange={(e) => onChange({ [pull.field]: e.target.value } as { url: string })}
-        />
       )}
       <CanvasPicker
         word="into"
@@ -1162,21 +1071,6 @@ function StepPicker({ onPick, onCancel }: { onPick: (kind: string) => void; onCa
           <b className="text-body font-semibold tracking-[-0.012em]">Meta Ads</b>
           <span className="text-caption leading-[1.45] text-ink-soft">Pull Meta ad creatives onto a canvas.</span>
         </button>
-        {clientIntegrations.map(
-          (integration) =>
-            integration.automationPull && (
-              <button
-                key={integration.id}
-                type="button"
-                className={tile}
-                onClick={() => onPick(`pull:${integration.id}`)}
-              >
-                {integration.Tile && <integration.Tile size={22} />}
-                <b className="text-body font-semibold tracking-[-0.012em]">{integration.name}</b>
-                <span className="text-caption leading-[1.45] text-ink-soft">{integration.automationPull.blurb}</span>
-              </button>
-            ),
-        )}
         <button type="button" className={tile} onClick={() => onPick('agent')}>
           <span className="flex">
             {AGENT_ROLES.slice(0, 4).map((r, i) => (

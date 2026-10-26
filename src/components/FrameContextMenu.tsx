@@ -2,6 +2,7 @@ import { useState, type MutableRefObject } from 'react'
 import type { Frame } from '../../shared/types'
 import { errorMessage } from '../lib/api'
 import { copyFrames, duplicateFrames, hasFrameClip, pasteFrameAtScreen } from '../lib/frameClipboard'
+import { copyFramePng } from '../lib/frameExport'
 import { deleteFramesTracked } from '../lib/history'
 import { setFramesHidden, setFramesLocked } from '../lib/layerEdits'
 import { canEditOpenCanvas, useStore } from '../lib/store'
@@ -12,7 +13,6 @@ import { ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from './ui/
 import { MenuHint } from './ui/menu'
 import { FrameExportModal } from './FrameExportModal'
 import { FrameHistoryModal } from './FrameHistoryModal'
-import { FigmaExportModal } from '../integrations/figma/ExportModal'
 
 async function copyImageUrl(frame: Frame) {
   const notify = useStore.getState().pushNotice
@@ -27,8 +27,8 @@ async function copyImageUrl(frame: Frame) {
 /** Right-click menu for a frame. FrameView owns the trigger, and passes the
  *  point the right-click happened at — Paste lands there. */
 export function FrameContextMenu({ frame, at }: { frame: Frame; at: MutableRefObject<{ x: number; y: number }> }) {
+  /* the frames Export… acts on: this one, or the selection it belongs to */
   const [exportFrames, setExportFrames] = useState<Frame[] | null>(null)
-  const [figmaFrames, setFigmaFrames] = useState<Frame[] | null>(null)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [savingApproval, setSavingApproval] = useState(false)
   /* a right-click inside a multi-selection acts on the whole group */
@@ -78,7 +78,7 @@ export function FrameContextMenu({ frame, at }: { frame: Frame; at: MutableRefOb
       <ContextMenuContent
         onCloseAutoFocus={(event) => {
           // The export dialog owns focus once the menu closes.
-          if (exportFrames || figmaFrames || historyOpen) event.preventDefault()
+          if (exportFrames || historyOpen) event.preventDefault()
         }}
       >
         <ContextMenuItem onSelect={() => copyFrames(groupFrames())}>
@@ -110,6 +110,7 @@ export function FrameContextMenu({ frame, at }: { frame: Frame; at: MutableRefOb
         >
           Copy link
         </ContextMenuItem>
+        <ContextMenuItem onSelect={() => void copyFramePng(frame)}>Copy as PNG</ContextMenuItem>
         <ContextMenuItem onSelect={() => void copyImageUrl(frame)}>Copy image URL</ContextMenuItem>
         <ContextMenuItem onSelect={() => setExportFrames(groupFrames())}>Export…</ContextMenuItem>
         <ContextMenuItem onSelect={() => setHistoryOpen(true)}>Version history…</ContextMenuItem>
@@ -138,18 +139,8 @@ export function FrameContextMenu({ frame, at }: { frame: Frame; at: MutableRefOb
         )}
       </ContextMenuContent>
       {exportFrames && (
-        <FrameExportModal
-          frame={frame}
-          groupFrames={exportFrames}
-          figmaFrameCount={exportFrames.length}
-          onSendToFigma={() => {
-            setFigmaFrames(exportFrames)
-            setExportFrames(null)
-          }}
-          onClose={() => setExportFrames(null)}
-        />
+        <FrameExportModal frame={frame} groupFrames={exportFrames} onClose={() => setExportFrames(null)} />
       )}
-      {figmaFrames && <FigmaExportModal frames={figmaFrames} onClose={() => setFigmaFrames(null)} />}
       {historyOpen && <FrameHistoryModal frame={frame} onClose={() => setHistoryOpen(false)} />}
     </>
   )

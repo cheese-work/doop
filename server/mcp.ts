@@ -1061,13 +1061,13 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
   server.registerTool(
     'export_frame',
     {
-      title: 'Export frame as image, PSD or PDF',
+      title: 'Export frame as image or PDF',
       description:
-        "Export the frame's CURRENT design. PNG/JPG return public URLs for publishing it elsewhere (CMS media library, social post, og:image; the URL re-renders when the frame changes); PSD returns a URL for handing the design to Photoshop as a layered, editable file (each element becomes a layer, text stays editable). PDF returns the file itself (an embedded application/pdf resource): vector, text selectable, one page per frame sized to the frame; pass frame_ids to put several frames of the same canvas into one multi-page PDF (pages in the order given: frame_id first, then frame_ids as listed).",
+        "Export the frame's CURRENT design. PNG/JPG return public URLs for publishing it elsewhere (CMS media library, social post, og:image; the URL re-renders when the frame changes). PDF returns the file itself (an embedded application/pdf resource): vector, text selectable, one page per frame sized to the frame; pass frame_ids to put several frames of the same canvas into one multi-page PDF (pages in the order given: frame_id first, then frame_ids as listed).",
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: {
         frame_id: z.string(),
-        format: z.enum(['png', 'jpg', 'psd', 'pdf']).optional().describe('default png'),
+        format: z.enum(['png', 'jpg', 'pdf']).optional().describe('default png'),
         quality: z.number().min(1).max(100).optional().describe('jpg only, default 90'),
         frame_ids: z
           .array(z.string())
@@ -1082,14 +1082,6 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       const f = frameFor(frame_id, 'view')
       if (!f) return noFrame(frame_id)
       if (format === 'pdf') return exportPdf(f, frame_ids ?? [])
-      if (format === 'psd') {
-        return text({
-          psd_url: `${env.BETTER_AUTH_URL}/i/${frame_id}.psd`,
-          width: f.width,
-          height: f.height,
-          note: 'Public URL, no auth needed — downloading it renders the frame into a layered Photoshop file (groups, editable text layers, blend modes, plus a pixel-perfect composite). Rendering takes several seconds; fetch with a generous timeout.',
-        })
-      }
       const ext = format === 'jpg' ? 'jpg' : 'png'
       const q = ext === 'jpg' ? `&quality=${quality ?? 90}` : ''
       return text({
@@ -1570,7 +1562,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
     },
   )
 
-  /* extension tools (the Figma import, future integrations) get the same
+  /* extension tools get the same
      per-session helpers the built-in tools close over */
   const extensionHelpers: McpToolHelpers = {
     ownerId,
@@ -1594,67 +1586,6 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
     },
   }
   for (const extension of extensions) extension.registerMcpTools?.(server, extensionHelpers)
-
-  server.registerTool(
-    'import_psd',
-    {
-      title: 'Import a Photoshop PSD',
-      _meta: previewToolMeta('Importing the PSD…', 'PSD imported'),
-      description:
-        'Import a .psd file from a public URL into a canvas as editable frames: every Photoshop layer becomes a real element (raster layers as positioned images, text layers as live styled text, groups/opacity/blend modes/masks preserved), and each artboard becomes its own frame. Use when a design handoff arrives as a PSD. For a PSD on YOUR machine, tell the human to use "Import" in the canvas toolbar instead.',
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-      inputSchema: {
-        source_url: z.string().describe('Public http(s) URL of the .psd file (max 400 MB)'),
-        canvas_id: z.string().describe('Canvas that should receive the imported frames'),
-        text_mode: z
-          .enum(['editable', 'raster'])
-          .optional()
-          .describe(
-            "'editable' (default) converts text layers to live HTML text; 'raster' keeps Photoshop's exact pixels",
-          ),
-        agent_name: agentName,
-      },
-    },
-    async ({ source_url, canvas_id, text_mode, agent_name }) => {
-      const canvas = canvasFor(canvas_id, 'edit')
-      if (!canvas) return noCanvas(canvas_id)
-      const now = Date.now()
-      const limitKey = ownerId ?? agent_name
-      const hits = (importHits.get(limitKey) ?? []).filter((t) => now - t < 60_000)
-      if (hits.length >= IMPORTS_PER_MIN) return err('import rate limit — wait a minute')
-      hits.push(now)
-      importHits.set(limitKey, hits)
-      try {
-        const { createImportedPsdFrames, MAX_PSD_BYTES } = await import('./psdImport.ts')
-        const buffer = await assets.fetchRemote(source_url, MAX_PSD_BYTES)
-        const actor = actorFrom(agent_name)
-        const rightmost = canvas.frames.reduce((right, frame) => Math.max(right, frame.x + frame.width), 0)
-        const fileName = new URL(source_url).pathname.split('/').pop() || 'import.psd'
-        const { frames, warnings } = await createImportedPsdFrames({
-          canvasId: canvas_id,
-          buffer,
-          fileName,
-          actor,
-          baseX: canvas.frames.length ? rightmost + 80 : 120,
-          baseY: 120,
-          textMode: text_mode,
-          storeImage: async (png) => {
-            const asset = await assets.createAsset(png, { canvasId: canvas_id, ownerId, uploadedBy: agent_name })
-            return `${env.BETTER_AUTH_URL}/a/${asset.id}.${asset.ext}`
-          },
-        })
-        const result = text({
-          ok: true,
-          frames: frames.map(frameSummary),
-          ...(warnings.length ? { warnings } : {}),
-          note: 'Each frame is editable HTML — review with get_frame_screenshot before building on it.',
-        })
-        return withPreview(withStatusNudge(withFeedback(result, canvas_id, actor), canvas_id, actor), canvas_id, frames)
-      } catch (e) {
-        return err(e instanceof Error ? e.message : 'PSD import failed')
-      }
-    },
-  )
 
   server.registerTool(
     'get_frame_screenshot',
@@ -1988,7 +1919,6 @@ export async function handleMcpRequest(req: Request, res: Response) {
           agent_client: msg.params?.clientInfo?.name,
           agent_client_version: msg.params?.clientInfo?.version,
         })
-        capture(session.userId, 'agent_connected', { kind: 'mcp', agent_client: msg.params?.clientInfo?.name })
       } else if (msg?.method === 'tools/call') {
         captureThrottled(session.userId, 'custom_agent_used', { first_tool: msg.params?.name })
       }

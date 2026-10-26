@@ -13,7 +13,7 @@ import { api } from '../lib/api'
 import { navigate } from '../App'
 import { posthog } from '../lib/posthog'
 import { AppRail, railLayout } from '../components/AppRail'
-import { ClockTile, MetaTile, RunDot, StepChain, formatRunTime, PullMark } from '../components/AutomateShell'
+import { ClockTile, MetaTile, PullMark, RunDot, StepChain, formatRunTime } from '../components/AutomateShell'
 import { FrameThumb } from '../components/FramePreview'
 import { RoleMark } from '../components/RoleMark'
 import { Button } from '../components/ui/button'
@@ -204,7 +204,7 @@ export function Automations() {
                     />
                     <div className="flex min-w-0 items-center gap-2.5">
                       {first?.type === 'pull' ? (
-                        <PullMark provider={first.provider} size={24} className="border border-line bg-surface" />
+                        <MetaTile size={24} className="border border-line bg-surface" />
                       ) : first?.type === 'slack' || first?.type === 'linear' ? (
                         <PullMark provider={first.type} size={24} />
                       ) : first?.type === 'agent' ? (

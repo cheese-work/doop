@@ -1,5 +1,4 @@
 import { normalizePipeline } from './agents.ts'
-import { looksLikeFigmaLink, type FigmaPullStep } from './figma.ts'
 import type { FrameApproval } from './types.ts'
 
 /** Scheduled or approval-triggered workflows. Every step names a canvas;
@@ -21,7 +20,7 @@ export interface Schedule {
 
 export type PullFilter = 'active' | 'all'
 
-export interface MetaPullStep {
+export interface PullStep {
   id: string
   type: 'pull'
   provider: 'meta'
@@ -30,8 +29,6 @@ export interface MetaPullStep {
   filter: PullFilter
   canvasId: string
 }
-
-export type PullStep = MetaPullStep | FigmaPullStep
 
 export type AutomationTrigger = { type: 'schedule' } | { type: 'approval'; canvasId: string }
 
@@ -317,14 +314,6 @@ export function normalizeSteps(raw: unknown): Step[] | string {
         title: field('title', 200),
         description: field('description'),
       })
-    } else if (s.type === 'pull' && s.provider === 'figma') {
-      out.push({
-        id: stepId(s.id, i),
-        type: 'pull',
-        provider: 'figma',
-        url: typeof s.url === 'string' ? s.url.trim().slice(0, 500) : '',
-        canvasId,
-      })
     } else if (s.type === 'pull') {
       out.push({
         id: stepId(s.id, i),
@@ -358,10 +347,7 @@ export function incompleteReason(steps: Step[], trigger?: AutomationTrigger): st
   if (steps.length === 0) return 'Add a step'
   for (const s of steps) {
     if (!s.canvasId) return 'Pick a canvas for every step'
-    if (s.type === 'pull' && s.provider === 'meta' && !s.accountId) return 'Pick a Meta ad account'
-    if (s.type === 'pull' && s.provider === 'figma' && !s.url) return 'Paste a Figma link'
-    if (s.type === 'pull' && s.provider === 'figma' && !looksLikeFigmaLink(s.url))
-      return 'That doesn’t look like a Figma file link'
+    if (s.type === 'pull' && !s.accountId) return 'Pick a Meta ad account'
     if (s.type === 'agent' && !s.prompt) return 'Write what the agent should do'
     if (s.type === 'slack' && !/^[CG][A-Z0-9]+$/.test(s.channelId)) return 'Enter a Slack channel ID'
     if (s.type === 'slack' && !s.message) return 'Write a Slack message'
@@ -375,8 +361,7 @@ export function incompleteReason(steps: Step[], trigger?: AutomationTrigger): st
 /* Examples                                                            */
 
 export type ExampleStep =
-  | Omit<MetaPullStep, 'id' | 'canvasId'>
-  | Omit<FigmaPullStep, 'id' | 'canvasId'>
+  | Omit<PullStep, 'id' | 'canvasId'>
   | Omit<AgentStep, 'id' | 'canvasId'>
   | Omit<SlackStep, 'id' | 'canvasId'>
   | Omit<LinearStep, 'id' | 'canvasId'>
@@ -445,13 +430,6 @@ export const AUTOMATION_EXAMPLES: AutomationExample[] = [
         roles: ['doop'],
       },
     ],
-  },
-  {
-    id: 'figma-sync',
-    name: 'Figma frames, every morning',
-    blurb: 'Import whatever is new in a Figma file onto a canvas each day.',
-    schedule: { kind: 'weekdays', weekday: 1, hour: 8, minute: 30 },
-    steps: [{ type: 'pull', provider: 'figma', url: '' }],
   },
   {
     id: 'friday-ux',

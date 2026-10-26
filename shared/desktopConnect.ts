@@ -1,4 +1,4 @@
-/* Connecting an integration (Meta, Figma, Canva, Linear, Slack) from the
+/* Connecting an integration (Meta, Linear, Slack) from the
    desktop app. The shell hands every provider page to the system browser,
    so the provider's redirect lands there, carrying the browser's cookie,
    which may belong to another account or to nobody. The flow:
@@ -21,7 +21,7 @@ export const DESKTOP_STATE_PREFIX = 'desktop~'
 export const DESKTOP_CONNECT_PATH = '/desktop/connect'
 
 /** The integrations that connect through an OAuth round trip. */
-export const OAUTH_PROVIDERS = ['meta', 'figma', 'canva', 'linear', 'slack'] as const
+export const OAUTH_PROVIDERS = ['meta', 'linear', 'slack'] as const
 export type OAuthProvider = (typeof OAUTH_PROVIDERS)[number]
 
 export function isOAuthProvider(value: unknown): value is OAuthProvider {

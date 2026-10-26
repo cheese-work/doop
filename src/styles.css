@@ -943,8 +943,7 @@ body:has([data-panel-resizing]) * {
 }
 
 /* Rail icons move once when their row is hovered or focused, each glyph in
-   its own small way (the idea is Resend's sidebar, drawn here in CSS over the
-   Lucide markup). AppRail marks its two layouts with `data-icon-motion`; the
+   its own small way (drawn here in CSS over the Lucide markup). AppRail marks its two layouts with `data-icon-motion`; the
    selectors key on Lucide's per-glyph class and child order, so swapping a
    glyph in icons.tsx means revisiting its rule here. */
 [data-icon-motion] svg.lucide * {

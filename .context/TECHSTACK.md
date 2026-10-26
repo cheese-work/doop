@@ -29,12 +29,6 @@
   Agent and the MCP server that lets external agents (e.g. Claude Code) design on a canvas.
 - `ws` 8.18.0 - WebSocket server for realtime multiplayer (cursors, presence, frame edits,
   activity feed) over one room per canvas.
-- `jszip` 3.x + `fast-xml-parser` 5.x + `pptxgenjs` 4.x - the Canva integration's PPTX pipeline
-  (`server/canva*.ts`): parse Canva's PPTX exports into positioned frame HTML on import, build
-  PPTX (background layer + live text boxes) for export to Canva. OAuth client pair in
-  `CANVA_CLIENT_ID` / `CANVA_CLIENT_SECRET` (see `.env.example`).
-- `ag-psd` 31.x - pure-TS Photoshop PSD reader/writer behind PSD import/export
-  (`server/psdImport.ts`, `server/psdExport.ts`; spec in `.context/specs/psd-import-export.md`).
 - `pdf-lib` 1.17.1 - joins the vector PDF export (`server/pdfExport.ts`): headless Chrome prints
   each frame onto a page of its own size, pages in the order the frames are listed (a whole page
   in canvas reading order, `shared/frameOrder.ts`; the Export checklist sends its displayed
@@ -66,6 +60,20 @@
 
 ## 4. Canvas Drawing
 
+- Canvas zoom: the camera runs from 8% to 1600% (`MAX_ZOOM`, mirrored by `FOLLOW_MAX_ZOOM`).
+  `Stage.tsx` lays the `.world` out at CSS zoom k, the settled camera zoom clamped
+  to 1-16, and its transform carries only the camera's movement since (`scale(zoom / k)`).
+  Chromium passes k into each frame iframe (and the drag preview) as pixel density, so frame
+  documents keep design-px viewports and rasterize at k×, out of process too (a transform on
+  the iframe only stretched a 1× raster there); k is the whole number at or above the zoom,
+  since the iframe box snaps to whole pixels and only a whole k keeps every design size exact.
+  Elsewhere (`FRAME_DOCUMENTS_TAKE_ZOOM_AS_DENSITY` false) each `FrameView` iframe undoes k (`zoom: 1/k`, `scale(k)`); `src/lib/layoutZoom.ts` snaps k to a
+  float32 whose inverse multiplies back to exactly 1, since engines multiply zoom in float32.
+  WebKit (the desktop app) rasterizes a composited layer at its CSS size, so a transform-only
+  scale went soft past 100%. Both engines tile what is on screen, so backing memory follows the
+  viewport, not k. From 300% a 1px pixel grid fades in over the frames (full at 500%). Frame
+  names live in a screen-space layer (`FrameLabelLayer`), placed from `--vx`/`--vy`/`--zoom`, so
+  they keep size, gap and crisp text at every zoom.
 - `src/lib/tools.ts` defines bottom-toolbar tools and shortcuts. `Stage.tsx` delegates drawing
   gestures and world-space previews to `CanvasDrawing.tsx`; Space/middle-button panning takes
   precedence over drawing.
@@ -139,6 +147,8 @@
   creation queued with transfers, and undo/redo. Browser regressions cover transformed shapes,
   stacking contexts, covered shapes, and delayed hit-test replies.
 
+## 5. Security and Secrets
+
 - Prototypes (`.context/specs/prototyping.md`): interactions are `data-doop-on` /
   `data-doop-action` (or the JSON `data-doop-interactions`) attributes in frame HTML, parsed by
   `shared/prototype.ts`, whose parser the frame runtime inlines by source. `PrototypePlayer.tsx`
@@ -146,53 +156,29 @@
   Prototype tab and `PrototypeOverlay.tsx` edit and draw them; MCP has `get_prototype` and
   `set_prototype_start`. `tests/prototypeBrowser.test.ts` drives the player in Chromium.
 
-## 5. Email
-
-- nodemailer 9 over SMTP (`server/mailer.ts`, `SMTP_*` + `EMAIL_FROM`; production points it at
-  Resend on port 2587) carries the plain system mail: verification, password reset, comment
-  digests, workspace invites.
-- The designed lifecycle emails (welcome at signup, "connect your agent" a day later) are **Resend
-  templates sent by PostHog workflows**; the server sends neither. `server/auth.ts` emits one
-  server-side `account_created` event per new account (with `first_name` and `$set` email/name,
-  retried with a stable uuid via `captureDurable`);
-  the two workflows in PostHog project 553661 trigger on it, the nudge one waits a day for any of
-  `agent_connected` (server-side, from every connect path: key, MCP handshake, model account,
-  local agent) or the browser's `agent_key_created` / `custom_agent_connected` /
-  `model_account_connected` / `chatgpt_connected` and exits if one arrives, and each sends through an HTTP Webhook step calling Resend's API with
-  the template alias (`welcome`, `connect-agent`) and variables. `emails/` holds the template
-  sources (`layout.ts` chrome, `welcome.ts`, `connectAgent.ts`), ported from the "Welcome email"
-  canvas (`81e15rzYCS`) where the designs live first; `bun scripts/resend-emails.mts push`
-  creates/updates/publishes them in Resend, `list` shows what is there, `send-test <alias> <to>`
-  sends one through the template. Links in the emails are static: `/api/welcome` redirects to the
-  person's first canvas and passes `?connect=1` through, which opens the Connect AI modal.
-  The founder check-in (`server/founderEmail.ts`) is separate on purpose: plain text, human timing,
-  its own credentials.
-
-## 6. Security and Secrets
-
 - better-auth 1.6.26 - authentication: email/password, generic OIDC/SSO, and Google / Microsoft /
   Apple sign-in (social providers, `GOOGLE_*` / `MICROSOFT_*` / `APPLE_*` client pairs; the iOS app
   signs in with Apple natively against `APPLE_APP_BUNDLE_IDENTIFIER`). Configuration and secrets
   (`BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, provider client IDs/secrets) come from the
   environment (`.env`, documented in `.env.example`); never committed.
 
+## 6. Build and Dependency Management
+
 - Canvas access: `canvasRole` in `server/access.ts` gives owners, members and workspace members
   edit, and share-link visitors the link's level (`none` / `view` / `comment` / `edit`). REST,
   the WebSocket room and MCP gate reads, comments and writes on it separately; spec in
   `.context/specs/share-link-roles.md`.
 
-## 7. Build and Dependency Management
-
 - Bun 1.3.10 - package manager; lockfile at `bun.lock`, installed with `bun install
 --frozen-lockfile` in CI.
 - Vite 8 (Rolldown-based) - frontend build tool (`vite build`), with `@vitejs/plugin-react` 6.
 
-## 8. Testing Stack
+## 7. Testing Stack
 
 - Vitest 5 - unit/integration tests across `server/` and `src/`; run via `bun run test`
   (`vitest run`). Tests live in `tests/`.
 
-## 9. CI/CD and Delivery
+## 8. CI/CD and Delivery
 
 - GitHub Actions:
   - `.github/workflows/ci.yml` - gates `typecheck`, `lint` + `format:check` + `doc-lint`, `build`
@@ -204,7 +190,7 @@
   - `.github/workflows/desktop.yml` / `desktop-release.yml` - Tauri desktop app CI and DMG
     release (tag `desktop-v*`, universal macOS build, optional Apple signing/notarization).
 
-## 10. Infrastructure and Deployment
+## 9. Infrastructure and Deployment
 
 - Experimental Gemini cloud pilot: `server/geminiCloudRuns.ts` dispatches resident harness tasks
   to per-user workers; `server/geminiCloudMcp.ts` exposes run-scoped canvas tools. The standalone
@@ -215,7 +201,7 @@
 - Docker - `Dockerfile` + `docker-compose.yml`; `docker compose up` runs the app container
   (port 4400) and a `postgres:16-alpine` db container for self-hosting.
 
-## 11. Frontend Stack
+## 10. Frontend Stack
 
 - React 18.3.1 + Vite 8 - SPA, entry at `index.html`.
 - Tailwind CSS 4.3.3 (`@tailwindcss/vite` 4.3.3) - styling; `tw-animate-css` 1.4.0 for animation
@@ -237,7 +223,7 @@
   From another page the rail sends scope picks home as `/?scope=` and new workspaces as
   `/?workspace=new`.
 
-## 12. Developer Experience Tooling
+## 11. Developer Experience Tooling
 
 - oxlint 1.x + oxlint-tsgolint (type-aware rules) - lint, config in `.oxlintrc.json`; ESLint 10 with
   the typescript-eslint parser runs only the `process.env` ban in `eslint.config.js`.
@@ -246,3 +232,11 @@
 - Husky 9.1.7 + lint-staged 17.3.0 - pre-commit hook runs `lint-staged` (`.husky/pre-commit`).
 - commitlint 21.2.2 (`@commitlint/config-conventional`) - conventional commit / PR title linting,
   config in `commitlint.config.js`.
+
+## OSS integration scope
+
+The integration registries currently register Linear only. Canvas imports offer websites, live-app
+sync and GitHub repositories; frame exports offer PNG/JPG with progress feedback and desktop saving.
+Figma, Canva and PSD are deferred. Migration 0019 is reserved for the deferred Figma integration;
+the OSS journal skips it while retaining the shared migration tags and timestamps for 0020–0022.
+Gemini cloud workers remain an operator-managed, opt-in pilot; see `docs/gemini-cloud-pilot.md`.

@@ -56,7 +56,6 @@ import {
 import * as ingest from './ingest.ts'
 import * as agentKeys from './agentKeys.ts'
 import * as backgrounds from './backgrounds.ts'
-import { mountPrivate } from './private/index.ts'
 import * as storage from './storage.ts'
 import * as github from './github.ts'
 import * as githubApp from './githubApp.ts'
@@ -365,38 +364,11 @@ app.use('/relay', async (req, res) => {
 /* render dispatch live in previews.ts — this route is HTTP only.      */
 /* ------------------------------------------------------------------ */
 
-/* PSD exports render one screenshot per layer — meter them harder than
-   plain image renders, and per IP like the /i/ budget. */
-const psdExportHits = new Map<string, number[]>()
-const PSD_EXPORTS_PER_MIN = 3
-
 app.get('/i/:id.:ext', async (req, res) => {
   const { id, ext } = req.params as { id: string; ext: string }
-  if (ext !== 'png' && ext !== 'jpg' && ext !== 'psd') return res.status(404).end()
+  if (ext !== 'png' && ext !== 'jpg') return res.status(404).end()
   const frame = store.getFrame(id)
   if (!frame) return res.status(404).end()
-
-  if (ext === 'psd') {
-    const ip = req.ip ?? 'unknown'
-    const now = Date.now()
-    const hits = (psdExportHits.get(ip) ?? []).filter((t) => now - t < 60_000)
-    if (hits.length >= PSD_EXPORTS_PER_MIN) {
-      res.set('Retry-After', '60')
-      return res.status(429).json({ error: 'PSD export rate limit — wait a minute' })
-    }
-    hits.push(now)
-    psdExportHits.set(ip, hits)
-    try {
-      const { renderFramePsd } = await import('./psdExport.ts')
-      const buf = await renderFramePsd(frame)
-      const safe = frame.name.replace(/[^\w\- ]+/g, '').trim() || 'frame'
-      res.set('Content-Type', 'image/vnd.adobe.photoshop')
-      res.set('Content-Disposition', `attachment; filename="${safe}.psd"`)
-      return res.send(buf)
-    } catch (e) {
-      return res.status(500).json({ error: e instanceof Error ? e.message : 'PSD export failed' })
-    }
-  }
 
   let result: Awaited<ReturnType<typeof getImage>>
   try {
@@ -447,11 +419,6 @@ app.get('/a/:id.:ext', async (req, res) => {
     res.set('Content-Type', found.meta.mime)
     res.set('Cache-Control', 'public, max-age=31536000, immutable')
     res.set('X-Content-Type-Options', 'nosniff')
-    /* CSS mask-image (PSD imports use it for layer/clipping masks) fetches
-       with CORS, and frames render in sandboxed iframes whose origin is
-       opaque — without this header every masked layer silently disappears.
-       Assets are public by unguessable id, so open CORS gives nothing away. */
-    res.set('Access-Control-Allow-Origin', '*')
     /* svg can script when opened as a document — neuter it; <img> embeds
        are unaffected */
     if (found.meta.mime === 'image/svg+xml')
@@ -1956,15 +1923,6 @@ app.post('/api/canvases/:id/import/discover', async (req, res) => {
   }
 })
 
-/* Extension-owned canvas routes (the Figma import and future integrations):
-   each extension mounts under /api/canvases/:id/<extension id> with the
-   core's own canvas gate and import rate slot. */
-for (const extension of extensions) {
-  if (extension.canvasRouter) {
-    app.use(`/api/canvases/:id/${extension.id}`, extension.canvasRouter({ requireCanvas, takeImportSlot }))
-  }
-}
-
 app.post('/api/canvases/:id/import', async (req, res) => {
   const canvas = requireCanvas(req, res, req.params.id, 'edit')
   if (!canvas) return
@@ -2049,44 +2007,6 @@ app.post('/api/canvases/:id/import', async (req, res) => {
     res.json(frame)
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : 'import failed' })
-  }
-})
-
-/* Photoshop import: the raw body IS the .psd file (same pattern as the
-   asset upload route — express.json never touches non-JSON content types).
-   Every layer becomes an element; layer bitmaps land in asset storage. */
-app.post('/api/canvases/:id/import/psd', express.raw({ type: () => true, limit: '402mb' }), async (req, res) => {
-  const canvas = requireCanvas(req, res, req.params.id, 'edit')
-  if (!canvas) return
-  try {
-    const { createImportedPsdFrames, looksLikePsd, MAX_PSD_BYTES } = await import('./psdImport.ts')
-    const buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0)
-    if (buffer.length > MAX_PSD_BYTES) return res.status(413).json({ error: 'PSD exceeds the 400 MB limit' })
-    if (!looksLikePsd(buffer)) return res.status(400).json({ error: 'not a Photoshop PSD file' })
-    if (!takeImportSlot(req.user!.id)) return res.status(429).json({ error: 'too many imports — wait a minute' })
-    const fileName = String(req.query.name ?? 'import.psd').slice(0, 120)
-    const actor = actions.resolveActor({ name: req.user!.name, kind: 'user' })
-    const rightmost = canvas.frames.reduce((right, frame) => Math.max(right, frame.x + frame.width), 0)
-    const { frames, warnings } = await createImportedPsdFrames({
-      canvasId: canvas.id,
-      buffer,
-      fileName,
-      actor,
-      baseX: canvas.frames.length ? rightmost + 80 : 120,
-      baseY: 120,
-      textMode: req.query.text === 'raster' ? 'raster' : 'editable',
-      storeImage: async (png) => {
-        const asset = await createAsset(png, {
-          canvasId: canvas.id,
-          ownerId: req.user!.id,
-          uploadedBy: req.user!.name,
-        })
-        return `${env.BETTER_AUTH_URL}/a/${asset.id}.${asset.ext}`
-      },
-    })
-    res.json({ frames, warnings })
-  } catch (e) {
-    res.status(400).json({ error: e instanceof Error ? e.message : 'PSD import failed' })
   }
 })
 
@@ -2237,16 +2157,8 @@ function protectedResourceMetadata(req: express.Request, res: express.Response) 
   })
 }
 app.get('/.well-known/oauth-protected-resource', protectedResourceMetadata)
-/* OpenAI's domain verification for the ChatGPT app directory: the bare token
-   from the Platform dashboard, no JSON. */
-app.get('/.well-known/openai-apps-challenge', (_req, res) => {
-  if (!env.OPENAI_APPS_CHALLENGE_TOKEN) return res.status(404).end()
-  res.type('text/plain').send(env.OPENAI_APPS_CHALLENGE_TOKEN)
-})
 /* path-aware variant some clients probe for a resource at /mcp */
 app.get('/.well-known/oauth-protected-resource/mcp', protectedResourceMetadata)
-
-await mountPrivate(app)
 
 /* robots + minimal sitemap for every deployment */
 app.get('/robots.txt', (_req, res) => {
