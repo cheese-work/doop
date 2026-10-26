@@ -1,6 +1,7 @@
 import { nanoid } from 'nanoid'
 import { canvasPages, copyPageName, pageFrames, samePages } from '../shared/pages.ts'
 import * as persist from './db/persist.ts'
+import type { LinkAccess } from '../shared/canvasRole.ts'
 import { MAX_GUIDES } from '../shared/guides.ts'
 import type {
   Canvas,
@@ -367,11 +368,11 @@ class Store {
   /** Owner-set link policy ('none' is the default and stored as unset).
    *  Deliberately does not bump updatedAt — a privacy toggle is not a
    *  design edit. */
-  setLinkAccess(id: string, mode: 'edit' | 'none'): Canvas | undefined {
+  setLinkAccess(id: string, mode: LinkAccess): Canvas | undefined {
     const c = this.canvases.get(id)
     if (!c) return undefined
-    if (mode === 'edit') c.linkAccess = 'edit'
-    else delete c.linkAccess
+    if (mode === 'none') delete c.linkAccess
+    else c.linkAccess = mode
     persist.saveCanvas(c)
     return c
   }

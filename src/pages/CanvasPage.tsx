@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { pickedSelectors, useStore } from '../lib/store'
+import { canEditOpenCanvas, pickedSelectors, roleOf, useStore } from '../lib/store'
 import { MOD_KEY, isHideUiShortcut } from '../lib/keys'
 import { canHideUi, hideUiHinted } from '../lib/hideUi'
 import { connect, disconnect, sendWs } from '../lib/ws'
@@ -160,6 +160,11 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
   const presences = useStore((s) => s.presences)
   const selectedId = useStore((s) => s.selectedId)
   const select = useStore((s) => s.select)
+  /* a view or comment share link: the canvas opens read-only — no imports,
+     no property panels, no edit shortcuts. The server refuses those writes
+     regardless; this keeps the UI from offering them. */
+  const role = useStore(roleOf)
+  const readOnly = useStore((s) => !canEditOpenCanvas(s))
   const isMobile = useIsMobile()
   const [showActivity, setShowActivity] = useState(() => !window.matchMedia('(max-width: 900px)').matches)
   /* ?connect=1 (the "connect your agent" email) lands on the Connect AI
@@ -271,7 +276,8 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
          removes — the frame it lives in only goes when nothing inside it is
          selected. Auto-repeat is ignored: a held key must not take the
          element and then, on the next repeat, the frame under it. */
-      if ((e.key === 'Delete' || e.key === 'Backspace') && !e.repeat && deleteSelection()) e.preventDefault()
+      const canEdit = canEditOpenCanvas(useStore.getState())
+      if (canEdit && (e.key === 'Delete' || e.key === 'Backspace') && !e.repeat && deleteSelection()) e.preventDefault()
       if (e.key === 'Escape') {
         select(null)
         useStore.getState().setFollowing(null)
@@ -283,25 +289,26 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
         toggleHideUi()
         return
       }
-      if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'z') {
+      /* undo, redo, hide, lock and duplicate all change the canvas; ⌘C does not */
+      if (canEdit && (e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'z') {
         e.preventDefault()
         if (e.shiftKey) void redo()
         else void undo()
         return
       }
-      if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'y') {
+      if (canEdit && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'y') {
         e.preventDefault()
         void redo()
         return
       }
       /* ⌘⇧H hides or shows what is selected — the picked element, else the
          frames — as the eye in the Layers panel would */
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'h') {
+      if (canEdit && (e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'h') {
         if (toggleSelectionHidden()) e.preventDefault()
         return
       }
       /* ⌘⇧L locks or unlocks what is selected: the picked layer, else the frames */
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'l') {
+      if (canEdit && (e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'l') {
         if (toggleLockSelection()) e.preventDefault()
         return
       }
@@ -317,7 +324,7 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
             copyLayers(pickedFrame, pickedSelectors(state))
           } else if (!picked && frames.length) copyFrames(frames)
         }
-        if (e.key === 'd' && frames.length) {
+        if (canEdit && e.key === 'd' && frames.length) {
           e.preventDefault()
           if (picked && pickedFrame) duplicateLayers(pickedFrame, pickedSelectors(state))
           else if (!picked) duplicateFrames(frames)
@@ -336,6 +343,8 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
     function onPaste(e: ClipboardEvent) {
       const t = e.target as HTMLElement
       if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable) return
+      /* every paste lands a frame or a layer */
+      if (!canEditOpenCanvas(useStore.getState())) return
       const images = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith('image/'))
       if (images.length) {
         e.preventDefault()
@@ -403,6 +412,7 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
   }, [latestDecision])
 
   async function addFrame() {
+    if (readOnly) return
     const n = (canvas?.frames.length ?? 0) + 1
     const frame = await createCenteredFrame(canvasId, `Frame ${n}`, STARTER_HTML)
     select(frame.id)
@@ -430,7 +440,7 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
   const elementPanelOpen = useStore((s) => s.elementPanelOpen)
   const panelElement = elementPanelOpen && selectedElement?.frameId === selectedFrame?.id ? selectedElement : null
   /* the frame Inspector or the element panel, whichever has the slot */
-  const propertiesShown = !!selectedFrame && !deferPanel && (!!panelElement || inspectorOpen)
+  const propertiesShown = !readOnly && !!selectedFrame && !deferPanel && (!!panelElement || inspectorOpen)
   const chrome = chromeLayout({ layersOpen, propertiesShown, agentsOpen: showActivity })
   /* ⇧R docks the rulers on the canvas's top and left edges; the bar and the
      floating chrome step in past them (the same test Stage draws them by) */
@@ -529,7 +539,12 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
                 <FolderIcon className="size-3.5" />
               </Button>
             </Tooltip>
-            <CanvasName />
+            <CanvasName readOnly={readOnly} />
+            {readOnly && (
+              <Badge tone="outline" title="Your share link lets you look around but not change the design">
+                {role === 'comment' ? 'Can comment' : 'View only'}
+              </Badge>
+            )}
             <Badge className="max-md:hidden" title="Canvas id — agents use this with the MCP tools">
               {canvasId}
             </Badge>
@@ -556,16 +571,20 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
             </span>
           </div>
           <BarPill>
-            <Button
-              variant="bare"
-              className={barPillBtn}
-              onClick={() => setShowImport(true)}
-              title="Import a live web page as a frame"
-            >
-              <ImportIcon className="size-3.5" />
-              Import
-            </Button>
-            <BarDivider className="mx-0.5" />
+            {!readOnly && (
+              <>
+                <Button
+                  variant="bare"
+                  className={barPillBtn}
+                  onClick={() => setShowImport(true)}
+                  title="Import a live web page as a frame"
+                >
+                  <ImportIcon className="size-3.5" />
+                  Import
+                </Button>
+                <BarDivider className="mx-0.5" />
+              </>
+            )}
             <Button
               variant="bare"
               className={barPillBtn}
@@ -722,7 +741,7 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
               }}
             />
           )}
-          {!isMobile && selectedFrame && panelElement && !deferPanel && (
+          {!isMobile && !readOnly && selectedFrame && panelElement && !deferPanel && (
             <ElementPanel
               /* keyed by frame, not element: picking the next element swaps
                  the values in place instead of remounting the panel blank */
@@ -732,7 +751,7 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
               style={{ right: chrome.properties }}
             />
           )}
-          {!isMobile && selectedFrame && inspectorOpen && !panelElement && !deferPanel && (
+          {!isMobile && !readOnly && selectedFrame && inspectorOpen && !panelElement && !deferPanel && (
             <Inspector frame={selectedFrame} style={{ right: chrome.properties }} />
           )}
           {!isMobile && showActivity && (
@@ -744,7 +763,7 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
               agentsOpen={showActivity}
               onToggleAgents={() => setShowActivity((open) => !open)}
               inspectorOpen={propertiesShown}
-              inspectorAvailable={!!selectedFrame}
+              inspectorAvailable={!!selectedFrame && !readOnly}
               onToggleInspector={() => {
                 const s = useStore.getState()
                 if (propertiesShown) {
@@ -787,16 +806,18 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
                 >
                   <LayersIcon /> Layers
                 </Button>
-                <Button
-                  variant="ghost"
-                  className="h-11 justify-start gap-2.5 border-line bg-surface px-4"
-                  onClick={() => {
-                    setShowMobileActions(false)
-                    setShowImport(true)
-                  }}
-                >
-                  <ImportIcon /> Import website
-                </Button>
+                {!readOnly && (
+                  <Button
+                    variant="ghost"
+                    className="h-11 justify-start gap-2.5 border-line bg-surface px-4"
+                    onClick={() => {
+                      setShowMobileActions(false)
+                      setShowImport(true)
+                    }}
+                  >
+                    <ImportIcon /> Import website
+                  </Button>
+                )}
                 <Button
                   variant="ghost"
                   className="h-11 justify-start gap-2.5 border-line bg-surface px-4"
@@ -845,7 +866,7 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
               the open state they read from is untouched, so they are back
               as they were when ⌘. restores the chrome */}
           <Sheet
-            open={!!selectedFrame && inspectorOpen && !deferPanel && !uiHidden}
+            open={!readOnly && !!selectedFrame && inspectorOpen && !deferPanel && !uiHidden}
             onOpenChange={(open) => {
               if (!open) select(null)
             }}
@@ -2139,11 +2160,12 @@ function GithubSection({
 }
 
 /* The canvas title doubles as its rename field. */
-function CanvasName() {
+function CanvasName({ readOnly }: { readOnly: boolean }) {
   const canvas = useStore((s) => s.canvas)
   return (
     <TopBarTitle
       pill
+      readOnly={readOnly}
       loading={!canvas}
       value={canvas?.name ?? ''}
       onCommit={(name) => {

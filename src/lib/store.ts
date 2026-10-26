@@ -15,8 +15,9 @@ import type {
   Presence,
   TaskFeedback,
 } from '../../shared/types'
+import { roleAllows, type CanvasRole } from '../../shared/canvasRole'
 import type { SnapGuide } from './snap'
-import type { Tool } from './tools'
+import { isDrawingTool, type Tool } from './tools'
 
 export interface Viewport {
   x: number
@@ -200,7 +201,11 @@ interface State {
   toggleSelect(id: string): void
   /** marquee: replace the selection with these frames */
   selectMany(ids: string[]): void
+  /** picks a tool the caller's role allows; drawing needs edit, the
+   *  Comment tool needs comment — anything else is ignored */
   setTool(tool: Tool): void
+  /** the share link changed under an open canvas: the caller's role now */
+  setRole(role: CanvasRole): void
   setPanMode(v: boolean): void
   setInspectorOpen(v: boolean): void
   openCtxMenu(menu: { frameId: string; deferPanel: boolean }): void
@@ -575,7 +580,18 @@ export const useStore = create<State>((set, get) => ({
         : { selectedIds: ids, selectedId, inspectorOpen: false, selectedElement: null, elementPanelOpen: false }
     })
   },
-  setTool: (tool) => set({ tool }),
+  setTool: (tool) => set((s) => (toolAllowed(tool, roleOf(s)) ? { tool } : {})),
+  setRole: (role) =>
+    set((s) => {
+      if (!s.canvas) return {}
+      const demoted = !roleAllows(role, 'edit')
+      return {
+        canvas: { ...s.canvas, role },
+        tool: toolAllowed(s.tool, role) ? s.tool : 'select',
+        /* an open Design panel or Inspector would keep offering edits */
+        ...(demoted ? { inspectorOpen: false, elementPanelOpen: false } : {}),
+      }
+    }),
   setPanMode: (panMode) => set({ panMode }),
   setInspectorOpen: (inspectorOpen) => set({ inspectorOpen }),
   openCtxMenu: (ctxMenu) => set({ ctxMenu }),
@@ -693,4 +709,27 @@ export function pickedSelectors(s: Pick<State, 'selectedElement' | 'selectedElem
   const primary = s.selectedElement?.selector
   if (!primary) return []
   return s.selectedElements.at(-1) === primary ? s.selectedElements : [primary]
+}
+
+/** The caller's role on the open canvas. A canvas without one (an older
+ *  server) is treated as editable; the server enforces it either way. */
+export function roleOf(s: Pick<State, 'canvas'>): CanvasRole {
+  return s.canvas?.role ?? 'edit'
+}
+
+/** May the caller change the open canvas? View and comment links may not. */
+export function canEditOpenCanvas(s: Pick<State, 'canvas'>): boolean {
+  return roleAllows(roleOf(s), 'edit')
+}
+
+/** May the caller comment on the open canvas? */
+export function canCommentOpenCanvas(s: Pick<State, 'canvas'>): boolean {
+  return roleAllows(roleOf(s), 'comment')
+}
+
+/** Select, Hand and the Comment tool for commenters; every tool for editors. */
+export function toolAllowed(tool: Tool, role: CanvasRole): boolean {
+  if (isDrawingTool(tool)) return roleAllows(role, 'edit')
+  if (tool === 'comment') return roleAllows(role, 'comment')
+  return true
 }

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { useStore } from '../lib/store'
+import { roleOf, toolAllowed, useStore } from '../lib/store'
+import { roleAllows } from '../../shared/canvasRole'
 import { onViewCommand } from '../lib/viewMenu'
 import type { Frame } from '../../shared/types'
 import { usePageCanvas, currentPageCanvas } from '../lib/pages'
@@ -115,6 +116,9 @@ export function Stage({
   const isMobile = useIsMobile()
   const showRulers = useStore((s) => s.rulers) && !uiHidden && !isMobile
   const tool = useStore((s) => s.tool)
+  /* view links get Select and Hand, comment links add the Comment tool */
+  const role = useStore(roleOf)
+  const readOnly = !roleAllows(role, 'edit')
   const setTool = useStore((s) => s.setTool)
   const [panning, setPanning] = useState(false)
   /* the selection rectangle being dragged out, in world coordinates */
@@ -826,7 +830,8 @@ export function Stage({
                  here is the empty canvas — except a right-click on a frame's
                  chrome overlay, which is not a menu target at all */
               const isBackground = e.target === e.currentTarget || (e.target as HTMLElement).classList.contains('world')
-              if (!isBackground) return e.preventDefault()
+              /* Paste and New frame are both edits */
+              if (!isBackground || readOnly) return e.preventDefault()
               /* Paste drops the frame where the click landed. The menu's own
                  box is not that point: Radix positions it after mount, and
                  flips it away from a viewport edge. */
@@ -914,7 +919,7 @@ export function Stage({
             {/* one fill slides between tools; the buttons themselves stay
                 transparent so the pill is the only thing that moves */}
             <ToolbarHighlight activeKey={tool} />
-            {TOOLS.map((t) => (
+            {TOOLS.filter((t) => toolAllowed(t.id, role)).map((t) => (
               <Tooltip key={t.id} label={`${t.label} (${t.key})`} side="right">
                 <ToolbarButton
                   aria-label={t.label}

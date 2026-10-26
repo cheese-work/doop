@@ -6,7 +6,7 @@ import { commitGuide, newGuide, visibleGuides } from '../lib/guides'
 import { isTypingTarget } from '../lib/keys'
 import { boundsOf, formatRulerValue, rulerTicks } from '../lib/rulers'
 import { snapFrame } from '../lib/snap'
-import { useStore } from '../lib/store'
+import { canEditOpenCanvas, useStore } from '../lib/store'
 import { useIsMobile } from '../hooks/use-mobile'
 import { cn } from '../lib/utils'
 
@@ -152,11 +152,12 @@ function trackGuide(
   window.addEventListener('keydown', onKey, true)
 }
 
-/** Only the Select tool grabs guides; every other tool (and a held space
- *  bar) lets the press through to the stage. */
+/** Only the Select tool grabs guides, and only for someone who can edit the
+ *  canvas; every other tool, a held space bar or a read-only link lets the
+ *  press through to the stage. */
 function grabsGuides(): boolean {
   const s = useStore.getState()
-  return s.tool === 'select' && !s.panMode
+  return s.tool === 'select' && !s.panMode && canEditOpenCanvas(s)
 }
 
 interface Palette {

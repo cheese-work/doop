@@ -4,7 +4,7 @@ import { errorMessage } from '../lib/api'
 import { copyFrames, duplicateFrames, hasFrameClip, pasteFrameAtScreen } from '../lib/frameClipboard'
 import { deleteFramesTracked } from '../lib/history'
 import { setFramesHidden, setFramesLocked } from '../lib/layerEdits'
-import { useStore } from '../lib/store'
+import { canEditOpenCanvas, useStore } from '../lib/store'
 import { setFramesApproval } from '../lib/frameApproval'
 import { useFrameSaves } from '../lib/frameSaves'
 import { MOD_KEY } from '../lib/keys'
@@ -33,6 +33,8 @@ export function FrameContextMenu({ frame, at }: { frame: Frame; at: MutableRefOb
   const [savingApproval, setSavingApproval] = useState(false)
   /* a right-click inside a multi-selection acts on the whole group */
   const selectedIds = useStore((s) => s.selectedIds)
+  /* a view or comment link keeps the items that only read the frame */
+  const readOnly = useStore((s) => !canEditOpenCanvas(s))
   const groupIds = selectedIds.includes(frame.id) ? selectedIds : [frame.id]
   const groupSize = groupIds.length
   const pendingSave = useFrameSaves((s) => groupIds.some((id) => !!s.pending[id]))
@@ -83,21 +85,25 @@ export function FrameContextMenu({ frame, at }: { frame: Frame; at: MutableRefOb
           {groupSize > 1 ? `Copy ${groupSize} frames` : 'Copy'}
           <MenuHint>{MOD_KEY}C</MenuHint>
         </ContextMenuItem>
-        <ContextMenuItem
-          disabled={!hasFrameClip()}
-          onSelect={() => pasteFrameAtScreen(frame.canvasId, at.current.x, at.current.y)}
-        >
-          Paste
-          <MenuHint>{MOD_KEY}V</MenuHint>
-        </ContextMenuItem>
-        <ContextMenuItem onSelect={() => duplicateFrames(groupFrames())}>
-          {groupSize > 1 ? `Duplicate ${groupSize} frames` : 'Duplicate'}
-          <MenuHint>{MOD_KEY}D</MenuHint>
-        </ContextMenuItem>
-        <ContextMenuItem onSelect={() => setFramesHidden(groupFrames(), !allHidden)}>
-          {`${allHidden ? 'Show' : 'Hide'}${groupSize > 1 ? ` ${groupSize} frames` : ''}`}
-          <MenuHint>{MOD_KEY}⇧H</MenuHint>
-        </ContextMenuItem>
+        {!readOnly && (
+          <>
+            <ContextMenuItem
+              disabled={!hasFrameClip()}
+              onSelect={() => pasteFrameAtScreen(frame.canvasId, at.current.x, at.current.y)}
+            >
+              Paste
+              <MenuHint>{MOD_KEY}V</MenuHint>
+            </ContextMenuItem>
+            <ContextMenuItem onSelect={() => duplicateFrames(groupFrames())}>
+              {groupSize > 1 ? `Duplicate ${groupSize} frames` : 'Duplicate'}
+              <MenuHint>{MOD_KEY}D</MenuHint>
+            </ContextMenuItem>
+            <ContextMenuItem onSelect={() => setFramesHidden(groupFrames(), !allHidden)}>
+              {`${allHidden ? 'Show' : 'Hide'}${groupSize > 1 ? ` ${groupSize} frames` : ''}`}
+              <MenuHint>{MOD_KEY}⇧H</MenuHint>
+            </ContextMenuItem>
+          </>
+        )}
         <ContextMenuSeparator />
         <ContextMenuItem
           onSelect={() => navigator.clipboard.writeText(`${location.origin}/c/${frame.canvasId}?frame=${frame.id}`)}
@@ -107,25 +113,29 @@ export function FrameContextMenu({ frame, at }: { frame: Frame; at: MutableRefOb
         <ContextMenuItem onSelect={() => void copyImageUrl(frame)}>Copy image URL</ContextMenuItem>
         <ContextMenuItem onSelect={() => setExportFrames(groupFrames())}>Export…</ContextMenuItem>
         <ContextMenuItem onSelect={() => setHistoryOpen(true)}>Version history…</ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem
-          disabled={savingApproval || (!allReady && (pendingSave || streaming))}
-          onSelect={() => void changeApproval()}
-        >
-          {allReady ? 'Move to draft' : 'Mark ready for dev'}
-          {groupSize > 1 && <MenuHint>{groupSize} frames</MenuHint>}
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem onSelect={() => setFramesLocked(groupFrames(), !allLocked)}>
-          {allLocked ? 'Unlock' : 'Lock'}
-          {groupSize > 1 ? ` ${groupSize} frames` : ''}
-          <MenuHint>{MOD_KEY}⇧L</MenuHint>
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem tone="danger" disabled={allLocked} onSelect={deleteSelection}>
-          {groupSize > 1 ? `Delete ${groupSize} frames` : 'Delete frame'}
-          <MenuHint>⌫</MenuHint>
-        </ContextMenuItem>
+        {!readOnly && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              disabled={savingApproval || (!allReady && (pendingSave || streaming))}
+              onSelect={() => void changeApproval()}
+            >
+              {allReady ? 'Move to draft' : 'Mark ready for dev'}
+              {groupSize > 1 && <MenuHint>{groupSize} frames</MenuHint>}
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem onSelect={() => setFramesLocked(groupFrames(), !allLocked)}>
+              {allLocked ? 'Unlock' : 'Lock'}
+              {groupSize > 1 ? ` ${groupSize} frames` : ''}
+              <MenuHint>{MOD_KEY}⇧L</MenuHint>
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem tone="danger" disabled={allLocked} onSelect={deleteSelection}>
+              {groupSize > 1 ? `Delete ${groupSize} frames` : 'Delete frame'}
+              <MenuHint>⌫</MenuHint>
+            </ContextMenuItem>
+          </>
+        )}
       </ContextMenuContent>
       {exportFrames && (
         <FrameExportModal

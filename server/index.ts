@@ -23,7 +23,15 @@ import * as commentNotifications from './commentNotifications.ts'
 import { notificationsRouter } from './notifications.ts'
 import * as webhooks from './webhooks.ts'
 import { webhooksRouter } from './webhookRoutes.ts'
-import { canAccessCanvas, canManageCanvas, hasDurableCanvasAccess, isAdmin } from './access.ts'
+import {
+  canEditCanvas,
+  canManageCanvas,
+  canvasRole,
+  hasDurableCanvasAccess,
+  isAdmin,
+  roomMessageNeeds,
+} from './access.ts'
+import { isLinkAccess, roleAllows, type CanvasRole } from '../shared/canvasRole.ts'
 import { auth, initAuth, syncAdmins, getUserName, loginProvidersConfig } from './auth.ts'
 import { adminRouter } from './admin.ts'
 import { communityRouter, parseListing, publishableFrames } from './community.ts'
@@ -67,7 +75,7 @@ import { mentionedRole } from '../shared/agents.ts'
 import { activeAgentTasks } from '../shared/agentActivity.ts'
 import { colorFor } from '../shared/types.ts'
 import { isPeerViewport } from '../shared/viewport.ts'
-import type { ClientMessage, Presence, ServerMessage } from '../shared/types.ts'
+import type { Canvas, ClientMessage, Presence, ServerMessage } from '../shared/types.ts'
 
 const PORT = env.PORT
 
@@ -96,7 +104,7 @@ if (data.canvases.length === 0 && (await persist.importLegacyJson())) {
   data = await persist.hydrate()
 }
 store.init(data.canvases)
-await workspaces.hydrateWorkspaces() // before the first request: canAccessCanvas reads membership
+await workspaces.hydrateWorkspaces() // before the first request: canvasRole reads membership
 await webhooks.hydrateWebhooks()
 billing.reportBillingConfig()
 actions.hydrateLogs(data)
@@ -157,6 +165,9 @@ for (const sig of ['SIGINT', 'SIGTERM'] as const) {
 interface Conn {
   ws: WebSocket
   canvasId: string
+  /** the session's user — the role is re-read from it on every message, so
+   *  a link changed mid-visit takes effect without a reconnect */
+  userId: string
   presence: Presence
   /** an admin viewing as someone else: receives updates, emits nothing.
    *  Showing their borrowed identity as a live cursor would tell the room
@@ -168,6 +179,32 @@ const conns = new Map<WebSocket, Conn>()
 
 function room(canvasId: string): Conn[] {
   return [...conns.values()].filter((c) => c.canvasId === canvasId)
+}
+
+/** The live role of one room connection (null once access is gone). */
+function connRole(conn: Conn): CanvasRole | null {
+  const canvas = store.getCanvas(conn.canvasId)
+  return canvas ? canvasRole(conn.userId, canvas) : null
+}
+
+/* After a share-link change: everyone in the room learns their new role (the
+   editor goes read-only, or back), and anyone left with no access at all is
+   disconnected rather than kept on the live feed. */
+function refreshRoomRoles(canvasId: string) {
+  for (const conn of room(canvasId)) {
+    const role = connRole(conn)
+    if (!role) {
+      conn.ws.close(4403, 'no access')
+      continue
+    }
+    send(conn.ws, { type: 'role', role })
+    /* the room now drops this visitor's editing messages, including the one
+       that would clear their badge, so clear it for them */
+    if (!roleAllows(role, 'edit') && conn.presence.activeFrameId) {
+      conn.presence.activeFrameId = null
+      broadcast(canvasId, { type: 'editing', clientId: conn.presence.clientId, frameId: null }, conn.presence.clientId)
+    }
+  }
 }
 
 function send(ws: WebSocket, msg: ServerMessage) {
@@ -726,32 +763,67 @@ app.post('/api/mcp-consent/:code', async (req, res, next) => {
 })
 
 /* Canvas access on the REST surface: resolve the canvas (or the frame's
-   canvas) and run it through canAccessCanvas before touching anything.
+   canvas) and check the caller's role against what the route needs before
+   touching anything — 'view' for reads, 'comment' for comment threads,
+   'edit' for every other write. `need` is required on purpose: a route
+   that forgets it does not compile, rather than defaulting open.
    Both helpers write the error response themselves and return null. */
-function requireCanvas(req: express.Request, res: express.Response, canvasId: string) {
+function requireCanvas(req: express.Request, res: express.Response, canvasId: string, need: CanvasRole) {
   const c = store.getCanvas(canvasId)
   if (!c) {
     res.status(404).json({ error: 'not found' })
     return null
   }
-  if (!canAccessCanvas(req.user!.id, c)) {
-    res.status(403).json({ error: 'this canvas is private — ask the owner for access' })
-    return null
-  }
-  return c
+  return checkRole(req, res, c, need) ? c : null
 }
 
-function requireFrame(req: express.Request, res: express.Response, frameId: string, expectedUpdatedAt?: unknown) {
+function checkRole(req: express.Request, res: express.Response, canvas: Canvas, need: CanvasRole): boolean {
+  const role = canvasRole(req.user!.id, canvas)
+  if (!role) {
+    res.status(403).json({ error: 'this canvas is private — ask the owner for access' })
+    return false
+  }
+  if (!roleAllows(role, need)) {
+    res.status(403).json({ error: ROLE_DENIED[need], role })
+    return false
+  }
+  return true
+}
+
+const ROLE_DENIED: Record<CanvasRole, string> = {
+  view: 'this canvas is private — ask the owner for access',
+  comment: 'you can view this canvas but not comment — ask the owner for access',
+  edit: 'you can view this canvas but not edit it — ask the owner for edit access',
+}
+
+/* An @mention hands the resident agent a command that changes frames, so a
+   comment-only visitor may comment but not mention an agent: otherwise the
+   agent would make the edits the link withholds. Answers the 403 itself. */
+function refuseAgentMention(req: express.Request, res: express.Response, canvasId: string, text: string): boolean {
+  const canvas = store.getCanvas(canvasId)
+  if (!mentionedRole(text) || (canvas && canEditCanvas(req.user!.id, canvas))) return false
+  res.status(403).json({ error: 'asking an agent to change the canvas needs edit access' })
+  return true
+}
+
+function requireFrame(
+  req: express.Request,
+  res: express.Response,
+  frameId: string,
+  need: CanvasRole,
+  expectedUpdatedAt?: unknown,
+) {
   const frame = store.getFrame(frameId)
   if (!frame) {
     res.status(404).json({ error: 'frame not found' })
     return null
   }
   const c = store.getCanvas(frame.canvasId)
-  if (!c || !canAccessCanvas(req.user!.id, c)) {
+  if (!c) {
     res.status(403).json({ error: 'this canvas is private — ask the owner for access' })
     return null
   }
+  if (!checkRole(req, res, c, need)) return null
   if (expectedUpdatedAt !== undefined) {
     if (typeof expectedUpdatedAt !== 'number' || !Number.isSafeInteger(expectedUpdatedAt) || expectedUpdatedAt < 0) {
       res.status(400).json({ error: 'expectedUpdatedAt must be a nonnegative integer' })
@@ -1051,14 +1123,15 @@ app.post('/api/canvases/:id/duplicate', async (req, res) => {
 })
 
 app.get('/api/canvases/:id', (req, res) => {
-  const c = requireCanvas(req, res, req.params.id)
-  if (c) res.json(c)
+  const c = requireCanvas(req, res, req.params.id, 'view')
+  /* the caller's own role rides along, so the editor knows to go read-only */
+  if (c) res.json({ ...c, role: canvasRole(req.user!.id, c) })
 })
 
 /* Community gallery listing — the owner's call alone, like link access.
    PUT both lists and re-describes; DELETE takes it down. */
 app.put('/api/canvases/:id/publish', (req, res) => {
-  const c = requireCanvas(req, res, req.params.id)
+  const c = requireCanvas(req, res, req.params.id, 'edit')
   if (!c) return
   if (c.ownerId !== req.user!.id) return res.status(403).json({ error: 'only the owner can publish a canvas' })
   if (!publishableFrames(c).length) return res.status(400).json({ error: 'add a frame before publishing' })
@@ -1069,7 +1142,7 @@ app.put('/api/canvases/:id/publish', (req, res) => {
 })
 
 app.delete('/api/canvases/:id/publish', (req, res) => {
-  const c = requireCanvas(req, res, req.params.id)
+  const c = requireCanvas(req, res, req.params.id, 'edit')
   if (!c) return
   if (c.ownerId !== req.user!.id) return res.status(403).json({ error: 'only the owner can unpublish a canvas' })
   store.unpublishCanvas(c.id)
@@ -1081,7 +1154,7 @@ app.delete('/api/canvases/:id/publish', (req, res) => {
    workspace admin). Moving is an access change, not an edit: every member
    of the target workspace can open it from now on. */
 app.put('/api/canvases/:id/workspace', (req, res) => {
-  const c = requireCanvas(req, res, req.params.id)
+  const c = requireCanvas(req, res, req.params.id, 'edit')
   if (!c) return
   const target = req.body?.workspaceId
   if (target !== null && typeof target !== 'string')
@@ -1133,15 +1206,16 @@ app.delete('/api/canvases/:id', (req, res) => {
 })
 
 app.patch('/api/canvases/:id', (req, res) => {
-  const c = requireCanvas(req, res, req.params.id)
+  const c = requireCanvas(req, res, req.params.id, 'edit')
   if (!c) return
   const { name, linkAccess } = req.body ?? {}
   /* the link policy is the owner's alone — collaborators can rename, not lock */
   if (linkAccess !== undefined) {
     if (c.ownerId !== req.user!.id) return res.status(403).json({ error: 'only the owner can change link access' })
-    if (linkAccess !== 'edit' && linkAccess !== 'none')
-      return res.status(400).json({ error: 'linkAccess must be "edit" or "none"' })
+    if (!isLinkAccess(linkAccess))
+      return res.status(400).json({ error: 'linkAccess must be "none", "view", "comment" or "edit"' })
     store.setLinkAccess(c.id, linkAccess)
+    refreshRoomRoles(c.id)
   }
   if (typeof name === 'string' && name.trim()) {
     const actor = actions.resolveActor({ name: req.user!.name, kind: 'user' })
@@ -1158,7 +1232,7 @@ app.patch('/api/canvases/:id', (req, res) => {
 /* ------------------------------------------------------------------ */
 
 app.get('/api/canvases/:id/members', async (req, res) => {
-  const c = requireCanvas(req, res, req.params.id)
+  const c = requireCanvas(req, res, req.params.id, 'view')
   if (!c) return
   const ids = [...(c.ownerId ? [c.ownerId] : []), ...(c.memberIds ?? [])]
   const rows = ids.length
@@ -1179,7 +1253,7 @@ app.get('/api/canvases/:id/members', async (req, res) => {
 })
 
 app.post('/api/canvases/:id/members', async (req, res) => {
-  const c = requireCanvas(req, res, req.params.id)
+  const c = requireCanvas(req, res, req.params.id, 'edit')
   if (!c) return
   if (c.ownerId !== req.user!.id) return res.status(403).json({ error: 'only the owner can invite people' })
   const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : ''
@@ -1195,7 +1269,7 @@ app.post('/api/canvases/:id/members', async (req, res) => {
 })
 
 app.delete('/api/canvases/:id/members/:userId', (req, res) => {
-  const c = requireCanvas(req, res, req.params.id)
+  const c = requireCanvas(req, res, req.params.id, 'view')
   if (!c) return
   if (c.ownerId !== req.user!.id && req.params.userId !== req.user!.id)
     return res.status(403).json({ error: 'only the owner can remove collaborators' })
@@ -1210,7 +1284,7 @@ app.delete('/api/canvases/:id/members/:userId', (req, res) => {
    keep writing frames after the owner turns the link off. */
 
 function requireDurableCanvas(req: express.Request, res: express.Response, canvasId: string) {
-  const c = requireCanvas(req, res, canvasId)
+  const c = requireCanvas(req, res, canvasId, 'view')
   if (!c) return null
   if (!hasDurableCanvasAccess(req.user!.id, c)) {
     res.status(403).json({ error: 'sync keys are managed by the owner and invited members' })
@@ -1236,7 +1310,7 @@ app.post('/api/canvases/:id/sync-keys', async (req, res) => {
 /* the flow map is design insight, not a credential — anyone who can see the
    frames can see how they connect */
 app.get('/api/canvases/:id/sync-flow', async (req, res) => {
-  const c = requireCanvas(req, res, req.params.id)
+  const c = requireCanvas(req, res, req.params.id, 'view')
   if (!c) return
   res.json(await ingest.getSyncFlow(c))
 })
@@ -1450,13 +1524,13 @@ app.post('/api/canvases/:id/github/:connId/import', async (req, res) => {
    model as rename: any signed-in user with access) */
 /* doc history, newest first — '' markdown rows mark deletions */
 app.get('/api/canvases/:id/guidelines/:name/history', async (req, res) => {
-  if (!requireCanvas(req, res, req.params.id)) return
+  if (!requireCanvas(req, res, req.params.id, 'view')) return
   const rows = await persist.listGuidelineVersions(req.params.id, req.params.name.toLowerCase())
   res.json(rows.map((v) => ({ markdown: v.markdown, savedAt: v.savedAt, savedBy: v.savedBy })))
 })
 
 app.put('/api/canvases/:id/guidelines/:name', (req, res) => {
-  if (!requireCanvas(req, res, req.params.id)) return
+  if (!requireCanvas(req, res, req.params.id, 'edit')) return
   const actor = actions.resolveActor({ name: req.user!.name, kind: 'user' })
   const { markdown, x, y, title } = req.body ?? {}
   /* no markdown = metadata patch (position/title): content and history untouched */
@@ -1488,7 +1562,7 @@ app.put('/api/canvases/:id/guidelines/:name', (req, res) => {
 
 /* design memory: pin/unpin reference frames, accept/dismiss rule proposals */
 app.post('/api/canvases/:id/references', (req, res) => {
-  if (!requireCanvas(req, res, req.params.id)) return
+  if (!requireCanvas(req, res, req.params.id, 'edit')) return
   const actor = actions.resolveActor({ name: req.user!.name, kind: 'user' })
   try {
     const ref = actions.pinReference(req.params.id, String(req.body?.frameId ?? ''), actor)
@@ -1500,7 +1574,7 @@ app.post('/api/canvases/:id/references', (req, res) => {
 })
 
 app.delete('/api/canvases/:id/references/:refId', (req, res) => {
-  if (!requireCanvas(req, res, req.params.id)) return
+  if (!requireCanvas(req, res, req.params.id, 'edit')) return
   const actor = actions.resolveActor({ name: req.user!.name, kind: 'user' })
   if (!actions.unpinReference(req.params.id, req.params.refId, actor))
     return res.status(404).json({ error: 'reference not found' })
@@ -1508,7 +1582,7 @@ app.delete('/api/canvases/:id/references/:refId', (req, res) => {
 })
 
 app.post('/api/canvases/:id/proposals/:pid', (req, res) => {
-  if (!requireCanvas(req, res, req.params.id)) return
+  if (!requireCanvas(req, res, req.params.id, 'edit')) return
   const actor = actions.resolveActor({ name: req.user!.name, kind: 'user' })
   const proposal = actions.resolveProposal(req.params.id, req.params.pid, !!req.body?.accept, actor)
   if (!proposal) return res.status(404).json({ error: 'proposal not found' })
@@ -1523,7 +1597,7 @@ app.post(
   '/api/canvases/:id/assets',
   express.raw({ type: () => true, limit: MAX_ASSET_BYTES + 1024 }),
   async (req, res) => {
-    const c = requireCanvas(req, res, req.params.id)
+    const c = requireCanvas(req, res, req.params.id, 'edit')
     if (!c) return
     try {
       const asset = await createAsset(Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0), {
@@ -1541,7 +1615,7 @@ app.post(
 )
 
 app.put('/api/canvases/:id/pages', (req, res) => {
-  const canvas = requireCanvas(req, res, req.params.id)
+  const canvas = requireCanvas(req, res, req.params.id, 'edit')
   if (!canvas) return
   const pages = req.body?.pages
   if (
@@ -1577,7 +1651,7 @@ app.put('/api/canvases/:id/pages', (req, res) => {
 
 /* the frame a page's prototype flow starts on; null clears it */
 app.put('/api/canvases/:id/pages/:pageId/flow-start', (req, res) => {
-  const canvas = requireCanvas(req, res, req.params.id)
+  const canvas = requireCanvas(req, res, req.params.id, 'edit')
   if (!canvas) return
   const frameId: unknown = req.body?.frameId
   if (frameId !== null && typeof frameId !== 'string')
@@ -1598,7 +1672,7 @@ app.put('/api/canvases/:id/pages/:pageId/flow-start', (req, res) => {
    never overwrite each other. The id is the client's, which lets undo put
    a removed guide back as itself. */
 app.put('/api/canvases/:id/guides/:guideId', (req, res) => {
-  const canvas = requireCanvas(req, res, req.params.id)
+  const canvas = requireCanvas(req, res, req.params.id, 'edit')
   if (!canvas) return
   const guide = parseGuide(
     req.params.guideId,
@@ -1616,7 +1690,7 @@ app.put('/api/canvases/:id/guides/:guideId', (req, res) => {
 })
 
 app.delete('/api/canvases/:id/guides/:guideId', (req, res) => {
-  const canvas = requireCanvas(req, res, req.params.id)
+  const canvas = requireCanvas(req, res, req.params.id, 'edit')
   if (!canvas) return
   const actor = actions.resolveActor({ name: req.user!.name, kind: 'user' })
   /* idempotent: a guide a collaborator already removed is just as gone */
@@ -1625,7 +1699,7 @@ app.delete('/api/canvases/:id/guides/:guideId', (req, res) => {
 })
 
 app.post('/api/canvases/:id/pages/:pageId/duplicate', async (req, res) => {
-  const canvas = requireCanvas(req, res, req.params.id)
+  const canvas = requireCanvas(req, res, req.params.id, 'edit')
   if (!canvas) return
   if (!canvasPages(canvas).some((page) => page.id === req.params.pageId))
     return res.status(404).json({ error: 'page not found' })
@@ -1642,7 +1716,7 @@ app.post('/api/canvases/:id/pages/:pageId/duplicate', async (req, res) => {
 })
 
 app.post('/api/canvases/:id/frames', (req, res) => {
-  if (!requireCanvas(req, res, req.params.id)) return
+  if (!requireCanvas(req, res, req.params.id, 'edit')) return
   const { name, pageId, x, y, width, height, html, hidden, locked } = req.body ?? {}
   if (pageId !== undefined && !store.getCanvas(req.params.id)?.pages?.some((p) => p.id === pageId))
     return res.status(400).json({ error: 'page not found' })
@@ -1668,7 +1742,7 @@ app.post('/api/canvases/:id/frames', (req, res) => {
 })
 
 app.patch('/api/frames/:id', (req, res) => {
-  const current = requireFrame(req, res, req.params.id, req.body?.expectedUpdatedAt)
+  const current = requireFrame(req, res, req.params.id, 'edit', req.body?.expectedUpdatedAt)
   if (!current) return
   const { actor: _ignored, expectedUpdatedAt: _version, ...patch } = req.body ?? {}
   const actor = actions.resolveActor({ name: req.user!.name, kind: 'user' })
@@ -1689,7 +1763,7 @@ app.patch('/api/frames/:id', (req, res) => {
 })
 
 app.put('/api/frames/:id/approval', (req, res) => {
-  const current = requireFrame(req, res, req.params.id, req.body?.expectedUpdatedAt)
+  const current = requireFrame(req, res, req.params.id, 'edit', req.body?.expectedUpdatedAt)
   if (!current) return
   const { status, expectedUpdatedAt } = req.body ?? {}
   if (expectedUpdatedAt === undefined)
@@ -1702,7 +1776,7 @@ app.put('/api/frames/:id/approval', (req, res) => {
 })
 
 app.post('/api/frames/:id/append', (req, res) => {
-  if (!requireFrame(req, res, req.params.id)) return
+  if (!requireFrame(req, res, req.params.id, 'edit')) return
   const { html_chunk, start, done } = req.body ?? {}
   const actor = actions.resolveActor({ name: req.user!.name, kind: 'user' })
   const frame = actions.appendFrameHtml(req.params.id, String(html_chunk ?? ''), actor, {
@@ -1714,7 +1788,7 @@ app.post('/api/frames/:id/append', (req, res) => {
 })
 
 app.delete('/api/frames/:id', (req, res) => {
-  if (!requireFrame(req, res, req.params.id, req.body?.expectedUpdatedAt)) return
+  if (!requireFrame(req, res, req.params.id, 'edit', req.body?.expectedUpdatedAt)) return
   const actor = actions.resolveActor({ name: req.user!.name, kind: 'user' })
   const frame = actions.deleteFrame(req.params.id, actor)
   if (!frame) return res.status(404).json({ error: 'frame not found' })
@@ -1725,19 +1799,19 @@ app.delete('/api/frames/:id', (req, res) => {
    newest first and without HTML; one version in full; restore (same
    permission model as editing — anyone with access to the canvas) */
 app.get('/api/frames/:id/versions', async (req, res) => {
-  if (!requireFrame(req, res, req.params.id)) return
+  if (!requireFrame(req, res, req.params.id, 'view')) return
   res.json(await persist.listFrameVersions(req.params.id))
 })
 
 app.get('/api/frames/:id/versions/:versionId', async (req, res) => {
-  if (!requireFrame(req, res, req.params.id)) return
+  if (!requireFrame(req, res, req.params.id, 'view')) return
   const version = await persist.getFrameVersion(req.params.id, req.params.versionId)
   if (!version) return res.status(404).json({ error: 'version not found' })
   res.json(version)
 })
 
 app.post('/api/frames/:id/versions/:versionId/restore', async (req, res) => {
-  if (!requireFrame(req, res, req.params.id)) return
+  if (!requireFrame(req, res, req.params.id, 'edit')) return
   const actor = actions.resolveActor({ name: req.user!.name, kind: 'user' })
   const restored = await actions.restoreFrameVersion(req.params.id, req.params.versionId, actor)
   if (restored === null) return res.status(404).json({ error: 'version not found' })
@@ -1746,8 +1820,10 @@ app.post('/api/frames/:id/versions/:versionId/restore', async (req, res) => {
 })
 
 app.post('/api/frames/:id/comments', async (req, res) => {
-  if (!requireFrame(req, res, req.params.id)) return
+  const frame = requireFrame(req, res, req.params.id, 'comment')
+  if (!frame) return
   const { selector, snippet, text } = req.body ?? {}
+  if (refuseAgentMention(req, res, frame.canvasId, String(text ?? ''))) return
   /* a comment that @mentions a resident agent is a new command to the team,
      so it's metered like a card; plain comments and replies stay free */
   if (mentionedRole(String(text ?? ''))) {
@@ -1769,7 +1845,7 @@ app.post('/api/frames/:id/comments', async (req, res) => {
 /* a comment pinned to a point on the canvas (world coordinates on one of its
    pages) rather than to an element — metered exactly like an element comment */
 app.post('/api/canvases/:id/comments', async (req, res) => {
-  const canvas = requireCanvas(req, res, req.params.id)
+  const canvas = requireCanvas(req, res, req.params.id, 'comment')
   if (!canvas) return
   const { pageId, x, y, text } = req.body ?? {}
   if (typeof pageId !== 'string' || !canvasPages(canvas).some((page) => page.id === pageId)) {
@@ -1778,6 +1854,7 @@ app.post('/api/canvases/:id/comments', async (req, res) => {
   if (!Number.isFinite(x) || !Number.isFinite(y)) return res.status(400).json({ error: 'x and y must be numbers' })
   const body = String(text ?? '')
   if (!body.trim()) return res.status(400).json({ error: 'empty text' })
+  if (refuseAgentMention(req, res, canvas.id, body)) return
   let gate: Awaited<ReturnType<typeof allowance.consumeResidentTask>> | undefined
   if (mentionedRole(body)) {
     gate = await allowance.consumeResidentTask(req.user!.id)
@@ -1807,11 +1884,12 @@ app.post('/api/canvases/:id/comments', async (req, res) => {
 app.post('/api/comments/:id/replies', async (req, res) => {
   const found = actions.findComment(req.params.id)
   if (!found) return res.status(404).json({ error: 'comment not found' })
-  if (!requireCanvas(req, res, found.canvasId)) return
+  if (!requireCanvas(req, res, found.canvasId, 'comment')) return
   const text = String(req.body?.text ?? '')
   if (!text.trim() || !actions.openThread(req.params.id)) {
     return res.status(404).json({ error: 'thread resolved or empty text' })
   }
+  if (refuseAgentMention(req, res, found.canvasId, text)) return
   /* same rule as a fresh comment: only an @mention costs a resident task */
   let gate: Awaited<ReturnType<typeof allowance.consumeResidentTask>> | undefined
   if (mentionedRole(text)) {
@@ -1837,14 +1915,14 @@ app.post('/api/comments/:id/replies', async (req, res) => {
 app.post('/api/comments/:id/resolve', (req, res) => {
   const found = actions.findComment(req.params.id)
   if (!found) return res.status(404).json({ error: 'comment not found' })
-  if (!requireCanvas(req, res, found.canvasId)) return
+  if (!requireCanvas(req, res, found.canvasId, 'comment')) return
   res.json(actions.resolveComment(req.params.id, req.user!.name))
 })
 
 app.post('/api/comments/:id/retry', async (req, res) => {
   const found = actions.findComment(req.params.id)
   if (!found) return res.status(404).json({ error: 'comment not found' })
-  if (!requireCanvas(req, res, found.canvasId)) return
+  if (!requireCanvas(req, res, found.canvasId, 'edit')) return
   const gate = await allowance.consumeResidentTask(req.user!.id)
   if (!gate.ok) {
     return res.status(403).json({ error: 'resident_limit', used: gate.used, limit: gate.limit })
@@ -1866,7 +1944,7 @@ function takeImportSlot(userId: string): boolean {
 }
 
 app.post('/api/canvases/:id/import/discover', async (req, res) => {
-  if (!requireCanvas(req, res, req.params.id)) return
+  if (!requireCanvas(req, res, req.params.id, 'edit')) return
   try {
     const { discoverSitePages, assertPublicHttpUrl } = await import('./importer.ts')
     const url = String(req.body?.url ?? '')
@@ -1888,7 +1966,7 @@ for (const extension of extensions) {
 }
 
 app.post('/api/canvases/:id/import', async (req, res) => {
-  const canvas = requireCanvas(req, res, req.params.id)
+  const canvas = requireCanvas(req, res, req.params.id, 'edit')
   if (!canvas) return
   try {
     const { importPage, importSitePages, assertPublicHttpUrl, isSameSiteUrl, MAX_SITE_PAGES } =
@@ -1978,7 +2056,7 @@ app.post('/api/canvases/:id/import', async (req, res) => {
    asset upload route — express.json never touches non-JSON content types).
    Every layer becomes an element; layer bitmaps land in asset storage. */
 app.post('/api/canvases/:id/import/psd', express.raw({ type: () => true, limit: '402mb' }), async (req, res) => {
-  const canvas = requireCanvas(req, res, req.params.id)
+  const canvas = requireCanvas(req, res, req.params.id, 'edit')
   if (!canvas) return
   try {
     const { createImportedPsdFrames, looksLikePsd, MAX_PSD_BYTES } = await import('./psdImport.ts')
@@ -2013,7 +2091,7 @@ app.post('/api/canvases/:id/import/psd', express.raw({ type: () => true, limit: 
 })
 
 app.post('/api/canvases/:id/cards', async (req, res) => {
-  if (!requireCanvas(req, res, req.params.id)) return
+  if (!requireCanvas(req, res, req.params.id, 'edit')) return
   const title = String(req.body?.title ?? '').trim()
   if (!title) return res.status(400).json({ error: 'empty title' })
   const gate = await allowance.consumeResidentTask(req.user!.id)
@@ -2034,14 +2112,14 @@ app.post('/api/canvases/:id/cards', async (req, res) => {
 })
 
 app.post('/api/canvases/:canvasId/cards/:id/done', (req, res) => {
-  if (!requireCanvas(req, res, req.params.canvasId)) return
+  if (!requireCanvas(req, res, req.params.canvasId, 'edit')) return
   const card = actions.completeCard(req.params.canvasId, req.params.id)
   if (!card) return res.status(404).json({ error: 'card not found' })
   res.json(card)
 })
 
 app.post('/api/canvases/:canvasId/cards/:id/retry', async (req, res) => {
-  if (!requireCanvas(req, res, req.params.canvasId)) return
+  if (!requireCanvas(req, res, req.params.canvasId, 'edit')) return
   const gate = await allowance.consumeResidentTask(req.user!.id)
   if (!gate.ok) {
     return res.status(403).json({ error: 'resident_limit', used: gate.used, limit: gate.limit })
@@ -2054,7 +2132,7 @@ app.post('/api/canvases/:canvasId/cards/:id/retry', async (req, res) => {
 app.post('/api/tasks/:id/feedback', async (req, res) => {
   const canvasId = actions.taskCanvasId(req.params.id)
   if (!canvasId) return res.status(404).json({ error: 'task not found' })
-  if (!requireCanvas(req, res, canvasId)) return
+  if (!requireCanvas(req, res, canvasId, 'edit')) return
   const text = String(req.body?.text ?? '').trim()
   if (!text) return res.status(400).json({ error: 'empty text' })
   const gate = await allowance.consumeResidentTask(req.user!.id)
@@ -2069,7 +2147,7 @@ app.post('/api/tasks/:id/feedback', async (req, res) => {
 app.post('/api/feedback/:id/retry', async (req, res) => {
   const found = actions.findFeedback(req.params.id)
   if (!found) return res.status(404).json({ error: 'feedback not found' })
-  if (!requireCanvas(req, res, found.canvasId)) return
+  if (!requireCanvas(req, res, found.canvasId, 'edit')) return
   const gate = await allowance.consumeResidentTask(req.user!.id)
   if (!gate.ok) {
     return res.status(403).json({ error: 'resident_limit', used: gate.used, limit: gate.limit })
@@ -2078,7 +2156,7 @@ app.post('/api/feedback/:id/retry', async (req, res) => {
 })
 
 app.get('/api/frames/:id/screenshot.png', async (req, res) => {
-  const frame = requireFrame(req, res, req.params.id)
+  const frame = requireFrame(req, res, req.params.id, 'view')
   if (!frame) return
   try {
     const { renderFrame } = await import('./screenshot.ts')
@@ -2094,7 +2172,7 @@ app.get('/api/frames/:id/screenshot.png', async (req, res) => {
    first page) takes every visible frame there, in reading order. A GET so a read-only
    impersonation session can export too. */
 app.get('/api/canvases/:id/export.pdf', async (req, res) => {
-  const canvas = requireCanvas(req, res, req.params.id)
+  const canvas = requireCanvas(req, res, req.params.id, 'view')
   if (!canvas) return
   const pdf = await import('./pdfExport.ts')
   const frameIds = typeof req.query.frames === 'string' ? req.query.frames.split(',').filter(Boolean) : undefined
@@ -2224,7 +2302,8 @@ wss.on('connection', (ws, upgradeReq) => {
         ws.close(4404, 'not found')
         return
       }
-      if (!canAccessCanvas(session.user.id, canvas)) {
+      const role = canvasRole(session.user.id, canvas)
+      if (!role) {
         ws.close(4403, 'no access')
         return
       }
@@ -2236,14 +2315,14 @@ wss.on('connection', (ws, upgradeReq) => {
         activeFrameId: null,
       }
       const silent = !!(session.session as { impersonatedBy?: string | null }).impersonatedBy
-      conns.set(ws, { ws, canvasId: msg.canvasId, presence, silent })
+      conns.set(ws, { ws, canvasId: msg.canvasId, userId: session.user.id, presence, silent })
       const others = room(msg.canvasId)
         .filter((c) => c.ws !== ws && !c.silent)
         .map((c) => c.presence)
       const agents = [...(agentPresences.get(msg.canvasId)?.values() ?? [])]
       send(ws, {
         type: 'init',
-        canvas,
+        canvas: { ...canvas, role },
         presences: [...others, ...agents],
         activity: actions.getActivity(msg.canvasId),
         tasks: actions.getTasks(msg.canvasId),
@@ -2261,6 +2340,9 @@ wss.on('connection', (ws, upgradeReq) => {
          own visit is supposed to trigger, not a support session. */
       if (silent) return
       broadcast(msg.canvasId, { type: 'presence:join', presence }, presence.clientId)
+      /* the demo and the card kick are the owner's team at work — a share
+         link visitor without edit rights is only looking */
+      if (role !== 'edit') return
       demo.maybePlay(msg.canvasId) // first visit to a fresh signup canvas: the demo agent performs
       /* Start never-attempted cards. Failed/interrupted cards are excluded. */
       if (actions.getTasks(msg.canvasId).some((t) => t.queuedBy && !t.agentName && !t.endedAt)) {
@@ -2272,6 +2354,14 @@ wss.on('connection', (ws, upgradeReq) => {
     if (!conn) return
     if (conn.silent) return // view-as connections receive updates but never emit
     const { canvasId, presence } = conn
+    /* view and comment visitors share cursors and viewports; claiming a
+       frame for editing or broadcasting a frame drag is editor-only */
+    const role = connRole(conn)
+    if (!role) {
+      ws.close(4403, 'no access')
+      return
+    }
+    if (!roleAllows(role, roomMessageNeeds(msg))) return
 
     switch (msg.type) {
       case 'cursor':

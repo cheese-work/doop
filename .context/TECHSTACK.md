@@ -176,6 +176,11 @@
   (`BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, provider client IDs/secrets) come from the
   environment (`.env`, documented in `.env.example`); never committed.
 
+- Canvas access: `canvasRole` in `server/access.ts` gives owners, members and workspace members
+  edit, and share-link visitors the link's level (`none` / `view` / `comment` / `edit`). REST,
+  the WebSocket room and MCP gate reads, comments and writes on it separately; spec in
+  `.context/specs/share-link-roles.md`.
+
 ## 7. Build and Dependency Management
 
 - Bun 1.3.10 - package manager; lockfile at `bun.lock`, installed with `bun install

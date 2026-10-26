@@ -8,7 +8,8 @@ import { fromNodeHeaders } from 'better-auth/node'
 import { z } from 'zod'
 import { store } from './store.ts'
 import * as actions from './actions.ts'
-import { canAccessCanvas } from './access.ts'
+import { canvasRole } from './access.ts'
+import { roleAllows, type CanvasRole } from '../shared/canvasRole.ts'
 import { isAgentKeySecret, verifyAgentKey } from './agentKeys.ts'
 import * as workspaces from './workspaces.ts'
 import { auth, getUserName, isBanned } from './auth.ts'
@@ -89,11 +90,9 @@ const REVIEW_NUDGE =
 import type { Actor, Frame } from '../shared/types.ts'
 
 /** Reaches agents whose session predates set_status (or who skipped the guide). */
-function withStatusNudge<T extends { content: { type: 'text' | 'image'; [k: string]: unknown }[] }>(
-  result: T,
-  canvasId: string,
-  actor?: Actor,
-): T {
+type ToolContent = { content: { type: 'text' | 'image'; [k: string]: unknown }[] }
+
+function appendStatusNudge<T extends ToolContent>(result: T, canvasId: string, actor?: Actor): T {
   if (!actor) return result
   if (actions.hasAnnouncedTask(canvasId, actor)) return result
   result.content.push({
@@ -137,11 +136,7 @@ function withGuidelinesNudge<T extends { content: { type: 'text' | 'image'; [k: 
 
 /** Append any undelivered human feedback for this agent to a tool result.
  *  MCP is pull-based, so this is the channel through which humans steer agents. */
-function withFeedback<T extends { content: { type: 'text' | 'image'; [k: string]: unknown }[] }>(
-  result: T,
-  canvasId: string,
-  actor?: Actor,
-): T {
+function appendFeedback<T extends ToolContent>(result: T, canvasId: string, actor?: Actor): T {
   if (!actor) return result
   const pending = actions.takeFeedbackFor(canvasId, actor.name)
   if (pending.length === 0) return result
@@ -241,24 +236,42 @@ function frameSummary(f: {
 export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
   const actorFrom = (agent_name?: string) => actions.resolveActor({ name: agent_name, kind: 'agent', owner })
   /* Canvas access for agents mirrors the web UI: the OAuth user's id runs
-     through the same canAccessCanvas gate as browser sessions. Every tool
-     that takes a canvas or frame id resolves it through these. */
-  const canvasFor = (canvasId: string) => {
+     through the same canvasRole gate as browser sessions, so an agent
+     connected by someone holding a view or comment link reads but cannot
+     write. Every tool that takes a canvas or frame id resolves it through
+     these, naming the role it needs: 'view' to read, 'comment' for comment
+     threads, 'edit' for everything that changes the canvas. */
+  const roleOn = (canvasId: string) => {
     const c = store.getCanvas(canvasId)
-    return c && canAccessCanvas(ownerId, c) ? c : undefined
+    return c ? canvasRole(ownerId, c) : null
   }
-  const frameFor = (frameId: string) => {
+  const canvasFor = (canvasId: string, need: CanvasRole) =>
+    roleAllows(roleOn(canvasId), need) ? store.getCanvas(canvasId) : undefined
+  const frameFor = (frameId: string, need: CanvasRole) => {
     const f = store.getFrame(frameId)
-    if (!f) return undefined
-    return canvasFor(f.canvasId) ? f : undefined
+    return f && canvasFor(f.canvasId, need) ? f : undefined
   }
-  const noCanvas = (id: string) => err(`no canvas with id ${id} accessible to this account`)
-  const noFrame = (id: string) => err(`no frame with id ${id} accessible to this account`)
+  /* a canvas the account can read but not change says so, instead of
+     claiming the canvas is not there */
+  const readOnlyNote = (canvasId: string | undefined) => {
+    const role = canvasId ? roleOn(canvasId) : null
+    return role ? ` with the access this task needs — this account can only ${role} on that canvas` : ''
+  }
+  const noCanvas = (id: string) => err(`no canvas with id ${id} accessible to this account${readOnlyNote(id)}`)
+  const noFrame = (id: string) =>
+    err(`no frame with id ${id} accessible to this account${readOnlyNote(store.getFrame(id)?.canvasId)}`)
+  /* Feedback is claimed, and set_status nudged, only for agents that may
+     act on it: claiming assigns a human's request to this agent, which a
+     read-only agent could never carry out. */
+  const withFeedback = <T extends ToolContent>(result: T, canvasId: string, actor?: Actor): T =>
+    roleAllows(roleOn(canvasId), 'edit') ? appendFeedback(result, canvasId, actor) : result
+  const withStatusNudge = <T extends ToolContent>(result: T, canvasId: string, actor?: Actor): T =>
+    roleAllows(roleOn(canvasId), 'edit') ? appendStatusNudge(result, canvasId, actor) : result
   const noComment = (id: string) => err(`no comment with id ${id} on this canvas`)
   /* export_frame's PDF: the file travels inside the tool result, not as a
      public URL, so it stays behind the same canvas gate as the frames */
   const exportPdf = async (first: Frame, more: string[]) => {
-    const canvas = canvasFor(first.canvasId)
+    const canvas = canvasFor(first.canvasId, 'view')
     if (!canvas) return noFrame(first.id)
     const selection = selectPdfFrames(canvas, { frameIds: [first.id, ...more] })
     if (!selection.ok) return err(selection.error)
@@ -452,7 +465,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ canvas_id, agent_name, approval_status }) => {
-      const c = canvasFor(canvas_id)
+      const c = canvasFor(canvas_id, 'view')
       if (!c) return noCanvas(canvas_id)
       arrive(canvas_id, agent_name)
       const docs = store.getGuidelines(canvas_id)
@@ -524,7 +537,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       inputSchema: { canvas_id: z.string(), agent_name: agentName.optional() },
     },
     async ({ canvas_id, agent_name }) => {
-      if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!canvasFor(canvas_id, 'view')) return noCanvas(canvas_id)
       if (agent_name) actions.markGuidelinesSeen(canvas_id, actorFrom(agent_name).name)
       const docs = store.getGuidelines(canvas_id)
       if (docs.length === 0)
@@ -563,7 +576,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ canvas_id, name, agent_name }) => {
-      if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!canvasFor(canvas_id, 'view')) return noCanvas(canvas_id)
       const doc = store.getGuidelines(canvas_id).find((d) => d.name === name.trim().toLowerCase())
       if (!doc) {
         const names = store.getGuidelines(canvas_id).map((d) => d.name)
@@ -601,7 +614,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ canvas_id, name, markdown, title, agent_name }) => {
-      if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!canvasFor(canvas_id, 'edit')) return noCanvas(canvas_id)
       const actor = actorFrom(agent_name)
       try {
         const doc = actions.setGuideline(canvas_id, name, markdown, actor, undefined, title)
@@ -635,7 +648,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ canvas_id, reference_id, agent_name }) => {
-      if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!canvasFor(canvas_id, 'view')) return noCanvas(canvas_id)
       const ref = store.getReferences(canvas_id).find((r) => r.id === reference_id)
       if (!ref) {
         const ids = store.getReferences(canvas_id).map((r) => `${r.id} (“${r.title}”)`)
@@ -677,7 +690,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ canvas_id, decision, agent_name }) => {
-      if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!canvasFor(canvas_id, 'edit')) return noCanvas(canvas_id)
       const actor = actorFrom(agent_name)
       try {
         const saved = actions.recordChatDecision(canvas_id, decision, actor)
@@ -714,7 +727,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ canvas_id, status, agent_name }) => {
-      if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!canvasFor(canvas_id, 'edit')) return noCanvas(canvas_id)
       actions.setAgentStatus(canvas_id, actorFrom(agent_name), status)
       return withFeedback(text({ ok: true, status: status.trim() || null }), canvas_id, actorFrom(agent_name))
     },
@@ -740,9 +753,9 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ canvas_id, frame_id, include_resolved, agent_name }) => {
-      if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!canvasFor(canvas_id, 'view')) return noCanvas(canvas_id)
       if (frame_id !== undefined) {
-        const frame = frameFor(frame_id)
+        const frame = frameFor(frame_id, 'view')
         if (!frame || frame.canvasId !== canvas_id) return noFrame(frame_id)
       }
       arrive(canvas_id, agent_name)
@@ -770,10 +783,14 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ canvas_id, comment_id, text: body, agent_name }) => {
-      if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!canvasFor(canvas_id, 'comment')) return noCanvas(canvas_id)
       const found = actions.findComment(comment_id)
       if (!found || found.canvasId !== canvas_id) return noComment(comment_id)
       if (!body.trim() || !actions.openThread(comment_id)) return err('thread resolved or empty text')
+      /* an @mention commands the resident agent to change frames — the REST
+         reply route holds comment-only visitors to the same rule */
+      if (mentionedRole(body) && !canvasFor(canvas_id, 'edit'))
+        return err('asking an agent to change the canvas needs edit access')
       const actor = actorFrom(agent_name)
       arrive(canvas_id, agent_name)
       /* A reply that @mentions a resident agent is a new command to the team,
@@ -818,7 +835,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ canvas_id, comment_id, agent_name }) => {
-      if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!canvasFor(canvas_id, 'comment')) return noCanvas(canvas_id)
       const found = actions.findComment(comment_id)
       if (!found || found.canvasId !== canvas_id) return noComment(comment_id)
       const actor = actorFrom(agent_name)
@@ -850,7 +867,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       inputSchema: { canvas_id: z.string(), agent_name: agentName },
     },
     async ({ canvas_id, agent_name }) => {
-      if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!canvasFor(canvas_id, 'edit')) return noCanvas(canvas_id)
       const fbs = actions.takeFeedbackFor(canvas_id, actorFrom(agent_name).name)
       if (fbs.length === 0) return text({ feedback: [], note: 'No open feedback requests right now.' })
       const tasks = actions.getTasks(canvas_id)
@@ -889,7 +906,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ canvas_id, pages, expectedPages, agent_name }) => {
-      const canvas = canvasFor(canvas_id)
+      const canvas = canvasFor(canvas_id, 'edit')
       if (!canvas) return noCanvas(canvas_id)
       if (!samePages(expectedPages, canvasPages(canvas)))
         return err('Pages changed. Read get_canvas again before saving.')
@@ -912,7 +929,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       inputSchema: { canvas_id: z.string(), agent_name: agentName },
     },
     async ({ canvas_id, agent_name }) => {
-      const canvas = canvasFor(canvas_id)
+      const canvas = canvasFor(canvas_id, 'view')
       if (!canvas) return noCanvas(canvas_id)
       arrive(canvas_id, agent_name)
       return text(prototypeReport(canvas))
@@ -934,7 +951,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ canvas_id, pageId, frame_id, agent_name }) => {
-      const canvas = canvasFor(canvas_id)
+      const canvas = canvasFor(canvas_id, 'edit')
       if (!canvas) return noCanvas(canvas_id)
       const result = setPrototypeStart(canvas, pageId, frame_id, actorFrom(agent_name))
       if (!result.ok) return err(result.error)
@@ -970,7 +987,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ canvas_id, pageId, name, html, x, y, width, height, agent_name }) => {
-      if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!canvasFor(canvas_id, 'edit')) return noCanvas(canvas_id)
       const frame = actions.createFrame(canvas_id, { name, pageId, html, x, y, width, height }, actorFrom(agent_name))
       if (!frame) return noCanvas(canvas_id)
       const result = withEscapeNote(
@@ -996,7 +1013,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       inputSchema: { frame_id: z.string(), agent_name: agentName.optional() },
     },
     async ({ frame_id, agent_name }) => {
-      const f = frameFor(frame_id)
+      const f = frameFor(frame_id, 'view')
       if (!f) return noFrame(frame_id)
       arrive(f.canvasId, agent_name)
       return withFeedback(
@@ -1018,7 +1035,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       inputSchema: { frame_id: z.string(), html: z.string(), agent_name: agentName },
     },
     async ({ frame_id, html, agent_name }) => {
-      if (!frameFor(frame_id)) return noFrame(frame_id)
+      if (!frameFor(frame_id, 'edit')) return noFrame(frame_id)
       const frame = actions.updateFrame(frame_id, { html }, actorFrom(agent_name), { replace: true })
       if (!frame) return noFrame(frame_id)
       return withPreview(
@@ -1062,7 +1079,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ frame_id, format, quality, frame_ids }) => {
-      const f = frameFor(frame_id)
+      const f = frameFor(frame_id, 'view')
       if (!f) return noFrame(frame_id)
       if (format === 'pdf') return exportPdf(f, frame_ids ?? [])
       if (format === 'psd') {
@@ -1112,7 +1129,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
         return err(
           'provide exactly one of: source_url (remote file), local_file=true (local file — returns a curl command), or data (small base64)',
         )
-      if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!canvasFor(canvas_id, 'edit')) return noCanvas(canvas_id)
       const now = Date.now()
       const limitKey = ownerId ?? agent_name
       const hits = (uploadHits.get(limitKey) ?? []).filter((t) => now - t < 60_000)
@@ -1178,7 +1195,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ prompt, aspect, quality, canvas_id, agent_name }) => {
-      if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!canvasFor(canvas_id, 'edit')) return noCanvas(canvas_id)
       const now = Date.now()
       const limitKey = ownerId ?? agent_name
       const hits = (generateHits.get(limitKey) ?? []).filter((t) => now - t < 60_000)
@@ -1493,7 +1510,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ url, canvas_id, agent_name }) => {
-      if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!canvasFor(canvas_id, 'edit')) return noCanvas(canvas_id)
       let normalizedUrl: string
       try {
         normalizedUrl = normalizeImportUrl(url).href
@@ -1599,7 +1616,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ source_url, canvas_id, text_mode, agent_name }) => {
-      const canvas = canvasFor(canvas_id)
+      const canvas = canvasFor(canvas_id, 'edit')
       if (!canvas) return noCanvas(canvas_id)
       const now = Date.now()
       const limitKey = ownerId ?? agent_name
@@ -1657,7 +1674,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ frame_id, scale, agent_name }) => {
-      const live = frameFor(frame_id)
+      const live = frameFor(frame_id, 'view')
       if (!live) return noFrame(frame_id)
       arrive(live.canvasId, agent_name)
       /* a snapshot: an edit landing while Chromium renders must not stamp
@@ -1709,7 +1726,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ frame_id, html_chunk, start, done, agent_name }) => {
-      if (!frameFor(frame_id)) return noFrame(frame_id)
+      if (!frameFor(frame_id, 'edit')) return noFrame(frame_id)
       const frame = actions.appendFrameHtml(frame_id, html_chunk, actorFrom(agent_name), { start, done })
       if (!frame) return noFrame(frame_id)
       const result = done
@@ -1747,7 +1764,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ frame_id, old_str, new_str, agent_name }) => {
-      const f = frameFor(frame_id)
+      const f = frameFor(frame_id, 'edit')
       if (!f) return noFrame(frame_id)
       const count = f.html.split(old_str).length - 1
       if (count === 0) return err('old_str not found in the frame HTML. Call get_frame to see the current content.')
@@ -1793,7 +1810,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
     async ({ frame_id, agent_name, ...patch }) => {
       const clean = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined))
       if (!Object.keys(clean).length) return err('nothing to update')
-      if (!frameFor(frame_id)) return noFrame(frame_id)
+      if (!frameFor(frame_id, 'edit')) return noFrame(frame_id)
       const frame = actions.updateFrame(frame_id, clean, actorFrom(agent_name))
       if (!frame) return noFrame(frame_id)
       return withPreview(
@@ -1814,7 +1831,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ frame_id, agent_name }) => {
-      const f = frameFor(frame_id)
+      const f = frameFor(frame_id, 'view')
       if (!f) return noFrame(frame_id)
       arrive(f.canvasId, agent_name)
       const versions = await persist.listFrameVersions(frame_id)
@@ -1843,7 +1860,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },
     async ({ frame_id, version_id, agent_name }) => {
-      if (!frameFor(frame_id)) return noFrame(frame_id)
+      if (!frameFor(frame_id, 'edit')) return noFrame(frame_id)
       const restored = await actions.restoreFrameVersion(frame_id, version_id, actorFrom(agent_name))
       if (restored === null) return err(`no version ${version_id} on frame ${frame_id} — call list_frame_versions`)
       if (!restored) return noFrame(frame_id)
@@ -1864,7 +1881,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       inputSchema: { frame_id: z.string(), agent_name: agentName },
     },
     async ({ frame_id, agent_name }) => {
-      if (!frameFor(frame_id)) return noFrame(frame_id)
+      if (!frameFor(frame_id, 'edit')) return noFrame(frame_id)
       const frame = actions.deleteFrame(frame_id, actorFrom(agent_name))
       if (!frame) return noFrame(frame_id)
       return text({ ok: true, deleted: frame.name })

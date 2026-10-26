@@ -2,6 +2,7 @@ import type express from 'express'
 import type { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type { Actor, Canvas, Frame } from '../shared/types.ts'
+import type { CanvasRole } from '../shared/canvasRole.ts'
 import type { PullStep, SlackStep, LinearStep } from '../shared/automations.ts'
 import { figmaExtension } from './figma/extension.ts'
 import { linearExtension } from './linear/extension.ts'
@@ -71,7 +72,9 @@ export interface OAuthConnect {
 /** The core's request helpers, handed to an extension's canvas routes.
  *  Both helpers answer the response themselves when they refuse. */
 export interface CanvasRouteHelpers {
-  requireCanvas(req: express.Request, res: express.Response, canvasId: string): Canvas | null
+  /** resolves the canvas when the caller's role covers `need` ('view' to
+   *  read or export, 'edit' to change or import into it) */
+  requireCanvas(req: express.Request, res: express.Response, canvasId: string, need: CanvasRole): Canvas | null
   /** the shared import rate slot (websites, repos, design files alike) */
   takeImportSlot(userId: string): boolean
 }
@@ -83,7 +86,8 @@ export interface McpToolHelpers {
   ownerId?: string
   agentName: z.ZodType<string>
   actorFrom(agentName?: string): Actor
-  canvasFor(canvasId: string): Canvas | undefined
+  /** the canvas when the connected user's role covers `need` */
+  canvasFor(canvasId: string, need: CanvasRole): Canvas | undefined
   noCanvas(id: string): McpToolResult
   err(message: string): McpToolResult
   text(data: unknown): McpToolResult

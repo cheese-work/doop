@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from 'react'
 import type { Frame } from '../../shared/types'
-import { pickedSelectors, useStore } from '../lib/store'
+import { canEditOpenCanvas, pickedSelectors, useStore } from '../lib/store'
 import { usePageCanvas } from '../lib/pages'
 import { PagesPanel, sectionHeading } from './PagesPanel'
 import { getIdentity } from '../lib/identity'
@@ -165,6 +165,8 @@ export function LayersPanel({
 }) {
   /* a row's pointerleave never fires if the panel goes away under it */
   useEffect(() => () => useStore.getState().setHoveredLayer(null), [])
+  /* view and comment links browse the tree; nothing in it moves or changes */
+  const readOnly = useStore((s) => !canEditOpenCanvas(s))
   const pageCanvas = usePageCanvas()
   const frames = useMemo(() => pageCanvas?.frames ?? [], [pageCanvas])
   const selectedId = useStore((s) => s.selectedId)
@@ -262,7 +264,7 @@ export function LayersPanel({
      dropLayer checks the frame against the store (a collaborator may have
      edited it during the drag), and a cancelled gesture drops nothing. */
   function onRowPointerDown(e: ReactPointerEvent<HTMLDivElement>, row: NodeVisibleRow) {
-    if (e.button !== 0) return
+    if (e.button !== 0 || readOnly) return
     const start = { x: e.clientX, y: e.clientY }
     const body = e.currentTarget.closest<HTMLElement>('[data-slot="panel-body"]')
     let active = false
@@ -313,7 +315,7 @@ export function LayersPanel({
       if (next) activate(next)
     }
     const shift = (dir: 1 | -1) => {
-      if (row?.kind === 'node') shiftLayer(row.frame, row.node.selector, dir)
+      if (row?.kind === 'node' && !readOnly) shiftLayer(row.frame, row.node.selector, dir)
     }
     switch (e.key) {
       case 'ArrowDown':
@@ -342,7 +344,7 @@ export function LayersPanel({
       case 'Delete':
         /* a held key repeats: once the element is gone the frame row would
            be next, so only the first press deletes */
-        if (e.repeat) break
+        if (e.repeat || readOnly) break
         /* a locked frame stays (deleteLayers refuses a locked element itself) */
         if (row?.kind === 'frame') {
           if (!row.frame.locked) deleteFramesTracked([row.frame])
@@ -400,11 +402,13 @@ export function LayersPanel({
               <CollapseAllIcon className="size-3.5" />
             </Button>
           </Tooltip>
-          <Tooltip label="New frame" side="bottom" align="end">
-            <Button variant="bare" size="icon-sm" className={sectionBtn} aria-label="New frame" onClick={onAddFrame}>
-              <PlusIcon className="size-3.5" />
-            </Button>
-          </Tooltip>
+          {!readOnly && (
+            <Tooltip label="New frame" side="bottom" align="end">
+              <Button variant="bare" size="icon-sm" className={sectionBtn} aria-label="New frame" onClick={onAddFrame}>
+                <PlusIcon className="size-3.5" />
+              </Button>
+            </Tooltip>
+          )}
         </span>
       </div>
       <PanelBody
@@ -511,6 +515,7 @@ function FrameRow({
   onActivate: () => void
 }) {
   const { frame } = row
+  const readOnly = useStore((s) => !canEditOpenCanvas(s))
   const stream = useStore((s) => s.streams[frame.id])
   const presences = useStore((s) => s.presences)
   const me = getIdentity().clientId
@@ -522,7 +527,8 @@ function FrameRow({
   return (
     <>
       <ContextMenu>
-        <ContextMenuTrigger asChild>
+        {/* every item in the frame menu is an edit */}
+        <ContextMenuTrigger asChild disabled={readOnly}>
           <Row
             data-row-key={row.key}
             depth={0}
@@ -535,9 +541,9 @@ function FrameRow({
             selected={selected}
             hidden={!!frame.hidden}
             dimmed={!!frame.hidden}
-            onToggleHidden={() => setFrameHidden(frame, !frame.hidden)}
+            onToggleHidden={readOnly ? undefined : () => setFrameHidden(frame, !frame.hidden)}
             locked={!!frame.locked}
-            onToggleLocked={() => setFramesLocked([frame], !frame.locked)}
+            onToggleLocked={readOnly ? undefined : () => setFramesLocked([frame], !frame.locked)}
             onClick={onActivate}
             onDoubleClick={() => useStore.getState().requestFlyTo(frame.id)}
             onContextMenu={() => {
@@ -592,10 +598,11 @@ function NodeRow({
   onPointerDown: (e: ReactPointerEvent<HTMLDivElement>) => void
 }) {
   const { frame, node } = row
+  const readOnly = useStore((s) => !canEditOpenCanvas(s))
   const hasChildren = node.children.length > 0
   return (
     <ContextMenu>
-      <ContextMenuTrigger asChild>
+      <ContextMenuTrigger asChild disabled={readOnly}>
         <Row
           data-row-key={row.key}
           depth={row.depth}
@@ -608,9 +615,9 @@ function NodeRow({
           selected={selected}
           hidden={node.hidden}
           dimmed={row.dim || node.hidden}
-          onToggleHidden={() => setLayerHidden(frame, node.selector, !node.hidden)}
+          onToggleHidden={readOnly ? undefined : () => setLayerHidden(frame, node.selector, !node.hidden)}
           locked={node.locked}
-          onToggleLocked={() => setLayerLocked(frame, node.selector, !node.locked)}
+          onToggleLocked={readOnly ? undefined : () => setLayerLocked(frame, node.selector, !node.locked)}
           className={cn(dragging && 'opacity-40')}
           onClick={(e) => onActivate(e.shiftKey || e.metaKey || e.ctrlKey)}
           onContextMenu={() => onActivate(false)}

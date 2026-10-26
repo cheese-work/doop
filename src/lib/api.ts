@@ -21,6 +21,7 @@ import type {
 } from '../../shared/types'
 import type { Automation, AutomationRun, AutomationTrigger, Schedule, Step } from '../../shared/automations'
 import type { BillingInterval, Plan } from '../../shared/billing'
+import type { LinkAccess } from '../../shared/canvasRole'
 
 export type HomeActivity = ActivityItem & { canvasId: string; canvasName: string }
 
@@ -304,7 +305,7 @@ export const api = {
   renameCanvas: (id: string, name: string) =>
     req('/api/canvases/' + id, { method: 'PATCH', body: JSON.stringify({ name, actor: actor() }) }),
   /* owner-only: what the share link grants people who aren't invited */
-  setLinkAccess: (id: string, linkAccess: 'edit' | 'none') =>
+  setLinkAccess: (id: string, linkAccess: LinkAccess) =>
     req('/api/canvases/' + id, { method: 'PATCH', body: JSON.stringify({ linkAccess }) }),
   /* community gallery: owner-only listing, open browsing and copying */
   publishCanvas: (id: string, listing: { description: string; category: CommunityCategory }) =>
@@ -562,7 +563,7 @@ export const api = {
 }
 
 export interface AdminCanvas extends CanvasMeta {
-  linkAccess: 'edit' | 'none'
+  linkAccess: LinkAccess
   memberCount: number
   owner?: { id: string; name: string; email: string }
 }

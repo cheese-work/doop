@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import type { ElementComment, Frame } from '../../shared/types'
-import { pickedSelectors, useStore } from '../lib/store'
+import { canEditOpenCanvas, pickedSelectors, useStore } from '../lib/store'
 import { isCanvasElement } from '../lib/drawing'
 import { useElementMove } from './ElementMove'
 import { PathEditor } from './PathEditor'
@@ -177,6 +177,9 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
   /* the canvas tool: Hand lets presses fall through to the Stage, Comment
      turns a click on the surface into a comment on the element under it */
   const tool = useStore((s) => s.tool)
+  /* a view or comment link: the frame can be selected and looked at, never
+     moved, resized or edited — the server refuses those writes anyway */
+  const readOnly = useStore((s) => !canEditOpenCanvas(s))
   const select = useStore((s) => s.select)
   const flash = useStore((s) => s.flashes[frame.id])
   const stream = useStore((s) => s.streams[frame.id])
@@ -244,6 +247,11 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
     /* a locked frame is not the stage's to select, move or resize: the press
        falls through to the Stage, which treats it as empty canvas */
     if (action !== 'frame-drag' || frame.locked) return
+    if (!canEditOpenCanvas(s)) {
+      e.stopPropagation()
+      if (!s.selectedIds.includes(frame.id)) select(frame.id)
+      return
+    }
     // A new surface press supersedes the previous click, including an iframe
     // reply that is already in flight when the next layer starts moving.
     if (mode === 'move' && probeOnClick && !skipElement) cancelProbe()
@@ -826,10 +834,19 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
   }, [selected]) // eslint-disable-line react-hooks/exhaustive-deps
 
   /* ---- inline text editing ---- */
-  const canEdit = !!frame.html && !stream && !frame.locked && !/<script/i.test(frame.html)
+  const canEdit = !!frame.html && !stream && !frame.locked && !readOnly && !/<script/i.test(frame.html)
 
   async function enterElementEdit(where: Record<string, unknown>) {
-    if (!frame.html || stream || frame.locked || editing || pathEdit || useStore.getState().tool !== 'select') return
+    if (
+      !frame.html ||
+      stream ||
+      frame.locked ||
+      readOnly ||
+      editing ||
+      pathEdit ||
+      useStore.getState().tool !== 'select'
+    )
+      return
     const request = ++editRequest.current
     const canvasId = useStore.getState().canvas?.id
     const pageId = useStore.getState().activePageId
@@ -936,8 +953,8 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
      what was typed so far is flushed by the exit, nothing more lands */
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- external-system sync, as above
-    if (frame.locked && editing) exitEdit()
-  }, [frame.locked]) // eslint-disable-line react-hooks/exhaustive-deps
+    if ((frame.locked || readOnly) && editing) exitEdit()
+  }, [frame.locked, readOnly]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <ContextMenu
@@ -986,7 +1003,9 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
             menuAt.current = { x: e.clientX, y: e.clientY }
             const target = e.target as HTMLElement
             const request = ++menuRequest.current
-            if (target.closest('[data-frame-title]')) {
+            /* the element menu only edits layers; a reader gets the frame
+               menu's read-only half (copy, links, export, history) anywhere */
+            if (target.closest('[data-frame-title]') || readOnly) {
               if (editing) exitEdit()
               menuKind.current = 'frame'
               setMenuTarget('frame')
@@ -1215,7 +1234,8 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
               tool === 'select' &&
               probe.sizable &&
               !probe.locked &&
-              !frame.locked && (
+              !frame.locked &&
+              !readOnly && (
                 <ElementResizeHandles
                   frame={frame}
                   selector={probe.selector}
@@ -1405,7 +1425,7 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
             )
           })()}
 
-          {!frame.locked && !pathEdit && (
+          {!frame.locked && !readOnly && !pathEdit && (
             <div
               className={cn(
                 'absolute -right-[7px] -bottom-[7px] h-3.5 w-3.5 cursor-nwse-resize rounded-[4px] border-[1.5px] border-ink bg-surface opacity-0 [transition:opacity_0.12s] group-hover:opacity-100',

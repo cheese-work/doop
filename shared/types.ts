@@ -1,4 +1,5 @@
 import type { BillingInterval, WorkspaceStatus } from './billing.ts'
+import type { CanvasRole, LinkAccess } from './canvasRole.ts'
 
 export interface Frame {
   id: string
@@ -140,9 +141,12 @@ export interface Canvas {
   name: string
   ownerId?: string
   /** what the share link grants people who are not the owner or invited:
-   *  'edit' (anyone with the link collaborates) or 'none' (private — the
-   *  default; unset means 'none'). */
-  linkAccess?: 'edit' | 'none'
+   *  'view', 'comment' or 'edit', or 'none' (private — the default; unset
+   *  means 'none'). See shared/canvasRole.ts. */
+  linkAccess?: LinkAccess
+  /** the caller's own role, set on the copy a canvas GET or a room `init`
+   *  hands one person; never stored */
+  role?: CanvasRole
   /** user ids invited to collaborate (the owner is not listed) */
   memberIds?: string[]
   /** the shared workspace this canvas belongs to — every workspace member
@@ -525,6 +529,8 @@ export type ServerMessage =
       /** id of the client bundle the server is serving; 'dev' outside production */
       serverBuild: string
     }
+  /** the share link changed: the receiver's role on this canvas now */
+  | { type: 'role'; role: CanvasRole }
   | { type: 'presence:join'; presence: Presence }
   | { type: 'presence:leave'; clientId: string }
   | { type: 'cursor'; clientId: string; x: number; y: number }

@@ -98,6 +98,9 @@ function handle(msg: ServerMessage) {
         else if (loadedBuild !== msg.serverBuild) s.setUpdateReady(true)
       }
       s.setCanvas(msg.canvas)
+      /* drops a tool the role does not allow, e.g. on a rejoin after the
+         owner turned the link to view-only */
+      s.setRole(msg.canvas.role ?? 'edit')
       s.setPresences(msg.presences)
       s.setActivity(msg.activity)
       s.setTasks(msg.tasks)
@@ -105,6 +108,9 @@ function handle(msg: ServerMessage) {
       s.setComments(msg.comments)
       s.setDecisions(msg.decisions)
       s.setProposals(msg.proposals)
+      break
+    case 'role':
+      s.setRole(msg.role)
       break
     case 'presence:join':
       if (msg.presence.clientId !== me) s.upsertPresence(msg.presence)

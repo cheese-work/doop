@@ -70,12 +70,15 @@ export function TopBarTitle({
   placeholder = 'Untitled',
   loading = false,
   pill = false,
+  readOnly = false,
 }: {
   value: string
   onCommit: (name: string) => void
   placeholder?: string
   loading?: boolean
   pill?: boolean
+  /** shows the name as text: the caller cannot rename it */
+  readOnly?: boolean
 }) {
   const [draft, setDraft] = useState<string | null>(null)
   const pillCls =
@@ -89,6 +92,18 @@ export function TopBarTitle({
         )}
       >
         …
+      </span>
+    )
+  if (readOnly)
+    return (
+      <span
+        className={cn(
+          titleCls,
+          'truncate',
+          pill ? 'px-1.5 text-[12.5px] font-medium' : 'px-2 py-[5px] font-display text-[15px] font-semibold',
+        )}
+      >
+        {value || placeholder}
       </span>
     )
   const shown = draft ?? value
