@@ -29,8 +29,22 @@ import { AuthScreen } from './components/ui/screen'
 import { DesktopTabs, ShellDragBar } from './components/DesktopTabs'
 import { setTabsUser } from './lib/desktop'
 import { isDesktopShell } from './lib/shell'
+import { SIGNUP_PARAM, parseSignupMethod } from '../shared/firstCanvas'
 
 export { navigate }
+
+/* A provider sign-in that created the account lands here carrying
+   ?signup=<method> (shared/firstCanvas.ts); the email form reports its own
+   signups at submit. Report it once the person is identified, then take the
+   marker off the URL so a reload or a shared link cannot count it twice. */
+function reportProviderSignup() {
+  const url = new URL(location.href)
+  const method = parseSignupMethod(url.searchParams.get(SIGNUP_PARAM))
+  if (!url.searchParams.has(SIGNUP_PARAM)) return
+  url.searchParams.delete(SIGNUP_PARAM)
+  history.replaceState(history.state, '', url)
+  if (method) posthog.capture('account_signed_up', { method })
+}
 
 export function App() {
   const [route, setRoute] = useState(location.pathname + location.search)
@@ -91,6 +105,7 @@ export function App() {
     posthog.identify(user.id, { email: user.email, name: user.name })
     syncReplayForUser(user.email)
     identifiedUserId.current = user.id
+    reportProviderSignup()
   }, [session?.user, me])
 
   /* the account name is the identity shown on cursors and in the feed */
