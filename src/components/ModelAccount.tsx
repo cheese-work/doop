@@ -51,28 +51,33 @@ export function useModelAccount(): {
 /**
  * The connected provider's live model list, asked for while `wanted` is true
  * (the picker is open, or the Settings pane is mounted) and again whenever
- * the account itself changes: a rotated key or a different provider gets a
- * fresh answer. Null until it arrives and whenever it belongs to another
+ * the provider changes or `generation` is bumped: the Settings panel bumps it
+ * on every connect, rotation and disconnect, since a rotated key keeps the
+ * account's kind and `connectedAt` and would otherwise keep showing the old
+ * key's models. Null until it arrives and whenever it belongs to another
  * account than the one on screen, so callers fall back to the curated menu.
  */
-export function useAgentModels(account: ModelAccountStatus | null, wanted: boolean): AgentModelCatalog | null {
+export function useAgentModels(
+  account: ModelAccountStatus | null,
+  wanted: boolean,
+  generation = 0,
+): AgentModelCatalog | null {
   const kind = account?.connected ? account.kind : undefined
-  const connectedAt = account?.connectedAt
-  const [loaded, setLoaded] = useState<{ kind: ModelAccountKind; connectedAt?: number; catalog: AgentModelCatalog }>()
+  const [loaded, setLoaded] = useState<{ kind: ModelAccountKind; generation: number; catalog: AgentModelCatalog }>()
   useEffect(() => {
     if (!kind || !wanted) return
     let stale = false
     api.agentModels().then(
       (catalog) => {
-        if (!stale) setLoaded({ kind, connectedAt, catalog })
+        if (!stale) setLoaded({ kind, generation, catalog })
       },
       () => {},
     )
     return () => {
       stale = true
     }
-  }, [kind, connectedAt, wanted])
-  return loaded && loaded.kind === kind && loaded.connectedAt === connectedAt ? loaded.catalog : null
+  }, [kind, generation, wanted])
+  return loaded && loaded.kind === kind && loaded.generation === generation ? loaded.catalog : null
 }
 
 /**
@@ -121,7 +126,9 @@ const rowBtn = 'max-md:justify-center'
 export function ModelAccountPanel({ onChange }: { onChange?: () => void }) {
   const desktop = isDesktopShell()
   const { account, refresh, set } = useModelAccount()
-  const catalog = useAgentModels(account, true)
+  /* bumped by `settle`, so a rotated key reloads the catalog it unlocks */
+  const [catalogGeneration, setCatalogGeneration] = useState(0)
+  const catalog = useAgentModels(account, true, catalogGeneration)
   const { data: session } = authClient.useSession()
   const local = useLocalAgent((s) => s.preference)
   const userId = session?.user.id
@@ -144,6 +151,7 @@ export function ModelAccountPanel({ onChange }: { onChange?: () => void }) {
   const settle = useCallback(
     (next: ModelAccountStatus) => {
       set(next)
+      setCatalogGeneration((generation) => generation + 1)
       setAuthUrl('')
       setWaiting(false)
       setDevice(null)
