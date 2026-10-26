@@ -1,5 +1,6 @@
 import { FRAME_REPLAY_RUNTIME } from './frameReplayRuntime'
 import { FRAME_DROP_RUNTIME } from './frameDropRuntime'
+import { FRAME_PROTO_RUNTIME } from './frameProtoRuntime'
 
 /**
  * Bootstrap document loaded once per frame iframe. The parent posts HTML in
@@ -12,6 +13,7 @@ export const FRAME_BOOTSTRAP = `<!doctype html>
 (function () {
   ${FRAME_REPLAY_RUNTIME}
   ${FRAME_DROP_RUNTIME}
+  ${FRAME_PROTO_RUNTIME}
   /* horizontal overscroll inside a frame must not chain to the parent page,
      where the browser turns it into a history back/forward swipe. Adopted
      sheet, not a <style> tag — the morph would wipe a tag from <head>. */
@@ -226,6 +228,7 @@ export const FRAME_BOOTSTRAP = `<!doctype html>
       marked[j].removeAttribute('data-v-hover')
     }
     root.querySelectorAll('[data-v-path-hidden]').forEach(function (el) { el.removeAttribute('data-v-path-hidden') })
+    root.querySelectorAll('[data-v-proto-flash]').forEach(function (el) { el.removeAttribute('data-v-proto-flash') })
     root.style.removeProperty('zoom') // crisp-render zoom is ours, not the design's
     if (!root.getAttribute('style')) root.removeAttribute('style')
     return '<!doctype html>\\n' + root.outerHTML
@@ -292,6 +295,7 @@ export const FRAME_BOOTSTRAP = `<!doctype html>
      key event itself, so relay it (present mode closes on it) */
   document.addEventListener('keydown', function (ev) {
     if (ev.key !== 'Escape') return
+    if (protoOn && ev.defaultPrevented) return // the design's own script took it
     if (editing) {
       setEdit(false)
       parent.postMessage({ type: 'doop:edit-esc' }, '*')
@@ -923,6 +927,7 @@ export const FRAME_BOOTSTRAP = `<!doctype html>
     if (d.type === 'doop:html' && typeof d.html === 'string' && !editing) {
       render(d.html)
       notifyFrameUpdated()
+      protoHtmlChanged()
       if (d.reqId) parent.postMessage({ type: 'doop:html-result', reqId: d.reqId }, '*')
     }
     if (d.type === 'doop:edit') setEdit(!!d.on)

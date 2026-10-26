@@ -1312,9 +1312,18 @@ export function appendFrameHtml(
 /* ------------------------------------------------------------------ */
 
 export function setCanvasPages(canvasId: string, pages: import('../shared/types.ts').CanvasPageInfo[], actor: Actor) {
-  const dropped = store.setPages(canvasId, pages) ?? []
-  broadcast(canvasId, { type: 'canvas:pages', pages, actor })
-  for (const guide of dropped) broadcast(canvasId, { type: 'guide', id: guide.id, guide: null, actor })
+  const saved = store.setPages(canvasId, pages)
+  const next = saved?.pages ?? pages
+  broadcast(canvasId, { type: 'canvas:pages', pages: next, actor })
+  for (const guide of saved?.dropped ?? []) broadcast(canvasId, { type: 'guide', id: guide.id, guide: null, actor })
+  return next
+}
+
+/** Point a page's prototype flow at a frame (or clear it); peers get the page list. */
+export function setFlowStart(canvasId: string, pageId: string, frameId: string | null, actor: Actor) {
+  const pages = store.setFlowStart(canvasId, pageId, frameId)
+  if (pages) broadcast(canvasId, { type: 'canvas:pages', pages, actor })
+  return pages
 }
 
 /** Add or move a ruler guide; peers see it at once. Guides are view

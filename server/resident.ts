@@ -14,7 +14,8 @@ import * as backgrounds from './backgrounds.ts'
 import * as ingest from './ingest.ts'
 import { viewWebsite, referencedUrls } from './website.ts'
 import { createImportedWebpageFrame, findImportedWebpageFrame } from './webpageImport.ts'
-import { DESIGN_BRIEF, DESIGN_QUALITY } from './guide.ts'
+import { DESIGN_BRIEF, DESIGN_QUALITY, PROTOTYPES } from './guide.ts'
+import { prototypeReport, setPrototypeStart } from './prototypeTools.ts'
 import { describeInspiration, INSPIRATION_USAGE_NOTE, searchInspiration } from './inspiration.ts'
 import type { Actor, AgentTask, Canvas, ElementComment, Frame } from '../shared/types.ts'
 import { canvasPages, framePageId, pageFrames } from '../shared/pages.ts'
@@ -122,7 +123,11 @@ Design quality — the bar for anything you originate or restyle (canvas guideli
 ${DESIGN_QUALITY}
 
 Design brief — when your card asks you to ORIGINATE new design work:
-${DESIGN_BRIEF}`
+${DESIGN_BRIEF}
+
+Clickable prototypes:
+${PROTOTYPES}
+- Frame ids are the id= values in the frame list of your request.`
 
 /** The system prompt for one agent: the shared harness rules plus its specialty. */
 function systemFor(role: AgentRole): string {
@@ -1136,6 +1141,28 @@ const TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: 'get_prototype',
+    description:
+      'List the clickable-prototype wiring of this canvas: each page with its flow start frame, and every interaction (data-doop-on / data-doop-action attributes in frame HTML) with its trigger, action and target. Interactions whose target frame does not exist carry a problem; fix them with edit_frame_html. Call it after wiring a flow.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'set_prototype_start',
+    description:
+      "Choose the frame a page's clickable prototype starts on (the player at /c/<canvas>/proto opens there). Pass an empty frame_id to clear it; the flow then starts on the page's top-left frame.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        frame_id: { type: 'string', description: "The start frame, or an empty string to clear the page's start" },
+        page_id: {
+          type: 'string',
+          description: "The page; defaults to the start frame's page (the first page when clearing)",
+        },
+      },
+      required: ['frame_id'],
+    },
+  },
+  {
     name: 'screenshot_frame',
     description:
       'Render a frame and SEE it as an image. Call this after every visual change to verify the feedback is actually addressed.',
@@ -1146,6 +1173,9 @@ const TOOLS: Anthropic.Tool[] = [
     },
   },
 ]
+
+/** The resident agents' tool names; tests hold them to the MCP server's (agentToolParity.test.ts). */
+export const RESIDENT_TOOL_NAMES = TOOLS.map((tool) => tool.name)
 
 /* tall frames (imported landing pages) are CROPPED to the top 4000px at full
    detail rather than downscaled to mush; width still scales down if it would
@@ -1647,6 +1677,20 @@ async function execTool(
             ? `saved design guide "${actions.guidelineTitle(doc)}" (${doc.name}, ${doc.markdown.length} chars) — every actor on this canvas now inherits it`
             : `deleted design guide ${raw.name.trim().toLowerCase()}`,
         )
+      }
+      case 'get_prototype': {
+        const canvas = store.getCanvas(canvasId)
+        if (!canvas) return fail('canvas not found')
+        return ok(JSON.stringify(prototypeReport(canvas)))
+      }
+      case 'set_prototype_start': {
+        const raw = block.input as { frame_id?: unknown; page_id?: unknown }
+        if (typeof raw.frame_id !== 'string') return fail('frame_id must be a frame id, or an empty string to clear')
+        const canvas = store.getCanvas(canvasId)
+        if (!canvas) return fail('canvas not found')
+        const pageId = typeof raw.page_id === 'string' && raw.page_id ? raw.page_id : undefined
+        const result = setPrototypeStart(canvas, pageId, raw.frame_id.trim() || null, actor)
+        return result.ok ? ok(JSON.stringify({ pages: result.pages })) : fail(result.error)
       }
       case 'screenshot_frame': {
         const f = store.getFrame(input.frame_id)

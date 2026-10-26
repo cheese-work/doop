@@ -90,6 +90,9 @@ interface State {
    *  A plain overlay flag: the panels' own open/closed state is untouched
    *  underneath, so toggling back shows exactly what was open before */
   uiHidden: boolean
+  /** Prototype mode: the element panel shows its Interactions tab and the
+   *  stage draws each interaction's connector to its target frame */
+  prototypeMode: boolean
   viewport: Viewport
   /** live alignment guide lines while a frame drag is snapped to a neighbour */
   snapGuides: SnapGuide[]
@@ -214,6 +217,7 @@ interface State {
   setElementPanelOpen(v: boolean): void
   setLayersOpen(v: boolean): void
   toggleUiHidden(): void
+  setPrototypeMode(on: boolean): void
   setViewport(v: Viewport): void
   setSnapGuides(guides: SnapGuide[]): void
   toggleRulers(): void
@@ -277,6 +281,7 @@ export const useStore = create<State>((set, get) => ({
   elementPanelOpen: false,
   layersOpen: readLayersOpen(),
   uiHidden: false,
+  prototypeMode: false,
   viewport: { x: 0, y: 0, zoom: 1 },
   snapGuides: [],
   rulers: readRulers(),
@@ -628,6 +633,7 @@ export const useStore = create<State>((set, get) => ({
   },
   /* hidden guides cannot stay selected: Delete would remove one unseen */
   toggleUiHidden: () => set((s) => ({ uiHidden: !s.uiHidden, ...(s.uiHidden ? {} : { selectedGuideId: null }) })),
+  setPrototypeMode: (prototypeMode) => set({ prototypeMode }),
   /* every ordinary camera move (pan, zoom, fit, fly-to) is ours, so it ends a follow */
   setViewport: (viewport) => set({ viewport, following: null }),
   /* fires on every pointermove during a drag — skip the no-op transitions

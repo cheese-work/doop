@@ -119,6 +119,10 @@ export interface CommunityItem {
 export interface CanvasPageInfo {
   id: string
   name: string
+  /** the frame this page's prototype flow starts on (shared/prototype.ts).
+   *  Set only through the flow-start route or MCP tool; page-list saves keep
+   *  whatever the server already has. */
+  startFrameId?: string
 }
 
 /** A ruler guide: an infinite line on one page of a canvas, in world px.

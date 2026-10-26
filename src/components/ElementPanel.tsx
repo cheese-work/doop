@@ -39,6 +39,7 @@ import {
 import { Button } from './ui/button'
 import { Textarea } from './ui/textarea'
 import { ImageFill } from './ImageFill'
+import { InteractionsPanel } from './InteractionsPanel'
 import { Tooltip } from './ui/tooltip'
 import {
   AlignCenterIcon,
@@ -110,6 +111,7 @@ export function ElementPanel({
   /* the tab sticks across elements and visits: walking the tree in HTML
      view must not snap back to Design on every row */
   const [tab, setTab] = useState<Tab>(readTab)
+  const prototypeMode = useStore((s) => s.prototypeMode)
   /* the values carry the selector they were read from: switching elements
      keeps the panel mounted (no blank flash), but the old element's values
      are shown dimmed and locked until the new element's read lands, so a
@@ -187,11 +189,20 @@ export function ElementPanel({
       className={cn('top-2.5 max-h-[calc(100%-24px)] w-[244px] transition-[right] duration-150', className)}
       style={style}
     >
-      <PanelTabsRoot value={tab} onValueChange={(v) => selectTab(v === 'html' ? 'html' : 'design')}>
+      <PanelTabsRoot
+        value={prototypeMode ? 'prototype' : tab}
+        onValueChange={(v) => {
+          /* the Prototype tab is Prototype mode: picking it (or the top
+             bar's toggle) turns the canvas connectors on as well */
+          useStore.getState().setPrototypeMode(v === 'prototype')
+          if (v !== 'prototype') selectTab(v === 'html' ? 'html' : 'design')
+        }}
+      >
         <PanelHeader className="pl-2">
           <PanelTabs>
             <PanelTab value="design">Design</PanelTab>
             <PanelTab value="html">HTML</PanelTab>
+            <PanelTab value="prototype">Prototype</PanelTab>
           </PanelTabs>
           <PanelClose onClick={close} />
         </PanelHeader>
@@ -245,6 +256,11 @@ export function ElementPanel({
         </PanelTabPanel>
         <PanelTabPanel value="html">
           <HtmlTab key={selector} frame={frame} selector={selector} />
+        </PanelTabPanel>
+        <PanelTabPanel value="prototype">
+          <PanelBody>
+            <InteractionsPanel frame={frame} selector={selector} />
+          </PanelBody>
         </PanelTabPanel>
       </PanelTabsRoot>
     </Panel>

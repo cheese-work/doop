@@ -1,5 +1,5 @@
 import { env } from './env.ts'
-import { canvasPages, samePages } from '../shared/pages.ts'
+import { canvasPages, framePageId, samePages } from '../shared/pages.ts'
 import { FIRST_CANVAS_PATH, SIGNUP_PARAM, parseSignupMethod } from '../shared/firstCanvas.ts'
 import { localAgentRouter, handleLocalAgentMcp } from './localAgent.ts'
 import { handleGeminiCloudMcp } from './geminiCloudMcp.ts'
@@ -1572,8 +1572,26 @@ app.put('/api/canvases/:id/pages', (req, res) => {
   }
   const clean = pages.map((p) => ({ id: p.id, name: p.name.trim() }))
   const actor = actions.resolveActor({ name: req.user!.name, kind: 'user' })
-  actions.setCanvasPages(canvas.id, clean, actor)
-  res.json(clean)
+  res.json(actions.setCanvasPages(canvas.id, clean, actor))
+})
+
+/* the frame a page's prototype flow starts on; null clears it */
+app.put('/api/canvases/:id/pages/:pageId/flow-start', (req, res) => {
+  const canvas = requireCanvas(req, res, req.params.id)
+  if (!canvas) return
+  const frameId: unknown = req.body?.frameId
+  if (frameId !== null && typeof frameId !== 'string')
+    return res.status(400).json({ error: 'frameId must be a string or null' })
+  if (!canvasPages(canvas).some((p) => p.id === req.params.pageId))
+    return res.status(404).json({ error: 'page not found' })
+  if (frameId !== null) {
+    const frame = canvas.frames.find((f) => f.id === frameId)
+    if (!frame) return res.status(400).json({ error: `no frame ${frameId} on this canvas` })
+    if (framePageId(canvas, frame) !== req.params.pageId)
+      return res.status(400).json({ error: 'the start frame must be on the same page' })
+  }
+  const actor = actions.resolveActor({ name: req.user!.name, kind: 'user' })
+  res.json(actions.setFlowStart(canvas.id, req.params.pageId, frameId, actor))
 })
 
 /* Ruler guides, one per request so two people dragging different guides

@@ -139,6 +139,13 @@
   creation queued with transfers, and undo/redo. Browser regressions cover transformed shapes,
   stacking contexts, covered shapes, and delayed hit-test replies.
 
+- Prototypes (`.context/specs/prototyping.md`): interactions are `data-doop-on` /
+  `data-doop-action` (or the JSON `data-doop-interactions`) attributes in frame HTML, parsed by
+  `shared/prototype.ts`, whose parser the frame runtime inlines by source. `PrototypePlayer.tsx`
+  (Play, and the full-page `/c/<id>/proto`) runs them with Web Animations transitions; the
+  Prototype tab and `PrototypeOverlay.tsx` edit and draw them; MCP has `get_prototype` and
+  `set_prototype_start`. `tests/prototypeBrowser.test.ts` drives the player in Chromium.
+
 ## 5. Email
 
 - nodemailer 9 over SMTP (`server/mailer.ts`, `SMTP_*` + `EMAIL_FROM`; production points it at

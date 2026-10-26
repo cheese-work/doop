@@ -5,6 +5,7 @@
  * these calls instead of holding an iframe ref of its own.
  */
 import type { DropTarget, FlowPlacement } from './layers'
+import type { Interaction } from '../../shared/prototype'
 
 export interface LayoutDrop {
   target: DropTarget
@@ -220,6 +221,20 @@ export async function replaceElementImage(
   url: string,
 ): Promise<ElementInfo | null> {
   return infoOf(await requestFrame(frameId, 'doop:replace-image', { selector, image, url }))
+}
+
+/** One element with interactions, as the frame runtime reports it. */
+export interface ScannedHotspot {
+  selector: string
+  rect: ElementInfo['rect']
+  interactions: Interaction[]
+}
+
+/** Every element of the live document that carries prototype interactions,
+ *  including ones a script created; empty when the frame is not mounted. */
+export async function scanHotspots(frameId: string): Promise<ScannedHotspot[]> {
+  const reply = await requestFrame(frameId, 'doop:proto-scan', {})
+  return Array.isArray(reply?.items) ? (reply.items as ScannedHotspot[]) : []
 }
 
 /** Preview a whole scrub locally, then save once or restore its original CSS. */

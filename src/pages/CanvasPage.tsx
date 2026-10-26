@@ -40,7 +40,8 @@ import { Onboarding } from '../components/Onboarding'
 import { ShareModal } from '../components/ShareModal'
 import { ExportModal } from '../components/ExportModal'
 import { FigmaExportModal } from '../integrations/figma/ExportModal'
-import { pageFrames } from '../../shared/pages'
+import { canvasPages, pageFrames } from '../../shared/pages'
+import { flowStartFrame } from '../../shared/prototype'
 import type { Frame } from '../../shared/types'
 import { clientIntegrations } from '../integrations'
 import { CanvaMark, ImportStepFooter, ImportStepHeader, PhotoshopMark, SourcePicker } from '../components/ImportSources'
@@ -76,6 +77,7 @@ import {
   MoreHorizontalIcon,
   PlayIcon,
   PlusIcon,
+  PrototypeIcon,
   GearIcon,
   RadioTowerIcon,
   ShareIcon,
@@ -171,9 +173,18 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
     history.replaceState(history.state, '', `${url.pathname}${url.search}${url.hash}`)
   }, [])
   const [showShare, setShowShare] = useState(false)
-  const [presenting, setPresenting] = useState(false)
+  /* the frame the player was launched on, while presenting */
+  const [presenting, setPresenting] = useState<string | null>(null)
   /* ⌘. acts only over the canvas view, outside PresentMode */
-  const hideUiActive = canHideUi({ view: 'canvas', presenting })
+  const hideUiActive = canHideUi({ view: 'canvas', presenting: !!presenting })
+  const prototypeMode = useStore((s) => s.prototypeMode)
+  const activePageId = useStore((s) => s.activePageId)
+  /* Play starts on the selected frame, or on the page's flow start */
+  const playFrom = useMemo(() => {
+    if (selectedId) return selectedId
+    if (!canvas) return null
+    return flowStartFrame(canvas, activePageId ?? canvasPages(canvas)[0]!.id)?.id ?? null
+  }, [selectedId, canvas, activePageId])
   /* returning from a GitHub App install: the setup redirect appends a signed
      pass — pull it off the URL and open the import modal on the repo picker */
   const [ghInstallPass, setGhInstallPass] = useState<string | null>(() => {
@@ -570,15 +581,35 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
               <ShareUpIcon className="size-3.5" />
               Share
             </Button>
-            <Tooltip label={selectedId ? 'Present this frame' : 'Select a frame to present'} side="bottom">
+            <Tooltip
+              label={prototypeMode ? 'Leave Prototype mode' : 'Prototype mode: wire up interactions'}
+              side="bottom"
+            >
+              <Button
+                variant="bare"
+                size="icon-sm"
+                className={cn(barPillIconBtn, prototypeMode && 'bg-paper-deep text-ink')}
+                aria-label="Prototype mode"
+                aria-pressed={prototypeMode}
+                onClick={() => useStore.getState().setPrototypeMode(!prototypeMode)}
+              >
+                <PrototypeIcon className="size-3.5" />
+              </Button>
+            </Tooltip>
+            <Tooltip
+              label={
+                selectedId ? 'Present from this frame' : playFrom ? 'Present the prototype' : 'Add a frame to present'
+              }
+              side="bottom"
+            >
               <span className="inline-flex">
                 <Button
                   variant="bare"
                   size="icon-sm"
                   className={barPillIconBtn}
-                  aria-label="Present selected frame"
-                  disabled={!selectedId}
-                  onClick={() => setPresenting(true)}
+                  aria-label="Present prototype"
+                  disabled={!playFrom}
+                  onClick={() => setPresenting(playFrom)}
                 >
                   <PlayIcon className="size-3.5" />
                 </Button>
@@ -843,7 +874,7 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
 
       {renaming && <RenameSelfModal current={me.name} onClose={() => setRenaming(false)} />}
       {showConnect && <ConnectModal canvasId={canvasId} onClose={() => setShowConnect(false)} />}
-      {presenting && selectedId && <PresentMode frameId={selectedId} onClose={() => setPresenting(false)} />}
+      {presenting && <PresentMode frameId={presenting} onClose={() => setPresenting(null)} />}
       {showShare && canvas && (
         <ShareModal
           key={canvas.id}

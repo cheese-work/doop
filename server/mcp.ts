@@ -1,5 +1,6 @@
 import { env } from './env.ts'
 import { canvasPages, samePages } from '../shared/pages.ts'
+import { prototypeReport, prototypeUrl, setPrototypeStart } from './prototypeTools.ts'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import type { Request, Response } from 'express'
@@ -54,6 +55,7 @@ You MUST call get_guide({ topic: "doop-instructions" }) once before using other 
 - Creating: create_frame, then stream the design with append_frame_html one complete section at a time (~1–4 KB chunks; start=true on the first, done=true on the last). Each chunk renders the moment it arrives — viewers watch you work.
 - Review: after every create or significant edit you MUST call get_frame_screenshot and fix what looks wrong before moving on.
 - Small edits: edit_frame_html (exact find/replace — the change morphs into the rendered frame in place). Full redesigns: set_frame_html or a new stream. Rename/move/resize: update_frame.
+- Clickable prototypes: wire screens with data-doop-on / data-doop-action attributes in frame HTML (guide → Prototypes), set the flow start with set_prototype_start, and check the wiring with get_prototype.
 - History: every replace and stream files the design it overwrote. list_frame_versions shows a frame's earlier states; restore_frame_version brings one back (HTML and size) when a human asks for the previous version or your rework turned out worse.
 - Images: real imagery makes designs. search_images finds stock photos (you SEE thumbnails and pick), search_icons finds 200k+ UI icons as hotlinkable SVGs, search_logos finds real company logos by brand name or domain — call it once per brand BEFORE writing any logo wall, integration row, press bar or testimonial, and never ship a placeholder tile, "LOGO" text or an invented wordmark in its place, list_backgrounds shows a page of curated hero/section/bento backgrounds (glows, grainy meshes, aurora, painterly scenes) as thumbnails — browse it when a section wants atmosphere rather than defaulting to a flat CSS gradient, judge by eye whether one fits the frame, and draw your own when none does, upload_asset stores your own file (remote file → source_url; local file → local_file=true, returns a curl command) and returns a permanent URL. generate_image makes a new image from a prompt (a full-bleed hero background in the frame's exact palette, illustration, a product render, brand-specific hero art that stock cannot supply) and stores it as a permanent asset — reach for it when search_images cannot deliver the exact visual, or when the human asks for a generated image; it costs the human money or quota, so one considered prompt beats five drafts. Never inline images as data: URIs.
 - Websites: when a request names an existing site or URL — a redesign of it, or "like acme.com" — call import_webpage FIRST so an editable HTML snapshot lands on the canvas. Leave that source frame unchanged and design in a separate frame. view_website is only for read-only inspection when the page should not be added. If Doop cannot capture the site, do not retry with view_website because it uses the same capture path. Use your own browser or web tool and work only from content you actually observe; if that is unavailable, ask the user for screenshots or an HTML export rather than inventing content.
@@ -896,8 +898,47 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       if (canvas.frames.some((f) => !pages.some((p) => p.id === (f.pageId ?? firstId))))
         return err('Move frames before deleting their page')
       const actor = actorFrom(agent_name)
-      actions.setCanvasPages(canvas_id, pages, actor)
-      return text({ ok: true, pages })
+      return text({ ok: true, pages: actions.setCanvasPages(canvas_id, pages, actor) })
+    },
+  )
+
+  server.registerTool(
+    'get_prototype',
+    {
+      title: 'Read a canvas prototype',
+      description:
+        'List the clickable-prototype wiring of a canvas: each page with its flow start frame, and every interaction with its trigger, action and target. Interactions are attributes on the triggering element in frame HTML, written with edit_frame_html: data-doop-on (click | hover | press | delay:<ms> | key:<Key>) and data-doop-action (navigate:<frameId> | back | overlay:<frameId> | close-overlay | scroll-to:<selector> | url:<https url>), optionally data-doop-transition and data-doop-duration; the guide\'s "Prototypes" section has the full syntax. Interactions whose target frame does not exist are flagged with a problem; fix them with edit_frame_html.',
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: { canvas_id: z.string(), agent_name: agentName },
+    },
+    async ({ canvas_id, agent_name }) => {
+      const canvas = canvasFor(canvas_id)
+      if (!canvas) return noCanvas(canvas_id)
+      arrive(canvas_id, agent_name)
+      return text(prototypeReport(canvas))
+    },
+  )
+
+  server.registerTool(
+    'set_prototype_start',
+    {
+      title: 'Set a prototype flow start',
+      description:
+        "Choose the frame a page's clickable prototype starts on (the player at /c/<canvas_id>/proto opens there). Pass frame_id null to clear it — the flow then starts on the page's top-left frame.",
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: {
+        canvas_id: z.string(),
+        pageId: z.string().optional().describe("Page ID from get_canvas; defaults to the start frame's page"),
+        frame_id: z.string().nullable().describe("The start frame, or null to clear the page's start"),
+        agent_name: agentName,
+      },
+    },
+    async ({ canvas_id, pageId, frame_id, agent_name }) => {
+      const canvas = canvasFor(canvas_id)
+      if (!canvas) return noCanvas(canvas_id)
+      const result = setPrototypeStart(canvas, pageId, frame_id, actorFrom(agent_name))
+      if (!result.ok) return err(result.error)
+      return text({ ok: true, pages: result.pages, prototype_url: prototypeUrl(canvas.id) })
     },
   )
 

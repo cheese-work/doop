@@ -5,6 +5,7 @@ import { Home } from './pages/Home'
 import { Community } from './pages/Community'
 import { Settings } from './pages/Settings'
 import { CanvasPage } from './pages/CanvasPage'
+import { PrototypePage } from './pages/PrototypePage'
 import { AuthPage } from './pages/AuthPage'
 import { DesktopHandoff } from './pages/DesktopHandoff'
 import { DesktopSignIn } from './pages/DesktopSignIn'
@@ -171,7 +172,11 @@ export function App() {
      session back and reloads. */
   if (path.startsWith('/admin') && (!me || returningToAdmin)) return <div className="auth-page" />
 
-  const page = canvasId ? (
+  /* /c/<id>/proto: the prototype player, full page */
+  const prototypeOf = path.match(/^\/c\/([^/]+)\/proto\/?$/)?.[1]
+  const page = prototypeOf ? (
+    <PrototypePage canvasId={prototypeOf} key={prototypeOf} />
+  ) : canvasId ? (
     <CanvasPage canvasId={canvasId} key={canvasId} />
   ) : path === CODEX_SETUP_PATH ? (
     <DesktopCodexSetup key={route} />

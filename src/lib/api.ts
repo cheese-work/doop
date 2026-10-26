@@ -397,6 +397,11 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ pages, expectedPages }),
     }),
+  setFlowStart: (canvasId: string, pageId: string, frameId: string | null) =>
+    req<import('../../shared/types').CanvasPageInfo[]>(
+      `/api/canvases/${canvasId}/pages/${encodeURIComponent(pageId)}/flow-start`,
+      { method: 'PUT', body: JSON.stringify({ frameId }) },
+    ),
   putGuide: (canvasId: string, guide: import('../../shared/types').CanvasGuide) =>
     req<import('../../shared/types').CanvasGuide>(`/api/canvases/${canvasId}/guides/${guide.id}`, {
       method: 'PUT',

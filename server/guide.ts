@@ -69,6 +69,29 @@ Skip the brief only when the canvas already dictates the style — established f
 style guides or pinned references — or when the human handed you a complete design
 system. Then those are the brief; follow them.`
 
+/** How to wire a clickable prototype — shared by the MCP guide and the resident agents' system prompt. */
+export const PROTOTYPES = `When a human asks for a clickable prototype or a flow, wire the screens with data attributes on
+the element that triggers each step (edit_frame_html is enough; they are inert on the canvas and
+only run in the player):
+
+    <button data-doop-on="click" data-doop-action="navigate:<frameId>"
+            data-doop-transition="push-left" data-doop-duration="300">Continue</button>
+
+- data-doop-on: click | hover | press (while held) | delay:<ms> (after the screen shows; on any
+  element, e.g. <body>) | key:<Key> (KeyboardEvent.key: ArrowRight, Escape, Enter, Space).
+- data-doop-action: navigate:<frameId> | back | overlay:<frameId> (opens that frame as a modal
+  over a scrim) | close-overlay | scroll-to:<css selector> | url:<https url> (new tab).
+- data-doop-transition: instant (default) | dissolve | slide-left | slide-right | slide-up |
+  slide-down | push-left | push-right; data-doop-duration in ms (default 300).
+- Several interactions on one element: data-doop-interactions='[{"on":"click","action":
+  "navigate:abc"},{"on":"key:Escape","action":"back"}]' instead of the single attributes.
+- Wire screens only with these attributes: the player does not follow href links or script click
+  handlers between frames.
+- Use real frame ids from the canvas, never invented ones. Size overlay frames to the modal itself, not the page.
+- set_prototype_start picks the frame the flow starts on; get_prototype lists every interaction
+  and flags targets that do not exist — call it after wiring and fix what it flags. The player
+  lives at /c/<canvasId>/proto (append ?frame=<id> to open on a specific screen).`
+
 export const DOOP_GUIDE = `# Doop Agent Guide
 
 ## The room you're in
@@ -378,6 +401,11 @@ ${DESIGN_QUALITY}
   through view_website. Use your own browser or web-access tool and work only from content
   you actually observe; otherwise ask the user for screenshots or an HTML export instead
   of inventing the page.
+
+## Prototypes — make frames clickable
+
+${PROTOTYPES}
+- Frame ids come from get_canvas.
 
 ## Exporting frames (images, PDF, PSD)
 

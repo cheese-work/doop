@@ -270,9 +270,13 @@ class Store {
     return { source, page, pages: canvas.pages, frames, guides }
   }
 
-  /** Replace the page list. Returns the guides that went with deleted
-   *  pages (undefined when the canvas is gone), so peers can drop them. */
-  setPages(canvasId: string, pages: import('../shared/types.ts').CanvasPageInfo[]): CanvasGuide[] | undefined {
+  /** Replace the page list. Returns the saved pages (flow starts kept) and
+   *  the guides that went with deleted pages, so peers can drop them;
+   *  undefined when the canvas is gone. */
+  setPages(
+    canvasId: string,
+    pages: import('../shared/types.ts').CanvasPageInfo[],
+  ): { pages: import('../shared/types.ts').CanvasPageInfo[]; dropped: CanvasGuide[] } | undefined {
     const canvas = this.canvases.get(canvasId)
     if (!canvas) return undefined
     const firstId = canvasPages(canvas)[0]!.id
@@ -282,14 +286,37 @@ class Store {
         persist.saveFrame(frame, true)
       }
     }
-    canvas.pages = pages
+    /* a page-list save renames, reorders, adds or deletes pages — it never
+       moves a flow start, which only setFlowStart changes */
+    const current = canvasPages(canvas)
+    const merged = pages.map(({ startFrameId: _ignored, ...page }) => {
+      const startFrameId = current.find((p) => p.id === page.id)?.startFrameId
+      return startFrameId ? { ...page, startFrameId } : page
+    })
+    canvas.pages = merged
     /* a deleted page takes its guides with it */
-    const kept = (guide: CanvasGuide) => pages.some((page) => page.id === guide.pageId)
+    const kept = (guide: CanvasGuide) => merged.some((page) => page.id === guide.pageId)
     const dropped = (canvas.guides ?? []).filter((guide) => !kept(guide))
     if (dropped.length) canvas.guides = canvas.guides!.filter(kept)
     canvas.updatedAt = Date.now()
     persist.saveCanvas(canvas)
-    return dropped
+    return { pages: merged, dropped }
+  }
+
+  /** Set (frameId) or clear (null) the frame a page's prototype starts on. */
+  setFlowStart(canvasId: string, pageId: string, frameId: string | null) {
+    const canvas = this.canvases.get(canvasId)
+    if (!canvas) return undefined
+    const pages = canvasPages(canvas)
+    if (!pages.some((p) => p.id === pageId)) return undefined
+    canvas.pages = pages.map((page) => {
+      if (page.id !== pageId) return page
+      const { startFrameId: _previous, ...rest } = page
+      return frameId ? { ...rest, startFrameId: frameId } : rest
+    })
+    canvas.updatedAt = Date.now()
+    persist.saveCanvas(canvas)
+    return canvas.pages
   }
 
   /** Add a ruler guide, or move one that exists. Undefined when the canvas

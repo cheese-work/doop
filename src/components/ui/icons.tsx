@@ -117,6 +117,9 @@ import {
   User,
   Users,
   Workflow,
+  Flag,
+  MousePointerClick,
+  SquareMousePointer,
   X,
 } from 'lucide-react'
 
@@ -304,6 +307,10 @@ export const UploadIcon = icon(Upload)
 export const CalendarIcon = icon(Calendar)
 /** what changed: the clock turned back */
 export const HistoryIcon = icon(RotateCcw)
+/* prototypes: the editor's Prototype mode, a flow's start, the player's hotspot hint */
+export const PrototypeIcon = icon(MousePointerClick)
+export const FlowStartIcon = icon(Flag)
+export const HotspotIcon = icon(SquareMousePointer)
 /** review comments: the square bubble */
 export const MessageSquareIcon = icon(MessageSquare)
 /** draft a page: a page skeleton */
