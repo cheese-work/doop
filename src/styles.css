@@ -25,6 +25,7 @@
   --color-dot: var(--dot);
   --color-success: var(--success);
   --color-success-ink: var(--success-ink);
+  --color-success-on-ink: var(--success-on-ink);
   --color-warning: var(--warning);
   --color-warning-ink: var(--warning-ink);
   --font-ui: var(--font-ui);
@@ -155,6 +156,7 @@
      is text that sits on paper. Both flip with the theme. */
   --success: #1fc16b;
   --success-ink: #0f7a45;
+  --success-on-ink: #6fd8a0;
   --warning: #ff8447;
   --warning-ink: #a8481a;
   /* the silver hairline an active agent's avatar wears in the presence pill */
@@ -367,6 +369,7 @@
   --accent-ink: #ff6b57;
   --success: #2fd47c;
   --success-ink: #6fd8a0;
+  --success-on-ink: #0f7a45;
   --warning: #ff9a66;
   --warning-ink: #ffb58c;
   --glaze-ring: #6b6b70;

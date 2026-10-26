@@ -30,7 +30,7 @@ import { CommentComposer, CommentPin, CommentThread } from './CommentPopovers'
 import { cn } from '@/lib/utils'
 import { Button } from './ui/button'
 import { Tooltip } from './ui/tooltip'
-import { EyeClosedIcon, GithubIcon, LockIcon, SyncIcon } from './ui/icons'
+import { CodeIcon, CommentIcon, EditIcon, EyeClosedIcon, GithubIcon, LockIcon, SyncIcon, SparkIcon } from './ui/icons'
 import { isSyncedFrame } from '../lib/sync'
 import { isGithubFrame, isGithubPlaceholder } from '../lib/github'
 import { AgentIcon } from './AgentIcon'
@@ -1081,7 +1081,7 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
           {editing && (
             <div
               className={cn(
-                'absolute top-[calc(100%_+_10px)] left-0 flex origin-top-left items-center gap-[9px] whitespace-nowrap rounded-full bg-ink py-1 pr-[5px] pl-3 text-[11px] font-semibold text-paper shadow-card animate-[chip-in_0.25s_ease]',
+                'absolute top-[calc(100%_+_10px)] left-0 flex origin-top-left items-center gap-[9px] whitespace-nowrap rounded-full bg-ink py-1 pr-[5px] pl-3 text-[11px] font-semibold text-paper shadow-card',
                 COUNTER_SCALE,
               )}
               onPointerDown={(e) => e.stopPropagation()}
@@ -1169,7 +1169,7 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
                   >
                     {!composing ? (
                       <>
-                        <div className="flex items-center gap-1.5 whitespace-nowrap rounded-[10px] bg-ink px-[7px] py-[5px] shadow-pop animate-[chip-in_0.18s_ease]">
+                        <div className="flex items-center gap-1.5 whitespace-nowrap rounded-[10px] bg-ink px-[7px] py-[5px] shadow-pop">
                           <span className="rounded-[5px] bg-paper/[0.14] px-[5px] py-px text-[11px] font-bold text-paper [font-family:ui-monospace,monospace]">
                             {anchor.tag}
                           </span>
@@ -1181,7 +1181,7 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
                               setComposing(true)
                             }}
                           >
-                            💬 Comment
+                            <CommentIcon size="rail" /> Comment
                           </Button>
                           <Button
                             variant="inverse"
@@ -1193,14 +1193,14 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
                               setComposing(true)
                             }}
                           >
-                            ✦ Ask AI
+                            <SparkIcon size="rail" /> Ask AI
                           </Button>
                           <Button
                             variant="inverse"
                             className={EL_TOOLBAR_BTN}
                             onClick={() => (codeView === null ? requestCode(anchor.selector) : setCodeView(null))}
                           >
-                            {'</>'} Code
+                            <CodeIcon size="button" /> Code
                           </Button>
                           <Button
                             variant="inverse"
@@ -1218,7 +1218,7 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
                                 enterEdit()
                               }}
                             >
-                              ✎ Edit text
+                              <EditIcon size="rail" /> Edit text
                             </Button>
                           )}
                         </div>
