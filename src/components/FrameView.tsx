@@ -33,7 +33,17 @@ import { CommentComposer, CommentPin, CommentThread } from './CommentPopovers'
 import { cn } from '@/lib/utils'
 import { Button } from './ui/button'
 import { Tooltip } from './ui/tooltip'
-import { CodeIcon, CommentIcon, EditIcon, EyeClosedIcon, GithubIcon, LockIcon, SyncIcon, SparkIcon } from './ui/icons'
+import {
+  CheckIcon,
+  CodeIcon,
+  CommentIcon,
+  EditIcon,
+  EyeClosedIcon,
+  GithubIcon,
+  LockIcon,
+  SyncIcon,
+  SparkIcon,
+} from './ui/icons'
 import { isSyncedFrame } from '../lib/sync'
 import { isGithubFrame, isGithubPlaceholder } from '../lib/github'
 import { AgentIcon } from './AgentIcon'
@@ -1137,7 +1147,8 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
                     .filter((p) => p.name !== stream?.name)
                     .map((p) => (
                       <span key={p.clientId} className={EDITOR_CHIP} style={{ background: p.color }}>
-                        {p.kind === 'agent' ? <AgentIcon name={p.name} size={9} color="#fff" /> : '✎'} {p.name}
+                        {p.kind === 'agent' ? <AgentIcon name={p.name} size={9} color="#fff" /> : <EditIcon size={9} />}{' '}
+                        {p.name}
                       </span>
                     ))}
                 </span>
@@ -1321,7 +1332,8 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
                 onClick={exitEdit}
                 title="Save and finish editing (Esc)"
               >
-                ✓ Done
+                <CheckIcon size={12} />
+                Done
               </Button>
             </div>
           )}

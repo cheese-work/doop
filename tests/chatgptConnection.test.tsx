@@ -58,7 +58,7 @@ it('opens the official ChatGPT setup and copies the production MCP URL without d
   )!
   await act(async () => serverBlock.querySelector('button')!.click())
   expect(writeText).toHaveBeenCalledWith('https://doop.design/mcp')
-  expect(serverBlock.textContent).toContain('✓')
+  expect(serverBlock.querySelector('button')?.getAttribute('aria-label')).toBe('Copied')
 })
 
 it.each([

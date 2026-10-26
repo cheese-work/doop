@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils'
 import { canCommentOpenCanvas, canEditOpenCanvas, useStore } from '../lib/store'
 import { Button } from './ui/button'
 import { Textarea } from './ui/textarea'
+import { CheckIcon, CommentIcon, SparkIcon, SyncIcon } from './ui/icons'
 import { RoleMark } from './RoleMark'
 
 /* The comment UI — pins, the composer, an open thread — is shared by the
@@ -16,7 +17,7 @@ import { RoleMark } from './RoleMark'
 export const PIN_SCALE = '[transform:translate(-50%,-50%)_scale(calc(1/var(--zoom,1)))]'
 
 /** A thread's pin, coloured by its author and reflecting the newest agent
- *  request in the thread (💬 a note, ✦ an agent is on it, ! it failed). The
+ *  request in the thread (a speech bubble for a note, a spark while an agent is on it, ! when it failed). The
  *  open thread popover renders as its child, so it inherits the pin's
  *  counter-scale. `left`/`top` are in the parent's coordinate space. */
 export function CommentPin({
@@ -54,7 +55,7 @@ export function CommentPin({
       onClick={onToggle}
       title={`${root.from}: ${root.text}${thread.length > 1 ? ` (${thread.length - 1} replies)` : ''}`}
     >
-      {agentItem?.failedAt ? '!' : working ? '✦' : '💬'}
+      {agentItem?.failedAt ? '!' : working ? <SparkIcon size={14} /> : <CommentIcon size={14} />}
       {open && children}
     </div>
   )
@@ -124,12 +125,29 @@ export function CommentComposer({
 }
 
 /** Where an @agent request in the thread stands, or null for a human note. */
-function agentStatus(c: ElementComment): string | null {
+function agentStatus(c: ElementComment): ReactNode {
   const target = c.targetAgent ?? roleName(DEFAULT_ROLE_ID)
   if (c.failedAt) return `${target} stopped`
-  if (c.resolvedAt) return c.forAgent ? `✓ ${c.resolvedBy ?? target}` : null
-  if (c.claimedBy) return `✦ ${c.claimedBy} is on it`
-  return c.forAgent ? `✦ waiting for ${target}` : null
+  if (c.resolvedAt)
+    return c.forAgent ? (
+      <>
+        <CheckIcon size={12} />
+        {c.resolvedBy ?? target}
+      </>
+    ) : null
+  if (c.claimedBy)
+    return (
+      <>
+        <SparkIcon size={12} />
+        {c.claimedBy} is on it
+      </>
+    )
+  return c.forAgent ? (
+    <>
+      <SparkIcon size={12} />
+      waiting for {target}
+    </>
+  ) : null
 }
 
 export function CommentThread({
@@ -181,7 +199,11 @@ export function CommentThread({
             <div key={c.id} className={cn(i > 0 && 'mt-2 border-t border-line-soft pt-2')}>
               <div className="flex items-center justify-between gap-2 text-[12px]">
                 <b style={{ color: colorFor(c.from) }}>{c.from}</b>
-                {status && <span className="whitespace-nowrap text-[11px] font-semibold text-brand">{status}</span>}
+                {status && (
+                  <span className="inline-flex items-center gap-1 whitespace-nowrap text-[11px] font-semibold text-brand">
+                    {status}
+                  </span>
+                )}
               </div>
               <div className="mt-1 break-words text-[13px] leading-[1.45] text-ink">{c.text}</div>
               {c.failedAt ? (
@@ -194,7 +216,8 @@ export function CommentThread({
                       className="shrink-0 px-[9px] py-[3px] text-[11px]"
                       onClick={() => onRetry(c.id)}
                     >
-                      ↻ Retry
+                      <SyncIcon size={12} />
+                      Retry
                     </Button>
                   )}
                 </div>
@@ -263,7 +286,8 @@ function ThreadReply({
           className="px-2.5 text-ink-soft hover:border-ink-soft hover:bg-transparent hover:text-ink"
           onClick={onResolve}
         >
-          ✓ Resolve
+          <CheckIcon size={12} />
+          Resolve
         </Button>
         {mentioned && (
           <span

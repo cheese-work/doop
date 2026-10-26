@@ -11,6 +11,7 @@ import { isDesktopShell } from '../lib/shell'
 import { posthog } from '../lib/posthog'
 import { AuthCard, AuthCardText, AuthScreen } from '../components/ui/screen'
 import { Button } from '../components/ui/button'
+import { ArrowRightIcon } from '../components/ui/icons'
 import { Input } from '../components/ui/input'
 import { Field } from '../components/ui/field'
 import { Callout } from '../components/ui/callout'
@@ -462,21 +463,23 @@ export function AuthPage() {
               <Button
                 variant="link"
                 size="inline"
-                className="mt-1.5 block text-accent-ink underline"
+                className="mt-1.5 flex text-accent-ink underline"
                 onClick={() => switchMode(suggestMode)}
               >
-                {suggestMode === 'signup' ? 'Create an account instead →' : 'Sign in instead →'}
+                {suggestMode === 'signup' ? 'Create an account instead' : 'Sign in instead'}
+                <ArrowRightIcon size={12} />
               </Button>
             )}
             {unverified && (
               <Button
                 variant="link"
                 size="inline"
-                className="mt-1.5 block text-accent-ink underline"
+                className="mt-1.5 flex text-accent-ink underline"
                 onClick={resendVerification}
                 disabled={busy}
               >
-                Resend verification email →
+                Resend verification email
+                <ArrowRightIcon size={12} />
               </Button>
             )}
           </Callout>

@@ -8,7 +8,7 @@ import { posthog } from '../lib/posthog'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Callout } from './ui/callout'
-import { CheckIcon } from './ui/icons'
+import { ArrowRightIcon, CheckIcon } from './ui/icons'
 import { Input } from './ui/input'
 import { Modal, ModalActions, ModalEyebrow, ModalLede, ModalTitle } from './ui/modal'
 import { Segmented, SegmentedItem } from './ui/segmented'
@@ -289,10 +289,11 @@ function PlanCard({ plan, interval, current }: { plan: Plan; interval: BillingIn
       </ul>
       {plan.id === 'enterprise' && (
         <a
-          className="mt-auto pt-4 text-body font-semibold text-ink underline underline-offset-2"
+          className="mt-auto flex items-center gap-1 pt-4 text-body font-semibold text-ink underline underline-offset-2"
           href={ENTERPRISE_CONTACT}
         >
-          Contact us →
+          Contact us
+          <ArrowRightIcon size={14} />
         </a>
       )}
     </div>

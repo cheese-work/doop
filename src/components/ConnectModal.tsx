@@ -14,7 +14,7 @@ import { Button } from './ui/button'
 import { CodeBlock } from './ui/code-block'
 import { Disclosure } from './ui/collapsible'
 import { Dot } from './ui/dot'
-import { ChevronLeftIcon, PuzzleIcon } from './ui/icons'
+import { CheckIcon, ChevronLeftIcon, PuzzleIcon } from './ui/icons'
 import { Modal, ModalActions, ModalLede, ModalSpacer, ModalTitle } from './ui/modal'
 import { barPrimaryBtn } from './TopBar'
 import { cn } from '@/lib/utils'
@@ -555,7 +555,8 @@ export function AgentArrival({ name }: { name?: string }) {
   )
   return arrived ? (
     <span className="mr-auto inline-flex items-center gap-[7px] text-body text-success-ink">
-      ✓ {arrived.name} is here — it worked
+      <CheckIcon size={14} />
+      {arrived.name} is here — it worked
     </span>
   ) : (
     <span className="mr-auto inline-flex items-center gap-[7px] text-body text-ink-faint">

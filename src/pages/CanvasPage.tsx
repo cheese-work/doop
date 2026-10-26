@@ -64,6 +64,7 @@ import { Button } from '../components/ui/button'
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '../components/ui/sheet'
 import { AuthCard, AuthCardText, AuthScreen } from '../components/ui/screen'
 import {
+  ArrowLeftIcon,
   BrainIcon,
   CopyIcon,
   ExportIcon,
@@ -1328,7 +1329,8 @@ function ImportModal({
                   setError(null)
                 }}
               >
-                ← Back
+                <ArrowLeftIcon size={14} />
+                Back
               </Button>
               <Button
                 variant="primary"
@@ -1528,7 +1530,8 @@ function ImportModal({
                   setError(null)
                 }}
               >
-                ← Back
+                <ArrowLeftIcon size={14} />
+                Back
               </Button>
               <Button variant="primary" disabled={!!busy || !selectedCount} onClick={importSelected}>
                 {busy === 'importing'
@@ -1672,11 +1675,12 @@ function SyncKeysSection({ canvasId, onBack }: { canvasId: string; onBack: () =>
             <Button
               variant="bare"
               size="icon-sm"
-              className="-mr-1.5 text-[13px] hover:bg-accent-ink/10 hover:text-accent-ink"
+              className="-mr-1.5 hover:bg-accent-ink/10 hover:text-accent-ink"
               title="Revoke this key"
+              aria-label="Revoke this key"
               onClick={() => revoke(k.id)}
             >
-              ✕
+              <XIcon size={14} />
             </Button>
           </div>
           <div className="relative">
@@ -1907,11 +1911,12 @@ function GithubSection({
               <Button
                 variant="bare"
                 size="icon-sm"
-                className="-mr-1.5 text-[13px] hover:bg-accent-ink/10 hover:text-accent-ink"
+                className="-mr-1.5 hover:bg-accent-ink/10 hover:text-accent-ink"
                 title="Disconnect this repository"
+                aria-label="Disconnect this repository"
                 onClick={() => disconnect(conn.id)}
               >
-                ✕
+                <XIcon size={14} />
               </Button>
             </div>
           </div>

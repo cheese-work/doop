@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useMemo, useState, type ComponentType, type PointerEvent as ReactPointerEvent } from 'react'
 import type { Frame } from '../../shared/types'
 import { canvasPages, framePageId } from '../../shared/pages'
 import { DEFAULT_PROTO_DURATION, targetsFrame, type Interaction } from '../../shared/prototype'
@@ -7,7 +7,19 @@ import { usePageCanvas } from '../lib/pages'
 import { inspectElement, onFrameChange, scanHotspots, type ScannedHotspot } from '../lib/frameBridge'
 import { elementInteractions, saveInteractions } from '../lib/prototype'
 import { isLayerLocked } from '../lib/layerEdits'
-import { FlowStartIcon } from './ui/icons'
+import {
+  ArrowDownIcon,
+  ArrowLeftIcon,
+  ArrowRightIcon,
+  ExportIcon,
+  FlowStartIcon,
+  XIcon,
+  type IconProps,
+} from './ui/icons'
+
+/** What a link without a connector says beside its hotspot: a glyph for the
+ *  kind of jump and the place it lands. */
+type LinkLabel = { icon: ComponentType<IconProps>; text: string }
 
 type Rect = { x: number; y: number; width: number; height: number }
 
@@ -84,7 +96,7 @@ function Connectors({ frames, startFrameId }: { frames: Frame[]; startFrameId?: 
   const onPage = useMemo(() => new Map(frames.map((f) => [f.id, f])), [frames])
 
   const links = useMemo(() => {
-    const out: { key: string; box: Rect; path: string | null; label: string | null; picked: boolean }[] = []
+    const out: { key: string; box: Rect; path: string | null; label: LinkLabel | null; picked: boolean }[] = []
     for (const frame of frames) {
       for (const [n, spot] of (scans[frame.id] ?? []).entries()) {
         const box = worldRect(frame, spot.rect)
@@ -107,7 +119,10 @@ function Connectors({ frames, startFrameId }: { frames: Frame[]; startFrameId?: 
               key,
               box,
               path: null,
-              label: elsewhere ? `→ ${elsewhere.name}${page ? ` (${page.name})` : ''}` : '→ missing frame',
+              label: {
+                icon: ArrowRightIcon,
+                text: elsewhere ? `${elsewhere.name}${page ? ` (${page.name})` : ''}` : 'missing frame',
+              },
               picked: isPicked,
             })
           }
@@ -158,8 +173,16 @@ function Connectors({ frames, startFrameId }: { frames: Frame[]; startFrameId?: 
               />
             )}
             {link.label && (
-              <text
+              <link.label.icon
                 x={link.box.x + link.box.width + 6 / zoom}
+                y={link.box.y + link.box.height / 2 - 5.5 / zoom}
+                width={11 / zoom}
+                height={11 / zoom}
+              />
+            )}
+            {link.label && (
+              <text
+                x={link.box.x + link.box.width + 20 / zoom}
                 y={link.box.y + link.box.height / 2}
                 dominantBaseline="middle"
                 fill="currentColor"
@@ -168,7 +191,7 @@ function Connectors({ frames, startFrameId }: { frames: Frame[]; startFrameId?: 
                 strokeWidth={3 / zoom}
                 paintOrder="stroke"
               >
-                {link.label}
+                {link.label.text}
               </text>
             )}
           </g>
@@ -195,18 +218,18 @@ function Connectors({ frames, startFrameId }: { frames: Frame[]; startFrameId?: 
   )
 }
 
-function describe(i: Interaction): string {
+function describe(i: Interaction): LinkLabel | null {
   switch (i.action) {
     case 'back':
-      return '← Back'
+      return { icon: ArrowLeftIcon, text: 'Back' }
     case 'close-overlay':
-      return '✕ Close overlay'
+      return { icon: XIcon, text: 'Close overlay' }
     case 'scroll-to':
-      return `↓ ${i.target ?? ''}`
+      return { icon: ArrowDownIcon, text: i.target ?? '' }
     case 'url':
-      return `↗ ${i.target ?? ''}`
+      return { icon: ExportIcon, text: i.target ?? '' }
     default:
-      return ''
+      return null
   }
 }
 

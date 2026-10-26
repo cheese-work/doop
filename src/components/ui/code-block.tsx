@@ -3,6 +3,8 @@ import { cva, type VariantProps } from 'class-variance-authority'
 
 import { cn } from '@/lib/utils'
 
+import { CheckIcon } from './icons'
+
 /* A copyable command. `density="rail"` is the squeezed form for the narrow
    dashboard rail, where the command is clipped to one line and the copy button
    does the work — previously an ancestor selector reaching in from the page. */
@@ -28,6 +30,7 @@ function CodeBlock({
       {text}
       <button
         type="button"
+        aria-label={copied ? 'Copied' : 'Copy'}
         className={cn(
           'absolute rounded-[6px] bg-white/[0.08] px-2 py-1 text-caption/3.5 text-code-ink transition-colors hover:bg-white/[0.18]',
           density === 'rail' ? 'right-[5px] top-[5px]' : 'right-2 top-2',
@@ -39,7 +42,7 @@ function CodeBlock({
           }, console.error)
         }}
       >
-        {copied ? '✓' : 'copy'}
+        {copied ? <CheckIcon size={12} /> : 'copy'}
       </button>
     </div>
   )

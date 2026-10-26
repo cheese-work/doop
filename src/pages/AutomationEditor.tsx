@@ -63,7 +63,14 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from '../components/ui/dropdown-menu'
-import { ChevronDownIcon, PanelCollapseRightIcon, PlayIcon, PulseIcon, XIcon } from '../components/ui/icons'
+import {
+  ArrowRightIcon,
+  ChevronDownIcon,
+  PanelCollapseRightIcon,
+  PlayIcon,
+  PulseIcon,
+  XIcon,
+} from '../components/ui/icons'
 import { cn } from '@/lib/utils'
 
 /** A draft is the automation minus what the server owns. */
@@ -1238,10 +1245,11 @@ function RunsPanel({
                   ) : r.canvasId && r.status === 'ok' ? (
                     <button
                       type="button"
-                      className="self-start text-xs font-semibold text-accent-ink hover:underline"
+                      className="inline-flex items-center gap-1 self-start text-xs font-semibold text-accent-ink hover:underline"
                       onClick={() => navigate(`/c/${r.canvasId}`)}
                     >
-                      Open {canvasName(r.canvasId) ?? 'canvas'} →
+                      Open {canvasName(r.canvasId) ?? 'canvas'}
+                      <ArrowRightIcon size={12} />
                     </button>
                   ) : null}
                 </ListItem>

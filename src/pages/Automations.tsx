@@ -19,7 +19,7 @@ import { RoleMark } from '../components/RoleMark'
 import { Button } from '../components/ui/button'
 import { EmptyState } from '../components/ui/empty-state'
 import { IconButton } from '../components/ui/icon-button'
-import { GridIcon, PlusIcon } from '../components/ui/icons'
+import { ArrowRightIcon, GridIcon, PlusIcon } from '../components/ui/icons'
 import { Pressable } from '../components/ui/pressable'
 import { Skeleton } from '../components/ui/skeleton'
 import { Switch } from '../components/ui/switch'
@@ -344,7 +344,10 @@ export function Examples({ onUse, busy }: { onUse: (example: AutomationExample) 
               {e.trigger === 'approval'
                 ? 'When designs are approved'
                 : describeSchedule({ ...e.schedule, tz: 'UTC' }).replace(' at ', ' ')}
-              <b className="ml-auto font-sans text-body font-semibold text-ink group-hover:text-accent-ink">Use →</b>
+              <b className="ml-auto inline-flex items-center gap-1 font-sans text-body font-semibold text-ink group-hover:text-accent-ink">
+                Use
+                <ArrowRightIcon size={14} />
+              </b>
             </div>
           </Pressable>
         ))}

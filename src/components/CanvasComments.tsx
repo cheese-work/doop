@@ -11,6 +11,7 @@ import { posthog } from '../lib/posthog'
 import { isResidentLimit } from './TeamAllowance'
 import { CommentComposer, CommentPin, CommentThread } from './CommentPopovers'
 import { cn } from '@/lib/utils'
+import { CommentIcon } from './ui/icons'
 
 /** Where the Comment tool was clicked on empty canvas: a world point on the
  *  active page. `at` makes a second click on the same spot a new request. */
@@ -168,7 +169,7 @@ export function CanvasComments({
             className="absolute grid h-[26px] w-[26px] -translate-x-1/2 -translate-y-1/2 place-items-center rounded-[50%_50%_50%_4px] border-2 border-white text-[13px] text-white shadow-card animate-[chip-in_0.25s_ease]"
             style={{ background: colorFor(getIdentity().name) }}
           >
-            💬
+            <CommentIcon size={14} />
           </div>
           <div
             className={cn('absolute -top-[13px]', composeAt.placement.side === 'left' ? 'right-[20px]' : 'left-[20px]')}

@@ -6,7 +6,7 @@ import { Sheet, SheetContent, SheetDescription, SheetTitle, SheetTrigger } from 
 import { cn } from '@/lib/utils'
 import { Button } from './ui/button'
 import { IconButton } from './ui/icon-button'
-import { XIcon } from './ui/icons'
+import { CheckIcon, CircleIcon, SparkIcon, XIcon } from './ui/icons'
 import { ConnectModal } from './ConnectModal'
 
 const obHint = 'text-body text-ink-soft'
@@ -109,7 +109,14 @@ export function Onboarding({ canvasId }: { canvasId: string }) {
         {progress.connected && !progress.tasked && (
           <>
             <Button size="sm" className={obCopy} onClick={() => copy(prompt)}>
-              {copied ? '✓ copied' : 'copy a starter prompt'}
+              {copied ? (
+                <>
+                  <CheckIcon size={12} />
+                  copied
+                </>
+              ) : (
+                'copy a starter prompt'
+              )}
             </Button>
             <p className={obHint}>Paste it into your agent's chat and watch the frame stream in.</p>
           </>
@@ -119,7 +126,7 @@ export function Onboarding({ canvasId }: { canvasId: string }) {
       {allDone && (
         <div className="flex flex-col gap-2.5 border-t border-line-soft pt-2.5">
           <p className="text-body text-ink-soft">
-            That's the loop. One more trick: hover a task in the panel and reply with ↩ — your note becomes an open
+            That's the loop. One more trick: hover a task in the panel and reply to it — your note becomes an open
             request any agent picks up mid-flight.
           </p>
           <Button className="self-start" onClick={dismiss}>
@@ -143,7 +150,7 @@ export function Onboarding({ canvasId }: { canvasId: string }) {
               variant="ghost"
               className="pointer-events-auto absolute left-3 top-3 z-30 h-10 gap-2 rounded-full bg-surface px-3 text-xs font-semibold shadow-card"
             >
-              <span className="text-brand">✦</span> Getting started
+              <SparkIcon size={14} className="text-brand" /> Getting started
               <span className="font-mono text-[10px] text-ink-faint">{done}/2</span>
             </Button>
           </SheetTrigger>
@@ -195,9 +202,15 @@ export function Onboarding({ canvasId }: { canvasId: string }) {
 
 function Step({ done, label, children }: { done: boolean; label: string; children?: React.ReactNode }) {
   return (
-    <div className="flex items-baseline gap-2.5">
-      <span className={cn('w-3.5 flex-none text-copy', done ? 'text-success-ink' : 'text-ink-faint')}>
-        {done ? '✓' : '○'}
+    <div className="flex items-start gap-2.5">
+      {/* one copy line tall, so the mark centres on the label's first line */}
+      <span
+        className={cn(
+          'flex h-[1lh] w-3.5 flex-none items-center text-copy',
+          done ? 'text-success-ink' : 'text-ink-faint',
+        )}
+      >
+        {done ? <CheckIcon size={14} /> : <CircleIcon size={12} />}
       </span>
       {/* the label's line box already leaves room under its text, so it sits
           tighter to its details than they sit to each other */}

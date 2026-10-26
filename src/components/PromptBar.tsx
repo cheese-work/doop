@@ -311,7 +311,7 @@ export function PromptBar({ canvasId }: { canvasId: string }) {
                 disabled={busy}
                 onClick={() => removeAttachment(a.preview)}
               >
-                ×
+                <XIcon size={10} />
               </Button>
             </div>
           ))}
