@@ -81,6 +81,10 @@ const OPENAI_PAGE = {
     { id: 'o4-mini', object: 'model', created: 1_745_000_000, owned_by: 'system' },
     /* not chat models the agent could drive: out */
     { id: 'gpt-image-2', object: 'model', created: 1_786_000_000, owned_by: 'system' },
+    /* no reasoning block, which every turn sends: out */
+    { id: 'gpt-4.1', object: 'model', created: 1_786_000_000, owned_by: 'system' },
+    { id: 'gpt-4o-2024-11-20', object: 'model', created: 1_786_000_000, owned_by: 'system' },
+    { id: 'gpt-6-chat-latest', object: 'model', created: 1_786_000_000, owned_by: 'system' },
     { id: 'gpt-6-realtime', object: 'model', created: 1_786_000_000, owned_by: 'system' },
     { id: 'text-embedding-4', object: 'model', created: 1_786_000_000, owned_by: 'system' },
     { id: 'whisper-2', object: 'model', created: 1_786_000_000, owned_by: 'system' },
@@ -241,6 +245,7 @@ it('OpenAI: lists the GPT and o-series chat families, newest first after the cur
   expect((await alice.patch('/api/model-account', { model: 'gpt-6.1-sol' })).status).toBe(200)
   expect(await (await alice.get('/api/model-account')).json()).toMatchObject({ model: 'gpt-6.1-sol' })
   expect((await alice.patch('/api/model-account', { model: 'claude-opus-5' })).status).toBe(400)
+  expect((await alice.patch('/api/model-account', { model: 'gpt-4.1' })).status).toBe(400)
 })
 
 it('Gemini: pages through the catalog and keeps the generateContent models with room for a turn', async () => {

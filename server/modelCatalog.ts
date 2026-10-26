@@ -38,13 +38,15 @@ export interface ModelCatalog {
 const TURN_OUTPUT_TOKENS = 16_000
 
 /** Ids shaped like something each provider's API will accept as a model. The
- *  catalog decides what is offered; the run decides what works. */
+ *  catalog decides what is offered; the run decides what works. OpenAI is
+ *  held to the reasoning families (GPT-5 and later, the o-series): the runner
+ *  always sends `reasoning.effort`, which GPT-4-era models reject outright. */
 export const CLAUDE_API_MODEL = /^claude-[a-z0-9][a-z0-9.-]{0,98}$/
-export const OPENAI_API_MODEL = /^(?:gpt-\d|o\d)[a-z0-9.-]{0,98}$/
+export const OPENAI_API_MODEL = /^(?:gpt-(?:[5-9]|\d{2,})|o[1-9])[a-z0-9.-]{0,98}$/
 export const GEMINI_API_MODEL = /^gemini-[a-z0-9][a-z0-9.-]{0,98}$/
 
 /* catalog entries that are not a chat model the agent could drive */
-const NOT_AN_AGENT_MODEL = /realtime|audio|tts|transcribe|embedding|image|moderation|search|instruct|live|robotics/
+const NOT_AN_AGENT_MODEL = /realtime|audio|tts|transcribe|embedding|image|moderation|search|instruct|chat|live|robotics/
 
 class CatalogAccessError extends Error {}
 
@@ -84,9 +86,9 @@ async function anthropicModels(apiKey: string, signal: AbortSignal): Promise<Mod
 
 const openaiPage = z.object({ data: z.array(z.object({ id: z.string(), created: z.number() }).passthrough()) })
 
-/** The GPT and o-series chat families, newest first. `/v1/models` says
+/** The reasoning GPT and o-series families, newest first. `/v1/models` says
  *  nothing about capabilities, so the family filter stands in; every model it
- *  admits speaks the Responses API with tools and images. */
+ *  admits speaks the Responses API with tools, images and a reasoning block. */
 async function openaiModels(apiKey: string, signal: AbortSignal): Promise<ModelOption[]> {
   const page = openaiPage.parse(
     await fetchCatalog(new URL(env.OPENAI_MODELS_URL), { Authorization: `Bearer ${apiKey}` }, signal),

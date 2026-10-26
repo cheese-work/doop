@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({
   replace: vi.fn(),
   disconnect: vi.fn(),
   selectLocal: vi.fn(),
-  models: vi.fn(async () => ({ models: [], live: false })),
+  models: vi.fn(async (): Promise<AgentModelCatalog> => ({ models: [], live: false })),
 }))
 vi.mock('../src/lib/auth', () => ({ authClient: { useSession: () => ({ data: { user: { id: 'alice' } } }) } }))
 vi.mock('../src/lib/api', () => ({
@@ -24,6 +24,7 @@ vi.mock('../src/lib/localAgent', () => ({
 vi.mock('../src/lib/store', () => ({ useStore: { getState: () => ({ allowanceChanged: vi.fn() }) } }))
 vi.mock('../src/lib/posthog', () => ({ posthog: { capture: vi.fn() } }))
 vi.mock('../src/components/LocalClaude', () => ({ LocalClaudeRow: () => null }))
+import type { AgentModelCatalog } from '../src/lib/api'
 import { ModelAccountPanel } from '../src/components/ModelAccount'
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 let root: Root
