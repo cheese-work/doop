@@ -190,6 +190,10 @@ private struct LibraryView: View {
     @State private var busy = false
     /// A Live Activity tapped before the library loaded; opened after the first reload.
     @State private var pendingLink: (canvasID: String, serverOrigin: String)?
+    #if DEBUG
+    /// `.task` restarts every time the library reappears, so `-openCanvas` must fire only once.
+    @State private var openedLaunchCanvas = false
+    #endif
 
     private var filtered: [CanvasSummary] {
         app.canvases.filter { canvas in
@@ -247,10 +251,6 @@ private struct LibraryView: View {
             .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle(showingAgents ? "Agents" : "").navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Image("AppMark").resizable().frame(width: 26, height: 26)
-                        .clipShape(RoundedRectangle(cornerRadius: 6)).accessibilityLabel("Doop")
-                }
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
                     if !showingAgents {
                     Button { title = ""; creating = true } label: { Image(systemName: "plus") }
@@ -273,7 +273,8 @@ private struct LibraryView: View {
                 if let link = pendingLink { pendingLink = nil; open(link) }
                 #if DEBUG
                 // -openCanvas <id> jumps straight to a canvas (simulator automation).
-                if path.isEmpty, let id = UserDefaults.standard.string(forKey: "openCanvas"), let canvas = app.canvases.first(where: { $0.id == id }) {
+                if !openedLaunchCanvas, path.isEmpty, let id = UserDefaults.standard.string(forKey: "openCanvas"), let canvas = app.canvases.first(where: { $0.id == id }) {
+                    openedLaunchCanvas = true
                     path.append(canvas)
                 }
                 #endif

@@ -48,25 +48,10 @@ struct NativeCanvasView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 7) {
-                Menu {
-                    Picker("Page", selection: Binding(get: { model.activePageID }, set: { model.selectPage($0) })) {
-                        ForEach(model.pages) { page in Text(page.name).tag(page.id) }
-                    }
-                } label: {
-                    HStack(spacing: 5) {
-                        Text(model.activePage.name).lineLimit(1)
-                        Image(systemName: "chevron.down").font(.caption2)
-                    }.foregroundStyle(.primary).frame(minHeight: 44)
-                }
-                .disabled(model.canvas == nil)
-                .accessibilityLabel("Page").accessibilityValue(model.activePage.name)
-                .accessibilityIdentifier("canvas.pagePicker")
                 Spacer()
                 Circle().fill(model.connected ? .green : .orange).frame(width: 6, height: 6)
                     .accessibilityLabel(model.connected ? "Live" : model.connecting ? "Connecting" : "Disconnected")
                 if !model.pagePresences.isEmpty { Label("\(model.pagePresences.count) here", systemImage: "person.2") }
-                Text("\(model.pageFrames.count) \(model.pageFrames.count == 1 ? "frame" : "frames")")
-                    .accessibilityIdentifier("canvas.frameCount")
             }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 18)
             if let error = model.error ?? model.connectionError {
                 HStack {
@@ -103,6 +88,14 @@ struct NativeCanvasView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
+                    Section("\(model.pageFrames.count) \(model.pageFrames.count == 1 ? "frame" : "frames")") {
+                        Picker(selection: Binding(get: { model.activePageID }, set: { model.selectPage($0) })) {
+                            ForEach(model.pages) { page in Text(page.name).tag(page.id) }
+                        } label: { Label("Page", systemImage: "doc.on.doc") }
+                        .pickerStyle(.menu)
+                        .disabled(model.canvas == nil)
+                        .accessibilityIdentifier("canvas.pagePicker")
+                    }
                     Button { sheet = .tasks } label: { Label("Agent tasks", systemImage: "sparkles") }
                     Button { sheet = .comments } label: { Label("Comments", systemImage: "bubble.left.and.bubble.right") }
                     ShareLink(item: model.client.server.origin.appendingPathComponent("c/\(model.id)")) { Label("Share canvas link", systemImage: "square.and.arrow.up") }
