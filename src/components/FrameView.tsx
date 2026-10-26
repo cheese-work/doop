@@ -686,6 +686,10 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
         if ((hit?.selector ?? null) !== activeSelRef.current) setComposing(false)
         activeSelRef.current = hit?.selector ?? null
         setActiveHit(hit)
+        /* Editing retains an element selection for its Design/HTML panel.
+           Moving the caret to another text element updates that selection;
+           leaving edit mode keeps the last element selected. */
+        if (hit) setProbe(hit)
       }
       if (ev.data?.type === 'doop:code-result' && ev.data.reqId === codeReq.current) {
         setCodeView(typeof ev.data.html === 'string' ? ev.data.html : null)
@@ -742,7 +746,7 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
   /* ---- inline text editing ---- */
   const canEdit = !!frame.html && !stream && !frame.locked && !/<script/i.test(frame.html)
 
-  async function enterElementEdit(where: Record<string, unknown>) {
+  async function enterElementEdit(where: { x: number; y: number } | { selector: string }) {
     if (!frame.html || stream || frame.locked || editing || pathEdit || useStore.getState().tool !== 'select') return
     const request = ++editRequest.current
     const canvasId = useStore.getState().canvas?.id
@@ -766,13 +770,23 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
       closePopovers()
       clearHover()
       setPathEdit(path)
-    } else if (canEdit) enterEdit()
+    } else if (canEdit) enterEdit('x' in where ? where : undefined)
   }
 
-  function enterEdit() {
+  function enterEdit(at?: { x: number; y: number }) {
     select(frame.id)
-    closePopovers()
+    closeElementPopovers()
     clearHover()
+    /* A fast double-click can precede the delayed single-click probe.
+       Resolve its element now so the properties panel opens in that case too. */
+    if (at) {
+      probeIntent.current = 'toolbar'
+      probeReq.current += 1
+      iframeRef.current?.contentWindow?.postMessage(
+        { type: 'doop:probe', reqId: probeReq.current, x: at.x, y: at.y },
+        '*',
+      )
+    }
     setEditing(true)
     iframeRef.current?.contentWindow?.postMessage({ type: 'doop:edit', on: true }, '*')
   }
