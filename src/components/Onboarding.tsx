@@ -175,8 +175,11 @@ export function Onboarding({ canvasId }: { canvasId: string }) {
   return (
     /* bottom left of the canvas, beside the Layers panel in the tool rail's
        column (--rail-left): the rail stops near the top, so the card can hug
-       the panel. Clear of the zoom control on the right */
-    <div className="pointer-events-auto absolute bottom-3.5 left-[var(--rail-left,14px)] z-40 flex w-[340px] flex-col gap-3 rounded-panel bg-surface px-5 pt-4 pb-5 shadow-pop transition-[left] duration-150 max-md:right-4 max-md:bottom-4 max-md:left-auto">
+       the panel. A window too short to stack them (the rail ends ~308px down,
+       the card is up to ~250px tall) moves the card past the rail
+       (--chrome-left) so it can't cover the tools. Clear of the zoom control
+       on the right */
+    <div className="pointer-events-auto absolute bottom-3.5 left-[var(--rail-left,14px)] md:[@media(max-height:599px)]:left-[var(--chrome-left,14px)] z-40 flex w-[340px] flex-col gap-3 rounded-panel bg-surface px-5 pt-4 pb-5 shadow-pop transition-[left] duration-150 max-md:right-4 max-md:bottom-4 max-md:left-auto">
       <header className="flex items-center justify-between">
         <span className="text-lead font-semibold">Getting started</span>
         <IconButton size="sm" className="-mr-1" aria-label="Dismiss" onClick={dismiss}>
