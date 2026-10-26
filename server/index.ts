@@ -2221,6 +2221,7 @@ wss.on('connection', (ws, upgradeReq) => {
       }
       const presence: Presence = {
         clientId: msg.clientId,
+        userId: session.user.id,
         name: session.user.name, // session identity, not whatever the client claims
         color: colorFor(msg.clientId),
         kind: 'user',

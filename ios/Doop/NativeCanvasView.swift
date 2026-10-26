@@ -166,14 +166,15 @@ struct NativeCanvasView: View {
                             }
                         }
                     }
-                }.padding(.horizontal, 16).padding(.bottom, 8)
+                }
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 16).padding(.bottom, 8)
             }
             TextField(promptPlaceholder, text: $prompt, axis: .vertical)
                 .lineLimit(1...5).textFieldStyle(.plain)
                 .font(.callout).padding(.horizontal, 16)
                 .focused($promptFocused)
                 .accessibilityIdentifier("canvas.prompt")
-                .onChange(of: prompt) { _ in dismissedMention = nil }
                 .onChange(of: promptFocused) { focused in if focused { modelPickerOpen = false } }
             HStack(spacing: 8) {
                 Button {
@@ -225,6 +226,7 @@ struct NativeCanvasView: View {
         // Pills already have 6 pt of space inside their taller touch target.
         .padding(.top, hasComposerContext ? 4 : 16)
         .padding(.bottom, 4)
+        .disabled(sending)
         .modifier(ComposerGlass())
         .background(GeometryReader { proxy in Color.clear.preference(key: ComposerHeightKey.self, value: proxy.size.height) })
         .onPreferenceChange(ComposerHeightKey.self) { model.composerHeight = $0 }
@@ -320,15 +322,7 @@ struct NativeCanvasView: View {
         contextPickerOpen || (promptFocused && mentionQuery != nil && dismissedMention != prompt)
     }
     private var availableContext: [PromptContextReference] {
-        var people: [PromptContextReference] = []
-        if let user = currentUser {
-            people.append(PromptContextReference(kind: .person, sourceID: user.id, name: user.name))
-        }
-        for person in model.presences where person.kind == "user" && person.name != "iOS" {
-            if !people.contains(where: { $0.name == person.name }) {
-                people.append(PromptContextReference(kind: .person, sourceID: person.clientId, name: person.name))
-            }
-        }
+        let people = PromptContextReference.people(currentUser: currentUser, presences: model.presences)
         let frames = (model.canvas?.frames ?? []).map { PromptContextReference(kind: .frame, sourceID: $0.id, name: $0.name) }
         let query = mentionQuery ?? ""
         return (people + frames).filter { item in
@@ -409,6 +403,7 @@ struct NativeCanvasView: View {
         }
         .padding(8).modifier(ComposerGlass())
         .accessibilityIdentifier("canvas.contextPicker")
+        .disabled(sending)
     }
 
     private var availableAgents: [AgentAssignment] {
@@ -419,10 +414,9 @@ struct NativeCanvasView: View {
     }
 
     private func selectAgent(_ assignment: AgentAssignment) {
+        guard !sending else { return }
         agentAssignment = assignment
-        prompt = PromptContextReference.removingMentionQuery(from: prompt)
-        contextPickerOpen = false
-        promptFocused = true
+        finishContextSelection()
     }
 
     private func closeContextPicker() {
@@ -431,8 +425,14 @@ struct NativeCanvasView: View {
     }
 
     private func addContext(_ item: PromptContextReference) {
+        guard !sending else { return }
         if !contextReferences.contains(where: { $0.id == item.id }) { contextReferences.append(item) }
+        finishContextSelection()
+    }
+
+    private func finishContextSelection() {
         prompt = PromptContextReference.removingMentionQuery(from: prompt)
+        dismissedMention = prompt
         contextPickerOpen = false
         promptFocused = true
     }
@@ -464,6 +464,7 @@ struct NativeCanvasView: View {
     }
 
     private func sendPrompt() {
+        guard canSend else { return }
         let value = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return }
         sending = true

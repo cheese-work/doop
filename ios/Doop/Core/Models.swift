@@ -124,6 +124,23 @@ public struct PromptContextReference: Identifiable, Equatable {
         self.kind = kind; self.sourceID = sourceID; self.name = name
     }
 
+    public static func people(currentUser: DoopUser?, presences: [CanvasPresence]) -> [Self] {
+        var people: [Self] = []
+        if let user = currentUser {
+            people.append(Self(kind: .person, sourceID: user.id, name: user.name))
+        }
+        var seen = Set(people.map(\.sourceID))
+        for person in presences where person.kind == "user" {
+            // Older servers expose only connection IDs. Keep those distinct
+            // rather than guessing identity from a potentially shared name.
+            let id = person.userId ?? "client:\(person.clientId)"
+            if seen.insert(id).inserted {
+                people.append(Self(kind: .person, sourceID: id, name: person.name))
+            }
+        }
+        return people
+    }
+
     /// The multiline text field completes the trailing @ query; email addresses
     /// and @ characters in the middle of words do not open the picker.
     private static func mentionRange(in text: String) -> Range<String.Index>? {
@@ -264,6 +281,7 @@ public struct CanvasComment: Codable, Identifiable {
 
 public struct CanvasPresence: Codable, Identifiable {
     public var clientId: String
+    public var userId: String? = nil
     public var name: String
     public var color: String
     public var kind: String

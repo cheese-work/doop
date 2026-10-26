@@ -14,6 +14,7 @@ struct ServerAddressChecks {
         checks.testCardScopeBody()
         checks.testCardAgentAssignmentBody()
         checks.testPromptContext()
+        try checks.testContextPeople()
         try checks.testAgentModelMenu()
         try checks.testAgentActivityStates()
         FrameSnappingChecks.run()
@@ -127,6 +128,15 @@ struct ServerAddressChecks {
         checkEqual(request["title"] as? String, title)
         checkEqual(request["agents"] as? [String], ["copy"])
         checkEqual((request["scope"] as? [String: String])?["frameId"], "frame-1")
+    }
+
+    func testContextPeople() throws {
+        let user = try JSONDecoder().decode(DoopUser.self, from: Data(#"{"id":"self","name":"Alex","email":"alex@example.com"}"#.utf8))
+        let presences = try JSONDecoder().decode([CanvasPresence].self, from: Data(#"[{"clientId":"self-tab","userId":"self","name":"Alex","color":"red","kind":"user"},{"clientId":"other-tab","userId":"other","name":"Alex","color":"blue","kind":"user"},{"clientId":"other-tab-2","userId":"other","name":"Alex","color":"blue","kind":"user"},{"clientId":"legacy","name":"Alex","color":"green","kind":"user"},{"clientId":"legacy","name":"Alex","color":"green","kind":"user"},{"clientId":"agent","name":"Alex","color":"orange","kind":"agent"}]"#.utf8))
+        let people = PromptContextReference.people(currentUser: user, presences: presences)
+        checkEqual(people.map(\.sourceID), ["self", "other", "client:legacy"])
+        checkEqual(people.map(\.name), ["Alex", "Alex", "Alex"])
+        checkEqual(PromptContextReference.people(currentUser: nil, presences: presences).count, 3)
     }
 
     func testCardAgentAssignmentBody() {
