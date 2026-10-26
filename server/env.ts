@@ -138,7 +138,6 @@ const schema = {
   OPENAI_RESPONSES_URL: str({ default: 'https://api.openai.com/v1/responses' }),
   OPENAI_MODELS_URL: str({ default: 'https://api.openai.com/v1/models' }),
   OPENROUTER_CHAT_URL: str({ default: 'https://openrouter.ai/api/v1/chat/completions' }),
-  OPENROUTER_MODELS_URL: str({ default: 'https://openrouter.ai/api/v1/models' }),
   GEMINI_OPENAI_CHAT_URL: str({
     default: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
   }),

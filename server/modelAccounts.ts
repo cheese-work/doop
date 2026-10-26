@@ -6,13 +6,7 @@ import { db } from './db/index.ts'
 import { modelAccounts } from './db/schema.ts'
 import { normalizeClaudeModel } from '../shared/localAgent.ts'
 import { GEMINI_MODELS, OPENROUTER_MODELS } from '../shared/modelMenu.ts'
-import {
-  CLAUDE_API_MODEL,
-  GEMINI_API_MODEL,
-  OPENAI_API_MODEL,
-  OPENROUTER_MODEL,
-  modelCatalogFor,
-} from './modelCatalog.ts'
+import { CLAUDE_API_MODEL, GEMINI_API_MODEL, OPENAI_API_MODEL } from './modelCatalog.ts'
 import { isKnownModel, modelFor } from './openaiAgent.ts'
 
 /**
@@ -77,9 +71,6 @@ export interface ModelAccount {
   apiKey?: string
   /** model tier the user picked; unset = the server default */
   model?: string
-  /** whether `model` sees images, as the provider's catalog said when it was
-   *  picked; unset = decide from the curated roster */
-  vision?: boolean
   connectedAt: number
 }
 
@@ -120,7 +111,6 @@ function toAccount(row: typeof modelAccounts.$inferSelect): ModelAccount | null 
     ...(row.expiresAt != null ? { expiresAt: row.expiresAt } : {}),
     ...(row.apiKey ? { apiKey: row.apiKey } : {}),
     ...(row.model ? { model: row.model } : {}),
-    ...(row.modelVision != null ? { vision: row.modelVision } : {}),
     connectedAt: row.connectedAt,
   }
 }
@@ -161,9 +151,11 @@ const MODEL_POLICY: Record<AccountKind, { resolve(model?: string): string; isKno
     resolve: (model) => (model && CLAUDE_API_MODEL.test(model) ? model : normalizeClaudeModel(model)),
     isKnown: (model) => CLAUDE_API_MODEL.test(model),
   },
+  /* OpenRouter keeps its curated roster: the roster's vision flags are what
+     the run-time check knows, and its catalog mixes in text-only models */
   'openrouter-key': {
     resolve: (model) => model || DEFAULT_OPENROUTER,
-    isKnown: (model) => OPENROUTER_MODEL.test(model),
+    isKnown: (model) => OPENROUTER_MODELS.some((option) => option.id === model),
   },
   'gemini-key': {
     resolve: (model) => model || DEFAULT_GEMINI,
@@ -175,14 +167,11 @@ export function accountModelFor(account: Pick<ModelAccount, 'kind' | 'model'>): 
   return MODEL_POLICY[account.kind].resolve(account.model)
 }
 
-/** Whether the model this account resolves to can see images: what the
- *  provider's catalog said when the model was picked, else the curated menu's
- *  flag. An id off both (a server env override) is trusted to have vision
- *  except on OpenRouter, whose roster mixes text-only models — there the
- *  conservative answer is a degraded run rather than a 400 on the first
- *  screenshot. */
-export function accountVisionFor(account: Pick<ModelAccount, 'kind' | 'model' | 'vision'>): boolean {
-  if (account.vision != null) return account.vision
+/** Whether the model this account resolves to can see images. An id off the
+ *  curated menu (a server env override) is trusted to have vision except on
+ *  OpenRouter, whose roster mixes text-only models — there the conservative
+ *  answer is a degraded run rather than a 400 on the first screenshot. */
+export function accountVisionFor(account: Pick<ModelAccount, 'kind' | 'model'>): boolean {
   const model = accountModelFor(account)
   const menu =
     account.kind === 'openrouter-key' ? OPENROUTER_MODELS : account.kind === 'gemini-key' ? GEMINI_MODELS : null
@@ -197,22 +186,8 @@ export async function setAccountModel(userId: string, model: string): Promise<Ac
   const account = await getAccount(userId)
   if (!account) throw new Error('no model account connected')
   if (!MODEL_POLICY[account.kind].isKnown(model)) throw new Error('unknown model')
-  const { vision: _previous, ...rest } = account
-  await save({ ...rest, model, ...(await pickedVision(account, model)) })
+  await save({ ...account, model })
   return getStatus(userId)
-}
-
-/** OpenRouter is the one roster where a model may be blind, and the only
- *  catalog that says so: an id off the curated roster is looked up there and
- *  its vision flag kept with the pick, so the run strips images exactly when
- *  the provider says it must. Every other kind sees images; nothing to record. */
-async function pickedVision(account: ModelAccount, model: string): Promise<{ vision?: boolean }> {
-  if (account.kind !== 'openrouter-key' || OPENROUTER_MODELS.some((option) => option.id === model)) return {}
-  const catalog = await modelCatalogFor(account, OPENROUTER_MODELS)
-  if (!catalog.live) throw new Error('could not reach OpenRouter to check that model — try again in a moment')
-  const listed = catalog.models.find((option) => option.id === model)
-  if (!listed) throw new Error('OpenRouter does not list that model for this key')
-  return { vision: listed.vision }
 }
 
 async function save(account: Omit<ModelAccount, 'connectedAt'>): Promise<void> {
@@ -228,7 +203,6 @@ async function save(account: Omit<ModelAccount, 'connectedAt'>): Promise<void> {
     expiresAt: account.expiresAt ?? null,
     apiKey: account.apiKey ?? null,
     model: account.model ?? null,
-    modelVision: account.vision ?? null,
     connectedAt: now,
     updatedAt: now,
   }
@@ -247,7 +221,6 @@ async function save(account: Omit<ModelAccount, 'connectedAt'>): Promise<void> {
         expiresAt: row.expiresAt,
         apiKey: row.apiKey,
         model: row.model,
-        modelVision: row.modelVision,
         updatedAt: row.updatedAt,
       },
     })
@@ -767,9 +740,8 @@ async function connectKey(userId: string, kind: AccountKind, apiKey: string): Pr
     userId,
     kind,
     apiKey: key,
-    /* a rotation keeps the chosen model (and what was recorded about it);
-       switching providers resets both */
-    ...(previous?.kind === kind ? { model: previous.model, vision: previous.vision } : {}),
+    /* a rotation keeps the chosen model; switching providers resets it */
+    model: previous?.kind === kind ? previous.model : undefined,
   })
   return getStatus(userId)
 }

@@ -7,10 +7,9 @@ import { Client, startServer, type Server } from './harness'
  * A connected API key's model menu comes from the provider's own catalog,
  * asked with that key, so a model released after the curated list was
  * written is on the menu without a code change. One fake provider stands in
- * for all four catalogs and pins: pagination, the family filters, the
+ * for all three catalogs and pins: pagination, the family filters, the
  * curated-first merge, that a discovered id can be chosen and then runs as
- * itself, that OpenRouter's vision flag follows the catalog into the pick,
- * and the curated fallback when a provider is down or rejects the key.
+ * itself, and the curated fallback when a provider is down or rejects the key.
  */
 
 const ANTHROPIC_PAGE_ONE = {
@@ -126,40 +125,6 @@ const GEMINI_PAGE_TWO = {
   ],
 }
 
-const OPENROUTER_PAGE = {
-  data: [
-    {
-      id: 'moonshotai/kimi-k2.6',
-      name: 'Moonshot: Kimi K2.6',
-      created: 1_770_000_000,
-      architecture: { input_modalities: ['text', 'image'], output_modalities: ['text'] },
-      supported_parameters: ['tools', 'temperature'],
-    },
-    {
-      id: 'acme/designer-9',
-      name: 'Acme: Designer 9',
-      created: 1_795_000_000,
-      architecture: { input_modalities: ['text', 'image'] },
-      supported_parameters: ['tools'],
-    },
-    {
-      id: 'acme/scribe-9',
-      name: 'Acme: Scribe 9',
-      created: 1_794_000_000,
-      architecture: { input_modalities: ['text'] },
-      supported_parameters: ['tools'],
-    },
-    /* no tool calling: out */
-    {
-      id: 'acme/chatter-1',
-      name: 'Acme: Chatter 1',
-      created: 1_796_000_000,
-      architecture: { input_modalities: ['text', 'image'] },
-      supported_parameters: ['temperature'],
-    },
-  ],
-}
-
 let mode: 'catalog' | 'down' | 'rejects' = 'catalog'
 const seen: { path: string; auth: string }[] = []
 
@@ -187,8 +152,6 @@ beforeAll(async () => {
         return json(200, OPENAI_PAGE)
       case '/gemini/v1beta/models':
         return json(200, url.searchParams.get('pageToken') ? GEMINI_PAGE_TWO : GEMINI_PAGE_ONE)
-      case '/openrouter/api/v1/models':
-        return json(200, OPENROUTER_PAGE)
       default:
         return json(404, {})
     }
@@ -201,7 +164,6 @@ beforeAll(async () => {
     OPENAI_API_KEY: '',
     OPENAI_MODELS_URL: `${base}/openai/v1/models`,
     GEMINI_MODELS_URL: `${base}/gemini/v1beta/models`,
-    OPENROUTER_MODELS_URL: `${base}/openrouter/api/v1/models`,
     DATABASE_URL: '',
     SMTP_HOST: '',
   })
@@ -297,34 +259,14 @@ it('Gemini: pages through the catalog and keeps the generateContent models with 
   expect(await (await alice.get('/api/model-account')).json()).toMatchObject({ model: 'gemini-4-argon' })
 })
 
-it('OpenRouter: offers every tool-calling model and records what the catalog says about vision', async () => {
+it('keeps the curated roster, and no catalog call, for OpenRouter', async () => {
   seen.length = 0
   await alice.post('/api/model-account/openrouter-key', { apiKey: 'sk-or-v1-openroutertestkey' })
   const catalog = await (await alice.get('/api/model-account/models')).json()
-  expect(catalog.live).toBe(true)
-  expect(ids(catalog)).toEqual(['moonshotai/kimi-k2.6', 'acme/designer-9', 'acme/scribe-9'])
-  expect(catalog.models[0]).toMatchObject({ name: 'Kimi K2.6', recommended: true, vision: true })
-  expect(catalog.models[1]).toMatchObject({ name: 'Acme: Designer 9', vision: true })
-  expect(catalog.models[2]).toMatchObject({ name: 'Acme: Scribe 9', vision: false })
-
-  /* a discovered pick is checked against the catalog, and its vision flag kept */
-  expect((await alice.patch('/api/model-account', { model: 'acme/designer-9' })).status).toBe(200)
-  expect((await alice.patch('/api/model-account', { model: 'acme/nobody-1' })).status).toBe(400)
-  /* a rotation keeps the pick; the catalog is not needed to keep it */
-  mode = 'down'
-  const rotated = await (
-    await alice.post('/api/model-account/openrouter-key', { apiKey: 'sk-or-v1-rotatedkey' })
-  ).json()
-  expect(rotated).toMatchObject({ model: 'acme/designer-9' })
-  /* with the provider down, a pick off the curated roster is refused rather than guessed at */
-  expect((await alice.patch('/api/model-account', { model: 'acme/scribe-9' })).status).toBe(400)
-  expect((await alice.patch('/api/model-account', { model: 'moonshotai/kimi-k2.6' })).status).toBe(200)
-  mode = 'catalog'
-})
-
-it('keeps the curated menu for a provider without a catalog', async () => {
-  seen.length = 0
-  const chatgpt = await (await alice.get('/api/model-account')).json()
-  expect(chatgpt.menus.chatgpt.map((m: { id: string }) => m.id)).toContain('gpt-5.6-terra')
+  expect(catalog.live).toBe(false)
+  expect(catalog.error).toBeUndefined()
+  expect(ids(catalog)).toContain('moonshotai/kimi-k2.6')
+  expect(catalog.models.some((m: { vision: boolean }) => m.vision === false)).toBe(true)
+  expect((await alice.patch('/api/model-account', { model: 'acme/designer-9' })).status).toBe(400)
   expect(seen).toEqual([])
 })

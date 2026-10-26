@@ -17,11 +17,13 @@ import { ACCOUNT_KIND_LABELS, type ModelOption } from '../shared/modelMenu.ts'
  * When the call fails the curated menu is served with `live: false` and a
  * message, never an empty picker.
  *
- * The catalogs do not all say what a model can do, so each loader keeps a
+ * The catalogs do not say what a model can do, so each loader keeps a
  * family filter of its own: the agent needs tools, screenshots and room for
  * a full turn, and a catalog lists plenty of models that offer none of that
  * (embeddings, audio, image generation, realtime). Those filters admit new
  * revisions of a known family; a new family is a review, not a regex edit.
+ * OpenRouter stays on its curated roster: its catalog mixes text-only
+ * models, and the run-time vision check only knows the roster's flags.
  */
 
 export interface ModelCatalog {
@@ -40,7 +42,6 @@ const TURN_OUTPUT_TOKENS = 16_000
 export const CLAUDE_API_MODEL = /^claude-[a-z0-9][a-z0-9.-]{0,98}$/
 export const OPENAI_API_MODEL = /^(?:gpt-\d|o\d)[a-z0-9.-]{0,98}$/
 export const GEMINI_API_MODEL = /^gemini-[a-z0-9][a-z0-9.-]{0,98}$/
-export const OPENROUTER_MODEL = /^[a-z0-9][a-z0-9.-]{0,60}\/[a-z0-9][a-z0-9.:-]{0,98}$/
 
 /* catalog entries that are not a chat model the agent could drive */
 const NOT_AN_AGENT_MODEL = /realtime|audio|tts|transcribe|embedding|image|moderation|search|instruct|live|robotics/
@@ -58,9 +59,6 @@ async function fetchCatalog(url: URL, headers: Record<string, string>, signal: A
   }
   return res.json()
 }
-
-const newestFirst = <T extends { created: number; id: string }>(a: T, b: T) =>
-  b.created - a.created || a.id.localeCompare(b.id)
 
 /** Messages models with image input and room for a full turn, newest first.
  *  The SDK pages through `/v1/models` itself and honours ANTHROPIC_BASE_URL. */
@@ -86,16 +84,16 @@ async function anthropicModels(apiKey: string, signal: AbortSignal): Promise<Mod
 
 const openaiPage = z.object({ data: z.array(z.object({ id: z.string(), created: z.number() }).passthrough()) })
 
-/** The GPT and o-series chat families. `/v1/models` says nothing about
- *  capabilities, so the family filter stands in; every model it admits speaks
- *  the Responses API with tools and images. */
+/** The GPT and o-series chat families, newest first. `/v1/models` says
+ *  nothing about capabilities, so the family filter stands in; every model it
+ *  admits speaks the Responses API with tools and images. */
 async function openaiModels(apiKey: string, signal: AbortSignal): Promise<ModelOption[]> {
   const page = openaiPage.parse(
     await fetchCatalog(new URL(env.OPENAI_MODELS_URL), { Authorization: `Bearer ${apiKey}` }, signal),
   )
   return page.data
     .filter((model) => OPENAI_API_MODEL.test(model.id) && !NOT_AN_AGENT_MODEL.test(model.id))
-    .sort(newestFirst)
+    .sort((a, b) => b.created - a.created || a.id.localeCompare(b.id))
     .map((model) => ({ id: model.id, name: model.id.replace(/^gpt-/, 'GPT-'), blurb: '', vision: true }))
 }
 
@@ -134,67 +132,29 @@ async function geminiModels(apiKey: string, signal: AbortSignal): Promise<ModelO
   throw new Error('Gemini catalog did not end')
 }
 
-const openrouterPage = z.object({
-  data: z.array(
-    z
-      .object({
-        id: z.string(),
-        name: z.string().optional(),
-        created: z.number().default(0),
-        architecture: z
-          .object({ input_modalities: z.array(z.string()).default([]) })
-          .passthrough()
-          .optional(),
-        supported_parameters: z.array(z.string()).default([]),
-      })
-      .passthrough(),
-  ),
-})
-
-/** Everything on OpenRouter that takes tool calls. This is the one catalog
- *  that states image input, so the vision flag comes from it rather than from
- *  the hand-checked roster. */
-async function openrouterModels(apiKey: string, signal: AbortSignal): Promise<ModelOption[]> {
-  const page = openrouterPage.parse(
-    await fetchCatalog(new URL(env.OPENROUTER_MODELS_URL), { Authorization: `Bearer ${apiKey}` }, signal),
-  )
-  return page.data
-    .filter((model) => OPENROUTER_MODEL.test(model.id) && model.supported_parameters.includes('tools'))
-    .sort(newestFirst)
-    .map((model) => ({
-      id: model.id,
-      name: model.name || model.id,
-      blurb: '',
-      vision: model.architecture?.input_modalities.includes('image') ?? false,
-    }))
-}
-
 type Loader = (apiKey: string, signal: AbortSignal) => Promise<ModelOption[]>
 
 const LOADERS: Partial<Record<ModelAccount['kind'], Loader>> = {
   'anthropic-key': anthropicModels,
   'openai-key': openaiModels,
   'gemini-key': geminiModels,
-  'openrouter-key': openrouterModels,
 }
 
 /** Curated entries the provider confirms come first, in curated order, with
  *  their blurbs; the rest of the catalog follows. A curated id the provider
  *  does not list is dropped — offering a tier the account cannot run is the
- *  bug this exists to fix. The provider's word on vision wins over the roster's. */
+ *  bug this exists to fix. */
 function merge(curated: ModelOption[], live: ModelOption[]): ModelOption[] {
   const liveById = new Map(live.map((model) => [model.id, model]))
   const recommended = curated.flatMap((option) => {
-    const found = liveById.get(option.id)
-    if (!found) return []
-    liveById.delete(option.id)
-    return [{ ...option, vision: found.vision, recommended: true }]
+    if (!liveById.delete(option.id)) return []
+    return [{ ...option, recommended: true }]
   })
   return [...recommended, ...liveById.values()]
 }
 
 /** The menu for this account: the provider's list merged over the curated
- *  one, or the curated one alone for a kind with no catalog yet, or when the
+ *  one, or the curated one alone for a kind with no catalog, or when the
  *  provider cannot be reached. */
 export async function modelCatalogFor(account: ModelAccount, curated: ModelOption[]): Promise<ModelCatalog> {
   const load = LOADERS[account.kind]

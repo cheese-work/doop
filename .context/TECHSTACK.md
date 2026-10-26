@@ -31,13 +31,11 @@
   account's picker asks the provider's catalog with the user's own key when it opens (the
   composer's `ModelPicker`) or mounts (Settings, `useAgentModels`), merging the curated entries of
   `shared/modelMenu.ts` / `shared/localAgent.ts` on top as `recommended`; a provider without a
-  loader, or one that cannot be reached, gets the curated menu with `live: false`. The four API-key
-  kinds have loaders (Anthropic and OpenAI `/v1/models`, Gemini `/v1beta/models`, OpenRouter
-  `/api/v1/models`), each with a family filter for chat models with tools, images and a 16k output
-  window; a picked id only has to be shaped like the provider's, and the run is the final check.
-  OpenRouter's catalog states image input, so an off-roster pick is verified there and its vision
-  flag stored on the account (`model_accounts.model_vision`), which `accountVisionFor` reads first.
-  ChatGPT subscriptions still use the curated `AGENT_MODELS`.
+  loader, or one that cannot be reached, gets the curated menu with `live: false`. Anthropic and
+  OpenAI (`/v1/models`) and Gemini (`/v1beta/models`) have loaders, each with a family filter for
+  chat models with tools, images and a 16k output window; a picked id only has to be shaped like
+  the provider's, and the run is the final check. OpenRouter stays on its curated roster (the
+  run-time vision check knows only the roster's flags) and ChatGPT subscriptions on `AGENT_MODELS`.
 - `ws` 8.18.0 - WebSocket server for realtime multiplayer (cursors, presence, frame edits,
   activity feed) over one room per canvas.
 - `pdf-lib` 1.17.1 - joins the vector PDF export (`server/pdfExport.ts`): headless Chrome prints

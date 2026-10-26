@@ -557,9 +557,6 @@ export const modelAccounts = pgTable('model_accounts', {
   apiKey: text('api_key'),
   /** the model tier this user picked; null = the server default */
   model: text('model'),
-  /** whether `model` can see images, as the provider's catalog said when it
-   *  was picked; null = not recorded, fall back to the curated roster */
-  modelVision: boolean('model_vision'),
   connectedAt: bigint('connected_at', { mode: 'number' }).notNull(),
   updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
 })
