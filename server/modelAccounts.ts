@@ -4,8 +4,9 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { eq } from 'drizzle-orm'
 import { db } from './db/index.ts'
 import { modelAccounts } from './db/schema.ts'
-import { CLAUDE_MODEL_IDS, normalizeClaudeModel } from '../shared/localAgent.ts'
+import { normalizeClaudeModel } from '../shared/localAgent.ts'
 import { GEMINI_MODELS, OPENROUTER_MODELS } from '../shared/modelMenu.ts'
+import { CLAUDE_API_MODEL } from './modelCatalog.ts'
 import { isKnownModel, modelFor } from './openaiAgent.ts'
 
 /**
@@ -141,9 +142,11 @@ const DEFAULT_GEMINI = env.DOOP_AGENT_GEMINI_MODEL
 const MODEL_POLICY: Record<AccountKind, { resolve(model?: string): string; isKnown(model: string): boolean }> = {
   chatgpt: { resolve: (model) => modelFor({ model }), isKnown: isKnownModel },
   'openai-key': { resolve: (model) => modelFor({ model }), isKnown: isKnownModel },
+  /* any Claude id the catalog offered (or the user typed) runs as is; only the
+     pre-catalog aliases and an unset model fall back to the curated default */
   'anthropic-key': {
-    resolve: normalizeClaudeModel,
-    isKnown: (model) => CLAUDE_MODEL_IDS.some((id) => id === model),
+    resolve: (model) => (model && CLAUDE_API_MODEL.test(model) ? model : normalizeClaudeModel(model)),
+    isKnown: (model) => CLAUDE_API_MODEL.test(model),
   },
   'openrouter-key': {
     resolve: (model) => model || DEFAULT_OPENROUTER,

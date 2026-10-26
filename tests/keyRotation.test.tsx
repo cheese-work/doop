@@ -7,6 +7,7 @@ vi.mock('../src/lib/auth', () => ({ authClient: { useSession: () => ({ data: { u
 vi.mock('../src/lib/api', () => ({
   api: {
     modelAccount: async () => ({ connected: true, kind: 'anthropic-key', model: 'claude-opus-5', models: [] }),
+    agentModels: async () => ({ models: [], live: false }),
     connectAnthropicKey: mocks.replace,
     disconnectModelAccount: mocks.disconnect,
   },

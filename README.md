@@ -310,7 +310,10 @@ kinds of account:
 - **Gemini cloud pilot** — an operator-managed prototype running the official Gemini CLI in an
   isolated worker using Google sign-in. Disabled by default; see the
   [pilot setup and verification guide](docs/gemini-cloud-pilot.md).
-- **Claude API key** — pay-as-you-go on the user's own Anthropic account.
+- **Claude API key** — pay-as-you-go on the user's own Anthropic account. Its model menu is
+  Anthropic's live `/v1/models` catalog asked with that key (`server/modelCatalog.ts`), so a newly
+  released Claude model is on it without an upgrade; the curated entries sit on top as
+  recommendations, and the curated menu alone is served if Anthropic cannot be reached.
 
 Azure OpenAI is deliberately _not_ a connectable account kind, and the OpenRouter/Gemini endpoints
 are fixed constants: a user-supplied endpoint would be a URL the server fetches with the run's full
