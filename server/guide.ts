@@ -379,13 +379,18 @@ ${DESIGN_QUALITY}
   you actually observe; otherwise ask the user for screenshots or an HTML export instead
   of inventing the page.
 
-## Exporting frames as images
+## Exporting frames (images, PDF, PSD)
 
 Every frame response includes an image_url — a public, hotlinkable render of the frame's
 CURRENT html (/i/<frameId>.png?scale=2; use .jpg?quality=90 for JPEG, append &download
 for an attachment). The export_frame tool returns the same URLs on demand. Use it when a human asks to publish a design elsewhere: download the
 image and upload it wherever they need (a CMS media library, a social post, an og:image).
 The URL re-renders on change, so an embedded link stays current as the frame iterates.
+For print, a client handoff or a deck, export_frame with format "pdf" returns the PDF file itself
+(an embedded application/pdf resource, not a URL): vector, text selectable, one page per frame
+at the frame's own size. Pass frame_ids to bind several frames of one canvas into one multi-page
+PDF; pages follow the order given (frame_id first, then frame_ids as listed).
+format "psd" returns a URL to a layered Photoshop file.
 
 ## Multiplayer etiquette
 

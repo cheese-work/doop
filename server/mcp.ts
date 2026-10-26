@@ -13,6 +13,15 @@ import * as workspaces from './workspaces.ts'
 import { auth, getUserName, isBanned } from './auth.ts'
 import { capture, captureThrottled } from './analytics.ts'
 import { renderFrame } from './screenshot.ts'
+import {
+  MAX_PDF_FRAMES,
+  PDF_UNAVAILABLE_MESSAGE,
+  pdfFileName,
+  pdfRendererAvailable,
+  renderFramesPdf,
+  selectPdfFrames,
+  takePdfExportSlot,
+} from './pdfExport.ts'
 import { primeImage } from './previews.ts'
 import { DOOP_GUIDE, GUIDE_TOPICS } from './guide.ts'
 import { describeInspiration, INSPIRATION_USAGE_NOTE, searchInspiration } from './inspiration.ts'
@@ -100,6 +109,9 @@ function withEscapeNote<T extends { content: { type: 'text' | 'image'; [k: strin
   if (looksEscapedHtml(sent)) result.content.push({ type: 'text' as const, text: ESCAPED_HTML_NOTE })
   return result
 }
+
+/** A PDF returned inline as base64; beyond this, export fewer frames. */
+const MAX_MCP_PDF_BYTES = 15_000_000
 
 function err(message: string) {
   return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true }
@@ -241,6 +253,45 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
   const noCanvas = (id: string) => err(`no canvas with id ${id} accessible to this account`)
   const noFrame = (id: string) => err(`no frame with id ${id} accessible to this account`)
   const noComment = (id: string) => err(`no comment with id ${id} on this canvas`)
+  /* export_frame's PDF: the file travels inside the tool result, not as a
+     public URL, so it stays behind the same canvas gate as the frames */
+  const exportPdf = async (first: Frame, more: string[]) => {
+    const canvas = canvasFor(first.canvasId)
+    if (!canvas) return noFrame(first.id)
+    const selection = selectPdfFrames(canvas, { frameIds: [first.id, ...more] })
+    if (!selection.ok) return err(selection.error)
+    if (!pdfRendererAvailable()) return err(PDF_UNAVAILABLE_MESSAGE)
+    if (!takePdfExportSlot(ownerId ?? `mcp:${owner ?? 'anonymous'}`))
+      return err('PDF export rate limit — wait a minute before exporting again')
+    try {
+      const pdf = await renderFramesPdf(selection.frames)
+      if (pdf.length > MAX_MCP_PDF_BYTES) return err('The PDF is too large to return — export fewer frames at once')
+      const fileName = pdfFileName(canvas, selection.frames)
+      return {
+        content: [
+          {
+            type: 'resource' as const,
+            resource: {
+              uri: `doop://canvas/${canvas.id}/${encodeURIComponent(fileName)}`,
+              mimeType: 'application/pdf',
+              blob: pdf.toString('base64'),
+            },
+          },
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              file_name: fileName,
+              bytes: pdf.length,
+              pages: selection.frames.length,
+              note: 'The PDF is the embedded application/pdf resource (base64). Save it to disk as the file name above; each page is one frame at its own size, text stays selectable.',
+            }),
+          },
+        ],
+      }
+    } catch (e) {
+      return err(`PDF export failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
   /* Reads count as arrival: presence (and with it every "your agent is
      connected" confirmation in the UI) must appear on an agent's FIRST
      canvas-scoped call, not only once it mutates something. */
@@ -952,19 +1003,35 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
   server.registerTool(
     'export_frame',
     {
-      title: 'Export frame as image',
+      title: 'Export frame as image, PSD or PDF',
       description:
-        "Get public image URLs (PNG/JPG) rendering the frame's CURRENT design — for publishing it elsewhere: download the URL and upload to a CMS media library, social post, or use directly as og:image. The URL re-renders when the frame changes.",
+        "Export the frame's CURRENT design. PNG/JPG return public URLs for publishing it elsewhere (CMS media library, social post, og:image; the URL re-renders when the frame changes); PSD returns a URL for handing the design to Photoshop as a layered, editable file (each element becomes a layer, text stays editable). PDF returns the file itself (an embedded application/pdf resource): vector, text selectable, one page per frame sized to the frame; pass frame_ids to put several frames of the same canvas into one multi-page PDF (pages in the order given: frame_id first, then frame_ids as listed).",
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: {
         frame_id: z.string(),
-        format: z.enum(['png', 'jpg']).optional().describe('default png'),
+        format: z.enum(['png', 'jpg', 'psd', 'pdf']).optional().describe('default png'),
         quality: z.number().min(1).max(100).optional().describe('jpg only, default 90'),
+        frame_ids: z
+          .array(z.string())
+          .max(MAX_PDF_FRAMES)
+          .optional()
+          .describe(
+            `pdf only: more frames from the same canvas to include as extra pages, in this order after frame_id (up to ${MAX_PDF_FRAMES} in all)`,
+          ),
       },
     },
-    async ({ frame_id, format, quality }) => {
+    async ({ frame_id, format, quality, frame_ids }) => {
       const f = frameFor(frame_id)
       if (!f) return noFrame(frame_id)
+      if (format === 'pdf') return exportPdf(f, frame_ids ?? [])
+      if (format === 'psd') {
+        return text({
+          psd_url: `${env.BETTER_AUTH_URL}/i/${frame_id}.psd`,
+          width: f.width,
+          height: f.height,
+          note: 'Public URL, no auth needed — downloading it renders the frame into a layered Photoshop file (groups, editable text layers, blend modes, plus a pixel-perfect composite). Rendering takes several seconds; fetch with a generous timeout.',
+        })
+      }
       const ext = format === 'jpg' ? 'jpg' : 'png'
       const q = ext === 'jpg' ? `&quality=${quality ?? 90}` : ''
       return text({
@@ -1445,7 +1512,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
     },
   )
 
-  /* extension tools get the same
+  /* extension tools (the Figma import, future integrations) get the same
      per-session helpers the built-in tools close over */
   const extensionHelpers: McpToolHelpers = {
     ownerId,
@@ -1469,6 +1536,67 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
     },
   }
   for (const extension of extensions) extension.registerMcpTools?.(server, extensionHelpers)
+
+  server.registerTool(
+    'import_psd',
+    {
+      title: 'Import a Photoshop PSD',
+      _meta: previewToolMeta('Importing the PSD…', 'PSD imported'),
+      description:
+        'Import a .psd file from a public URL into a canvas as editable frames: every Photoshop layer becomes a real element (raster layers as positioned images, text layers as live styled text, groups/opacity/blend modes/masks preserved), and each artboard becomes its own frame. Use when a design handoff arrives as a PSD. For a PSD on YOUR machine, tell the human to use "Import" in the canvas toolbar instead.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      inputSchema: {
+        source_url: z.string().describe('Public http(s) URL of the .psd file (max 400 MB)'),
+        canvas_id: z.string().describe('Canvas that should receive the imported frames'),
+        text_mode: z
+          .enum(['editable', 'raster'])
+          .optional()
+          .describe(
+            "'editable' (default) converts text layers to live HTML text; 'raster' keeps Photoshop's exact pixels",
+          ),
+        agent_name: agentName,
+      },
+    },
+    async ({ source_url, canvas_id, text_mode, agent_name }) => {
+      const canvas = canvasFor(canvas_id)
+      if (!canvas) return noCanvas(canvas_id)
+      const now = Date.now()
+      const limitKey = ownerId ?? agent_name
+      const hits = (importHits.get(limitKey) ?? []).filter((t) => now - t < 60_000)
+      if (hits.length >= IMPORTS_PER_MIN) return err('import rate limit — wait a minute')
+      hits.push(now)
+      importHits.set(limitKey, hits)
+      try {
+        const { createImportedPsdFrames, MAX_PSD_BYTES } = await import('./psdImport.ts')
+        const buffer = await assets.fetchRemote(source_url, MAX_PSD_BYTES)
+        const actor = actorFrom(agent_name)
+        const rightmost = canvas.frames.reduce((right, frame) => Math.max(right, frame.x + frame.width), 0)
+        const fileName = new URL(source_url).pathname.split('/').pop() || 'import.psd'
+        const { frames, warnings } = await createImportedPsdFrames({
+          canvasId: canvas_id,
+          buffer,
+          fileName,
+          actor,
+          baseX: canvas.frames.length ? rightmost + 80 : 120,
+          baseY: 120,
+          textMode: text_mode,
+          storeImage: async (png) => {
+            const asset = await assets.createAsset(png, { canvasId: canvas_id, ownerId, uploadedBy: agent_name })
+            return `${env.BETTER_AUTH_URL}/a/${asset.id}.${asset.ext}`
+          },
+        })
+        const result = text({
+          ok: true,
+          frames: frames.map(frameSummary),
+          ...(warnings.length ? { warnings } : {}),
+          note: 'Each frame is editable HTML — review with get_frame_screenshot before building on it.',
+        })
+        return withPreview(withStatusNudge(withFeedback(result, canvas_id, actor), canvas_id, actor), canvas_id, frames)
+      } catch (e) {
+        return err(e instanceof Error ? e.message : 'PSD import failed')
+      }
+    },
+  )
 
   server.registerTool(
     'get_frame_screenshot',
@@ -1802,6 +1930,7 @@ export async function handleMcpRequest(req: Request, res: Response) {
           agent_client: msg.params?.clientInfo?.name,
           agent_client_version: msg.params?.clientInfo?.version,
         })
+        capture(session.userId, 'agent_connected', { kind: 'mcp', agent_client: msg.params?.clientInfo?.name })
       } else if (msg?.method === 'tools/call') {
         captureThrottled(session.userId, 'custom_agent_used', { first_tool: msg.params?.name })
       }

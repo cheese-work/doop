@@ -62,6 +62,7 @@ import {
   Folder,
   FolderPlus,
   File,
+  FileText,
   Frame,
   Globe,
   Hand,
@@ -227,6 +228,8 @@ export const LayersIcon = icon(Layers)
 export const FrameIcon = icon(Frame)
 /** a page of the canvas, in the Layers panel's Pages list */
 export const PageIcon = icon(File)
+/** a PDF document, the Export modal's PDF destination */
+export const PdfIcon = icon(FileText)
 export const BoxIcon = icon(Square)
 export const TextIcon = icon(Type)
 export const ImageIcon = icon(Image)

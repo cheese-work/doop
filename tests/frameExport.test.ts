@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { Frame } from '../shared/types'
-import { copyFramePng, downloadFrameExport } from '../src/lib/frameExport'
+import { downloadFrameExport, downloadFrameExports, downloadFramesPdf } from '../src/lib/frameExport'
 import { useStore } from '../src/lib/store'
 
 const frame: Frame = {
@@ -42,29 +42,29 @@ it('shows a busy toast while rendering, then saves through a download link named
     vi.fn(() => new Promise<Response>((resolve) => (respond = resolve))),
   )
 
-  const done = downloadFrameExport(frame, 'jpg')
-  expect(fetch).toHaveBeenCalledWith('/i/export-frame.jpg?scale=2&download', expect.anything())
-  expect(useStore.getState().notice).toMatchObject({ text: 'Exporting JPG…', busy: true })
+  const done = downloadFrameExport(frame, 'psd')
+  expect(fetch).toHaveBeenCalledWith('/i/export-frame.psd', expect.anything())
+  expect(useStore.getState().notice).toMatchObject({ text: 'Exporting PSD…', busy: true })
 
-  respond(new Response('jpg-bytes', { headers: { 'Content-Disposition': 'attachment; filename="Poster.jpg"' } }))
+  respond(new Response('psd-bytes', { headers: { 'Content-Disposition': 'attachment; filename="Poster.psd"' } }))
   await done
 
   expect(clicked).toHaveLength(1)
-  expect(clicked[0]!.download).toBe('Poster.jpg')
+  expect(clicked[0]!.download).toBe('Poster.psd')
   expect(clicked[0]!.href).toBe('blob:export')
-  expect(useStore.getState().notice).toMatchObject({ text: '“Poster.jpg” is ready', busy: false })
+  expect(useStore.getState().notice).toMatchObject({ text: '“Poster.psd” is ready', busy: false })
 })
 
 it('reports the server error instead of saving a failed render', async () => {
   vi.stubGlobal(
     'fetch',
-    vi.fn(async () => Response.json({ error: 'JPG export rate limit — wait a minute' }, { status: 429 })),
+    vi.fn(async () => Response.json({ error: 'PSD export rate limit — wait a minute' }, { status: 429 })),
   )
 
-  await downloadFrameExport(frame, 'jpg')
+  await downloadFrameExport(frame, 'psd')
 
   expect(clicked).toHaveLength(0)
-  expect(useStore.getState().notice?.text).toBe('JPG export rate limit — wait a minute')
+  expect(useStore.getState().notice?.text).toBe('PSD export rate limit — wait a minute')
 })
 
 it('requests PNG and JPG at 2x', async () => {
@@ -89,7 +89,7 @@ it('keeps the spinner up while another export is still rendering', async () => {
   )
 
   const png = downloadFrameExport(frame, 'png')
-  const jpg = downloadFrameExport(frame, 'jpg')
+  const psd = downloadFrameExport(frame, 'psd')
   pending[0]!(new Response('img', { headers: { 'Content-Disposition': 'attachment; filename="Poster.png"' } }))
   await png
   expect(useStore.getState().notice).toMatchObject({
@@ -97,9 +97,9 @@ it('keeps the spinner up while another export is still rendering', async () => {
     busy: true,
   })
 
-  pending[1]!(new Response('jpg', { headers: { 'Content-Disposition': 'attachment; filename="Poster.jpg"' } }))
-  await jpg
-  expect(useStore.getState().notice).toMatchObject({ text: '“Poster.jpg” is ready', busy: false })
+  pending[1]!(new Response('psd', { headers: { 'Content-Disposition': 'attachment; filename="Poster.psd"' } }))
+  await psd
+  expect(useStore.getState().notice).toMatchObject({ text: '“Poster.psd” is ready', busy: false })
 })
 
 it('in the desktop shell leaves the outcome to the save panel, which may be cancelled', async () => {
@@ -115,79 +115,147 @@ it('in the desktop shell leaves the outcome to the save panel, which may be canc
   expect(useStore.getState().notice).toBeNull()
 })
 
-/* A clipboard that resolves each item's pending data the way browsers do. */
-function stubClipboard() {
-  const written: Blob[] = []
+it('exports a batch one at a time and waits out the server’s limit instead of dropping frames', async () => {
+  const other = { ...frame, id: 'other-frame', name: 'Flyer' }
+  let calls = 0
   vi.stubGlobal(
-    'ClipboardItem',
-    class {
-      constructor(readonly items: Record<string, Promise<Blob>>) {}
-    },
+    'fetch',
+    vi.fn(async (url: string) => {
+      calls += 1
+      if (calls === 2) {
+        return Response.json(
+          { error: 'PSD export rate limit — wait a minute' },
+          { status: 429, headers: { 'Retry-After': '1' } },
+        )
+      }
+      const name = url.startsWith('/i/other-frame') ? 'Flyer' : 'Poster'
+      return new Response('psd', { headers: { 'Content-Disposition': `attachment; filename="${name}.psd"` } })
+    }),
   )
-  const write = vi.fn(async (items: { items: Record<string, Promise<Blob>> }[]) => {
-    written.push(await items[0]!.items['image/png']!)
+
+  vi.useFakeTimers()
+  const done = downloadFrameExports([frame, other], 'psd')
+  /* the first frame saves and the second hits the limit — all microtasks */
+  for (let i = 0; i < 20; i++) await Promise.resolve()
+  expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2)
+  expect(useStore.getState().notice).toMatchObject({
+    text: 'Exporting PSD 2 of 2 — waiting 1s for the export limit…',
+    busy: true,
   })
-  vi.stubGlobal('navigator', { clipboard: { write } })
-  return { written, write }
-}
-
-it('copies the PNG, handing the clipboard the pending render so the click still counts', async () => {
-  let respond!: (res: Response) => void
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(() => new Promise<Response>((resolve) => (respond = resolve))),
-  )
-  const { written, write } = stubClipboard()
-
-  const done = copyFramePng(frame)
-  expect(fetch).toHaveBeenCalledWith('/i/export-frame.png?scale=2&download', expect.anything())
-  expect(write).toHaveBeenCalledTimes(1)
-  expect(useStore.getState().notice).toMatchObject({ text: 'Copying PNG…', busy: true })
-
-  respond(new Response('png-bytes'))
+  await vi.advanceTimersByTimeAsync(999)
+  expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2)
+  await vi.advanceTimersByTimeAsync(1)
   await done
+  vi.useRealTimers()
 
-  expect(await written[0]!.text()).toBe('png-bytes')
+  expect(vi.mocked(fetch).mock.calls.map(([url]) => url)).toEqual([
+    '/i/export-frame.psd',
+    '/i/other-frame.psd',
+    '/i/other-frame.psd',
+  ])
+  expect(clicked.map((a) => a.download)).toEqual(['Poster.psd', 'Flyer.psd'])
+  expect(useStore.getState().notice).toMatchObject({ text: '2 PSDs ready', busy: false })
+})
+
+it('reports how many of a batch were saved when a frame keeps failing', async () => {
+  const other = { ...frame, id: 'other-frame', name: 'Flyer' }
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) =>
+      url.startsWith('/i/other-frame')
+        ? Response.json({ error: 'PSD export failed' }, { status: 500 })
+        : new Response('psd', { headers: { 'Content-Disposition': 'attachment; filename="Poster.psd"' } }),
+    ),
+  )
+
+  await downloadFrameExports([frame, other], 'psd')
+
+  expect(clicked.map((a) => a.download)).toEqual(['Poster.psd'])
+  expect(useStore.getState().notice?.text).toBe('1 of 2 PSDs saved — PSD export failed')
+})
+
+it('waits the default minute when a 429 arrives without Retry-After', async () => {
+  let calls = 0
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => {
+      calls += 1
+      return calls === 1
+        ? Response.json({ error: 'PSD export rate limit — wait a minute' }, { status: 429 })
+        : new Response('psd', { headers: { 'Content-Disposition': 'attachment; filename="Poster.psd"' } })
+    }),
+  )
+  vi.useFakeTimers()
+  const done = downloadFrameExports([frame], 'psd')
+  for (let i = 0; i < 20; i++) await Promise.resolve()
+  expect(useStore.getState().notice?.text).toBe('Exporting PSD — waiting 60s for the export limit…')
+  await vi.advanceTimersByTimeAsync(60_000)
+  await done
+  vi.useRealTimers()
+  expect(clicked.map((a) => a.download)).toEqual(['Poster.psd'])
+})
+
+it('settles and reports when starting the download throws', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => new Response('psd', { headers: { 'Content-Disposition': 'attachment; filename="Poster.psd"' } })),
+  )
+  vi.mocked(URL.createObjectURL).mockImplementation(() => {
+    throw new Error('blocked')
+  })
+
+  await downloadFrameExports([frame], 'psd')
+
+  expect(useStore.getState().notice).toMatchObject({
+    text: '0 of 1 PSDs saved — Couldn’t save “Poster.psd”',
+    busy: false,
+  })
+})
+
+it('binds several frames into one PDF request and saves the file the server names', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(
+      async () =>
+        new Response('%PDF-1.7', {
+          headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': 'attachment; filename="Deck.pdf"' },
+        }),
+    ),
+  )
+
+  await downloadFramesPdf('canvas', [frame, { ...frame, id: 'second' }])
+
+  expect(fetch).toHaveBeenCalledExactlyOnceWith(
+    '/api/canvases/canvas/export.pdf?frames=export-frame,second',
+    expect.anything(),
+  )
+  expect(clicked[0]!.download).toBe('Deck.pdf')
+  expect(useStore.getState().notice).toMatchObject({ text: '“Deck.pdf” is ready', busy: false })
+})
+
+it('shows why a PDF could not be made, such as a server without a browser', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => Response.json({ error: 'PDF export is unavailable' }, { status: 503 })),
+  )
+
+  await downloadFramesPdf('canvas', [frame])
+
   expect(clicked).toHaveLength(0)
-  expect(useStore.getState().notice).toMatchObject({ text: 'PNG copied', busy: false })
+  expect(useStore.getState().notice?.text).toBe('PDF export is unavailable')
 })
 
-it('reports the server error when the PNG to copy fails to render', async () => {
+it('gives a PDF of many frames longer than a single frame to render', async () => {
+  const timeout = vi.spyOn(AbortSignal, 'timeout')
   vi.stubGlobal(
     'fetch',
-    vi.fn(async () => Response.json({ error: 'render rate limit — cached URLs are unaffected' }, { status: 429 })),
+    vi.fn(async () => new Response('%PDF-1.7', { headers: { 'Content-Type': 'application/pdf' } })),
   )
-  const { written } = stubClipboard()
 
-  await copyFramePng(frame)
+  await downloadFramesPdf('canvas', [frame])
+  const many = Array.from({ length: 40 }, (_, index) => ({ ...frame, id: `frame-${index}` }))
+  await downloadFramesPdf('canvas', many)
 
-  expect(written).toHaveLength(0)
-  expect(useStore.getState().notice?.text).toBe('render rate limit — cached URLs are unaffected')
-})
-
-it('says so without rendering when the browser has no async clipboard', async () => {
-  vi.stubGlobal('fetch', vi.fn())
-  vi.stubGlobal('navigator', {})
-
-  await copyFramePng(frame)
-
-  expect(fetch).not.toHaveBeenCalled()
-  expect(useStore.getState().notice?.text).toBe('This browser can’t copy images')
-})
-
-it('leaves no unhandled rejection when the clipboard refuses before reading the render', async () => {
-  const unhandled = vi.fn()
-  process.on('unhandledRejection', unhandled)
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async () => Response.json({ error: 'render failed' }, { status: 500 })),
-  )
-  stubClipboard().write.mockRejectedValue(new DOMException('denied', 'NotAllowedError'))
-
-  await copyFramePng(frame)
-  await new Promise((resolve) => setTimeout(resolve, 0))
-
-  process.off('unhandledRejection', unhandled)
-  expect(unhandled).not.toHaveBeenCalled()
-  expect(useStore.getState().notice?.text).toBe('Couldn’t copy the PNG')
+  /* one frame keeps the two-minute floor; forty print three at a time, a minute per wave */
+  expect(timeout.mock.calls.map(([ms]) => ms)).toEqual([2 * 60_000, 14 * 60_000])
 })

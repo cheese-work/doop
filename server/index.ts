@@ -2041,6 +2041,37 @@ app.get('/api/frames/:id/screenshot.png', async (req, res) => {
   }
 })
 
+/* Vector PDF of frames on a canvas, a page per frame: ?frames=<id>,<id>
+   picks frames, pages in the order listed, else ?page=<pageId> (default the
+   first page) takes every visible frame there, in reading order. A GET so a read-only
+   impersonation session can export too. */
+app.get('/api/canvases/:id/export.pdf', async (req, res) => {
+  const canvas = requireCanvas(req, res, req.params.id)
+  if (!canvas) return
+  const pdf = await import('./pdfExport.ts')
+  const frameIds = typeof req.query.frames === 'string' ? req.query.frames.split(',').filter(Boolean) : undefined
+  const pageId = typeof req.query.page === 'string' && req.query.page ? req.query.page : undefined
+  const selection = pdf.selectPdfFrames(canvas, { frameIds, pageId })
+  if (!selection.ok) return res.status(selection.status).json({ error: selection.error })
+  if (!pdf.pdfRendererAvailable()) {
+    return res.status(503).json({ error: pdf.PDF_UNAVAILABLE_MESSAGE })
+  }
+  if (!pdf.takePdfExportSlot(req.user!.id)) {
+    res.set('Retry-After', '60')
+    return res.status(429).json({ error: 'PDF export rate limit — wait a minute' })
+  }
+  try {
+    const buf = await pdf.renderFramesPdf(selection.frames)
+    res.set('Content-Type', 'application/pdf')
+    res.set('Content-Disposition', `attachment; filename="${pdf.pdfFileName(canvas, selection.frames)}"`)
+    res.set('Cache-Control', 'no-store')
+    return res.send(buf)
+  } catch (e) {
+    if (e instanceof pdf.PdfRendererUnavailableError) return res.status(503).json({ error: e.message })
+    return res.status(500).json({ error: e instanceof Error ? e.message : 'PDF export failed' })
+  }
+})
+
 /* MCP endpoint — point any MCP-capable AI at http://localhost:PORT/mcp.
    Protected by OAuth: unauthenticated calls get 401 + discovery pointers. */
 app.all('/mcp', handleMcpRequest)
