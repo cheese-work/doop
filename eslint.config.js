@@ -11,7 +11,6 @@ const LEGACY_CHROME = [
   /* the canvas editor and its panels */
   'src/pages/CanvasPage.tsx',
   'src/components/ActivityPanel.tsx',
-  'src/components/Board.tsx',
   'src/components/CanvasComments.tsx',
   'src/components/CanvasDrawing.tsx',
   'src/components/CodePanel.tsx',

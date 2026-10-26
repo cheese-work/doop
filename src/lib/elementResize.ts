@@ -13,7 +13,6 @@ import type { StylePatch } from './frameBridge'
 export type ResizeHandle = 'n' | 'e' | 's' | 'w' | 'nw' | 'ne' | 'sw' | 'se'
 export const RESIZE_CORNERS: readonly ResizeHandle[] = ['nw', 'ne', 'sw', 'se']
 export const RESIZE_EDGES: readonly ResizeHandle[] = ['n', 'e', 's', 'w']
-export const RESIZE_HANDLES: readonly ResizeHandle[] = [...RESIZE_EDGES, ...RESIZE_CORNERS]
 
 export interface Size {
   width: number

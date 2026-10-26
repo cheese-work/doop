@@ -34,7 +34,6 @@ import {
   ArrowUp,
   Bell,
   Blocks,
-  Bookmark,
   Calendar,
   BookOpen,
   Brain,
@@ -49,9 +48,7 @@ import {
   CirclePlus,
   Clipboard,
   CodeXml,
-  Command,
   Clock,
-  Compass,
   Copy,
   CreditCard,
   Download,
@@ -74,7 +71,6 @@ import {
   Link2,
   Lock,
   LogOut,
-  MapPin,
   Menu,
   Minus,
   MousePointer2,
@@ -86,7 +82,6 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
-  PanelRightOpen,
   Paperclip,
   Pencil,
   PenTool,
@@ -96,7 +91,6 @@ import {
   RadioTower,
   RefreshCw,
   RotateCcw,
-  Scan,
   Search,
   Settings,
   Share,
@@ -217,7 +211,6 @@ export const ImportIcon = icon(Download)
 export const ExportIcon = icon(ExternalLink)
 export const PulseIcon = icon(Activity)
 export const BellIcon = icon(Bell)
-export const ChatIcon = icon(MessageCircle)
 export const SparkIcon = icon(Sparkles)
 export const SearchIcon = icon(Search)
 export const PlusIcon = icon(Plus)
@@ -226,7 +219,6 @@ export const PanelLeftIcon = icon(PanelLeft)
 export const PanelCollapseIcon = icon(PanelLeftClose)
 export const PanelExpandIcon = icon(PanelLeftOpen)
 export const PanelCollapseRightIcon = icon(PanelRightClose)
-export const PanelExpandRightIcon = icon(PanelRightOpen)
 export const LayersIcon = icon(Layers)
 export const FrameIcon = icon(Frame)
 /** a page of the canvas, in the Layers panel's Pages list */
@@ -237,7 +229,6 @@ export const BoxIcon = icon(Square)
 export const TextIcon = icon(Type)
 export const ImageIcon = icon(Image)
 export const VectorIcon = icon(PenTool)
-export const BookmarkIcon = icon(Bookmark)
 export const PlayIcon = icon(Play)
 export const ArrowUpIcon = icon(ArrowUp)
 export const ArrowLeftIcon = icon(ArrowLeft)
@@ -247,7 +238,6 @@ export const GridIcon = icon(LayoutGrid)
 export const ListIcon = icon(Menu)
 export const UserIcon = icon(User)
 export const UsersIcon = icon(Users)
-export const CompassIcon = icon(Compass)
 export const ClockIcon = icon(Clock)
 export const GearIcon = icon(Settings)
 export const ShieldIcon = icon(Shield)
@@ -279,7 +269,6 @@ export const CursorIcon = icon(MousePointer2)
 export const CommentIcon = icon(MessageCircle)
 export const CodeIcon = icon(CodeXml)
 export const EditIcon = icon(Pencil)
-export const PinIcon = icon(MapPin)
 export const EyeIcon = icon(Eye)
 export const EyeClosedIcon = icon(EyeOff)
 export const CircleIcon = icon(Circle)
@@ -289,7 +278,6 @@ export const WebIcon = icon(Globe)
 export const RadioTowerIcon = icon(RadioTower)
 export const MinusIcon = icon(Minus)
 /** zoom to fit: the four corners of the viewport */
-export const FitIcon = icon(Scan)
 /** sharing a canvas: the box with the arrow leaving it upward */
 export const ShareUpIcon = icon(Share)
 
@@ -316,4 +304,3 @@ export const MessageSquareIcon = icon(MessageSquare)
 /** draft a page: a page skeleton */
 export const LayoutTemplateIcon = icon(LayoutTemplate)
 /** the ⌘ key, in shortcut hints */
-export const CommandIcon = icon(Command)

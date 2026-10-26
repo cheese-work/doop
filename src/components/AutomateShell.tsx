@@ -14,8 +14,6 @@ import { clientIntegrations } from '../integrations'
  * "Automations 0/1/5" frames on the Doop Dashboard canvas.
  */
 
-export type AutomatePage = 'automations' | 'integrations'
-
 /* ---- marks ---- */
 
 /** The trigger's mark: a clock on an ink tile. */

@@ -281,35 +281,6 @@ export function SelectField<T extends string>({
   )
 }
 
-export function ToggleField({
-  value,
-  labels,
-  onChange,
-}: {
-  value: boolean
-  labels: [string, string]
-  onChange: (on: boolean) => void
-}) {
-  return (
-    <div className="flex h-[26px] flex-1 gap-0.5 overflow-hidden rounded-[7px] bg-sub p-0.5">
-      {[true, false].map((on, i) => (
-        <button
-          key={labels[i]}
-          type="button"
-          aria-pressed={value === on}
-          className={cn(
-            'flex-1 rounded-[5px] text-[11.5px] text-ink-soft transition-colors hover:text-ink',
-            value === on && 'bg-surface font-medium text-ink shadow-ring',
-          )}
-          onClick={() => value !== on && onChange(on)}
-        >
-          {labels[i]}
-        </button>
-      ))}
-    </div>
-  )
-}
-
 /** Swatch + hex. Typing a hex or picking from the swatch commits; clearing
  *  the text removes the colour. */
 export function ColorField({

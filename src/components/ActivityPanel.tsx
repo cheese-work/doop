@@ -156,7 +156,7 @@ const RECENT_SHOWN = 3
 function RecentTasks() {
   const tasks = useStore((s) => s.tasks)
   const [all, setAll] = useState(false)
-  /* unclaimed board cards have no agent yet — they belong to the Board */
+  /* unclaimed board cards have no agent yet, so they are not activity */
   const claimed = useMemo(() => tasks.filter((t) => t.agentName), [tasks])
   const working = useMemo(() => claimed.filter((t) => !t.endedAt && !t.failedAt), [claimed])
   const finished = useMemo(() => claimed.filter((t) => t.endedAt || t.failedAt), [claimed])

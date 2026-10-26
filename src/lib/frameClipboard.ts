@@ -38,10 +38,6 @@ export function copyFrames(frames: Frame[]) {
   localStorage.removeItem(ELEMENT_CLIP_KEY)
 }
 
-export function copyFrame(frame: Frame) {
-  copyFrames([frame])
-}
-
 function readClip(): ClipFrame[] {
   const raw = localStorage.getItem(CLIP_KEY)
   if (!raw) return []
@@ -232,8 +228,4 @@ export function duplicateFrames(frames: Frame[]) {
   ).then((created) => {
     if (created.length) posthog.capture('frame_duplicated', { count: created.length })
   })
-}
-
-export function duplicateFrame(frame: Frame) {
-  duplicateFrames([frame])
 }

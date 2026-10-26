@@ -134,23 +134,4 @@ function ToolbarHighlight({ activeKey, className }: { activeKey: string; classNa
   )
 }
 
-function ToolbarDivider({ className, ...props }: React.ComponentProps<'div'>) {
-  return <div data-slot="toolbar-divider" className={cn('mx-0.5 h-[18px] w-px bg-line-soft', className)} {...props} />
-}
-
-/** A read-only readout between controls (the zoom percentage). */
-const ToolbarValue = React.forwardRef<HTMLSpanElement, React.ComponentProps<'span'>>(function ToolbarValue(
-  { className, ...props },
-  ref,
-) {
-  return (
-    <span
-      ref={ref}
-      data-slot="toolbar-value"
-      className={cn('min-w-[44px] px-1 text-center font-mono text-[12px] text-ink sm:min-w-[48px]', className)}
-      {...props}
-    />
-  )
-})
-
-export { Toolbar, ToolbarButton, ToolbarControl, ToolbarDivider, ToolbarDot, ToolbarHighlight, ToolbarValue }
+export { Toolbar, ToolbarButton, ToolbarControl, ToolbarDot, ToolbarHighlight }

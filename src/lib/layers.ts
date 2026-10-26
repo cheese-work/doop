@@ -231,11 +231,6 @@ export function setElementLocked(html: string, selector: string, locked: boolean
   return serialize(doc)
 }
 
-/** The frame's HTML with the element removed, or null when the selector no longer resolves. */
-export function removeElement(html: string, selector: string): string | null {
-  return removeElements(html, [selector])
-}
-
 /* Every selector resolved against one document before anything changes: the
    paths are positional, so removing or inserting one element would shift the
    nth-of-type steps of the others. Null when any of them is gone. */
@@ -343,11 +338,6 @@ export function setElementsHidden(html: string, selectors: string[], hidden: boo
     next = step
   }
   return next
-}
-
-/** The frame's HTML with a copy of the element inserted right after it. */
-export function duplicateElement(html: string, selector: string): string | null {
-  return duplicateElements(html, [selector])?.html ?? null
 }
 
 /** The frame's HTML with a copy of each element inserted right after it,
