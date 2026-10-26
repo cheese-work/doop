@@ -42,11 +42,7 @@ const MISSING = [
   'resolve_comment',
   'export_frame',
   'upload_asset',
-  'import_psd',
-  'import_figma', // integration tools, registered by their connections
-  'import_from_canva',
-  'export_to_canva',
-  'list_linear_issues',
+  'list_linear_issues', // integration tools, registered by their connections
   'get_linear_issue',
 ]
 
