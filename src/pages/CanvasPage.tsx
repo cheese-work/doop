@@ -543,7 +543,7 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
             </Tooltip>
           </BarPill>
           {/* the bar's one black action — it opens the MCP connection modal */}
-          <Button variant="primary" className={barPrimaryBtn} onClick={openConnect}>
+          <Button variant="primary" className={cn(barPrimaryBtn, 'shadow-ring')} onClick={openConnect}>
             <PlusIcon className="size-3.5" strokeWidth={1.4} />
             Connect AI
           </Button>
@@ -558,7 +558,7 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
               <PeerAvatars others={others} />
             </span>
           </div>
-          <Button variant="primary" className={barPrimaryBtn} onClick={openConnect}>
+          <Button variant="primary" className={cn(barPrimaryBtn, 'shadow-ring')} onClick={openConnect}>
             <PlusIcon className="size-3.5" strokeWidth={1.4} />
             <span className="max-sm:hidden">Connect AI</span>
             <span className="sm:hidden">AI</span>
