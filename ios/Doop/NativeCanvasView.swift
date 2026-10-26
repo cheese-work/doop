@@ -88,7 +88,7 @@ struct NativeCanvasView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
-                    Section("\(model.pageFrames.count) \(model.pageFrames.count == 1 ? "frame" : "frames")") {
+                    Section {
                         Picker(selection: Binding(get: { model.activePageID }, set: { model.selectPage($0) })) {
                             ForEach(model.pages) { page in Text(page.name).tag(page.id) }
                         } label: { Label("Page", systemImage: "doc.on.doc") }
