@@ -9,6 +9,7 @@
       import React from 'react'
       import { createRoot } from 'react-dom/client'
       import { FrameView } from '/src/components/FrameView.tsx'
+      import { FrameLabelLayer } from '/src/components/FrameLabelLayer.ts'
       import { LayersPanel } from '/src/components/LayersPanel.tsx'
       import { TooltipProvider } from '/src/components/ui/tooltip.tsx'
       import {
@@ -38,6 +39,8 @@
       function Fixture() {
         const frames = useStore((s) => s.canvas?.frames ?? [])
         const zoom = useStore((s) => s.viewport.zoom)
+        /* frame names render into a screen-space layer, as the Stage provides */
+        const [labelLayer, setLabelLayer] = React.useState(null)
         return React.createElement(
           TooltipProvider,
           null,
@@ -50,10 +53,15 @@
               React.createElement(
                 'div',
                 { className: 'stage', style: { position: 'absolute', inset: 0 } },
+                React.createElement('div', { style: { position: 'absolute', inset: 0 }, ref: setLabelLayer }),
                 React.createElement(
                   'div',
                   { style: { transform: `scale(${zoom})`, transformOrigin: '0 0' } },
-                  frames.map((frame) => React.createElement(FrameView, { key: frame.id, frame, raster: 1 })),
+                  React.createElement(
+                    FrameLabelLayer.Provider,
+                    { value: labelLayer },
+                    frames.map((frame) => React.createElement(FrameView, { key: frame.id, frame, layoutZoom: 1 })),
+                  ),
                 ),
               ),
             ),

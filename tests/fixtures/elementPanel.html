@@ -49,7 +49,7 @@
         return React.createElement(
           TooltipProvider,
           null,
-          React.createElement(FrameView, { frame, raster: 1 }),
+          React.createElement(FrameView, { frame, layoutZoom: 1 }),
           selected && React.createElement(ElementPanel, { frame, selector: selected.selector, style: { right: 12 } }),
         )
       }
