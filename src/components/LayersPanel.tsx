@@ -490,7 +490,7 @@ export function LayersRailToggle() {
         <Button
           variant="bare"
           size="icon-sm"
-          className="size-7 rounded-[7px] text-ink hover:bg-paper-deep"
+          className="size-7 rounded-[7px] text-ink-soft hover:bg-paper-deep hover:text-ink"
           aria-label={`Layers — ${count} frames`}
           onClick={() => setLayersOpen(true)}
         >
