@@ -397,6 +397,13 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ pages, expectedPages }),
     }),
+  putGuide: (canvasId: string, guide: import('../../shared/types').CanvasGuide) =>
+    req<import('../../shared/types').CanvasGuide>(`/api/canvases/${canvasId}/guides/${guide.id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ pageId: guide.pageId, axis: guide.axis, at: guide.at }),
+    }),
+  deleteGuide: (canvasId: string, guideId: string) =>
+    req<{ ok: true }>(`/api/canvases/${canvasId}/guides/${guideId}`, { method: 'DELETE' }),
   duplicatePage: (canvasId: string, pageId: string) =>
     req<{
       page: import('../../shared/types').CanvasPageInfo

@@ -118,6 +118,20 @@
   text runs, rotated or skewed elements, locked layers, locked frames and the Comment tool get no
   grips. `tests/elementResize.test.ts` covers the geometry and `tests/elementResizeBrowser.test.ts`
   drags the grips in Chromium.
+- Rulers and guides (`src/components/Rulers.tsx`, math in `src/lib/rulers.ts`): ⇧R or the zoom menu
+  toggles `<canvas>` rulers docked on the stage's top and left edges (the top bar and the floating
+  chrome step in by `RULER_PX`) (remembered under
+  `doop:rulers`, hidden on phones and under ⌘.). Ticks step 1/2/5×10ⁿ by zoom; labels count from the
+  selected frames' top-left, whose extent is highlighted. Dragging out of a ruler adds a guide;
+  guides drag, drop back on their ruler or Delete to remove, and undo/redo (`history.ts` `guide`
+  entries). Guides live in `canvases.guides` (jsonb, per page, client-generated ids), written one
+  at a time through `PUT`/`DELETE /api/canvases/:id/guides/:guideId` behind `requireCanvas` and
+  broadcast as `guide` room messages; page copies and canvas copies take them along (within
+  `MAX_GUIDES`), a deleted page drops its guides and page undo/redo puts them back. Writes to
+  one guide run in order, and a failed one rolls back only when no newer edit follows. Visible
+  guides join `snapFrame` (frame move/resize, element moves), element resize and drawing points
+  at the same 8-screen-px tolerance; Alt bypasses. Tests: `rulers.test.ts`, `snapGuides.test.ts`,
+  `guides.test.ts`, `guideEdits.test.ts`, `rulersBrowser.test.ts`.
 - `tests/drawing.test.ts` covers geometry, serialization and persistence; `drawingBrowser.test.ts`
   exercises the toolbar and gestures in Chromium, including Bézier paths, frame transfers,
   cancellation, mobile input, and coexistence with canvas comment pins and reply fields.

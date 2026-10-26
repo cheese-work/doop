@@ -2,7 +2,8 @@ import { useEffect, useRef } from 'react'
 import type { Frame } from '../../shared/types'
 import { useStore } from '../lib/store'
 import { gesture } from '../lib/gesture'
-import { flexSizeAxis } from '../lib/flexLayout'
+import { visibleGuides } from '../lib/guides'
+import { guideDelta } from '../lib/snap'
 import { styleElement, styleGesture, type ElementInfo, type StylePatch } from '../lib/frameBridge'
 import {
   RESIZE_CORNERS,
@@ -82,6 +83,9 @@ export function ElementResizeHandles({
        resumes from where the finger is (at the zoom it is now) rather than
        jumping by the pinch's displacement, the way a frame drag does */
     let origin = { x: e.clientX, y: e.clientY }
+    /* the rendered box's far edges in world px, where a drag starts: flow
+       layout grows the box right and down whichever side is pulled */
+    let edges = { right: frame.x + rect.x + rect.width, bottom: frame.y + rect.y + rect.height }
     const pointerId = e.pointerId
     /* the computed size is what the inline value has to express: a
        content-box element's width excludes its padding, its rect does not */
@@ -89,7 +93,6 @@ export function ElementResizeHandles({
     /* the size the live document shows after the last applied move */
     let current: Size | null = null
     let original: StylePatch | null = null
-    let flexAxis: 'width' | 'height' | null = null
     /* a scaled element renders larger than its layout box: the pointer's
        travel is divided by that scale so the box follows the pointer */
     let scale = { x: 1, y: 1 }
@@ -99,16 +102,13 @@ export function ElementResizeHandles({
     const ready = styleGesture(frame.id, selector, 'begin').then((info) => {
       if (!info) return false
       base = { width: info.width ?? info.rect.width, height: info.height ?? info.rect.height }
-      original = Object.fromEntries(
-        ['width', 'height', 'flex-grow', 'flex-shrink', 'flex-basis'].map((key) => [key, info.inline[key] ?? null]),
-      )
-      flexAxis = flexSizeAxis(info)
+      original = { width: info.inline['width'] ?? null, height: info.inline['height'] ?? null }
       scale = info.scale
       return true
     })
     /* where the pointer is now: a flick that outruns the gesture's opening
        is applied the moment the base size lands */
-    let last: { x: number; y: number; shift: boolean } | null = null
+    let last: { x: number; y: number; shift: boolean; alt: boolean } | null = null
     let latest: StylePatch | null = null
     let inFlight = false
     let moved = false
@@ -139,21 +139,36 @@ export function ElementResizeHandles({
     }
     /** the styles the pointer's current place asks for; null before the
      *  gesture has travelled far enough to count as a drag */
-    function patchFor(pos: { x: number; y: number; shift: boolean }): StylePatch | null {
-      if (!base || !moved) return null
+    function patchFor(pos: { x: number; y: number; shift: boolean; alt: boolean }): StylePatch | null {
+      if (!base) return null
+      if (!moved && Math.abs(pos.x - origin.x) + Math.abs(pos.y - origin.y) < MOVE_THRESHOLD_PX) return null
+      moved = true
       const zoom = useStore.getState().viewport.zoom
-      const delta = { dx: (pos.x - origin.x) / zoom / scale.x, dy: (pos.y - origin.y) / zoom / scale.y }
+      const world = snapToGuides({ dx: (pos.x - origin.x) / zoom, dy: (pos.y - origin.y) / zoom }, zoom, pos.alt)
+      const delta = { dx: world.dx / scale.x, dy: world.dy / scale.y }
       const keepRatio = pos.shift
       if (keepRatio) ratioUsed = true
-      const patch = resizePatch(handle, resizedSize(handle, base, delta, { keepRatio }), { keepRatio, flexAxis })
+      const patch = resizePatch(handle, resizedSize(handle, base, delta, { keepRatio }), { keepRatio })
       if (ratioUsed && !keepRatio && original) {
         if (!movesWidth(handle)) patch.width = original.width ?? null
         if (!movesHeight(handle)) patch.height = original.height ?? null
-        if ((flexAxis === 'width' && !movesWidth(handle)) || (flexAxis === 'height' && !movesHeight(handle))) {
-          for (const key of ['flex-grow', 'flex-shrink', 'flex-basis']) patch[key] = original[key] ?? null
-        }
       }
       return patch
+    }
+    /** The pointer's travel (world px) adjusted so a growing edge lands on
+     *  a ruler guide it comes close to; ⌥ resizes freely. A pull on a west
+     *  or north side grows the box the other way, so its sign flips. */
+    function snapToGuides(world: { dx: number; dy: number }, zoom: number, free: boolean) {
+      if (free) return world
+      const guides = visibleGuides()
+      const sx = handle.includes('w') ? -1 : 1
+      const sy = handle.includes('n') ? -1 : 1
+      return {
+        dx: movesWidth(handle) ? world.dx + sx * guideDelta(edges.right + sx * world.dx, guides, 'v', zoom) : world.dx,
+        dy: movesHeight(handle)
+          ? world.dy + sy * guideDelta(edges.bottom + sy * world.dy, guides, 'h', zoom)
+          : world.dy,
+      }
     }
     function preview() {
       if (done || !last) return
@@ -164,20 +179,21 @@ export function ElementResizeHandles({
     }
     void ready.then(preview)
 
-    /* Pointer travel counts even while the runtime is still opening the gesture. */
-    function trackPointer(ev: PointerEvent) {
-      last = { x: ev.clientX, y: ev.clientY, shift: ev.shiftKey }
-      if (Math.abs(ev.clientX - origin.x) + Math.abs(ev.clientY - origin.y) >= MOVE_THRESHOLD_PX) moved = true
-    }
     function onMove(ev: PointerEvent) {
       if (ev.pointerId !== pointerId) return
       if (gesture.pinching) {
         origin = { x: ev.clientX, y: ev.clientY }
-        if (current) base = current
+        if (current && base) {
+          edges = {
+            right: edges.right + (current.width - base.width) * scale.x,
+            bottom: edges.bottom + (current.height - base.height) * scale.y,
+          }
+          base = current
+        }
         last = null
         return
       }
-      trackPointer(ev)
+      last = { x: ev.clientX, y: ev.clientY, shift: ev.shiftKey, alt: ev.altKey }
       preview()
     }
     function finish() {
@@ -207,12 +223,6 @@ export function ElementResizeHandles({
     }
     function onUp(ev: PointerEvent) {
       if (ev.pointerId !== pointerId) return
-      if (ev.type === 'pointercancel') {
-        cancel()
-        return
-      }
-      // Release can carry a position/modifier change newer than the last move.
-      if (!gesture.pinching) trackPointer(ev)
       finish()
       end(moved ? 'commit' : 'cancel')
     }

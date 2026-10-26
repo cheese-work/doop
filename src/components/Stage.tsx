@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { useStore, type Viewport } from '../lib/store'
+import { useStore } from '../lib/store'
+import { onViewCommand } from '../lib/viewMenu'
 import type { Frame } from '../../shared/types'
 import { usePageCanvas, currentPageCanvas } from '../lib/pages'
 import { sendWs } from '../lib/ws'
@@ -15,6 +16,8 @@ import { Cursors } from './Cursors'
 import { FollowFrame } from './FollowFrame'
 import { cameraOnCursor, cameraToFollow } from '../lib/follow'
 import { SnapGuides } from './SnapGuides'
+import { GuideLines, Rulers } from './Rulers'
+import { useIsMobile } from '../hooks/use-mobile'
 import { isTypingTarget, MOD_KEY } from '../lib/keys'
 import { cn } from '../lib/utils'
 import { gesture } from '../lib/gesture'
@@ -26,41 +29,16 @@ import { ZoomControls } from './ZoomControls'
 import { Tooltip } from './ui/tooltip'
 import { BoxIcon, CircleIcon, CommentIcon, CursorIcon, FrameIcon, HandIcon, TextIcon, VectorIcon } from './ui/icons'
 import { TOOLS, isDrawingTool, resolvePointerAction, toolForKey, type Tool } from '../lib/tools'
+import { frameRaster } from '../lib/frameRaster'
 import { useCanvasDrawing } from './CanvasDrawing'
-import { FrameLabelLayer } from './FrameLabelLayer'
-import { layoutZoomFor } from '../lib/layoutZoom'
 
 const MIN_ZOOM = 0.08
-/* The settled world is laid out at up to this zoom too (layoutZoomFor), so
-   the desktop app stays sharp all the way in. That costs little: WebKit and
-   Chromium both tile what is on screen, so backing memory follows the
-   viewport rather than the zoom, and frame documents never re-lay out (each
-   iframe undoes the zoom). Mirrored by FOLLOW_MAX_ZOOM. */
-const MAX_ZOOM = 16
+const MAX_ZOOM = 3
 
 /* The Comment tool's cursor wins over everything under the stage — frames
    included, like the Hand tool's grab — except inside the comment UI itself
    (pins, composer, threads: `data-comment-ui`), which keeps its own cursors. */
 const COMMENT_CURSOR = 'cursor-comment! [&_:not([data-comment-ui]_*)]:cursor-comment!'
-
-/* The world is laid out at CSS zoom k, the settled camera zoom, and its
-   transform carries only what the camera has moved since. WebKit rasterizes a
-   composited layer at its CSS size and stretches it under a scale transform,
-   so a world scaled by its transform alone went soft in the desktop app past
-   100%. The element's own zoom also scales its translate, hence the /k. */
-function worldTransform(vp: Viewport, k: number): string {
-  return `translate(${vp.x / k}px, ${vp.y / k}px) scale(${vp.zoom / k})`
-}
-
-/* The pixel grid, as Figma draws it zoomed in: a hairline on every design-px
-   boundary. Below PIXEL_GRID_FROM the cells are too small to read as anything
-   but a tint, so it fades in from there and is fully on at PIXEL_GRID_FULL. */
-const PIXEL_GRID_FROM = 3
-const PIXEL_GRID_FULL = 5
-
-function pixelGridOpacity(zoom: number): number {
-  return Math.min(1, Math.max(0, (zoom - PIXEL_GRID_FROM) / (PIXEL_GRID_FULL - PIXEL_GRID_FROM)))
-}
 
 /** The canvas-pinned root comment a ?comment= link names, if it is loaded. */
 function linkedCanvasComment(id: string | null): CanvasComment | null {
@@ -124,8 +102,6 @@ export function Stage({
   const drawing = useCanvasDrawing(ref)
   const worldRef = useRef<HTMLDivElement>(null)
   const gridRef = useRef<HTMLDivElement>(null)
-  const pixelGridRef = useRef<HTMLDivElement>(null)
-  const [labelLayer, setLabelLayer] = useState<HTMLDivElement | null>(null)
   const zoomLabelRef = useRef<HTMLSpanElement>(null)
   const setViewport = useStore((s) => s.setViewport)
   const canvas = usePageCanvas()
@@ -134,6 +110,9 @@ export function Stage({
   const panMode = useStore((s) => s.panMode)
   /* ⌘. — the tool pill and the zoom pill go with the rest of the chrome */
   const uiHidden = useStore((s) => s.uiHidden)
+  /* ⇧R — phones have no room for rulers (nor a keyboard to ask for them) */
+  const isMobile = useIsMobile()
+  const showRulers = useStore((s) => s.rulers) && !uiHidden && !isMobile
   const tool = useStore((s) => s.tool)
   const setTool = useStore((s) => s.setTool)
   const [panning, setPanning] = useState(false)
@@ -144,12 +123,8 @@ export function Stage({
   const dismissCompose = useCallback(() => setComposeAt(null), [])
   /* where the background menu opened, so Paste drops the frame there */
   const bgAt = useRef({ x: 0, y: 0 })
-  /* the world's layout zoom (see worldTransform) — caught up with the camera
-     only once the zoom settles, and never below 1, where scaling down a 1×
-     raster stays sharp and nothing needs a relayout; the ref serves the
-     per-frame viewport writes */
-  const [layoutZoom, setLayoutZoom] = useState(1)
-  const layoutZoomRef = useRef(1)
+  /* iframe oversampling factor — bumped only once the zoom settles */
+  const [raster, setRaster] = useState(1)
   const fitted = useRef(false)
   const deepLinkHandled = useRef(false)
   const focusedPage = useRef<string | null>(null)
@@ -176,28 +151,13 @@ export function Stage({
       const grid = gridRef.current
       const stage = ref.current
       if (!world || !grid || !stage) return
-      world.style.transform = worldTransform(vp, layoutZoomRef.current)
+      world.style.transform = `translate(${vp.x}px, ${vp.y}px) scale(${vp.zoom})`
       stage.style.setProperty('--zoom', String(vp.zoom))
-      /* the camera's offset, for chrome drawn in screen px (FrameLabelLayer) */
-      stage.style.setProperty('--vx', `${vp.x}px`)
-      stage.style.setProperty('--vy', `${vp.y}px`)
       const period = 26 * vp.zoom
       grid.style.backgroundSize = `${period}px ${period}px`
-      /* one period of overhang: the layer slides back by up to a period */
-      grid.style.width = grid.style.height = `calc(100% + ${period}px)`
       const gx = (((vp.x % period) + period) % period) - period
       const gy = (((vp.y % period) + period) % period) - period
       grid.style.transform = `translate(${gx}px, ${gy}px)`
-      const pixels = pixelGridRef.current
-      if (pixels) {
-        const opacity = pixelGridOpacity(vp.zoom)
-        pixels.hidden = opacity === 0
-        pixels.style.opacity = String(opacity)
-        pixels.style.backgroundSize = `${vp.zoom}px ${vp.zoom}px`
-        const px = (((vp.x % vp.zoom) + vp.zoom) % vp.zoom) - vp.zoom
-        const py = (((vp.y % vp.zoom) + vp.zoom) % vp.zoom) - vp.zoom
-        pixels.style.transform = `translate(${px}px, ${py}px)`
-      }
       if (zoomLabelRef.current) zoomLabelRef.current.textContent = `${Math.round(vp.zoom * 100)}%`
     }
     apply(useStore.getState().viewport)
@@ -211,7 +171,7 @@ export function Stage({
       if (ref.current) sendViewport(s.viewport, ref.current)
       window.clearTimeout(settle)
       settle = window.setTimeout(() => {
-        setLayoutZoom(layoutZoomFor(useStore.getState().viewport.zoom, MAX_ZOOM))
+        setRaster(frameRaster(useStore.getState().viewport.zoom))
       }, 250)
     })
     return () => {
@@ -219,23 +179,6 @@ export function Stage({
       window.clearTimeout(settle)
     }
   }, [])
-
-  /* a new layout zoom lands in the same commit as the frames' counter-zoom
-     (FrameView), so no paint sees one without the other */
-  useLayoutEffect(() => {
-    layoutZoomRef.current = layoutZoom
-    const world = worldRef.current
-    if (!world) return
-    /* a new zoom recomputes every length inside the world: anything with a
-       transition (a peer's cursor glides between positions) would animate
-       from its old-zoom value while the world itself snaps, so it jumped
-       off its spot and slid back. Transitions are off for this one change. */
-    world.dataset.rezoom = ''
-    world.style.zoom = String(layoutZoom)
-    world.style.transform = worldTransform(useStore.getState().viewport, layoutZoom)
-    void world.offsetWidth
-    delete world.dataset.rezoom
-  }, [layoutZoom])
 
   /* following a peer: whenever their camera (or, lacking one, their cursor)
      moves, ease ours toward the same view. Writes go through
@@ -614,12 +557,17 @@ export function Stage({
 
   /* ⌘0 → 100%, ⌘+ / ⌘− → step zoom, all pivoting on the view center —
      preventDefault keeps the browser's own page zoom out of it. ⇧1 / ⇧2 fit
-     everything / the selection, as in Figma. */
+     everything / the selection and ⇧R shows or hides the rulers, as in Figma. */
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const t = e.target as HTMLElement
       if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable) return
       if (e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (e.key.toLowerCase() === 'r') {
+          e.preventDefault()
+          if (!e.repeat) useStore.getState().toggleRulers()
+          return
+        }
         /* by code: ⇧1 types '!' on most layouts, so the key name is no use */
         if (e.code !== 'Digit1' && e.code !== 'Digit2') return
         e.preventDefault()
@@ -642,6 +590,22 @@ export function Stage({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [fit, fitSelection])
+
+  /* the same zooms from the desktop shell's View menu */
+  useEffect(
+    () =>
+      onViewCommand((command) => {
+        const el = ref.current
+        if (!el) return
+        const zoom = useStore.getState().viewport.zoom
+        if (command === 'zoom-in') zoomCentered(el, zoom * 1.25)
+        else if (command === 'zoom-out') zoomCentered(el, zoom / 1.25)
+        else if (command === 'zoom-reset') zoomCentered(el, 1)
+        else if (command === 'zoom-fit') fit()
+        else if (command === 'zoom-selection') fitSelection()
+      }),
+    [fit, fitSelection],
+  )
 
   function toWorld(clientX: number, clientY: number) {
     const rect = ref.current!.getBoundingClientRect()
@@ -871,29 +835,22 @@ export function Stage({
             {/* dot grid on its own composited layer: panning is transform-only
             (zero paint), zooming repaints just this layer's tiny tile */}
             <div
-              className="pointer-events-none absolute left-0 top-0 origin-top-left will-change-transform [background-image:radial-gradient(circle,var(--dot)_1.2px,transparent_1.2px)]"
+              className="pointer-events-none absolute left-0 top-0 h-[calc(100%+160px)] w-[calc(100%+160px)] origin-top-left will-change-transform [background-image:radial-gradient(circle,var(--dot)_1.2px,transparent_1.2px)]"
               ref={gridRef}
             />
-            {/* frame names, in screen px (FrameLabelLayer): under the world,
-                so a frame dragged over another's name covers it as before */}
-            <div className="pointer-events-none absolute inset-0" ref={setLabelLayer} />
             {/* `world` is likewise a behaviour hook: pan hit-testing checks
             classList.contains('world') to tell background from frame */}
-            <div
-              className="world absolute left-0 top-0 origin-top-left will-change-transform data-rezoom:**:transition-none!"
-              ref={worldRef}
-            >
-              <FrameLabelLayer.Provider value={labelLayer}>
-                {canvas?.frames.map((f) =>
-                  f.hidden ? (
-                    <HiddenFrameView key={f.id} frame={f} />
-                  ) : (
-                    <FrameView key={f.id} frame={f} layoutZoom={layoutZoom} />
-                  ),
-                )}
-              </FrameLabelLayer.Provider>
+            <div className="world absolute left-0 top-0 origin-top-left will-change-transform" ref={worldRef}>
+              {canvas?.frames.map((f) =>
+                f.hidden ? (
+                  <HiddenFrameView key={f.id} frame={f} />
+                ) : (
+                  <FrameView key={f.id} frame={f} raster={raster} />
+                ),
+              )}
               <GhostFrames />
               <FlowOverlay />
+              <GuideLines stage={ref} />
               <SnapGuides />
               <CanvasComments composeAt={composeAt} onComposeDone={dismissCompose} />
               <Cursors />
@@ -905,13 +862,7 @@ export function Stage({
                 />
               )}
             </div>
-            {/* the pixel grid lies over the frames, not under them, so it lines
-                up their content; it never takes the pointer */}
-            <div
-              hidden
-              className="pointer-events-none absolute left-0 top-0 h-[calc(100%+16px)] w-[calc(100%+16px)] origin-top-left will-change-transform [--pixel-line:rgb(128_128_128/0.16)] [background-image:linear-gradient(to_right,var(--pixel-line)_1px,transparent_1px),linear-gradient(to_bottom,var(--pixel-line)_1px,transparent_1px)]"
-              ref={pixelGridRef}
-            />
+            {showRulers && <Rulers stage={ref} />}
           </div>
         </ContextMenuTrigger>
         <FollowFrame />

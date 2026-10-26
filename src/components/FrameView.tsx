@@ -15,6 +15,7 @@ import { getIdentity } from '../lib/identity'
 import { FRAME_BOOTSTRAP } from '../lib/frameRuntime'
 import { recordCreate, recordUpdate, recordUpdates, trackSave } from '../lib/history'
 import { snapFrame } from '../lib/snap'
+import { visibleGuides } from '../lib/guides'
 import { gesture } from '../lib/gesture'
 import { resolvePointerAction } from '../lib/tools'
 import { FrameContextMenu } from './FrameContextMenu'
@@ -357,14 +358,15 @@ export const FrameView = memo(function FrameView({ frame, raster }: { frame: Fra
               width: Math.max(120, Math.round(from.width + dx)),
               height: Math.max(80, Math.round(from.height + dy)),
             }
-      /* edges pull onto neighbouring frames' edges/centers; ⌥ drags free —
+      /* edges pull onto neighbouring frames' edges/centers and the page's
+         ruler guides; ⌥ drags free —
          except that a ⌥⇧ duplicate-drag holds ⌥ for the whole gesture, and
          the copy should land on the guides like any other move. Frames
          riding along in the group are not neighbours, and neither is a
          hidden frame — there is nothing on the stage to line up with. */
       const others = currentPageCanvas()?.frames.filter((f) => !f.hidden && !groupIds.has(f.id)) ?? []
       const free = ev.altKey && !duplicating
-      const snapped = free ? { ...raw, guides: [] } : snapFrame(mode, raw, others, zoom)
+      const snapped = free ? { ...raw, guides: [] } : snapFrame(mode, raw, others, zoom, visibleGuides())
       useStore.getState().setSnapGuides(snapped.guides)
       if (mode === 'move') {
         /* the snapped delta of the dragged frame moves the whole group */

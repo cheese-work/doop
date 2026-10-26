@@ -10,6 +10,7 @@ import { decodeEscapedHtml, looksEscapedHtml, repairEscapedHtml } from './escape
 import { emitCanvasEvent } from './events.ts'
 import type {
   Actor,
+  CanvasGuide,
   ActorKind,
   ActivityItem,
   AgentTask,
@@ -1311,8 +1312,22 @@ export function appendFrameHtml(
 /* ------------------------------------------------------------------ */
 
 export function setCanvasPages(canvasId: string, pages: import('../shared/types.ts').CanvasPageInfo[], actor: Actor) {
-  store.setPages(canvasId, pages)
+  const dropped = store.setPages(canvasId, pages) ?? []
   broadcast(canvasId, { type: 'canvas:pages', pages, actor })
+  for (const guide of dropped) broadcast(canvasId, { type: 'guide', id: guide.id, guide: null, actor })
+}
+
+/** Add or move a ruler guide; peers see it at once. Guides are view
+ *  furniture, not design content, so the canvas stays as recently edited
+ *  as it was and no activity is logged. */
+export function setGuide(canvasId: string, guide: CanvasGuide, actor: Actor) {
+  const saved = store.setGuide(canvasId, guide)
+  if (saved) broadcast(canvasId, { type: 'guide', id: saved.id, guide: saved, actor })
+  return saved
+}
+
+export function deleteGuide(canvasId: string, guideId: string, actor: Actor) {
+  if (store.deleteGuide(canvasId, guideId)) broadcast(canvasId, { type: 'guide', id: guideId, guide: null, actor })
 }
 
 /** Copy a page with its frames; peers get the page list and each new frame. */
@@ -1320,6 +1335,7 @@ export async function duplicatePage(canvasId: string, pageId: string, actor: Act
   const copy = await store.duplicatePage(canvasId, pageId, actor.name)
   if (!copy) return undefined
   broadcast(canvasId, { type: 'canvas:pages', pages: copy.pages, actor })
+  for (const guide of copy.guides) broadcast(canvasId, { type: 'guide', id: guide.id, guide, actor })
   for (const frame of copy.frames) {
     broadcast(canvasId, { type: 'frame:created', frame, actor })
     emitCanvasEvent(canvasId, { type: 'frame.created', frame, actor })

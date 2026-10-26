@@ -154,6 +154,9 @@ function handle(msg: ServerMessage) {
     case 'canvas:pages':
       s.setPages(msg.pages)
       break
+    case 'guide':
+      s.setGuideLocal(msg.id, msg.guide)
+      break
     case 'canvas:renamed':
       s.renameCanvasLocal(msg.name)
       break

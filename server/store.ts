@@ -1,8 +1,10 @@
 import { nanoid } from 'nanoid'
 import { canvasPages, copyPageName, pageFrames, samePages } from '../shared/pages.ts'
 import * as persist from './db/persist.ts'
+import { MAX_GUIDES } from '../shared/guides.ts'
 import type {
   Canvas,
+  CanvasGuide,
   CanvasPageInfo,
   CommunityCategory,
   Frame,
@@ -18,7 +20,19 @@ export class PageLimitError extends Error {
   }
 }
 
-type PageCopy = { source: CanvasPageInfo; page: CanvasPageInfo; pages: CanvasPageInfo[]; frames: Frame[] }
+export class GuideLimitError extends Error {
+  constructor() {
+    super(`A canvas holds at most ${MAX_GUIDES} guides.`)
+  }
+}
+
+type PageCopy = {
+  source: CanvasPageInfo
+  page: CanvasPageInfo
+  pages: CanvasPageInfo[]
+  frames: Frame[]
+  guides: CanvasGuide[]
+}
 
 const names = (pages: CanvasPageInfo[]) => pages.map((page) => page.name)
 
@@ -174,6 +188,7 @@ class Store {
       updatedAt: now,
       frames,
       pages: canvasPages(source).map((page) => ({ ...page })),
+      ...(source.guides?.length ? { guides: source.guides.map((guide) => ({ ...guide })) } : {}),
       ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
       ...(guidelines?.length ? { guidelines } : {}),
       ...(references?.length ? { references } : {}),
@@ -222,9 +237,17 @@ class Store {
       updatedAt: now,
       updatedBy: by,
     }))
+    const guides: CanvasGuide[] = (canvas.guides ?? [])
+      .filter((guide) => guide.pageId === pageId)
+      .map((guide) => ({ ...guide, id: nanoid(10), pageId: page.id }))
+    /* the copy's guides count against the canvas like any other */
+    if ((canvas.guides?.length ?? 0) + guides.length > MAX_GUIDES) throw new GuideLimitError()
     const next = [...pages]
     next.splice(pages.indexOf(source) + 1, 0, page)
-    await persist.savePageCopy({ ...canvas, pages: next, updatedAt: now }, frames)
+    await persist.savePageCopy(
+      { ...canvas, pages: next, guides: [...(canvas.guides ?? []), ...guides], updatedAt: now },
+      frames,
+    )
     if (this.canvases.get(canvasId) !== canvas) return undefined
     /* a page save may have landed during the write: slot the copy after the
        source wherever it is now (or last, if the source is gone), under a
@@ -236,12 +259,20 @@ class Store {
     canvas.pages.splice(at === -1 ? live.length : at + 1, 0, page)
     canvas.frames.push(...frames)
     for (const frame of frames) this.frameIndex.set(frame.id, canvasId)
+    /* guides placed while the copy was being written stay alongside; the
+       copy keeps only as many of its own as the limit still has room for */
+    const copied = guides.length > 0
+    const room = Math.max(0, MAX_GUIDES - (canvas.guides?.length ?? 0))
+    if (guides.length > room) guides.splice(room)
+    if (guides.length) canvas.guides = [...(canvas.guides ?? []), ...guides]
     canvas.updatedAt = Math.max(canvas.updatedAt, now)
-    if (!samePages(canvas.pages, next)) persist.saveCanvas(canvas)
-    return { source, page, pages: canvas.pages, frames }
+    if (!samePages(canvas.pages, next) || copied) persist.saveCanvas(canvas)
+    return { source, page, pages: canvas.pages, frames, guides }
   }
 
-  setPages(canvasId: string, pages: import('../shared/types.ts').CanvasPageInfo[]) {
+  /** Replace the page list. Returns the guides that went with deleted
+   *  pages (undefined when the canvas is gone), so peers can drop them. */
+  setPages(canvasId: string, pages: import('../shared/types.ts').CanvasPageInfo[]): CanvasGuide[] | undefined {
     const canvas = this.canvases.get(canvasId)
     if (!canvas) return undefined
     const firstId = canvasPages(canvas)[0]!.id
@@ -252,9 +283,35 @@ class Store {
       }
     }
     canvas.pages = pages
+    /* a deleted page takes its guides with it */
+    const kept = (guide: CanvasGuide) => pages.some((page) => page.id === guide.pageId)
+    const dropped = (canvas.guides ?? []).filter((guide) => !kept(guide))
+    if (dropped.length) canvas.guides = canvas.guides!.filter(kept)
     canvas.updatedAt = Date.now()
     persist.saveCanvas(canvas)
-    return pages
+    return dropped
+  }
+
+  /** Add a ruler guide, or move one that exists. Undefined when the canvas
+   *  is gone; throws GuideLimitError on a canvas already holding the most. */
+  setGuide(canvasId: string, guide: CanvasGuide): CanvasGuide | undefined {
+    const canvas = this.canvases.get(canvasId)
+    if (!canvas) return undefined
+    const guides = canvas.guides ?? []
+    const exists = guides.some((g) => g.id === guide.id)
+    if (!exists && guides.length >= MAX_GUIDES) throw new GuideLimitError()
+    canvas.guides = exists ? guides.map((g) => (g.id === guide.id ? guide : g)) : [...guides, guide]
+    persist.saveCanvas(canvas)
+    return guide
+  }
+
+  /** Remove a ruler guide; false when there was no such guide. */
+  deleteGuide(canvasId: string, guideId: string): boolean {
+    const canvas = this.canvases.get(canvasId)
+    if (!canvas?.guides?.some((g) => g.id === guideId)) return false
+    canvas.guides = canvas.guides.filter((g) => g.id !== guideId)
+    persist.saveCanvas(canvas)
+    return true
   }
 
   getCanvas(id: string) {

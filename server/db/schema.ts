@@ -10,7 +10,7 @@ import {
   primaryKey,
   jsonb,
 } from 'drizzle-orm/pg-core'
-import type { CanvasPageInfo, FrameApproval } from '../../shared/types.ts'
+import type { CanvasGuide, CanvasPageInfo, FrameApproval } from '../../shared/types.ts'
 import type { AutomationRunState, AutomationTrigger, Schedule, Step } from '../../shared/automations.ts'
 
 /** ActivityKit tokens are delivery secrets: never return them through read APIs. */
@@ -47,6 +47,8 @@ export const liveActivityStarters = pgTable('live_activity_starters', {
 
 export const canvases = pgTable('canvases', {
   pages: jsonb('pages').$type<CanvasPageInfo[]>(),
+  /** ruler guides of every page; null = none */
+  guides: jsonb('guides').$type<CanvasGuide[]>(),
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   ownerId: text('owner_id'),

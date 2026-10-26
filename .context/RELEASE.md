@@ -54,6 +54,11 @@ in `.github/actions/setup-desktop`:
   provider in the system browser and returns over a `doop://integration/<id>` link; the app
   finishes it under its own session (`shared/desktopConnect.ts`). This is web-only: shells from
   0.2.1 already deliver any `doop://` link, and older shells open Integrations in the browser.
+- The macOS View menu (`desktop/src-tauri/src/view_menu.rs`) holds the canvas toggles (Rulers,
+  Show/Hide UI, Layers and Agents panels) and zoom. Items reach the page as `view-command`
+  events; the page mirrors its state back through `view_menu_state` (`src/lib/viewMenu.ts`,
+  gated on `window.__DOOP_VIEW_MENU__`), so checkmarks follow it and canvas items are disabled
+  off a canvas. Only ⌘ shortcuts are bound in the menu; ⇧R / ⇧1 / ⇧2 stay with the page.
 - The shell tells the page its platform via `window.__DOOP_DESKTOP_PLATFORM__` (read in
   `src/lib/shell.ts`); only macOS gets the overlay title bar / traffic-light inset.
 - Desktop app version is tracked separately from the root `package.json` and bumped by

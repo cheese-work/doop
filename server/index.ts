@@ -13,7 +13,8 @@ import { eq, inArray } from 'drizzle-orm'
 import { toNodeHandler, fromNodeHeaders } from 'better-auth/node'
 import { oAuthDiscoveryMetadata } from 'better-auth/plugins'
 import { WebSocketServer, WebSocket } from 'ws'
-import { PageLimitError, store } from './store.ts'
+import { GuideLimitError, PageLimitError, store } from './store.ts'
+import { parseGuide } from '../shared/guides.ts'
 import { getImage } from './previews.ts'
 import * as actions from './actions.ts'
 import { liveActivitiesRouter, logLiveActivityRequests, startLiveActivityDelivery } from './liveActivities.ts'
@@ -1570,10 +1571,39 @@ app.put('/api/canvases/:id/pages', (req, res) => {
     return res.status(400).json({ error: 'Move the frames to another page before deleting this page.' })
   }
   const clean = pages.map((p) => ({ id: p.id, name: p.name.trim() }))
-  store.setPages(canvas.id, clean)
   const actor = actions.resolveActor({ name: req.user!.name, kind: 'user' })
-  broadcast(canvas.id, { type: 'canvas:pages', pages: clean, actor })
+  actions.setCanvasPages(canvas.id, clean, actor)
   res.json(clean)
+})
+
+/* Ruler guides, one per request so two people dragging different guides
+   never overwrite each other. The id is the client's, which lets undo put
+   a removed guide back as itself. */
+app.put('/api/canvases/:id/guides/:guideId', (req, res) => {
+  const canvas = requireCanvas(req, res, req.params.id)
+  if (!canvas) return
+  const guide = parseGuide(
+    req.params.guideId,
+    req.body,
+    canvasPages(canvas).map((page) => page.id),
+  )
+  if (typeof guide === 'string') return res.status(400).json({ error: guide })
+  const actor = actions.resolveActor({ name: req.user!.name, kind: 'user' })
+  try {
+    res.json(actions.setGuide(canvas.id, guide, actor))
+  } catch (e) {
+    if (e instanceof GuideLimitError) return res.status(400).json({ error: e.message })
+    throw e
+  }
+})
+
+app.delete('/api/canvases/:id/guides/:guideId', (req, res) => {
+  const canvas = requireCanvas(req, res, req.params.id)
+  if (!canvas) return
+  const actor = actions.resolveActor({ name: req.user!.name, kind: 'user' })
+  /* idempotent: a guide a collaborator already removed is just as gone */
+  actions.deleteGuide(canvas.id, req.params.guideId, actor)
+  res.json({ ok: true })
 })
 
 app.post('/api/canvases/:id/pages/:pageId/duplicate', async (req, res) => {
@@ -1587,7 +1617,7 @@ app.post('/api/canvases/:id/pages/:pageId/duplicate', async (req, res) => {
     if (!copy) return res.status(404).json({ error: 'page not found' })
     res.json({ page: copy.page, pages: copy.pages, frames: copy.frames })
   } catch (e) {
-    if (e instanceof PageLimitError) return res.status(400).json({ error: e.message })
+    if (e instanceof PageLimitError || e instanceof GuideLimitError) return res.status(400).json({ error: e.message })
     console.error('[pages] duplicate failed', e)
     res.status(500).json({ error: 'Could not duplicate the page. Please try again.' })
   }

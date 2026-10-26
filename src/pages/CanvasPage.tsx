@@ -96,13 +96,17 @@ import { Note } from '../components/ui/note'
 import { Textarea } from '../components/ui/textarea'
 import { Modal, ModalActions, ModalEyebrow, ModalLede, ModalTitle } from '../components/ui/modal'
 import { createCenteredFrame } from '../lib/framePlacement'
+import { RULER_PX } from '../components/Rulers'
+import { NO_CANVAS, onViewCommand, syncViewMenu } from '../lib/viewMenu'
 
 /* The floating chrome's geometry, in px from the canvas area's edges. The
    panels sit 14px in from the edge; on the right the Agents panel (280)
    always hugs the edge, the Inspector (244) opens to its left, and the icon
    islands (40) sit left of whatever is open. On the left the tool rail follows the Layers
    panel (264), or its collapsed 40px island. --chrome-left/--chrome-right
-   mark where the open canvas begins and ends, for the zoom pill and toasts. */
+   mark where the open canvas begins and ends, for the zoom pill and toasts.
+   With rulers on, the chrome layer starts RULER_PX further in on the top
+   and left; --chrome-top and --rail-left include that, these offsets do not. */
 const EDGE = 14
 const LAYERS_W = 264
 const RAIL_W = 40
@@ -265,8 +269,7 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
          were. Escape deliberately leaves the UI hidden, as in Figma. */
       if (isHideUiShortcut(e) && hideUiActive) {
         e.preventDefault()
-        useStore.getState().toggleUiHidden()
-        if (useStore.getState().uiHidden && !hideUiHinted()) showToast(`UI hidden · ${MOD_KEY}. to show`)
+        toggleHideUi()
         return
       }
       if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'z') {
@@ -349,6 +352,12 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
     window.setTimeout(() => setToast(null), 2000)
   }
 
+  /* ⌘. and View > Show/Hide UI: the first hide in a browser says how to undo it */
+  function toggleHideUi() {
+    useStore.getState().toggleUiHidden()
+    if (useStore.getState().uiHidden && !hideUiHinted()) showToast(`UI hidden · ${MOD_KEY}. to show`)
+  }
+
   /* Export lists the page's frames, with the canvas selection pre-checked */
   function openExport() {
     const s = useStore.getState()
@@ -412,9 +421,42 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
   /* the frame Inspector or the element panel, whichever has the slot */
   const propertiesShown = !!selectedFrame && !deferPanel && (!!panelElement || inspectorOpen)
   const chrome = chromeLayout({ layersOpen, propertiesShown, agentsOpen: showActivity })
+  /* ⇧R docks the rulers on the canvas's top and left edges; the bar and the
+     floating chrome step in past them (the same test Stage draws them by) */
+  const rulers = useStore((s) => s.rulers)
+  const chromeHidden = useStore((s) => s.uiHidden)
+  const rulersShown = rulers && !chromeHidden && !isMobile
+  const rulerInset = rulersShown ? RULER_PX : 0
+  const hasSelection = useStore((s) => s.selectedIds.length > 0)
+
+  /* the desktop shell's View menu: its toggles act here, and it mirrors
+     their state; leaving the canvas disables its canvas items */
+  useEffect(
+    () =>
+      onViewCommand((command) => {
+        const s = useStore.getState()
+        if (command === 'rulers') s.toggleRulers()
+        else if (command === 'ui' && hideUiActive) toggleHideUi()
+        else if (command === 'layers') s.setLayersOpen(!s.layersOpen)
+        else if (command === 'agents') setShowActivity((open) => !open)
+      }),
+    [hideUiActive], // eslint-disable-line react-hooks/exhaustive-deps
+  )
+  useEffect(() => {
+    syncViewMenu({
+      canvas: true,
+      rulers,
+      ui: !uiHidden,
+      uiToggle: hideUiActive,
+      layers: layersOpen,
+      agents: showActivity,
+      selection: hasSelection,
+    })
+  }, [rulers, uiHidden, hideUiActive, layersOpen, showActivity, hasSelection])
+  useEffect(() => () => syncViewMenu(NO_CANVAS), [])
   const chromeVars = {
-    '--chrome-top': isMobile ? '0px' : '50px',
-    '--rail-left': `${chrome.toolRail}px`,
+    '--chrome-top': isMobile ? '0px' : `${50 + rulerInset}px`,
+    '--rail-left': `${chrome.toolRail + rulerInset}px`,
     '--chrome-left': `${chrome.left}px`,
     '--chrome-right': `${chrome.right}px`,
   } as CSSProperties
@@ -456,7 +498,13 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
           unmounting it, so what it holds — a composer draft, the expanded
           layers, a scroll position — is exactly as it was when ⌘. brings it
           back. */}
-      <TopBar variant="canvas" className={cn(uiHidden && 'hidden')}>
+      {/* with rulers on, the top ruler takes the window's top edge and the
+          bar's pills float below it */}
+      <TopBar
+        variant="canvas"
+        className={cn(uiHidden && 'hidden')}
+        style={rulerInset ? { top: rulerInset, left: rulerInset } : undefined}
+      >
         <div className="flex min-w-0 items-center gap-2 max-xs:basis-full">
           <BarPill className="min-w-0 gap-1 pr-3 pl-1">
             <Tooltip label="All canvases" side="bottom" align="start">
@@ -582,6 +630,9 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
             'pointer-events-none absolute inset-x-0 bottom-0 top-[50px] max-md:top-14 max-xs:top-[100px]',
             uiHidden && 'hidden',
           )}
+          /* panel offsets are measured from this layer, so moving it past
+             the rulers moves every panel with it */
+          style={rulerInset ? { top: 'var(--chrome-top)', left: rulerInset } : undefined}
         >
           <div className="pointer-events-none absolute top-3.5 right-[var(--chrome-right)] z-30 flex flex-col items-end gap-2 transition-[right] duration-150 [&>*]:pointer-events-auto max-md:top-[56px] max-md:right-2 max-md:left-2">
             {pendingProposal && mutedProposal !== pendingProposal.id && !(showActivity && panelTab === 'memory') && (

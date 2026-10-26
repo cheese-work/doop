@@ -121,6 +121,16 @@ export interface CanvasPageInfo {
   name: string
 }
 
+/** A ruler guide: an infinite line on one page of a canvas, in world px.
+ *  'v' is a vertical line at x = `at`, 'h' a horizontal one at y = `at`
+ *  (the same convention as the alignment snap guides). */
+export interface CanvasGuide {
+  id: string
+  pageId: string
+  axis: 'v' | 'h'
+  at: number
+}
+
 export interface Canvas {
   id: string
   name: string
@@ -149,6 +159,8 @@ export interface Canvas {
   updatedAt: number
   frames: Frame[]
   pages?: CanvasPageInfo[]
+  /** ruler guides of every page, each tagged with its page */
+  guides?: CanvasGuide[]
   /** named design docs (brand rules, style recipes) every actor on the canvas follows */
   guidelines?: GuidelineDoc[]
   /** frames pinned to Memory as style exemplars — HTML snapshotted at pin time */
@@ -525,6 +537,8 @@ export type ServerMessage =
   | { type: 'frame:streaming'; frameId: string; active: boolean; actor: Actor }
   | { type: 'canvas:renamed'; name: string; actor: Actor }
   | { type: 'canvas:pages'; pages: CanvasPageInfo[]; actor: Actor }
+  /** a ruler guide was added or moved (guide set) or removed (null) */
+  | { type: 'guide'; id: string; guide: CanvasGuide | null; actor: Actor }
   /** a style-guide doc was written, moved (doc set) or deleted (doc null) */
   | { type: 'guidelines'; name: string; doc: GuidelineDoc | null; actor: Actor }
   /** a frame was pinned to (reference set) or unpinned from (null) Memory */

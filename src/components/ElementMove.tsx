@@ -19,6 +19,8 @@ import {
   type LayoutDrop,
 } from '../lib/frameBridge'
 import { gesture } from '../lib/gesture'
+import { visibleGuides } from '../lib/guides'
+import { snapFrame } from '../lib/snap'
 import { dropLayer } from '../lib/layerEdits'
 import { useStore } from '../lib/store'
 
@@ -183,6 +185,7 @@ export function useElementMove(frame: Frame) {
       setPreview(null)
       setLayoutDrop(null)
       setMoving(false)
+      useStore.getState().setSnapGuides([])
       // Finish after the asynchronous begin, even if a flick or Escape beat it.
       if (layerReady && layer) {
         const selector = layer.selector
@@ -216,11 +219,19 @@ export function useElementMove(frame: Frame) {
       if (!bounds) return
       pickHit()
       const point = toWorld(ev.clientX, ev.clientY)
+      let locked: 'x' | 'y' | null = null
       if (ev.shiftKey) {
-        if (Math.abs(point.x - origin.x) >= Math.abs(point.y - origin.y)) point.y = origin.y
-        else point.x = origin.x
+        locked = Math.abs(point.x - origin.x) >= Math.abs(point.y - origin.y) ? 'y' : 'x'
+        point[locked] = origin[locked]
       }
       rect = { ...bounds, x: bounds.x + point.x - origin.x, y: bounds.y + point.y - origin.y }
+      /* edges and center pull onto the ruler guides (⌥ moves freely); an
+         axis Shift holds still stays held */
+      const snapped = ev.altKey ? null : snapFrame('move', rect, [], useStore.getState().viewport.zoom, visibleGuides())
+      if (snapped) {
+        rect = { ...rect, x: locked === 'x' ? rect.x : snapped.x, y: locked === 'y' ? rect.y : snapped.y }
+        useStore.getState().setSnapGuides(snapped.guides.filter((g) => (g.axis === 'v' ? 'x' : 'y') !== locked))
+      } else useStore.getState().setSnapGuides([])
       if (layer) {
         layerPoint = {
           x: rect.x - frame.x,

@@ -41,6 +41,7 @@ function canvasColumns(c: Canvas) {
   return {
     name: c.name,
     pages: c.pages ?? null,
+    guides: c.guides?.length ? c.guides : null,
     ownerId: c.ownerId ?? null,
     linkAccess: c.linkAccess ?? null,
     publishedAt: c.publishedAt ?? null,
@@ -769,6 +770,7 @@ export async function hydrate(): Promise<Hydrated> {
     id: c.id,
     name: c.name,
     pages: c.pages ?? undefined,
+    ...(c.guides?.length ? { guides: c.guides } : {}),
     ownerId: c.ownerId ?? undefined,
     linkAccess: c.linkAccess === 'edit' ? 'edit' : undefined,
     ...(c.publishedAt != null ? { publishedAt: c.publishedAt } : {}),
