@@ -88,29 +88,49 @@ import { Modal, ModalActions, ModalEyebrow, ModalLede, ModalTitle } from '../com
 import { createCenteredFrame } from '../lib/framePlacement'
 
 /* The floating chrome's geometry, in px from the canvas area's edges. The
-   panels sit 14px in from the edge; on the right the Agents panel (280)
+   panels sit 14px in from the edge; on the right the resizable Agents panel
    always hugs the edge, the Inspector (244) opens to its left, and the icon
    islands (40) sit left of whatever is open. On the left the tool rail follows the Layers
-   panel (264), or its collapsed 40px island. --chrome-left/--chrome-right
+   panel, or its collapsed 40px island. --chrome-left/--chrome-right
    mark where the open canvas begins and ends, for the zoom pill and toasts. */
 const EDGE = 14
 const LAYERS_W = 264
 const RAIL_W = 40
 const INSPECTOR_W = 244
 const AGENTS_W = 280
+const PANEL_WIDTH_KEY = 'doop:canvas-panel-widths'
+
+function readPanelWidths(): { layers: number; agents: number } {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(PANEL_WIDTH_KEY) ?? 'null')
+    if (saved && typeof saved === 'object' && 'layers' in saved && 'agents' in saved) {
+      return {
+        layers: typeof saved.layers === 'number' && Number.isFinite(saved.layers) ? saved.layers : LAYERS_W,
+        agents: typeof saved.agents === 'number' && Number.isFinite(saved.agents) ? saved.agents : AGENTS_W,
+      }
+    }
+  } catch {
+    /* Unavailable or invalid storage must not prevent opening a canvas. */
+  }
+  return { layers: LAYERS_W, agents: AGENTS_W }
+}
 
 function chromeLayout({
   layersOpen,
   propertiesShown,
   agentsOpen,
+  layersWidth,
+  agentsWidth,
 }: {
   layersOpen: boolean
   propertiesShown: boolean
   agentsOpen: boolean
+  layersWidth: number
+  agentsWidth: number
 }) {
-  const toolRail = layersOpen ? EDGE + LAYERS_W + 12 : EDGE + RAIL_W + 10
-  const properties = agentsOpen ? EDGE + AGENTS_W + 8 : EDGE
-  const island = propertiesShown ? properties + INSPECTOR_W + 10 : agentsOpen ? EDGE + AGENTS_W + 10 : EDGE
+  const toolRail = layersOpen ? EDGE + layersWidth + 12 : EDGE + RAIL_W + 10
+  const properties = agentsOpen ? EDGE + agentsWidth + 8 : EDGE
+  const island = propertiesShown ? properties + INSPECTOR_W + 10 : agentsOpen ? EDGE + agentsWidth + 10 : EDGE
   return { toolRail, properties, island, left: toolRail + RAIL_W + 16, right: island + RAIL_W + 10 }
 }
 
@@ -145,6 +165,23 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
   const selectedId = useStore((s) => s.selectedId)
   const select = useStore((s) => s.select)
   const isMobile = useIsMobile()
+  const [panelWidths, setPanelWidths] = useState(readPanelWidths)
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth)
+  useEffect(() => {
+    const updateWidth = () => setViewportWidth(window.innerWidth)
+    window.addEventListener('resize', updateWidth)
+    return () => window.removeEventListener('resize', updateWidth)
+  }, [])
+  useEffect(() => {
+    try {
+      localStorage.setItem(PANEL_WIDTH_KEY, JSON.stringify(panelWidths))
+    } catch {
+      /* Resizing still works when preferences cannot be saved. */
+    }
+  }, [panelWidths])
+  const maxPanelWidth = Math.min(480, Math.floor(viewportWidth * 0.35))
+  const layersWidth = Math.max(220, Math.min(maxPanelWidth, panelWidths.layers))
+  const agentsWidth = Math.max(260, Math.min(maxPanelWidth, panelWidths.agents))
   const [showActivity, setShowActivity] = useState(() => !window.matchMedia('(max-width: 900px)').matches)
   /* ?connect=1 (the "connect your agent" email) lands on the Connect AI
      modal; the flag comes off the URL once the page is up so a reload or a
@@ -375,7 +412,7 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
   const panelElement = elementPanelOpen && selectedElement?.frameId === selectedFrame?.id ? selectedElement : null
   /* the frame Inspector or the element panel, whichever has the slot */
   const propertiesShown = !!selectedFrame && !deferPanel && (!!panelElement || inspectorOpen)
-  const chrome = chromeLayout({ layersOpen, propertiesShown, agentsOpen: showActivity })
+  const chrome = chromeLayout({ layersOpen, propertiesShown, agentsOpen: showActivity, layersWidth, agentsWidth })
   const chromeVars = {
     '--chrome-top': isMobile ? '0px' : '50px',
     '--rail-left': `${chrome.toolRail}px`,
@@ -585,7 +622,22 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
               line; this per-agent stack is only for windows too narrow for it */}
           <WorkingNow style={{ left: chrome.left }} className="min-[1180px]:hidden" />
           <Onboarding canvasId={canvasId} />
-          {!isMobile && (layersOpen ? <LayersPanel onAddFrame={addFrame} /> : <LayersRailToggle />)}
+          {!isMobile &&
+            (layersOpen ? (
+              <LayersPanel
+                onAddFrame={addFrame}
+                resize={{
+                  label: 'Resize Layers panel',
+                  edge: 'right',
+                  width: layersWidth,
+                  min: 220,
+                  max: maxPanelWidth,
+                  onResize: (layers) => setPanelWidths((widths) => ({ ...widths, layers })),
+                }}
+              />
+            ) : (
+              <LayersRailToggle />
+            ))}
           {isMobile && !showActivity && (
             <MobilePanelTabs
               onOpen={(tab) => {
@@ -608,7 +660,19 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
             <Inspector frame={selectedFrame} style={{ right: chrome.properties }} />
           )}
           {!isMobile && showActivity && (
-            <ActivityPanel canvasId={canvasId} onClose={() => setShowActivity(false)} style={{ right: EDGE }} />
+            <ActivityPanel
+              canvasId={canvasId}
+              onClose={() => setShowActivity(false)}
+              style={{ right: EDGE }}
+              resize={{
+                label: 'Resize Agents panel',
+                edge: 'left',
+                width: agentsWidth,
+                min: 260,
+                max: maxPanelWidth,
+                onResize: (agents) => setPanelWidths((widths) => ({ ...widths, agents })),
+              }}
+            />
           )}
           {!isMobile && (
             <SideRail
