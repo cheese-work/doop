@@ -116,21 +116,14 @@ fn version_of(path: &PathBuf) -> Option<String> {
     if ok { first } else { None }
 }
 
-// Resolving runs every candidate's `--version`; remember the answer briefly
-// and forget it when an install just happened.
-static EXECUTABLE: Mutex<Option<(Instant, PathBuf, Option<Version>)>> = Mutex::new(None);
-
-/// The Claude Code to run and the version it reported (None when it would not say).
+/// The Claude Code to run and the version it reported (None when it would
+/// not say). Probed every time: this runs on a refresh, a sign-in, an install
+/// check and once per run, one `--version` per installed binary, and a cache
+/// here would hide an update made in place a moment ago.
 fn resolved() -> Result<(PathBuf, Option<Version>), String> {
-    if let Ok(cache) = EXECUTABLE.lock() {
-        if let Some((at, path, version)) = cache.as_ref() {
-            if at.elapsed() < Duration::from_secs(300) && path.is_file() { return Ok((path.clone(), *version)); }
-        }
-    }
     let versioned: Vec<_> = candidates().into_iter().map(|p| { let v = version_of(&p).as_deref().and_then(parse_version); (p, v) }).collect();
     let path = newest(versioned.clone()).ok_or("Claude CLI not found. Install Claude Code, then refresh.")?;
     let version = versioned.iter().find(|(p, _)| *p == path).and_then(|(_, v)| *v);
-    if let Ok(mut cache) = EXECUTABLE.lock() { *cache = Some((Instant::now(), path.clone(), version)); }
     Ok((path, version))
 }
 
@@ -144,10 +137,6 @@ fn require_supported() -> Result<(), String> {
     if supported(version) { return Ok(()); }
     let found = version.map(|(a, b, c)| format!("{a}.{b}.{c}")).unwrap_or_else(|| "an unknown version".into());
     Err(format!("Claude Code {found} at {} is older than the {MIN_CLAUDE_VERSION_TEXT} Doop needs. Run `claude update`, then Refresh.", path.display()))
-}
-
-fn forget_executable() {
-    if let Ok(mut cache) = EXECUTABLE.lock() { *cache = None; }
 }
 
 fn command() -> Result<Command, String> {
@@ -280,9 +269,6 @@ fn collect(
 #[tauri::command]
 pub async fn claude_status(app: AppHandle, user_id: String) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        // A status check is the explicit Refresh: look again, so a Claude Code
-        // updated in place a moment ago is not still the cached old version.
-        forget_executable();
         let enabled = enabled_users(&app)?.contains(&user_id);
         let Ok(mut cmd) = command() else { return Ok(json!({"installed": false, "connected": false, "enabled": enabled})); };
         cmd.current_dir(directory(&app)?).args(["auth", "status"]);
@@ -362,7 +348,6 @@ pub async fn claude_install(app: AppHandle) -> Result<(), String> {
             Duration::from_secs(600), Arc::new(AtomicBool::new(false)), |_| {})
             .map_err(|_| "Installation did not finish in time. Refresh to check, or use the installation guide.")?;
         if !ok { return Err("Installation failed. Check your internet connection or use the installation guide.".into()); }
-        forget_executable();
         let mut verify = command()?;
         verify.arg("--version");
         let ok = collect(verify.spawn().map_err(|e| e.to_string())?,
