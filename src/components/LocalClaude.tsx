@@ -226,7 +226,7 @@ export function LocalClaudeRow() {
                   Refresh
                 </Button>
               )}
-              {native?.installed && !native.connected && (
+              {native?.installed && !native.connected && !native.outdated && (
                 <Button
                   disabled={busy}
                   onClick={() =>
@@ -308,6 +308,13 @@ export function LocalClaudeRow() {
           </>
         )}
         {!supported && <p className="mt-[10px] text-[13px] text-ink-faint">Update Doop to connect Claude.</p>}
+        {supported && native?.installed && native.outdated && (
+          <p className="mt-[10px] text-[13px] text-ink-faint">
+            Claude Code {native.cliVersion ?? ''} at <code className={planAsCode}>{native.cliPath}</code> is too old to
+            sign in from here. Run <code className={planAsCode}>claude update</code> in a terminal, or remove it so Doop
+            finds your newer install, then Refresh.
+          </p>
+        )}
         {supported && native && !native.installed && (
           <p className="mt-[10px] text-[13px] text-ink-faint">
             <a className="underline" href="https://code.claude.com/docs/en/setup" target="_blank" rel="noreferrer">

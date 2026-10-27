@@ -40,7 +40,13 @@ pub fn shutdown(state: &ClaudeState) {
     }
 }
 
-fn executable() -> Result<PathBuf, String> {
+/// Every place a Claude Code install lands: the native installer's
+/// `~/.local/bin`, the npm-local install `claude migrate-installer` leaves in
+/// `~/.claude/local`, whatever is on PATH (a GUI app's PATH is short), and the
+/// Homebrew/npm global locations. Users accumulate more than one over time,
+/// and an old npm global (1.x) neither knows `auth status` nor shares a login
+/// with the install they use, so the NEWEST one found is the one to run.
+fn candidates() -> Vec<PathBuf> {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
     let name = if cfg!(windows) {
         "claude.exe"
@@ -49,7 +55,9 @@ fn executable() -> Result<PathBuf, String> {
     };
     let mut candidates = Vec::new();
     if let Some(home) = home {
-        candidates.push(PathBuf::from(home).join(".local/bin").join(name));
+        let home = PathBuf::from(home);
+        candidates.push(home.join(".local/bin").join(name));
+        candidates.push(home.join(".claude/local").join(name));
     }
     if let Some(path) = std::env::var_os("PATH") {
         candidates.extend(std::env::split_paths(&path).map(|dir| dir.join(name)));
@@ -58,15 +66,81 @@ fn executable() -> Result<PathBuf, String> {
         PathBuf::from("/opt/homebrew/bin/claude"),
         PathBuf::from("/usr/local/bin/claude"),
     ]);
+    let mut seen = HashSet::new();
     candidates
         .into_iter()
-        .find(|p| p.is_file())
-        .ok_or("Claude CLI not found. Install Claude Code, then refresh.".into())
+        .filter(|p| p.is_file())
+        .filter(|p| seen.insert(std::fs::canonicalize(p).unwrap_or_else(|_| p.clone())))
+        .collect()
+}
+
+type Version = (u64, u64, u64);
+
+/// "2.1.281 (Claude Code)" -> (2, 1, 281); None for anything else.
+fn parse_version(line: &str) -> Option<Version> {
+    let mut parts = line.split_whitespace().next()?.split('.').map(|n| n.parse::<u64>().ok());
+    Some((parts.next()??, parts.next()??, parts.next()??))
+}
+
+/// The newest of the candidates by `--version`; one that will not say falls
+/// to the back, and the first candidate stands in when none will.
+fn newest(versioned: Vec<(PathBuf, Option<Version>)>) -> Option<PathBuf> {
+    let first = versioned.first().map(|(path, _)| path.clone());
+    versioned
+        .into_iter()
+        .filter_map(|(path, version)| version.map(|v| (v, path)))
+        .max_by_key(|(version, _)| *version)
+        .map(|(_, path)| path)
+        .or(first)
+}
+
+fn version_of(path: &PathBuf) -> Option<String> {
+    let mut cmd = Command::new(path);
+    subscription_environment(&mut cmd);
+    cmd.arg("--version").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    let mut first = None;
+    let ok = collect(cmd.spawn().ok()?, Duration::from_secs(10), Arc::new(AtomicBool::new(false)), |line| {
+        if first.is_none() { first = Some(line.to_string()); }
+    }).unwrap_or(false);
+    if ok { first } else { None }
+}
+
+// Resolving runs every candidate's `--version`; remember the answer briefly
+// and forget it when an install just happened.
+static EXECUTABLE: Mutex<Option<(Instant, PathBuf)>> = Mutex::new(None);
+
+fn executable() -> Result<PathBuf, String> {
+    if let Ok(cache) = EXECUTABLE.lock() {
+        if let Some((at, path)) = cache.as_ref() {
+            if at.elapsed() < Duration::from_secs(300) && path.is_file() { return Ok(path.clone()); }
+        }
+    }
+    let versioned: Vec<_> = candidates().into_iter().map(|p| { let v = version_of(&p).as_deref().and_then(parse_version); (p, v) }).collect();
+    let path = newest(versioned).ok_or("Claude CLI not found. Install Claude Code, then refresh.")?;
+    if let Ok(mut cache) = EXECUTABLE.lock() { *cache = Some((Instant::now(), path.clone())); }
+    Ok(path)
+}
+
+fn forget_executable() {
+    if let Ok(mut cache) = EXECUTABLE.lock() { *cache = None; }
 }
 
 fn command() -> Result<Command, String> {
     let mut cmd = Command::new(executable()?);
-    // An explicit subscription mode must not accidentally spend an inherited API key.
+    subscription_environment(&mut cmd);
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    Ok(cmd)
+}
+
+/// An explicit subscription mode must not accidentally spend an inherited API key.
+fn subscription_environment(cmd: &mut Command) {
     for key in [
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
@@ -80,15 +154,6 @@ fn command() -> Result<Command, String> {
     ] {
         cmd.env_remove(key);
     }
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000);
-    }
-    Ok(cmd)
 }
 
 fn directory(app: &AppHandle) -> Result<PathBuf, String> {
@@ -190,8 +255,14 @@ pub async fn claude_status(app: AppHandle, user_id: String) -> Result<Value, Str
         let mut output = String::new();
         let ok = collect(cmd.spawn().map_err(|e| e.to_string())?, Duration::from_secs(20), Arc::new(AtomicBool::new(false)), |line| { if output.len() < 32_000 { output.push_str(line); } })?;
         let auth: Value = serde_json::from_str(&output).unwrap_or(Value::Null);
+        let path = executable()?;
+        // A CLI from before `auth status` answers with usage text or a crash,
+        // never JSON: signing in from here cannot work, say so instead.
+        let outdated = !auth.is_object();
         Ok(json!({"installed": true, "connected": ok && auth["loggedIn"] == true, "enabled": enabled,
-            "email": auth["email"], "plan": auth["subscriptionType"], "authMethod": auth["authMethod"]}))
+            "email": auth["email"], "plan": auth["subscriptionType"], "authMethod": auth["authMethod"],
+            "outdated": outdated, "cliPath": path.to_string_lossy(),
+            "cliVersion": version_of(&path).and_then(|v| v.split_whitespace().next().map(str::to_string))}))
     }).await.map_err(|e| e.to_string())?
 }
 
@@ -257,6 +328,7 @@ pub async fn claude_install(app: AppHandle) -> Result<(), String> {
             Duration::from_secs(600), Arc::new(AtomicBool::new(false)), |_| {})
             .map_err(|_| "Installation did not finish in time. Refresh to check, or use the installation guide.")?;
         if !ok { return Err("Installation failed. Check your internet connection or use the installation guide.".into()); }
+        forget_executable();
         let mut verify = command()?;
         verify.arg("--version");
         let ok = collect(verify.spawn().map_err(|e| e.to_string())?,
@@ -568,6 +640,24 @@ mod tests {
         let error = collect(child, Duration::from_secs(15), Arc::new(AtomicBool::new(false)), |_| {}).unwrap_err();
         assert!(error.contains("2 MB"));
         assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn picks_the_newest_claude_and_leaves_a_mute_one_last() {
+        let a = PathBuf::from("/opt/homebrew/bin/claude");
+        let b = PathBuf::from("/Users/me/.claude/local/claude");
+        let c = PathBuf::from("/Users/me/.local/bin/claude");
+        assert_eq!(parse_version("2.1.281 (Claude Code)"), Some((2, 1, 281)));
+        assert_eq!(parse_version("1.0.61 (Claude Code)"), Some((1, 0, 61)));
+        assert_eq!(parse_version("Usage: claude [options]"), None);
+        assert_eq!(parse_version(""), None);
+        assert_eq!(
+            newest(vec![(a.clone(), Some((1, 0, 61))), (b.clone(), Some((2, 1, 281))), (c.clone(), Some((2, 1, 9)))]),
+            Some(b.clone())
+        );
+        assert_eq!(newest(vec![(a.clone(), Some((1, 0, 61))), (b.clone(), None)]), Some(a.clone()));
+        assert_eq!(newest(vec![(a.clone(), None), (b.clone(), None)]), Some(a.clone()));
+        assert_eq!(newest(vec![]), None);
     }
 
     #[test]

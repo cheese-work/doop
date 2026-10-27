@@ -122,6 +122,11 @@ stay in Claude's local credential storage; Doop never reads or uploads them. The
 runner excludes inherited API-key/provider overrides so it does not silently bill
 an API key. Claude's own login and usage limits determine account access.
 
+- The shell looks for Claude Code in `~/.local/bin` (the native installer), `~/.claude/local` (an
+  npm-local install), `PATH`, `/opt/homebrew/bin` and `/usr/local/bin`, and runs the newest one it
+  finds by `--version`: a stale npm global from the 1.x days neither knows `auth status` nor shares
+  a login with the install the user actually uses. One too old to answer is reported as `outdated`
+  in the status, and the row says to update or remove it instead of offering a sign-in.
 - The local-provider preference, model choice and reasoning effort are account-wide. The model
   menu is the CLI's aliases (`fable`, `opus`, `sonnet`, `haiku`, or Claude Code's own default),
   which `claude --model` resolves to the newest model the installed CLI knows, so a new release

@@ -3,7 +3,17 @@ import { api, ApiError } from './api'
 import { useStore } from './store'
 import type { LocalAgentJob, LocalAgentPreference, LocalAgentResult } from '../../shared/localAgent'
 
-type NativeStatus = { installed: boolean; connected: boolean; enabled: boolean; email?: string; plan?: string }
+type NativeStatus = {
+  installed: boolean
+  connected: boolean
+  enabled: boolean
+  email?: string
+  plan?: string
+  /** the Claude Code found is too old to report or complete a sign-in */
+  outdated?: boolean
+  cliPath?: string
+  cliVersion?: string
+}
 type Bridge = {
   __DOOP_CLAUDE_CLI__?: boolean
   __DOOP_CLAUDE_INSTALL__?: boolean
