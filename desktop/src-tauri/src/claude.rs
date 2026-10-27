@@ -280,6 +280,9 @@ fn collect(
 #[tauri::command]
 pub async fn claude_status(app: AppHandle, user_id: String) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        // A status check is the explicit Refresh: look again, so a Claude Code
+        // updated in place a moment ago is not still the cached old version.
+        forget_executable();
         let enabled = enabled_users(&app)?.contains(&user_id);
         let Ok(mut cmd) = command() else { return Ok(json!({"installed": false, "connected": false, "enabled": enabled})); };
         cmd.current_dir(directory(&app)?).args(["auth", "status"]);
