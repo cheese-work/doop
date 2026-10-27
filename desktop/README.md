@@ -126,7 +126,7 @@ an API key. Claude's own login and usage limits determine account access.
   npm-local install), `PATH`, `/opt/homebrew/bin` and `/usr/local/bin`, and runs the newest one it
   finds by `--version`: a stale npm global from the 1.x days neither knows `auth status` nor shares
   a login with the install the user actually uses. Anything below `MIN_CLAUDE_VERSION` in
-  `claude.rs` (the version the runner's flags and `auth status` were verified against) is reported
+  `claude.rs` (2.1.0: the runner's flags and `auth status` are a 2.x surface) is reported
   as `outdated` in the status, refused by sign-in and runs, and the row says to update or remove it
   instead of offering a sign-in. Raise the floor together with the flags `run_cli` passes.
 - The local-provider preference, model choice and reasoning effort are account-wide. The model

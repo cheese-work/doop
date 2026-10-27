@@ -76,11 +76,12 @@ fn candidates() -> Vec<PathBuf> {
 
 type Version = (u64, u64, u64);
 
-/// The oldest Claude Code the runner is known to work with: `auth status`
-/// answers JSON, `-p` speaks stream-json with the flags run_cli passes, and
-/// `--effort` exists. Verified against this version; raise it with the flags.
-const MIN_CLAUDE_VERSION: Version = (2, 1, 281);
-const MIN_CLAUDE_VERSION_TEXT: &str = "2.1.281";
+/// The oldest Claude Code the runner will drive. Anything 2.1 and later is
+/// taken to speak `auth status` and `-p` stream-json with the flags run_cli
+/// passes; a 1.x install is a leftover npm global from before the native
+/// installer and knows neither. Raise this together with the flags.
+const MIN_CLAUDE_VERSION: Version = (2, 1, 0);
+const MIN_CLAUDE_VERSION_TEXT: &str = "2.1.0";
 
 fn supported(version: Option<Version>) -> bool {
     version.is_some_and(|v| v >= MIN_CLAUDE_VERSION)
@@ -690,9 +691,9 @@ mod tests {
     fn the_floor_is_a_real_version_and_older_ones_are_refused() {
         assert!(parse_version(MIN_CLAUDE_VERSION_TEXT) == Some(MIN_CLAUDE_VERSION));
         assert!(supported(Some(MIN_CLAUDE_VERSION)));
-        assert!(supported(Some((2, 1, 311))));
+        assert!(supported(Some((2, 1, 281))));
         assert!(supported(Some((3, 0, 0))));
-        assert!(!supported(Some((2, 1, 280))));
+        assert!(!supported(Some((2, 0, 99))));
         assert!(!supported(Some((1, 0, 61))));
         assert!(!supported(None));
     }
