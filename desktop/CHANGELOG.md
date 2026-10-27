@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/kgoedecke/doop/compare/desktop-v0.7.0...desktop-v0.8.0) (2026-10-27)
+
+
+### Features
+
+* **desktop:** follow new Claude models by alias, and pick the effort ([#251](https://github.com/kgoedecke/doop/issues/251)) ([bfcec7d](https://github.com/kgoedecke/doop/commit/bfcec7d318cf03df440a852844fd0033a05e5e47))
+
 ## [0.7.0](https://github.com/kgoedecke/doop/compare/desktop-v0.6.0...desktop-v0.7.0) (2026-10-26)
 
 
