@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use std::{
     collections::HashSet,
     io::{BufRead, BufReader, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -131,18 +131,23 @@ fn executable() -> Result<PathBuf, String> {
     resolved().map(|(path, _)| path)
 }
 
-/// Refuse to drive a Claude Code below the floor; the UI has already said what to do.
-fn require_supported() -> Result<(), String> {
-    let (path, version) = resolved()?;
-    if supported(version) { return Ok(()); }
-    let found = version.map(|(a, b, c)| format!("{a}.{b}.{c}")).unwrap_or_else(|| "an unknown version".into());
-    Err(format!("Claude Code {found} at {} is older than the {MIN_CLAUDE_VERSION_TEXT} Doop needs. Run `claude update`, then Refresh.", path.display()))
+/// A command for a Claude Code already resolved: one probe per action, the
+/// path and version then carried through the checks and the spawn.
+fn command_at(path: &Path) -> Command {
+    let mut cmd = Command::new(path);
+    quiet(&mut cmd);
+    cmd
 }
 
-fn command() -> Result<Command, String> {
-    let mut cmd = Command::new(executable()?);
-    quiet(&mut cmd);
-    Ok(cmd)
+/// The one resolve a sign-in or run makes, refusing a Claude Code below the
+/// floor; the UI has already said what to do about it.
+fn supported_command() -> Result<Command, String> {
+    let (path, version) = resolved()?;
+    if supported(version) {
+        return Ok(command_at(&path));
+    }
+    let found = version.map(|(a, b, c)| format!("{a}.{b}.{c}")).unwrap_or_else(|| "an unknown version".into());
+    Err(format!("Claude Code {found} at {} is older than the {MIN_CLAUDE_VERSION_TEXT} Doop needs. Run `claude update`, then Refresh.", path.display()))
 }
 
 /// Piped, stdin-less, API-key-free and (on Windows) without a console window:
@@ -270,12 +275,12 @@ fn collect(
 pub async fn claude_status(app: AppHandle, user_id: String) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let enabled = enabled_users(&app)?.contains(&user_id);
-        let Ok(mut cmd) = command() else { return Ok(json!({"installed": false, "connected": false, "enabled": enabled})); };
+        let Ok((path, version)) = resolved() else { return Ok(json!({"installed": false, "connected": false, "enabled": enabled})); };
+        let mut cmd = command_at(&path);
         cmd.current_dir(directory(&app)?).args(["auth", "status"]);
         let mut output = String::new();
         let ok = collect(cmd.spawn().map_err(|e| e.to_string())?, Duration::from_secs(20), Arc::new(AtomicBool::new(false)), |line| { if output.len() < 32_000 { output.push_str(line); } })?;
         let auth: Value = serde_json::from_str(&output).unwrap_or(Value::Null);
-        let (path, version) = resolved()?;
         // Below the floor, or so old that `auth status` answers with usage text
         // or a crash rather than JSON: nothing from here can work, say so.
         let outdated = !supported(version) || !auth.is_object();
@@ -348,7 +353,7 @@ pub async fn claude_install(app: AppHandle) -> Result<(), String> {
             Duration::from_secs(600), Arc::new(AtomicBool::new(false)), |_| {})
             .map_err(|_| "Installation did not finish in time. Refresh to check, or use the installation guide.")?;
         if !ok { return Err("Installation failed. Check your internet connection or use the installation guide.".into()); }
-        let mut verify = command()?;
+        let mut verify = command_at(&executable()?);
         verify.arg("--version");
         let ok = collect(verify.spawn().map_err(|e| e.to_string())?,
             Duration::from_secs(20), Arc::new(AtomicBool::new(false)), |_| {})?;
@@ -360,8 +365,7 @@ pub async fn claude_install(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub async fn claude_login(app: AppHandle) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        require_supported()?;
-        let mut cmd = command()?;
+        let mut cmd = supported_command()?;
         cmd.current_dir(directory(&app)?).args(["auth", "login"]);
         let ok = collect(
             cmd.spawn().map_err(|e| e.to_string())?,
@@ -448,7 +452,6 @@ pub async fn claude_run(
 }
 
 fn run_cli(app: &AppHandle, job: &Value, cancel: Arc<AtomicBool>) -> Result<Value, String> {
-    require_supported()?;
     let id = field(job, "id")?;
     let token = field(job, "token")?;
     if token.len() != 64 || !token.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -492,7 +495,7 @@ fn run_cli(app: &AppHandle, job: &Value, cancel: Arc<AtomicBool>) -> Result<Valu
             .map_err(|e| e.to_string())?
             .write_all(system.as_bytes())
             .map_err(|e| e.to_string())?;
-        let mut cmd = command()?;
+        let mut cmd = supported_command()?;
         cmd.current_dir(&dir)
             .args([
                 "-p",
