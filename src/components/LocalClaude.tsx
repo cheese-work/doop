@@ -221,7 +221,7 @@ export function LocalClaudeRow() {
                   {installing ? 'Installing…' : 'Install Claude Code'}
                 </Button>
               )}
-              {!connected && error && (
+              {!connected && (error || native?.outdated) && (
                 <Button variant="ghost" disabled={busy} onClick={() => act(() => refreshLocalAgent(userId!))}>
                   Refresh
                 </Button>

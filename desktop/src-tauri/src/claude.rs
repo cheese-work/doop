@@ -107,8 +107,8 @@ fn newest(versioned: Vec<(PathBuf, Option<Version>)>) -> Option<PathBuf> {
 
 fn version_of(path: &PathBuf) -> Option<String> {
     let mut cmd = Command::new(path);
-    subscription_environment(&mut cmd);
-    cmd.arg("--version").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    quiet(&mut cmd);
+    cmd.arg("--version");
     let mut first = None;
     let ok = collect(cmd.spawn().ok()?, Duration::from_secs(10), Arc::new(AtomicBool::new(false)), |line| {
         if first.is_none() { first = Some(line.to_string()); }
@@ -152,7 +152,14 @@ fn forget_executable() {
 
 fn command() -> Result<Command, String> {
     let mut cmd = Command::new(executable()?);
-    subscription_environment(&mut cmd);
+    quiet(&mut cmd);
+    Ok(cmd)
+}
+
+/// Piped, stdin-less, API-key-free and (on Windows) without a console window:
+/// every Claude Code process this shell starts, probes included.
+fn quiet(cmd: &mut Command) {
+    subscription_environment(cmd);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -161,7 +168,6 @@ fn command() -> Result<Command, String> {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x08000000);
     }
-    Ok(cmd)
 }
 
 /// An explicit subscription mode must not accidentally spend an inherited API key.
