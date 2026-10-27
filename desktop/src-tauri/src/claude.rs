@@ -76,6 +76,16 @@ fn candidates() -> Vec<PathBuf> {
 
 type Version = (u64, u64, u64);
 
+/// The oldest Claude Code the runner is known to work with: `auth status`
+/// answers JSON, `-p` speaks stream-json with the flags run_cli passes, and
+/// `--effort` exists. Verified against this version; raise it with the flags.
+const MIN_CLAUDE_VERSION: Version = (2, 1, 281);
+const MIN_CLAUDE_VERSION_TEXT: &str = "2.1.281";
+
+fn supported(version: Option<Version>) -> bool {
+    version.is_some_and(|v| v >= MIN_CLAUDE_VERSION)
+}
+
 /// "2.1.281 (Claude Code)" -> (2, 1, 281); None for anything else.
 fn parse_version(line: &str) -> Option<Version> {
     let mut parts = line.split_whitespace().next()?.split('.').map(|n| n.parse::<u64>().ok());
@@ -107,18 +117,32 @@ fn version_of(path: &PathBuf) -> Option<String> {
 
 // Resolving runs every candidate's `--version`; remember the answer briefly
 // and forget it when an install just happened.
-static EXECUTABLE: Mutex<Option<(Instant, PathBuf)>> = Mutex::new(None);
+static EXECUTABLE: Mutex<Option<(Instant, PathBuf, Option<Version>)>> = Mutex::new(None);
 
-fn executable() -> Result<PathBuf, String> {
+/// The Claude Code to run and the version it reported (None when it would not say).
+fn resolved() -> Result<(PathBuf, Option<Version>), String> {
     if let Ok(cache) = EXECUTABLE.lock() {
-        if let Some((at, path)) = cache.as_ref() {
-            if at.elapsed() < Duration::from_secs(300) && path.is_file() { return Ok(path.clone()); }
+        if let Some((at, path, version)) = cache.as_ref() {
+            if at.elapsed() < Duration::from_secs(300) && path.is_file() { return Ok((path.clone(), *version)); }
         }
     }
     let versioned: Vec<_> = candidates().into_iter().map(|p| { let v = version_of(&p).as_deref().and_then(parse_version); (p, v) }).collect();
-    let path = newest(versioned).ok_or("Claude CLI not found. Install Claude Code, then refresh.")?;
-    if let Ok(mut cache) = EXECUTABLE.lock() { *cache = Some((Instant::now(), path.clone())); }
-    Ok(path)
+    let path = newest(versioned.clone()).ok_or("Claude CLI not found. Install Claude Code, then refresh.")?;
+    let version = versioned.iter().find(|(p, _)| *p == path).and_then(|(_, v)| *v);
+    if let Ok(mut cache) = EXECUTABLE.lock() { *cache = Some((Instant::now(), path.clone(), version)); }
+    Ok((path, version))
+}
+
+fn executable() -> Result<PathBuf, String> {
+    resolved().map(|(path, _)| path)
+}
+
+/// Refuse to drive a Claude Code below the floor; the UI has already said what to do.
+fn require_supported() -> Result<(), String> {
+    let (path, version) = resolved()?;
+    if supported(version) { return Ok(()); }
+    let found = version.map(|(a, b, c)| format!("{a}.{b}.{c}")).unwrap_or_else(|| "an unknown version".into());
+    Err(format!("Claude Code {found} at {} is older than the {MIN_CLAUDE_VERSION_TEXT} Doop needs. Run `claude update`, then Refresh.", path.display()))
 }
 
 fn forget_executable() {
@@ -255,14 +279,14 @@ pub async fn claude_status(app: AppHandle, user_id: String) -> Result<Value, Str
         let mut output = String::new();
         let ok = collect(cmd.spawn().map_err(|e| e.to_string())?, Duration::from_secs(20), Arc::new(AtomicBool::new(false)), |line| { if output.len() < 32_000 { output.push_str(line); } })?;
         let auth: Value = serde_json::from_str(&output).unwrap_or(Value::Null);
-        let path = executable()?;
-        // A CLI from before `auth status` answers with usage text or a crash,
-        // never JSON: signing in from here cannot work, say so instead.
-        let outdated = !auth.is_object();
-        Ok(json!({"installed": true, "connected": ok && auth["loggedIn"] == true, "enabled": enabled,
+        let (path, version) = resolved()?;
+        // Below the floor, or so old that `auth status` answers with usage text
+        // or a crash rather than JSON: nothing from here can work, say so.
+        let outdated = !supported(version) || !auth.is_object();
+        Ok(json!({"installed": true, "connected": !outdated && ok && auth["loggedIn"] == true, "enabled": enabled,
             "email": auth["email"], "plan": auth["subscriptionType"], "authMethod": auth["authMethod"],
-            "outdated": outdated, "cliPath": path.to_string_lossy(),
-            "cliVersion": version_of(&path).and_then(|v| v.split_whitespace().next().map(str::to_string))}))
+            "outdated": outdated, "cliPath": path.to_string_lossy(), "minVersion": MIN_CLAUDE_VERSION_TEXT,
+            "cliVersion": version.map(|(a, b, c)| format!("{a}.{b}.{c}"))}))
     }).await.map_err(|e| e.to_string())?
 }
 
@@ -341,6 +365,7 @@ pub async fn claude_install(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub async fn claude_login(app: AppHandle) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
+        require_supported()?;
         let mut cmd = command()?;
         cmd.current_dir(directory(&app)?).args(["auth", "login"]);
         let ok = collect(
@@ -428,6 +453,7 @@ pub async fn claude_run(
 }
 
 fn run_cli(app: &AppHandle, job: &Value, cancel: Arc<AtomicBool>) -> Result<Value, String> {
+    require_supported()?;
     let id = field(job, "id")?;
     let token = field(job, "token")?;
     if token.len() != 64 || !token.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -658,6 +684,17 @@ mod tests {
         assert_eq!(newest(vec![(a.clone(), Some((1, 0, 61))), (b.clone(), None)]), Some(a.clone()));
         assert_eq!(newest(vec![(a.clone(), None), (b.clone(), None)]), Some(a.clone()));
         assert_eq!(newest(vec![]), None);
+    }
+
+    #[test]
+    fn the_floor_is_a_real_version_and_older_ones_are_refused() {
+        assert!(parse_version(MIN_CLAUDE_VERSION_TEXT) == Some(MIN_CLAUDE_VERSION));
+        assert!(supported(Some(MIN_CLAUDE_VERSION)));
+        assert!(supported(Some((2, 1, 311))));
+        assert!(supported(Some((3, 0, 0))));
+        assert!(!supported(Some((2, 1, 280))));
+        assert!(!supported(Some((1, 0, 61))));
+        assert!(!supported(None));
     }
 
     #[test]

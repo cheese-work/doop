@@ -13,6 +13,7 @@ type NativeStatus = {
   outdated?: boolean
   cliPath?: string
   cliVersion?: string
+  minVersion?: string
 }
 type Bridge = {
   __DOOP_CLAUDE_CLI__?: boolean

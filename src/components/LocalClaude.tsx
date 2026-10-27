@@ -310,9 +310,9 @@ export function LocalClaudeRow() {
         {!supported && <p className="mt-[10px] text-[13px] text-ink-faint">Update Doop to connect Claude.</p>}
         {supported && native?.installed && native.outdated && (
           <p className="mt-[10px] text-[13px] text-ink-faint">
-            Claude Code {native.cliVersion ?? ''} at <code className={planAsCode}>{native.cliPath}</code> is too old to
-            sign in from here. Run <code className={planAsCode}>claude update</code> in a terminal, or remove it so Doop
-            finds your newer install, then Refresh.
+            Claude Code {native.cliVersion ?? ''} at <code className={planAsCode}>{native.cliPath}</code> is older than
+            the {native.minVersion ?? ''} Doop needs. Run <code className={planAsCode}>claude update</code> in a
+            terminal, or remove it so Doop finds your newer install, then Refresh.
           </p>
         )}
         {supported && native && !native.installed && (
