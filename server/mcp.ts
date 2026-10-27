@@ -120,13 +120,14 @@ function withGuidelinesNudge<T extends { content: { type: 'text' | 'image'; [k: 
 }
 
 /** Append any undelivered human feedback for this agent to a tool result.
- *  MCP is pull-based, so this is the channel through which humans steer agents. */
+ *  MCP is pull-based, so this is the channel through which humans steer agents.
+ *  DOOP_MCP_FEEDBACK_PIGGYBACK=0 turns it off: feedback then stays open until get_feedback claims it. */
 function withFeedback<T extends { content: { type: 'text' | 'image'; [k: string]: unknown }[] }>(
   result: T,
   canvasId: string,
   actor?: Actor,
 ): T {
-  if (!actor) return result
+  if (!actor || !env.DOOP_MCP_FEEDBACK_PIGGYBACK) return result
   const pending = actions.takeFeedbackFor(canvasId, actor.name)
   if (pending.length === 0) return result
   const tasks = actions.getTasks(canvasId)

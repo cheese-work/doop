@@ -197,6 +197,10 @@ const schema = {
   /* ---------------------------------------------------- backgrounds */
   BACKGROUNDS_ORIGIN: origin({ default: undefined }),
 
+  /* ---------------------------------------------------- MCP behaviour */
+  /* 0 = tool results carry no piggybacked task feedback; get_feedback still claims it */
+  DOOP_MCP_FEEDBACK_PIGGYBACK: bool({ default: true }),
+
   /* ---------------------------------------------------- rate limits */
   MCP_UPLOADS_PER_MIN: perMinute({ default: 15 }),
   MCP_SEARCHES_PER_MIN: perMinute({ default: 12 }),
