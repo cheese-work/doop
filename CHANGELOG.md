@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.11.0](https://github.com/kgoedecke/doop/compare/v0.10.0...v0.11.0) (2026-10-27)
+
+
+### Features
+
+* **desktop:** follow new Claude models by alias, and pick the effort ([#251](https://github.com/kgoedecke/doop/issues/251)) ([bfcec7d](https://github.com/kgoedecke/doop/commit/bfcec7d318cf03df440a852844fd0033a05e5e47))
+* **ios:** move page picker and frame count into the canvas actions menu ([#248](https://github.com/kgoedecke/doop/issues/248)) ([21ddd8c](https://github.com/kgoedecke/doop/commit/21ddd8c7f79780550aaa7f7d48d02416f81969dc))
+* **models:** discover ChatGPT subscription models from the Codex catalog ([#250](https://github.com/kgoedecke/doop/issues/250)) ([ad028ab](https://github.com/kgoedecke/doop/commit/ad028ab9ae2a0e2bd26c3f2718361e32d48e2b58))
+* **models:** let users pick the OpenAI reasoning effort ([#246](https://github.com/kgoedecke/doop/issues/246)) ([b28219a](https://github.com/kgoedecke/doop/commit/b28219a779169b53303aec48e8cd45c0e555e042))
+
+
+### Bug Fixes
+
+* **ui:** draw icons from the Lucide set instead of text glyphs ([#244](https://github.com/kgoedecke/doop/issues/244)) ([6dedda8](https://github.com/kgoedecke/doop/commit/6dedda83b049626004a4f1db10dc7671d9d2d606))
+
 ## [0.10.0](https://github.com/kgoedecke/doop/compare/v0.9.0...v0.10.0) (2026-10-26)
 
 
