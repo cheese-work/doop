@@ -103,6 +103,25 @@ function err(message: string) {
   return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true }
 }
 
+/** The write fence of set_frame_html: `expected` is the frame's updatedAt as get_frame returns it (ISO string).
+ *  Returns an error result when the write must be refused, otherwise undefined. Pure and synchronous, so the caller's
+ *  check and write happen in one tick, like the REST requireFrame. */
+function fenceError(frame: { id: string; updatedAt: number }, expected: string | undefined) {
+  if (expected === undefined) {
+    return env.DOOP_MCP_REQUIRE_FENCE
+      ? err(
+          `expected_updated_at is required (DOOP_MCP_REQUIRE_FENCE is on): pass the updatedAt from your last get_frame of ${frame.id}`,
+        )
+      : undefined
+  }
+  const at = Date.parse(expected)
+  if (Number.isNaN(at)) return err('expected_updated_at must be an ISO timestamp, as updatedAt from get_frame')
+  if (at === frame.updatedAt) return undefined
+  return err(
+    `The frame changed since you read it: current updatedAt is ${new Date(frame.updatedAt).toISOString()}. Re-read it with get_frame and redo your edit.`,
+  )
+}
+
 /** Reaches agents that start designing without having read the canvas's style guides. */
 function withGuidelinesNudge<T extends { content: { type: 'text' | 'image'; [k: string]: unknown }[] }>(
   result: T,
@@ -912,10 +931,21 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       description:
         'Replace the HTML design of a frame in one shot. The change renders live for everyone viewing the canvas. For new or heavily reworked designs, prefer append_frame_html so viewers can watch the design stream in.',
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
-      inputSchema: { frame_id: z.string(), html: z.string(), agent_name: agentName },
+      inputSchema: {
+        frame_id: z.string(),
+        html: z.string(),
+        expected_updated_at: z
+          .string()
+          .optional()
+          .describe('updatedAt from your last get_frame; the write is refused if the frame changed since'),
+        agent_name: agentName,
+      },
     },
-    async ({ frame_id, html, agent_name }) => {
-      if (!frameFor(frame_id)) return noFrame(frame_id)
+    async ({ frame_id, html, expected_updated_at, agent_name }) => {
+      const current = frameFor(frame_id)
+      if (!current) return noFrame(frame_id)
+      const refused = fenceError(current, expected_updated_at)
+      if (refused) return refused
       const frame = actions.updateFrame(frame_id, { html }, actorFrom(agent_name), { replace: true })
       if (!frame) return noFrame(frame_id)
       return withPreview(
@@ -1530,6 +1560,9 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
     },
     async ({ frame_id, html_chunk, start, done, agent_name }) => {
       if (!frameFor(frame_id)) return noFrame(frame_id)
+      if (env.DOOP_MCP_REQUIRE_FENCE) {
+        return err('append_frame_html is off (DOOP_MCP_REQUIRE_FENCE is on): send the design with set_frame_html')
+      }
       const frame = actions.appendFrameHtml(frame_id, html_chunk, actorFrom(agent_name), { start, done })
       if (!frame) return noFrame(frame_id)
       const result = done

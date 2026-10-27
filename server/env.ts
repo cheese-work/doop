@@ -197,6 +197,10 @@ const schema = {
   /* ---------------------------------------------------- backgrounds */
   BACKGROUNDS_ORIGIN: origin({ default: undefined }),
 
+  /* ---------------------------------------------------- MCP behaviour */
+  /* 1 = set_frame_html needs expected_updated_at and append_frame_html is refused (no streaming) */
+  DOOP_MCP_REQUIRE_FENCE: bool({ default: false }),
+
   /* ---------------------------------------------------- rate limits */
   MCP_UPLOADS_PER_MIN: perMinute({ default: 15 }),
   MCP_SEARCHES_PER_MIN: perMinute({ default: 12 }),
