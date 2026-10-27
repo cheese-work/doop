@@ -95,7 +95,7 @@ describe('replying to a comment', () => {
     const parent = await root()
     const reply = (await actions.replyToComment(parent.id, 'Agreed', 'bob'))!
     expect(actions.openThread(reply.id)?.root.id).toBe(parent.id)
-    actions.resolveComment(parent.id, 'alice')
+    await actions.resolveComment(parent.id, 'alice')
     expect(actions.openThread(reply.id)).toBeUndefined()
     expect(actions.openThread('missing')).toBeUndefined()
   })
@@ -103,7 +103,7 @@ describe('replying to a comment', () => {
   it('refuses replies on a resolved thread or with empty text', async () => {
     const parent = await root()
     expect(await actions.replyToComment(parent.id, '   ', 'bob')).toBeUndefined()
-    actions.resolveComment(parent.id, 'alice')
+    await actions.resolveComment(parent.id, 'alice')
     expect(await actions.replyToComment(parent.id, 'Late', 'bob')).toBeUndefined()
     expect(await actions.replyToComment('missing', 'Hello', 'bob')).toBeUndefined()
   })
@@ -111,7 +111,7 @@ describe('replying to a comment', () => {
   it('resolving the root closes every open reply so none stays queued for an agent', async () => {
     const parent = await root()
     const reply = (await actions.replyToComment(parent.id, `@${DEFAULT_ROLE_ID} bigger`, 'alice', 'alice'))!
-    actions.resolveComment(parent.id, 'alice')
+    await actions.resolveComment(parent.id, 'alice')
     expect(actions.findComment(reply.id)?.resolvedAt).toBeDefined()
     expect(actions.takeAgentCommentsFor(CANVAS, AGENT, 'alice')).toEqual([])
   })
@@ -119,7 +119,7 @@ describe('replying to a comment', () => {
   it('resolving a reply leaves the thread open', async () => {
     const parent = await root()
     const reply = (await actions.replyToComment(parent.id, `@${DEFAULT_ROLE_ID} bigger`, 'alice', 'alice'))!
-    actions.resolveComment(reply.id, AGENT)
+    await actions.resolveComment(reply.id, AGENT)
     expect(actions.findComment(parent.id)?.resolvedAt).toBeUndefined()
   })
 })

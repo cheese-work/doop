@@ -77,7 +77,7 @@ describe('what is an event', () => {
       'alice',
     ))!
     const reply = (await actions.replyToComment(root.id, 'Yo', 'Doop', 'alice', 'agent'))!
-    actions.resolveComment(root.id, 'alice')
+    await actions.resolveComment(root.id, 'alice')
     expect(seen.map((s) => s.event.type)).toEqual(['comment.created', 'comment.replied', 'comment.resolved'])
     expect(seen[0]!.event).toMatchObject({ comment: { id: root.id }, frame: { id: 'f1' }, actorKind: 'user' })
     expect(seen[1]!.event).toMatchObject({ comment: { id: reply.id }, actorKind: 'agent' })
@@ -87,7 +87,7 @@ describe('what is an event', () => {
       frame: { id: 'f1' },
     })
     /* resolving an already-resolved thread is not news twice */
-    actions.resolveComment(root.id, 'alice')
+    await actions.resolveComment(root.id, 'alice')
     expect(seen).toHaveLength(3)
   })
 

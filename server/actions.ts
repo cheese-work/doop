@@ -484,6 +484,18 @@ export function addCanvasComment(
   return postComment(canvasId, { pageId: input.pageId, x: input.x, y: input.y }, input.text, from, fromUserId)
 }
 
+/** Tails of the thread operations in flight, by root id. A reply is stored before it joins the
+ *  log, so without this a resolve that lands in between would close the root but miss the reply. */
+const threadLocks = new Map<string, Promise<unknown>>()
+
+function withThreadLock<T>(rootId: string, run: () => Promise<T> | T): Promise<T> {
+  const result = (threadLocks.get(rootId) ?? Promise.resolve()).then(run)
+  const tail = result.catch(() => {})
+  threadLocks.set(rootId, tail)
+  void tail.then(() => threadLocks.get(rootId) === tail && threadLocks.delete(rootId))
+  return result
+}
+
 /** Reply inside a thread: the reply inherits the root comment's anchor (its
  *  element, or its point on the canvas) so an @mention in it gives the agent
  *  the same anchor the conversation is about. */
@@ -494,11 +506,16 @@ export function replyToComment(
   fromUserId?: string,
   kind: ActorKind = 'user',
 ): Promise<ElementComment | undefined> {
-  const open = openThread(commentId)
-  if (!open) return Promise.resolve(undefined)
-  const anchor = replyAnchor(open)
-  if (!anchor) return Promise.resolve(undefined)
-  return postComment(open.root.canvasId, anchor, text, from, fromUserId, kind, open.root.id)
+  const first = openThread(commentId)
+  if (!first) return Promise.resolve(undefined)
+  return withThreadLock(first.root.id, () => {
+    /* a resolve may have won the lock while this reply waited */
+    const open = openThread(commentId)
+    const anchor = open && replyAnchor(open)
+    return open && anchor
+      ? postComment(open.root.canvasId, anchor, text, from, fromUserId, kind, open.root.id)
+      : undefined
+  })
 }
 
 function replyAnchor({ root, frame }: { root: ElementComment; frame?: Frame }): CommentAnchor | undefined {
@@ -653,7 +670,13 @@ export function retryComment(commentId: string, by: string): ElementComment | un
   return undefined
 }
 
-export function resolveComment(commentId: string, by: string): ElementComment | undefined {
+export function resolveComment(commentId: string, by: string): Promise<ElementComment | undefined> {
+  const found = findComment(commentId)
+  if (!found) return Promise.resolve(undefined)
+  return withThreadLock(found.parentId ?? found.id, () => closeComment(commentId, by))
+}
+
+function closeComment(commentId: string, by: string): ElementComment | undefined {
   for (const [canvasId, list] of commentLog) {
     const c = list.find((x) => x.id === commentId)
     if (!c) continue

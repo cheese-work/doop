@@ -807,7 +807,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       const actor = actorFrom(agent_name)
       arrive(canvas_id, agent_name)
       const alreadyResolved = found.resolvedAt !== undefined
-      const resolved = actions.resolveComment(comment_id, actor.name)
+      const resolved = await actions.resolveComment(comment_id, actor.name)
       if (!resolved) return noComment(comment_id)
       return withFeedback(
         text({

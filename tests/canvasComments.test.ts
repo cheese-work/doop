@@ -138,7 +138,7 @@ describe('threads on a canvas comment', () => {
     const root = (await place(`@${DEFAULT_ROLE_ID} tighten the gap`))!
     await actions.replyToComment(root.id, 'On it', AGENT, 'alice', 'agent')
     seen.length = 0
-    actions.resolveComment(root.id, AGENT)
+    await actions.resolveComment(root.id, AGENT)
     expect(actions.getComments(CANVAS.id).every((c) => c.resolvedAt)).toBe(true)
     expect(actions.openThread(root.id)).toBeUndefined()
     expect(seen.at(-1)).toMatchObject({ type: 'comment.resolved', frame: undefined, by: AGENT })

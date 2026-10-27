@@ -1756,11 +1756,11 @@ app.post('/api/comments/:id/replies', async (req, res) => {
   res.json(reply)
 })
 
-app.post('/api/comments/:id/resolve', (req, res) => {
+app.post('/api/comments/:id/resolve', async (req, res) => {
   const found = actions.findComment(req.params.id)
   if (!found) return res.status(404).json({ error: 'comment not found' })
   if (!requireCanvas(req, res, found.canvasId)) return
-  res.json(actions.resolveComment(req.params.id, req.user!.name))
+  res.json(await actions.resolveComment(req.params.id, req.user!.name))
 })
 
 app.post('/api/comments/:id/retry', async (req, res) => {

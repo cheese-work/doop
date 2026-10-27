@@ -789,7 +789,7 @@ async function runAgent(canvasId: string, agentName: string, stalled: Set<string
     if (canceled()) return 'ran'
     if (finished && !blockedWebsiteAccess && !noMutation && !unverifiedMutation) {
       for (const f of claimed) actions.completeTaskFeedback(f.id)
-      for (const c of comments) actions.resolveComment(c.id, role.name)
+      for (const c of comments) await actions.resolveComment(c.id, role.name)
       /* a card moves to the next agent in its pipeline, or finishes here */
       for (const c of cards) actions.advanceCard(canvasId, c.id, actor)
     } else {

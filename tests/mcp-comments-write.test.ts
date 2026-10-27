@@ -358,7 +358,7 @@ describe('element-comment write MCP tools', () => {
     const resolvedAt = Date.UTC(2026, 0, 1)
     const resolveSpy = vi
       .spyOn(actions, 'resolveComment')
-      .mockReturnValue({ ...root, resolvedBy: 'Claude', resolvedAt })
+      .mockResolvedValue({ ...root, resolvedBy: 'Claude', resolvedAt })
     const { client, close } = await connect()
     try {
       const { parsed, isError } = await call(client, 'resolve_comment', {
@@ -386,7 +386,7 @@ describe('element-comment write MCP tools', () => {
     stubCanvas({ ...CANVAS, ownerId: 'someone-else', memberIds: [], linkAccess: 'edit' })
     const root = comment({ id: 'm1' })
     const find = vi.spyOn(actions, 'findComment').mockReturnValue(root)
-    vi.spyOn(actions, 'resolveComment').mockReturnValue({ ...root, resolvedBy: 'Claude', resolvedAt: 1 })
+    vi.spyOn(actions, 'resolveComment').mockResolvedValue({ ...root, resolvedBy: 'Claude', resolvedAt: 1 })
     const { client, close } = await connect()
     try {
       const allowed = await call(client, 'resolve_comment', {
