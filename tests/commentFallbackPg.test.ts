@@ -1,6 +1,8 @@
 import pg from 'pg'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { stubEnv, unstubAllEnvs } from './envStub.ts'
+import { useStore } from '../src/lib/store'
+import type { ElementComment } from '../shared/types.ts'
 import type { Frame } from '../shared/types.ts'
 
 /* Real PostgreSQL: the fallback reads the persisted comment row, so the
@@ -33,7 +35,7 @@ describe.skipIf(!PG_URL)('comments outside the memory window, on PostgreSQL', ()
   let actions: typeof import('../server/actions.ts')
   let store: typeof import('../server/store.ts').store
   let pool: pg.Pool
-  let broadcasts: Array<{ type: string; comment?: { id: string } }>
+  let broadcasts: Array<{ type: string; comment?: ElementComment }>
 
   beforeAll(async () => {
     stubEnv('DATABASE_URL', PG_URL)
@@ -126,6 +128,22 @@ describe.skipIf(!PG_URL)('comments outside the memory window, on PostgreSQL', ()
     expect(broadcasts.filter((b) => b.type === 'comment').map((b) => b.comment?.id)).toEqual(
       expect.arrayContaining([root.id, reply!.id]),
     )
+  })
+
+  it('shows a full 100-entry thread in the client after a reply to its evicted root', async () => {
+    const root = await post('root')
+    for (let i = 0; i < WINDOW - 1; i++) await actions.replyToComment(root.id, `reply ${i}`, 'bob', 'u2')
+    await fill(WINDOW)
+    expect(inMemory(root.id)).toBe(false)
+    useStore.getState().setComments([...actions.getComments(CANVAS_ID)])
+    broadcasts.length = 0
+
+    const reply = (await actions.replyToComment(root.id, 'newest', 'bob', 'u2'))!
+    for (const b of broadcasts) if (b.type === 'comment' && b.comment) useStore.getState().upsertComment(b.comment)
+
+    const shown = useStore.getState().comments.map((c) => c.id)
+    expect(shown).toEqual(expect.arrayContaining([root.id, reply.id]))
+    expect(new Set(shown)).toEqual(new Set(actions.getComments(CANVAS_ID).map((c) => c.id)))
   })
 
   it('pulls earlier replies back with the root', async () => {

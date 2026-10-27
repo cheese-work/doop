@@ -5,7 +5,7 @@ import * as thumbs from './thumbs.ts'
 import { colorFor } from '../shared/types.ts'
 import { DEFAULT_ROLE_ID, mentionedRole, normalizePipeline, roleByAgentName, roleName } from '../shared/agents.ts'
 import { canvasPages } from '../shared/pages.ts'
-import { isCanvasComment } from '../shared/comments.ts'
+import { isCanvasComment, trimComments } from '../shared/comments.ts'
 import { decodeEscapedHtml, looksEscapedHtml, repairEscapedHtml } from './escapedHtml.ts'
 import { emitCanvasEvent } from './events.ts'
 import type {
@@ -439,9 +439,6 @@ export function getComments(canvasId: string): ElementComment[] {
   return commentLog.get(canvasId) ?? []
 }
 
-/** Comments kept in memory per canvas; older ones live only in the comments table. */
-const COMMENT_WINDOW = 100
-
 function findInMemory(commentId: string): ElementComment | undefined {
   for (const list of commentLog.values()) {
     const c = list.find((x) => x.id === commentId)
@@ -456,15 +453,6 @@ export async function findComment(commentId: string): Promise<ElementComment | u
   return findInMemory(commentId) ?? (await persist.findCommentRow(commentId))
 }
 
-/** Drop the oldest entries beyond the window, never those of the thread rooted at `keepRootId`. */
-function trimLog(list: ElementComment[], keepRootId?: string) {
-  for (let i = list.length - 1; i >= 0 && list.length > COMMENT_WINDOW; i--) {
-    const c = list[i]!
-    if (keepRootId && (c.id === keepRootId || c.parentId === keepRootId)) continue
-    list.splice(i, 1)
-  }
-}
-
 /** Load a thread that left the window back into memory and tell the room, so a
  *  reply or a resolve acts on a thread the UI shows. */
 async function restoreThread(comment: ElementComment) {
@@ -474,7 +462,7 @@ async function restoreThread(comment: ElementComment) {
   if (missing.length === 0) return
   list.push(...missing)
   list.sort((a, b) => b.at - a.at)
-  trimLog(list, comment.parentId ?? comment.id)
+  trimComments(list, comment.parentId ?? comment.id)
   commentLog.set(comment.canvasId, list)
   for (const c of missing) if (list.includes(c)) broadcast(comment.canvasId, { type: 'comment', comment: c })
 }
@@ -515,6 +503,18 @@ export function addCanvasComment(
   return postComment(canvasId, { pageId: input.pageId, x: input.x, y: input.y }, input.text, from, fromUserId)
 }
 
+/** Tails of the thread operations in flight, by root id. A reply is stored before it joins the
+ *  log, so without this a resolve that lands in between would close the root but miss the reply. */
+const threadLocks = new Map<string, Promise<unknown>>()
+
+function withThreadLock<T>(rootId: string, run: () => Promise<T> | T): Promise<T> {
+  const result = (threadLocks.get(rootId) ?? Promise.resolve()).then(run)
+  const tail = result.catch(() => {})
+  threadLocks.set(rootId, tail)
+  void tail.then(() => threadLocks.get(rootId) === tail && threadLocks.delete(rootId))
+  return result
+}
+
 /** Reply inside a thread: the reply inherits the root comment's anchor (its
  *  element, or its point on the canvas) so an @mention in it gives the agent
  *  the same anchor the conversation is about. */
@@ -525,12 +525,17 @@ export async function replyToComment(
   fromUserId?: string,
   kind: ActorKind = 'user',
 ): Promise<ElementComment | undefined> {
-  const open = await openThread(commentId)
-  if (!open) return undefined
-  const anchor = replyAnchor(open)
-  if (!anchor) return undefined
-  if (!findInMemory(open.root.id)) await restoreThread(open.root)
-  return postComment(open.root.canvasId, anchor, text, from, fromUserId, kind, open.root.id)
+  const first = await openThread(commentId)
+  if (!first) return undefined
+  return withThreadLock(first.root.id, async () => {
+    /* a resolve may have won the lock while this reply waited */
+    const open = await openThread(commentId)
+    if (!open) return undefined
+    const anchor = replyAnchor(open)
+    if (!anchor) return undefined
+    if (!findInMemory(open.root.id)) await restoreThread(open.root)
+    return postComment(open.root.canvasId, anchor, text, from, fromUserId, kind, open.root.id)
+  })
 }
 
 function replyAnchor({ root, frame }: { root: ElementComment; frame?: Frame }): CommentAnchor | undefined {
@@ -594,7 +599,7 @@ async function postComment(
   await persist.saveNewComment(comment)
   const stored = commentLog.get(canvasId) ?? []
   stored.unshift(comment)
-  trimLog(stored, parentId)
+  trimComments(stored, parentId)
   commentLog.set(canvasId, stored)
   broadcast(canvasId, { type: 'comment', comment })
   const excerpt = clean.length > 80 ? clean.slice(0, 77) + '…' : clean
@@ -686,6 +691,12 @@ export function retryComment(commentId: string, by: string): ElementComment | un
 }
 
 export async function resolveComment(commentId: string, by: string): Promise<ElementComment | undefined> {
+  const found = await findComment(commentId)
+  if (!found) return undefined
+  return withThreadLock(found.parentId ?? found.id, () => closeComment(commentId, by))
+}
+
+async function closeComment(commentId: string, by: string): Promise<ElementComment | undefined> {
   const stored = await findComment(commentId)
   if (!stored) return undefined
   if (stored.resolvedAt) return stored

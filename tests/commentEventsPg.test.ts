@@ -185,6 +185,38 @@ describe.skipIf(!PG_URL)('comment events on PostgreSQL', () => {
     expect(events.map((e) => e.comment.text)).toEqual(['a', 'b'])
   })
 
+  it('closes a reply that commits while its root is being resolved', async () => {
+    const root = (await post('Root'))!
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const save = persist.saveNewComment
+    const slowSave = vi.spyOn(persist, 'saveNewComment').mockImplementationOnce(async (c) => {
+      await gate
+      return save(c)
+    })
+
+    const replying = actions.replyToComment(root.id, 'in flight', 'bob', 'user-2')
+    await vi.waitFor(() => expect(slowSave).toHaveBeenCalled())
+    const resolving = actions.resolveComment(root.id, 'alice')
+    release()
+    const reply = (await replying)!
+    await resolving
+
+    expect(actions.getComments(CANVAS.id).filter((c) => !c.resolvedAt)).toEqual([])
+    await vi.waitFor(async () => {
+      const { rows } = await pool.query('select id from comments where resolved_at is null')
+      expect(rows.map((r) => r.id)).not.toContain(reply.id)
+      expect(rows).toEqual([])
+    })
+  })
+
+  it('refuses a reply once its root is resolved', async () => {
+    const root = (await post('Root'))!
+    await actions.resolveComment(root.id, 'alice')
+    expect(await actions.replyToComment(root.id, 'too late', 'bob', 'user-2')).toBeUndefined()
+    expect((await pool.query('select count(*)::int as n from comments')).rows[0].n).toBe(1)
+  })
+
   it('exposes list and ack as MCP tools', async () => {
     await post('over MCP')
     const client = await connect()
