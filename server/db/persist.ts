@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { nanoid } from 'nanoid'
-import { and, desc, eq, inArray, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { db } from './index.ts'
 import * as t from './schema.ts'
 import { extractAssetIds } from '../assets.ts'
@@ -511,6 +511,7 @@ export function deleteCanvas(canvasId: string) {
   swallow(db.delete(t.tasks).where(eq(t.tasks.canvasId, canvasId)))
   swallow(db.delete(t.feedback).where(eq(t.feedback.canvasId, canvasId)))
   swallow(db.delete(t.comments).where(eq(t.comments.canvasId, canvasId)))
+  swallow(db.delete(t.commentEvents).where(eq(t.commentEvents.canvasId, canvasId)))
   swallow(db.delete(t.activity).where(eq(t.activity.canvasId, canvasId)))
   swallow(db.delete(t.guidelines).where(eq(t.guidelines.canvasId, canvasId)))
   swallow(db.delete(t.guidelineVersions).where(eq(t.guidelineVersions.canvasId, canvasId)))
@@ -649,8 +650,44 @@ export function saveFeedback(fb: TaskFeedback) {
   )
 }
 
-export function saveComment(c: ElementComment) {
-  const row = {
+type CommentRow = typeof t.comments.$inferSelect
+
+/** A stored comment as the in-memory log holds it; `fail` overrides the failure columns (boot recovery). */
+function commentFromRow(
+  row: CommentRow,
+  fail: { failedAt?: number | undefined; failureReason?: string | undefined } = {
+    failedAt: row.failedAt ?? undefined,
+    failureReason: row.failureReason ?? undefined,
+  },
+): ElementComment {
+  const { failedAt, failureReason } = fail
+  return {
+    id: row.id,
+    canvasId: row.canvasId,
+    ...(row.frameId != null ? { frameId: row.frameId } : {}),
+    selector: row.selector,
+    snippet: row.snippet,
+    ...(row.pageId != null ? { pageId: row.pageId } : {}),
+    ...(row.x != null ? { x: row.x } : {}),
+    ...(row.y != null ? { y: row.y } : {}),
+    from: row.fromName,
+    ...(row.fromUserId != null ? { fromUserId: row.fromUserId } : {}),
+    text: row.text,
+    at: row.at,
+    ...(row.forAgent ? { forAgent: true } : {}),
+    ...(row.targetAgent != null ? { targetAgent: row.targetAgent } : {}),
+    ...(row.claimedBy != null ? { claimedBy: row.claimedBy } : {}),
+    ...(row.claimedAt != null ? { claimedAt: row.claimedAt } : {}),
+    ...(failedAt !== undefined ? { failedAt } : {}),
+    ...(failureReason !== undefined ? { failureReason } : {}),
+    ...(row.resolvedBy != null ? { resolvedBy: row.resolvedBy } : {}),
+    ...(row.resolvedAt != null ? { resolvedAt: row.resolvedAt } : {}),
+    ...(row.parentId != null ? { parentId: row.parentId } : {}),
+  }
+}
+
+function commentRow(c: ElementComment) {
+  return {
     id: c.id,
     canvasId: c.canvasId,
     frameId: c.frameId ?? null,
@@ -673,6 +710,10 @@ export function saveComment(c: ElementComment) {
     resolvedAt: c.resolvedAt ?? null,
     parentId: c.parentId ?? null,
   }
+}
+
+export function saveComment(c: ElementComment) {
+  const row = commentRow(c)
   swallow(
     db
       .insert(t.comments)
@@ -689,6 +730,70 @@ export function saveComment(c: ElementComment) {
         },
       }),
   )
+}
+
+/** A NEW comment: the row and its comment_events row in ONE transaction. Unlike
+ *  the write-through saves it is awaited and its failure is thrown, so the
+ *  request fails and neither row is stored. */
+export async function saveNewComment(c: ElementComment): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx.insert(t.comments).values(commentRow(c))
+    await tx.insert(t.commentEvents).values({
+      canvasId: c.canvasId,
+      commentId: c.id,
+      parentId: c.parentId ?? null,
+      fromUserId: c.fromUserId ?? null,
+      at: c.at,
+    })
+  })
+}
+
+export interface CommentEvent {
+  id: number
+  canvasId: string
+  commentId: string
+  parentId: string | null
+  fromUserId: string | null
+  at: number
+  comment: ElementComment
+}
+
+/** Events nobody has acknowledged yet, oldest id first, with their comment. No
+ *  cursor: an event that commits late is still unacknowledged on the next read. */
+export async function listUnackedCommentEvents(canvasId: string, limit: number): Promise<CommentEvent[]> {
+  const rows = await db
+    .select({ event: t.commentEvents, comment: t.comments })
+    .from(t.commentEvents)
+    .innerJoin(t.comments, eq(t.comments.id, t.commentEvents.commentId))
+    .where(and(eq(t.commentEvents.canvasId, canvasId), isNull(t.commentEvents.ackedAt)))
+    .orderBy(asc(t.commentEvents.id))
+    .limit(limit)
+  return rows.map(({ event, comment }) => ({
+    id: event.id,
+    canvasId: event.canvasId,
+    commentId: event.commentId,
+    parentId: event.parentId,
+    fromUserId: event.fromUserId,
+    at: event.at,
+    comment: commentFromRow(comment),
+  }))
+}
+
+/** Acknowledge events by id, only those on canvases `canAck` allows. Returns the
+ *  ids now acknowledged; an already-acknowledged id is not an error. */
+export async function ackCommentEvents(ids: number[], canAck: (canvasId: string) => boolean): Promise<number[]> {
+  if (ids.length === 0) return []
+  const found = await db
+    .select({ id: t.commentEvents.id, canvasId: t.commentEvents.canvasId })
+    .from(t.commentEvents)
+    .where(inArray(t.commentEvents.id, ids))
+  const allowed = found.filter((e) => canAck(e.canvasId)).map((e) => e.id)
+  if (allowed.length === 0) return []
+  await db
+    .update(t.commentEvents)
+    .set({ ackedAt: Date.now() })
+    .where(and(inArray(t.commentEvents.id, allowed), isNull(t.commentEvents.ackedAt)))
+  return allowed
 }
 
 export function saveActivity(canvasId: string, item: ActivityItem) {
@@ -907,29 +1012,7 @@ export async function hydrate(): Promise<Hydrated> {
     const failedAt = row.failedAt ?? (interrupted ? now : undefined)
     const failureReason = row.failureReason ?? (interrupted ? interruptedReason : undefined)
     if (interrupted) swallow(db.update(t.comments).set({ failedAt, failureReason }).where(eq(t.comments.id, row.id)))
-    list.push({
-      id: row.id,
-      canvasId: row.canvasId,
-      ...(row.frameId != null ? { frameId: row.frameId } : {}),
-      selector: row.selector,
-      snippet: row.snippet,
-      ...(row.pageId != null ? { pageId: row.pageId } : {}),
-      ...(row.x != null ? { x: row.x } : {}),
-      ...(row.y != null ? { y: row.y } : {}),
-      from: row.fromName,
-      ...(row.fromUserId != null ? { fromUserId: row.fromUserId } : {}),
-      text: row.text,
-      at: row.at,
-      ...(row.forAgent ? { forAgent: true } : {}),
-      ...(row.targetAgent != null ? { targetAgent: row.targetAgent } : {}),
-      ...(row.claimedBy != null ? { claimedBy: row.claimedBy } : {}),
-      ...(row.claimedAt != null ? { claimedAt: row.claimedAt } : {}),
-      ...(failedAt !== undefined ? { failedAt } : {}),
-      ...(failureReason !== undefined ? { failureReason } : {}),
-      ...(row.resolvedBy != null ? { resolvedBy: row.resolvedBy } : {}),
-      ...(row.resolvedAt != null ? { resolvedAt: row.resolvedAt } : {}),
-      ...(row.parentId != null ? { parentId: row.parentId } : {}),
-    })
+    list.push(commentFromRow(row, { failedAt, failureReason }))
     comments.set(row.canvasId, list)
   }
 

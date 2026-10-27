@@ -14,6 +14,7 @@ vi.mock('../server/db/persist.ts', () => ({
   saveTask: () => {},
   saveFeedback: () => {},
   saveComment: () => {},
+  saveNewComment: async () => {},
   saveActivity: () => {},
   saveDecision: () => {},
   saveProposal: () => {},
@@ -82,37 +83,39 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-const place = (text = 'Move the pricing closer', from = 'alice') =>
-  actions.addCanvasComment(CANVAS.id, { pageId: 'p1', x: 820, y: 240, text }, from, from)
+const place = async (text = 'Move the pricing closer', from = 'alice') =>
+  await actions.addCanvasComment(CANVAS.id, { pageId: 'p1', x: 820, y: 240, text }, from, from)
 
 describe('addCanvasComment', () => {
-  it('pins the comment to the page point with no frame or element', () => {
-    const c = place()!
+  it('pins the comment to the page point with no frame or element', async () => {
+    const c = (await place())!
     expect(c).toMatchObject({ canvasId: 'c1', pageId: 'p1', x: 820, y: 240, selector: '', snippet: '', from: 'alice' })
     expect(c.frameId).toBeUndefined()
     expect(isCanvasComment(c)).toBe(true)
     expect(actions.getComments(CANVAS.id)).toEqual([c])
   })
 
-  it('reaches the room and the activity feed, and the event bus without a frame', () => {
-    const c = place()!
+  it('reaches the room and the activity feed, and the event bus without a frame', async () => {
+    const c = (await place())!
     expect(broadcast).toHaveBeenCalledWith('c1', { type: 'comment', comment: c })
     expect(actions.getActivity(CANVAS.id)[0]?.message).toBe('commented on the canvas: “Move the pricing closer”')
     expect(seen).toEqual([{ type: 'comment.created', comment: c, frame: undefined, actorKind: 'user' }])
   })
 
-  it('refuses an unknown canvas, a page the canvas does not have, a bad point or blank text', () => {
-    expect(actions.addCanvasComment('nope', { pageId: 'p1', x: 0, y: 0, text: 'hi' }, 'alice')).toBeUndefined()
-    expect(actions.addCanvasComment('c1', { pageId: 'p9', x: 0, y: 0, text: 'hi' }, 'alice')).toBeUndefined()
-    expect(actions.addCanvasComment('c1', { pageId: 'p1', x: NaN, y: 0, text: 'hi' }, 'alice')).toBeUndefined()
-    expect(actions.addCanvasComment('c1', { pageId: 'p1', x: 0, y: Infinity, text: 'hi' }, 'alice')).toBeUndefined()
-    expect(actions.addCanvasComment('c1', { pageId: 'p1', x: 0, y: 0, text: '   ' }, 'alice')).toBeUndefined()
+  it('refuses an unknown canvas, a page the canvas does not have, a bad point or blank text', async () => {
+    expect(await actions.addCanvasComment('nope', { pageId: 'p1', x: 0, y: 0, text: 'hi' }, 'alice')).toBeUndefined()
+    expect(await actions.addCanvasComment('c1', { pageId: 'p9', x: 0, y: 0, text: 'hi' }, 'alice')).toBeUndefined()
+    expect(await actions.addCanvasComment('c1', { pageId: 'p1', x: NaN, y: 0, text: 'hi' }, 'alice')).toBeUndefined()
+    expect(
+      await actions.addCanvasComment('c1', { pageId: 'p1', x: 0, y: Infinity, text: 'hi' }, 'alice'),
+    ).toBeUndefined()
+    expect(await actions.addCanvasComment('c1', { pageId: 'p1', x: 0, y: 0, text: '   ' }, 'alice')).toBeUndefined()
     expect(actions.getComments(CANVAS.id)).toEqual([])
     expect(broadcast).not.toHaveBeenCalled()
   })
 
-  it('routes an @mention to the resident agent like an element comment', () => {
-    const c = place(`@${DEFAULT_ROLE_ID} add a testimonial strip here`)!
+  it('routes an @mention to the resident agent like an element comment', async () => {
+    const c = (await place(`@${DEFAULT_ROLE_ID} add a testimonial strip here`))!
     expect(c.forAgent).toBe(true)
     expect(c.targetAgent).toBe(AGENT)
     expect(actions.pendingWorkAgents(CANVAS.id)).toEqual([AGENT])
@@ -121,19 +124,19 @@ describe('addCanvasComment', () => {
 })
 
 describe('threads on a canvas comment', () => {
-  it('opens for replies without a frame, and replies inherit the point', () => {
-    const root = place()!
+  it('opens for replies without a frame, and replies inherit the point', async () => {
+    const root = (await place())!
     expect(actions.openThread(root.id)).toEqual({ root })
-    const reply = actions.replyToComment(root.id, 'Agreed', 'bob', 'bob')!
+    const reply = (await actions.replyToComment(root.id, 'Agreed', 'bob', 'bob'))!
     expect(reply).toMatchObject({ parentId: root.id, pageId: 'p1', x: 820, y: 240, selector: '', snippet: '' })
     expect(reply.frameId).toBeUndefined()
     expect(actions.commentThread(reply).map((c) => c.text)).toEqual(['Move the pricing closer', 'Agreed'])
     expect(actions.getActivity(CANVAS.id)[0]?.message).toBe('replied to a comment on the canvas: “Agreed”')
   })
 
-  it('resolves like any thread and reports the resolution without a frame', () => {
-    const root = place(`@${DEFAULT_ROLE_ID} tighten the gap`)!
-    actions.replyToComment(root.id, 'On it', AGENT, 'alice', 'agent')
+  it('resolves like any thread and reports the resolution without a frame', async () => {
+    const root = (await place(`@${DEFAULT_ROLE_ID} tighten the gap`))!
+    await actions.replyToComment(root.id, 'On it', AGENT, 'alice', 'agent')
     seen.length = 0
     actions.resolveComment(root.id, AGENT)
     expect(actions.getComments(CANVAS.id).every((c) => c.resolvedAt)).toBe(true)
@@ -144,8 +147,12 @@ describe('threads on a canvas comment', () => {
     expect(actions.getDecisions(CANVAS.id)[0]?.frameId).toBeUndefined()
   })
 
-  it('still needs the frame for an element comment thread', () => {
-    const root = actions.addElementComment(HERO.id, { selector: 'h1', snippet: '<h1/>', text: 'Bigger' }, 'alice')!
+  it('still needs the frame for an element comment thread', async () => {
+    const root = (await actions.addElementComment(
+      HERO.id,
+      { selector: 'h1', snippet: '<h1/>', text: 'Bigger' },
+      'alice',
+    ))!
     expect(actions.openThread(root.id)).toEqual({ root, frame: HERO })
     vi.spyOn(store, 'getFrame').mockReturnValue(undefined)
     expect(actions.openThread(root.id)).toBeUndefined()
@@ -153,34 +160,34 @@ describe('threads on a canvas comment', () => {
 })
 
 describe('where a canvas comment leads', () => {
-  it('links to the canvas page with the thread, not to a frame', () => {
-    const root = place()!
-    const reply = actions.replyToComment(root.id, 'Agreed', 'bob')!
+  it('links to the canvas page with the thread, not to a frame', async () => {
+    const root = (await place())!
+    const reply = (await actions.replyToComment(root.id, 'Agreed', 'bob'))!
     expect(commentLink(root)).toBe(`http://localhost:4300/c/c1?page=p1&comment=${root.id}`)
     expect(commentLink(reply)).toBe(`http://localhost:4300/c/c1?page=p1&comment=${root.id}`)
   })
 
-  it('tells the resident agent the point, the page and the frames around it', () => {
-    const between = place()!
+  it('tells the resident agent the point, the page and the frames around it', async () => {
+    const between = (await place())!
     expect(describeCommentAnchor(between, CANVAS)).toBe(
       'on the canvas at (820, 240) on page "Home" — not pinned to any element; nearest frames: f1 ("Hero"), f2 ("Pricing")',
     )
-    const inside = actions.addCanvasComment(CANVAS.id, { pageId: 'p1', x: 100, y: 100, text: 'here' }, 'alice')!
+    const inside = (await actions.addCanvasComment(CANVAS.id, { pageId: 'p1', x: 100, y: 100, text: 'here' }, 'alice'))!
     expect(describeCommentAnchor(inside, CANVAS)).toContain('nearest frames: f1 ("Hero")')
     expect(describeCommentAnchor(inside, CANVAS)).not.toContain('Pricing')
-    const elsewhere = actions.addCanvasComment(CANVAS.id, { pageId: 'p2', x: 5, y: 5, text: 'here' }, 'alice')!
+    const elsewhere = (await actions.addCanvasComment(CANVAS.id, { pageId: 'p2', x: 5, y: 5, text: 'here' }, 'alice'))!
     expect(describeCommentAnchor(elsewhere, CANVAS)).toBe(
       'on the canvas at (5, 5) on page "Checkout" — not pinned to any element',
     )
   })
 
-  it('puts a frame the resident agent creates for a canvas comment on its page, beside the pin', () => {
-    const c = actions.addCanvasComment(
+  it('puts a frame the resident agent creates for a canvas comment on its page, beside the pin', async () => {
+    const c = (await actions.addCanvasComment(
       CANVAS.id,
       { pageId: 'p2', x: 300, y: 200, text: `@${DEFAULT_ROLE_ID} add a FAQ here` },
       'alice',
       'alice',
-    )!
+    ))!
     const placement = placementFor(c, CANVAS)
     expect(placement).toEqual({ pageId: 'p2', near: { x: 300, y: 200 } })
     const input = createFrameInput({ name: 'FAQ', width: 800, height: 500, html: '<html></html>' }, placement, CANVAS)
@@ -196,8 +203,12 @@ describe('where a canvas comment leads', () => {
     expect(placeBeside({ x: 820, y: 240 }, { width: 800, height: 500 }, [HERO, PRICING])).toEqual({ x: 860, y: 480 })
   })
 
-  it("keeps a frame asked for by an element comment on that frame's page, and lets the model pick a spot", () => {
-    const c = actions.addElementComment(HERO.id, { selector: 'h1', snippet: '<h1/>', text: 'add a FAQ' }, 'alice')!
+  it("keeps a frame asked for by an element comment on that frame's page, and lets the model pick a spot", async () => {
+    const c = (await actions.addElementComment(
+      HERO.id,
+      { selector: 'h1', snippet: '<h1/>', text: 'add a FAQ' },
+      'alice',
+    ))!
     expect(placementFor(c, CANVAS)).toEqual({ pageId: 'p1' })
     const chosen = createFrameInput(
       { name: 'FAQ', width: 800, height: 500, html: '<html></html>', x: 5, y: 6 },
@@ -214,8 +225,12 @@ describe('where a canvas comment leads', () => {
     })
   })
 
-  it('keeps describing element comments by their element', () => {
-    const c = actions.addElementComment(HERO.id, { selector: '.hero h1', snippet: '<h1>Hi</h1>', text: 'x' }, 'alice')!
+  it('keeps describing element comments by their element', async () => {
+    const c = (await actions.addElementComment(
+      HERO.id,
+      { selector: '.hero h1', snippet: '<h1>Hi</h1>', text: 'x' },
+      'alice',
+    ))!
     expect(describeCommentAnchor(c, CANVAS)).toBe(
       'on frame f1 "Hero", element .hero h1\n  element HTML at comment time: <h1>Hi</h1>',
     )

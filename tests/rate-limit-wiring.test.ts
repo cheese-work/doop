@@ -15,6 +15,7 @@ vi.mock('../server/db/persist.ts', () => ({
   saveTask: () => {},
   saveFeedback: () => {},
   saveComment: () => {},
+  saveNewComment: async () => {},
   saveActivity: () => {},
   saveDecision: () => {},
   saveProposal: () => {},

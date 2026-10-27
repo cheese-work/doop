@@ -457,9 +457,9 @@ export function addElementComment(
   input: { selector: string; snippet: string; text: string },
   from: string,
   fromUserId?: string,
-): ElementComment | undefined {
+): Promise<ElementComment | undefined> {
   const frame = store.getFrame(frameId)
-  if (!frame) return undefined
+  if (!frame) return Promise.resolve(undefined)
   return postComment(
     frame.canvasId,
     { frame, selector: String(input.selector ?? '').slice(0, 300), snippet: String(input.snippet ?? '').slice(0, 400) },
@@ -477,10 +477,10 @@ export function addCanvasComment(
   input: { pageId: string; x: number; y: number; text: string },
   from: string,
   fromUserId?: string,
-): ElementComment | undefined {
+): Promise<ElementComment | undefined> {
   const canvas = store.getCanvas(canvasId)
-  if (!canvas || !canvasPages(canvas).some((page) => page.id === input.pageId)) return undefined
-  if (!Number.isFinite(input.x) || !Number.isFinite(input.y)) return undefined
+  if (!canvas || !canvasPages(canvas).some((page) => page.id === input.pageId)) return Promise.resolve(undefined)
+  if (!Number.isFinite(input.x) || !Number.isFinite(input.y)) return Promise.resolve(undefined)
   return postComment(canvasId, { pageId: input.pageId, x: input.x, y: input.y }, input.text, from, fromUserId)
 }
 
@@ -493,11 +493,11 @@ export function replyToComment(
   from: string,
   fromUserId?: string,
   kind: ActorKind = 'user',
-): ElementComment | undefined {
+): Promise<ElementComment | undefined> {
   const open = openThread(commentId)
-  if (!open) return undefined
+  if (!open) return Promise.resolve(undefined)
   const anchor = replyAnchor(open)
-  if (!anchor) return undefined
+  if (!anchor) return Promise.resolve(undefined)
   return postComment(open.root.canvasId, anchor, text, from, fromUserId, kind, open.root.id)
 }
 
@@ -521,7 +521,13 @@ export function openThread(commentId: string): { root: ElementComment; frame?: F
   return { root, frame }
 }
 
-function postComment(
+/** Last `at` handed out per canvas: comments are persisted before they join the log, so two
+ *  posts in flight must not read the same newest entry. */
+const commentClock = new Map<string, number>()
+
+/** Persists the comment and its outbox event in one awaited transaction, then
+ *  publishes it. If the transaction fails this rejects and nothing is stored. */
+async function postComment(
   canvasId: string,
   anchor: CommentAnchor,
   text: string,
@@ -529,7 +535,7 @@ function postComment(
   fromUserId?: string,
   kind: ActorKind = 'user',
   parentId?: string,
-): ElementComment | undefined {
+): Promise<ElementComment | undefined> {
   const clean = text.trim()
   if (!clean) return undefined
   /* @Doop, @brand, @a11y… — whichever resident agent is mentioned picks it up */
@@ -537,7 +543,8 @@ function postComment(
   const list = commentLog.get(canvasId) ?? []
   /* strictly increasing per canvas: thread order is reconstructed from `at`
      after a restart, so two messages must never share a timestamp */
-  const at = Math.max(Date.now(), (list[0]?.at ?? 0) + 1)
+  const at = Math.max(Date.now(), (commentClock.get(canvasId) ?? 0) + 1, (list[0]?.at ?? 0) + 1)
+  commentClock.set(canvasId, at)
   const frame = 'frame' in anchor ? anchor.frame : undefined
   const comment: ElementComment = {
     id: nanoid(8),
@@ -552,10 +559,11 @@ function postComment(
     ...(mentioned ? { forAgent: true, targetAgent: mentioned.name } : {}),
     ...(parentId ? { parentId } : {}),
   }
-  list.unshift(comment)
-  if (list.length > 100) list.length = 100
-  commentLog.set(canvasId, list)
-  persist.saveComment(comment)
+  await persist.saveNewComment(comment)
+  const stored = commentLog.get(canvasId) ?? []
+  stored.unshift(comment)
+  if (stored.length > 100) stored.length = 100
+  commentLog.set(canvasId, stored)
   broadcast(canvasId, { type: 'comment', comment })
   const excerpt = clean.length > 80 ? clean.slice(0, 77) + '…' : clean
   const where = frame ? `in “${frame.name}”` : 'on the canvas'
