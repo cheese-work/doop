@@ -15,6 +15,8 @@ vi.mock('../server/db/persist.ts', () => ({
   saveFeedback: () => {},
   saveComment: () => {},
   saveNewComment: async () => {},
+  findCommentRow: async () => undefined,
+  loadCommentThread: async () => [],
   saveActivity: () => {},
   saveDecision: () => {},
   saveProposal: () => {},
@@ -126,7 +128,7 @@ describe('addCanvasComment', () => {
 describe('threads on a canvas comment', () => {
   it('opens for replies without a frame, and replies inherit the point', async () => {
     const root = (await place())!
-    expect(actions.openThread(root.id)).toEqual({ root })
+    expect(await actions.openThread(root.id)).toEqual({ root })
     const reply = (await actions.replyToComment(root.id, 'Agreed', 'bob', 'bob'))!
     expect(reply).toMatchObject({ parentId: root.id, pageId: 'p1', x: 820, y: 240, selector: '', snippet: '' })
     expect(reply.frameId).toBeUndefined()
@@ -138,9 +140,9 @@ describe('threads on a canvas comment', () => {
     const root = (await place(`@${DEFAULT_ROLE_ID} tighten the gap`))!
     await actions.replyToComment(root.id, 'On it', AGENT, 'alice', 'agent')
     seen.length = 0
-    actions.resolveComment(root.id, AGENT)
+    await actions.resolveComment(root.id, AGENT)
     expect(actions.getComments(CANVAS.id).every((c) => c.resolvedAt)).toBe(true)
-    expect(actions.openThread(root.id)).toBeUndefined()
+    expect(await actions.openThread(root.id)).toBeUndefined()
     expect(seen.at(-1)).toMatchObject({ type: 'comment.resolved', frame: undefined, by: AGENT })
     /* an @agent instruction that got carried out is a decision, frame or not */
     expect(actions.getDecisions(CANVAS.id)).toMatchObject([{ text: '@doop tighten the gap', source: 'comment' }])
@@ -153,9 +155,9 @@ describe('threads on a canvas comment', () => {
       { selector: 'h1', snippet: '<h1/>', text: 'Bigger' },
       'alice',
     ))!
-    expect(actions.openThread(root.id)).toEqual({ root, frame: HERO })
+    expect(await actions.openThread(root.id)).toEqual({ root, frame: HERO })
     vi.spyOn(store, 'getFrame').mockReturnValue(undefined)
-    expect(actions.openThread(root.id)).toBeUndefined()
+    expect(await actions.openThread(root.id)).toBeUndefined()
   })
 })
 

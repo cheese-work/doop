@@ -1723,11 +1723,11 @@ app.post('/api/canvases/:id/comments', async (req, res) => {
 })
 
 app.post('/api/comments/:id/replies', async (req, res) => {
-  const found = actions.findComment(req.params.id)
+  const found = await actions.findComment(req.params.id)
   if (!found) return res.status(404).json({ error: 'comment not found' })
   if (!requireCanvas(req, res, found.canvasId)) return
   const text = String(req.body?.text ?? '')
-  if (!text.trim() || !actions.openThread(req.params.id)) {
+  if (!text.trim() || !(await actions.openThread(req.params.id))) {
     return res.status(404).json({ error: 'thread resolved or empty text' })
   }
   /* same rule as a fresh comment: only an @mention costs a resident task */
@@ -1756,15 +1756,15 @@ app.post('/api/comments/:id/replies', async (req, res) => {
   res.json(reply)
 })
 
-app.post('/api/comments/:id/resolve', (req, res) => {
-  const found = actions.findComment(req.params.id)
+app.post('/api/comments/:id/resolve', async (req, res) => {
+  const found = await actions.findComment(req.params.id)
   if (!found) return res.status(404).json({ error: 'comment not found' })
   if (!requireCanvas(req, res, found.canvasId)) return
-  res.json(actions.resolveComment(req.params.id, req.user!.name))
+  res.json(await actions.resolveComment(req.params.id, req.user!.name))
 })
 
 app.post('/api/comments/:id/retry', async (req, res) => {
-  const found = actions.findComment(req.params.id)
+  const found = await actions.findComment(req.params.id)
   if (!found) return res.status(404).json({ error: 'comment not found' })
   if (!requireCanvas(req, res, found.canvasId)) return
   const gate = await allowance.consumeResidentTask(req.user!.id)

@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { nanoid } from 'nanoid'
-import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm'
 import { db } from './index.ts'
 import * as t from './schema.ts'
 import { extractAssetIds } from '../assets.ts'
@@ -746,6 +746,25 @@ export async function saveNewComment(c: ElementComment): Promise<void> {
       at: c.at,
     })
   })
+}
+
+/** One stored comment by id, for ids that have left the in-memory window. */
+export async function findCommentRow(commentId: string): Promise<ElementComment | undefined> {
+  const [row] = await db.select().from(t.comments).where(eq(t.comments.id, commentId)).limit(1)
+  return row ? commentFromRow(row) : undefined
+}
+
+/** The whole thread the comment belongs to (root and every reply), oldest first. */
+export async function loadCommentThread(commentId: string): Promise<ElementComment[]> {
+  const found = await findCommentRow(commentId)
+  if (!found) return []
+  const rootId = found.parentId ?? found.id
+  const rows = await db
+    .select()
+    .from(t.comments)
+    .where(or(eq(t.comments.id, rootId), eq(t.comments.parentId, rootId)))
+    .orderBy(asc(t.comments.at))
+  return rows.map((row) => commentFromRow(row))
 }
 
 export interface CommentEvent {

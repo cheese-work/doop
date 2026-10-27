@@ -439,13 +439,44 @@ export function getComments(canvasId: string): ElementComment[] {
   return commentLog.get(canvasId) ?? []
 }
 
-/** Look a comment up by id (it carries its canvasId) for access checks. */
-export function findComment(commentId: string): ElementComment | undefined {
+/** Comments kept in memory per canvas; older ones live only in the comments table. */
+const COMMENT_WINDOW = 100
+
+function findInMemory(commentId: string): ElementComment | undefined {
   for (const list of commentLog.values()) {
     const c = list.find((x) => x.id === commentId)
     if (c) return c
   }
   return undefined
+}
+
+/** Look a comment up by id (it carries its canvasId) for access checks. Falls
+ *  back to the stored row when the id is outside the in-memory window. */
+export async function findComment(commentId: string): Promise<ElementComment | undefined> {
+  return findInMemory(commentId) ?? (await persist.findCommentRow(commentId))
+}
+
+/** Drop the oldest entries beyond the window, never those of the thread rooted at `keepRootId`. */
+function trimLog(list: ElementComment[], keepRootId?: string) {
+  for (let i = list.length - 1; i >= 0 && list.length > COMMENT_WINDOW; i--) {
+    const c = list[i]!
+    if (keepRootId && (c.id === keepRootId || c.parentId === keepRootId)) continue
+    list.splice(i, 1)
+  }
+}
+
+/** Load a thread that left the window back into memory and tell the room, so a
+ *  reply or a resolve acts on a thread the UI shows. */
+async function restoreThread(comment: ElementComment) {
+  const thread = await persist.loadCommentThread(comment.id)
+  const list = commentLog.get(comment.canvasId) ?? []
+  const missing = thread.filter((c) => !list.some((x) => x.id === c.id))
+  if (missing.length === 0) return
+  list.push(...missing)
+  list.sort((a, b) => b.at - a.at)
+  trimLog(list, comment.parentId ?? comment.id)
+  commentLog.set(comment.canvasId, list)
+  for (const c of missing) if (list.includes(c)) broadcast(comment.canvasId, { type: 'comment', comment: c })
 }
 
 /** Where a new comment sits: on an element inside a frame, or at a world
@@ -487,17 +518,18 @@ export function addCanvasComment(
 /** Reply inside a thread: the reply inherits the root comment's anchor (its
  *  element, or its point on the canvas) so an @mention in it gives the agent
  *  the same anchor the conversation is about. */
-export function replyToComment(
+export async function replyToComment(
   commentId: string,
   text: string,
   from: string,
   fromUserId?: string,
   kind: ActorKind = 'user',
 ): Promise<ElementComment | undefined> {
-  const open = openThread(commentId)
-  if (!open) return Promise.resolve(undefined)
+  const open = await openThread(commentId)
+  if (!open) return undefined
   const anchor = replyAnchor(open)
-  if (!anchor) return Promise.resolve(undefined)
+  if (!anchor) return undefined
+  if (!findInMemory(open.root.id)) await restoreThread(open.root)
   return postComment(open.root.canvasId, anchor, text, from, fromUserId, kind, open.root.id)
 }
 
@@ -510,10 +542,10 @@ function replyAnchor({ root, frame }: { root: ElementComment; frame?: Frame }): 
  *  it is an element comment (a canvas comment has none), or undefined when
  *  the thread is resolved or its frame is gone — checked before any metering
  *  so a rejected reply never costs a resident task. */
-export function openThread(commentId: string): { root: ElementComment; frame?: Frame } | undefined {
-  const parent = findComment(commentId)
+export async function openThread(commentId: string): Promise<{ root: ElementComment; frame?: Frame } | undefined> {
+  const parent = await findComment(commentId)
   if (!parent) return undefined
-  const root = parent.parentId ? findComment(parent.parentId) : parent
+  const root = parent.parentId ? await findComment(parent.parentId) : parent
   if (!root || root.resolvedAt) return undefined
   if (isCanvasComment(root)) return { root }
   const frame = root.frameId ? store.getFrame(root.frameId) : undefined
@@ -562,7 +594,7 @@ async function postComment(
   await persist.saveNewComment(comment)
   const stored = commentLog.get(canvasId) ?? []
   stored.unshift(comment)
-  if (stored.length > 100) stored.length = 100
+  trimLog(stored, parentId)
   commentLog.set(canvasId, stored)
   broadcast(canvasId, { type: 'comment', comment })
   const excerpt = clean.length > 80 ? clean.slice(0, 77) + '…' : clean
@@ -653,7 +685,11 @@ export function retryComment(commentId: string, by: string): ElementComment | un
   return undefined
 }
 
-export function resolveComment(commentId: string, by: string): ElementComment | undefined {
+export async function resolveComment(commentId: string, by: string): Promise<ElementComment | undefined> {
+  const stored = await findComment(commentId)
+  if (!stored) return undefined
+  if (stored.resolvedAt) return stored
+  if (!findInMemory(commentId)) await restoreThread(stored)
   for (const [canvasId, list] of commentLog) {
     const c = list.find((x) => x.id === commentId)
     if (!c) continue
