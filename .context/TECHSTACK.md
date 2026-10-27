@@ -27,6 +27,13 @@
   generated into `src/components/ui`.
 - `@anthropic-ai/sdk` 0.115.0 and `@modelcontextprotocol/sdk` 1.12.0 - power the built-in Doop
   Agent and the MCP server that lets external agents (e.g. Claude Code) design on a canvas.
+- Claude Code on the desktop (`shared/localAgent.ts`, `server/localAgent.ts`,
+  `desktop/src-tauri/src/claude.rs`): the model menu is the CLI's aliases (`CLAUDE_MODEL_ALIASES`),
+  which `claude --model` resolves to the newest model the installed CLI knows, plus a pinned
+  `claude-*` id accepted by shape (`isClaudeModel`, mirrored by `valid_model` in the shell before the
+  value becomes an argument); `effort` (`CLAUDE_EFFORTS`, `local_agent_preferences.effort`) rides the
+  job and becomes `--effort`. A pre-alias shell's "Invalid model" is reworded by
+  `localAgentRuns` into an update prompt.
 - Model menus (`server/modelCatalog.ts`, `GET /api/model-account/models`): the connected
   account's picker asks the provider's catalog with the user's own key when it opens (the
   composer's `ModelPicker`) or mounts (Settings, `useAgentModels`), merging the curated entries of

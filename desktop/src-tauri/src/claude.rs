@@ -305,6 +305,28 @@ fn valid_id(id: &str) -> bool {
     id.len() == 36 && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
 }
 
+// Mirrors isClaudeModel in shared/localAgent.ts: an alias the CLI resolves to
+// its newest model, or a pinned claude-* id. The value becomes one argv element,
+// so the shape rule is the whole guard.
+fn valid_model(model: &str) -> bool {
+    if ["default", "fable", "opus", "sonnet", "haiku"].contains(&model) {
+        return true;
+    }
+    let Some(rest) = model.strip_prefix("claude-") else {
+        return false;
+    };
+    (1..=99).contains(&rest.len())
+        && rest.as_bytes()[0].is_ascii_alphanumeric()
+        && rest
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-')
+}
+
+// Mirrors CLAUDE_EFFORTS in shared/localAgent.ts: `claude --effort` levels.
+fn valid_effort(effort: &str) -> bool {
+    ["low", "medium", "high", "xhigh", "max"].contains(&effort)
+}
+
 #[tauri::command]
 pub async fn claude_run(
     app: AppHandle,
@@ -340,18 +362,12 @@ fn run_cli(app: &AppHandle, job: &Value, cancel: Arc<AtomicBool>) -> Result<Valu
         return Err("Invalid run token".into());
     }
     let model = field(job, "model")?;
-    if ![
-        "default",
-        "sonnet",
-        "opus",
-        "claude-fable-5-1",
-        "claude-opus-5",
-        "claude-sonnet-5",
-        "claude-haiku-4-5-20251001",
-    ]
-    .contains(&model)
-    {
+    if !valid_model(model) {
         return Err("Invalid model".into());
+    }
+    let effort = job["effort"].as_str();
+    if effort.is_some_and(|effort| !valid_effort(effort)) {
+        return Err("Invalid effort".into());
     }
     let prompt = field(job, "prompt")?;
     let system = field(job, "system")?;
@@ -413,6 +429,9 @@ fn run_cli(app: &AppHandle, job: &Value, cancel: Arc<AtomicBool>) -> Result<Valu
             .stdin(Stdio::piped());
         if model != "default" {
             cmd.args(["--model", model]);
+        }
+        if let Some(effort) = effort {
+            cmd.args(["--effort", effort]);
         }
         let mut child = cmd.spawn().map_err(|e| e.to_string())?;
         if let Some(mut stdin) = child.stdin.take() {
@@ -556,5 +575,32 @@ mod tests {
         assert!(valid_id("12345678-1234-1234-1234-123456789abc"));
         assert!(!valid_id("../../../../tmp/foreign"));
         assert!(!valid_id("https://example.com"));
+    }
+
+    #[test]
+    fn models_are_aliases_or_pinned_ids_never_flags() {
+        for alias in ["default", "fable", "opus", "sonnet", "haiku"] {
+            assert!(valid_model(alias), "{alias}");
+        }
+        assert!(valid_model("claude-opus-5"));
+        assert!(valid_model("claude-haiku-4-5-20251001"));
+        assert!(valid_model("claude-sonnet-5.5"));
+        assert!(!valid_model("--dangerously-skip-permissions"));
+        assert!(!valid_model("claude-"));
+        assert!(!valid_model("claude--x"));
+        assert!(!valid_model("claude-Opus"));
+        assert!(!valid_model("claude-opus 5"));
+        assert!(!valid_model("gpt-6"));
+        assert!(!valid_model(&format!("claude-{}", "a".repeat(100))));
+    }
+
+    #[test]
+    fn efforts_are_the_cli_levels() {
+        for level in ["low", "medium", "high", "xhigh", "max"] {
+            assert!(valid_effort(level), "{level}");
+        }
+        assert!(!valid_effort("default"));
+        assert!(!valid_effort("--verbose"));
+        assert!(!valid_effort(""));
     }
 }

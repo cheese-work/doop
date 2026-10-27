@@ -11,8 +11,17 @@ import {
   selectLocalAgent,
   useLocalAgent,
 } from '../lib/localAgent'
-import { CLAUDE_MODELS, normalizeClaudeModel, type ClaudeModel } from '../../shared/localAgent'
+import {
+  CLAUDE_EFFORT_OPTIONS,
+  CLAUDE_MODELS,
+  isClaudeModel,
+  normalizeClaudeModel,
+  type ClaudeEffort,
+  type ClaudeModel,
+} from '../../shared/localAgent'
 import { Button } from './ui/button'
+import { Input } from './ui/input'
+import { Segmented, SegmentedItem } from './ui/segmented'
 import { Disclosure } from './ui/collapsible'
 import { AgentIcon } from './AgentIcon'
 import { ToggleChip, ToggleChipGroup, ToggleChipItem } from './ui/toggle-chip'
@@ -101,8 +110,14 @@ export function LocalClaudeRow() {
   const connected = !!native?.connected && !!native?.enabled
   const supported = hasLocalClaude()
   const selectedModel = normalizeClaudeModel(preference?.model)
-  const selectedBlurb = CLAUDE_MODELS.find((model) => model.id === selectedModel)?.blurb
-  const choose = (model: ClaudeModel = selectedModel) =>
+  const selectedEffort = preference?.effort
+  /* an alias is on the chip row; a pinned id wears its own chip beside them */
+  const pinnedModel = CLAUDE_MODELS.some((model) => model.id === selectedModel) ? undefined : selectedModel
+  const selectedBlurb = pinnedModel
+    ? 'Pinned to this exact model id; the aliases follow new releases on their own.'
+    : CLAUDE_MODELS.find((model) => model.id === selectedModel)?.blurb
+  const [pin, setPin] = useState('')
+  const choose = (next: { model?: ClaudeModel; effort?: ClaudeEffort | undefined } = {}) =>
     act(async () => {
       if (!userId) return
       if (!active || !connected) {
@@ -110,7 +125,13 @@ export function LocalClaudeRow() {
         if (!current?.installed) throw new Error('Install Claude Code to connect.')
         if (!current.connected) throw new Error('Sign in to Claude Code to connect.')
       }
-      await selectLocalAgent(userId, { enabled: true, model })
+      const effort = 'effort' in next ? next.effort : selectedEffort
+      await selectLocalAgent(userId, {
+        enabled: true,
+        model: next.model ?? selectedModel,
+        ...(effort ? { effort } : {}),
+      })
+      setPin('')
     })
 
   if (!isDesktopShell()) return <DesktopOnlyClaudeRow active={active} />
@@ -152,9 +173,9 @@ export function LocalClaudeRow() {
           {connected ? (
             <ToggleChipGroup
               aria-label="Claude model"
-              value={selectedModel}
+              value={pinnedModel ? '' : selectedModel}
               disabled={busy || running}
-              onValueChange={(model) => choose(model as ClaudeModel)}
+              onValueChange={(model) => choose({ model })}
             >
               {CLAUDE_MODELS.map((model) => (
                 <ToggleChipItem key={model.id} value={model.id} title={model.blurb}>
@@ -164,6 +185,12 @@ export function LocalClaudeRow() {
                   {model.name}
                 </ToggleChipItem>
               ))}
+              {pinnedModel && (
+                <ToggleChip state="on" title={selectedBlurb}>
+                  <CheckIcon width={13} height={13} strokeWidth={2.5} color="var(--success-ink)" aria-hidden />
+                  {pinnedModel}
+                </ToggleChip>
+              )}
             </ToggleChipGroup>
           ) : (
             <div className="flex flex-wrap gap-[9px]">
@@ -238,7 +265,48 @@ export function LocalClaudeRow() {
             </div>
           )}
         </div>
-        {connected && <p className="mt-[10px] text-[13px] text-ink-faint">{selectedBlurb}</p>}
+        {connected && (
+          <>
+            <p className="mt-[10px] text-[13px] text-ink-faint">{selectedBlurb}</p>
+            <div className="mt-[10px] flex flex-wrap items-center gap-x-3 gap-y-2">
+              <span className="text-[13px] text-ink-soft">Reasoning effort</span>
+              <Segmented
+                aria-label="Reasoning effort"
+                value={selectedEffort ?? 'default'}
+                disabled={busy || running}
+                onValueChange={(effort) =>
+                  choose({ effort: effort === 'default' ? undefined : (effort as ClaudeEffort) })
+                }
+              >
+                <SegmentedItem value="default" title="Whatever your Claude Code is set to">
+                  Default
+                </SegmentedItem>
+                {CLAUDE_EFFORT_OPTIONS.map((effort) => (
+                  <SegmentedItem key={effort.id} value={effort.id} title={effort.blurb}>
+                    {effort.name}
+                  </SegmentedItem>
+                ))}
+              </Segmented>
+            </div>
+            <div className="mt-[10px] flex flex-wrap items-center gap-2">
+              <Input
+                aria-label="Pin a model id"
+                className="w-[260px] max-md:w-full"
+                value={pin}
+                onChange={(e) => setPin(e.target.value)}
+                placeholder="Pin a model id, e.g. claude-opus-5-20260901"
+                spellCheck={false}
+                disabled={busy || running}
+              />
+              <Button
+                disabled={busy || running || !isClaudeModel(pin.trim())}
+                onClick={() => choose({ model: pin.trim() })}
+              >
+                Pin
+              </Button>
+            </div>
+          </>
+        )}
         {!supported && <p className="mt-[10px] text-[13px] text-ink-faint">Update Doop to connect Claude.</p>}
         {supported && native && !native.installed && (
           <p className="mt-[10px] text-[13px] text-ink-faint">

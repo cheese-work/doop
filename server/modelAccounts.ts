@@ -4,8 +4,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { eq } from 'drizzle-orm'
 import { db } from './db/index.ts'
 import { modelAccounts } from './db/schema.ts'
-import { normalizeClaudeModel } from '../shared/localAgent.ts'
-import { GEMINI_MODELS, OPENROUTER_MODELS } from '../shared/modelMenu.ts'
+import { DEFAULT_ANTHROPIC_MODEL, GEMINI_MODELS, OPENROUTER_MODELS } from '../shared/modelMenu.ts'
 import { CLAUDE_API_MODEL, GEMINI_API_MODEL, OPENAI_API_MODEL } from './modelCatalog.ts'
 import { isKnownModel, modelFor } from './openaiAgent.ts'
 
@@ -145,10 +144,11 @@ const MODEL_POLICY: Record<AccountKind, { resolve(model?: string): string; isKno
      offers what the provider's catalog lists (server/modelCatalog.ts) and the
      run is the final check, as it always was */
   'openai-key': { resolve: (model) => modelFor({ model }), isKnown: (model) => OPENAI_API_MODEL.test(model) },
-  /* any Claude id the catalog offered (or the user typed) runs as is; only the
-     pre-catalog aliases and an unset model fall back to the curated default */
+  /* any Claude id the catalog offered (or the user typed) runs as is; an
+     unset model, or a Claude Code alias saved by an older build, falls back
+     to the curated default — the Messages API takes full ids only */
   'anthropic-key': {
-    resolve: (model) => (model && CLAUDE_API_MODEL.test(model) ? model : normalizeClaudeModel(model)),
+    resolve: (model) => (model && CLAUDE_API_MODEL.test(model) ? model : DEFAULT_ANTHROPIC_MODEL),
     isKnown: (model) => CLAUDE_API_MODEL.test(model),
   },
   /* OpenRouter keeps its curated roster: the roster's vision flags are what

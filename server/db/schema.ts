@@ -668,6 +668,8 @@ export const localAgentPreferences = pgTable('local_agent_preferences', {
   userId: text('user_id').primaryKey(),
   enabled: boolean('enabled').notNull().default(false),
   model: text('model').notNull().default('default'),
+  /** `claude --effort`; null = the CLI's own setting */
+  effort: text('effort'),
 })
 
 /** Per-user notification switches. No row means everything is on: comment

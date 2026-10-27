@@ -1,4 +1,4 @@
-import { CLAUDE_MODEL_IDS } from '../shared/localAgent.ts'
+import { CLAUDE_EFFORTS, isClaudeModel } from '../shared/localAgent.ts'
 import { Router, type Request, type Response } from 'express'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
@@ -12,9 +12,12 @@ import { isBanned } from './auth.ts'
 import { onFeedback } from './resident.ts'
 
 export const localAgentRouter = Router()
+/* an alias or a pinned claude-* id (the shell checks the shape again before
+   it becomes a CLI argument), and the CLI's effort levels or none */
 const preferenceSchema = z.object({
   enabled: z.boolean(),
-  model: z.enum([...CLAUDE_MODEL_IDS, 'default', 'sonnet', 'opus']),
+  model: z.string().max(120).refine(isClaudeModel, 'Invalid model'),
+  effort: z.enum(CLAUDE_EFFORTS).optional(),
 })
 const deviceSchema = z.object({ deviceId: z.string().uuid() })
 

@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import type Anthropic from '@anthropic-ai/sdk'
-import type { ClaudeModel, LocalAgentJob, LocalAgentResult } from '../shared/localAgent.ts'
+import type { LocalAgentJob, LocalAgentPreference, LocalAgentResult } from '../shared/localAgent.ts'
 
 export interface LocalHarnessRequest {
   canvasId: string
@@ -46,7 +46,11 @@ export class LocalAgentRuns {
     return run.job
   }
 
-  start(userId: string, model: ClaudeModel, request: LocalHarnessRequest): Promise<LocalAgentResult> {
+  start(
+    userId: string,
+    { model, effort }: Pick<LocalAgentPreference, 'model' | 'effort'>,
+    request: LocalHarnessRequest,
+  ): Promise<LocalAgentResult> {
     const id = randomUUID()
     return new Promise((resolve) => {
       this.runs.set(id, {
@@ -61,6 +65,7 @@ export class LocalAgentRuns {
           id,
           token: randomBytes(32).toString('hex'),
           model,
+          ...(effort ? { effort } : {}),
           prompt: request.prompt,
           system: request.system,
           maxTurns: request.maxTurns,
@@ -90,7 +95,7 @@ export class LocalAgentRuns {
   async finish(id: string, userId: string, deviceId: string, result: LocalAgentResult) {
     const run = this.runs.get(id)
     if (!run || run.userId !== userId || run.deviceId !== deviceId || run.closing) return false
-    await this.close(run, result)
+    await this.close(run, shellResult(result))
     return true
   }
 
@@ -130,6 +135,16 @@ export class LocalAgentRuns {
         ),
     )
     for (const [userId, device] of this.devices) if (now - device.at > 60_000) this.devices.delete(userId)
+  }
+}
+
+/** A desktop shell from before the model aliases refuses them with a bare
+ *  "Invalid model"; say what the person can do about it. */
+function shellResult(result: LocalAgentResult): LocalAgentResult {
+  if (result.success || !/^invalid model$/i.test(result.text.trim())) return result
+  return {
+    success: false,
+    text: 'The Doop desktop app on this device is too old for that model. Update it, or pick a pinned model id in Settings.',
   }
 }
 

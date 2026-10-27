@@ -304,9 +304,9 @@ export async function pickModel(payerId?: string): Promise<AgentModel | null> {
       if (!localAgentRuns.online(payerId)) return null
       return {
         provider: 'claude-local',
-        label: `Claude CLI (${local.model})`,
+        label: `Claude CLI (${local.model}${local.effort ? `, ${local.effort} effort` : ''})`,
         userId: payerId,
-        runHarness: (req) => localAgentRuns.start(payerId, local.model, req),
+        runHarness: (req) => localAgentRuns.start(payerId, local, req),
         run: () =>
           Promise.reject(
             new Error('Repository imports require a server provider. Select your connected account in Settings.'),

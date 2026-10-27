@@ -122,9 +122,14 @@ stay in Claude's local credential storage; Doop never reads or uploads them. The
 runner excludes inherited API-key/provider overrides so it does not silently bill
 an API key. Claude's own login and usage limits determine account access.
 
-- The local-provider preference and model choice (Fable 5.1, Opus 5, Sonnet 5, Haiku 4.5) are
-  account-wide. Existing Sonnet/Opus choices map to their named versions; the old
-  CLI-default choice becomes Sonnet 5. Fable 5.1 requires Claude Code 2.1.255 or newer.
+- The local-provider preference, model choice and reasoning effort are account-wide. The model
+  menu is the CLI's aliases (`fable`, `opus`, `sonnet`, `haiku`, or Claude Code's own default),
+  which `claude --model` resolves to the newest model the installed CLI knows, so a new release
+  needs no desktop update; a full `claude-*` id can be pinned instead, and ids saved before the
+  aliases keep running as pinned ids. The shell checks the same shape rule (`valid_model` in
+  `claude.rs`) before the value becomes an argument, and passes `--effort` only when one is set.
+  Shells from before the aliases refuse them with "Invalid model", which the server turns into an
+  update prompt.
   Device consent remains local. A connected ChatGPT/OpenAI account
   is retained, and its **Use instead** button switches back to server execution.
 - Queued design cards, comments and feedback run while the desktop is open.

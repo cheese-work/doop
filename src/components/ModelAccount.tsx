@@ -133,9 +133,16 @@ export function ModelAccountPanel({ onChange }: { onChange?: () => void }) {
   const local = useLocalAgent((s) => s.preference)
   const userId = session?.user.id
   const localModel = local?.model ?? 'default'
+  const localEffort = local?.effort
+  /* switching to a server provider keeps the local choices for a switch back */
   const selectServer = useCallback(async () => {
-    if (userId) await selectLocalAgent(userId, { enabled: false, model: localModel })
-  }, [userId, localModel])
+    if (userId)
+      await selectLocalAgent(userId, {
+        enabled: false,
+        model: localModel,
+        ...(localEffort ? { effort: localEffort } : {}),
+      })
+  }, [userId, localModel, localEffort])
   const [authUrl, setAuthUrl] = useState('')
   /* true while the server is listening on the loopback callback port for us —
      the user approves in the other tab and this one just flips */

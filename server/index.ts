@@ -68,8 +68,7 @@ import { imageModelAvailability, serverImageGenEnabled } from './imageGen.ts'
 import { setImagePref } from './imagePrefs.ts'
 import { AGENT_MODELS } from './openaiAgent.ts'
 import { modelCatalogFor } from './modelCatalog.ts'
-import { CLAUDE_MODELS } from '../shared/localAgent.ts'
-import { GEMINI_MODELS, OPENROUTER_MODELS } from '../shared/modelMenu.ts'
+import { ANTHROPIC_MODELS, GEMINI_MODELS, OPENROUTER_MODELS } from '../shared/modelMenu.ts'
 import type { ModelOption } from '../shared/modelMenu.ts'
 import { mentionedRole } from '../shared/agents.ts'
 import { activeAgentTasks } from '../shared/agentActivity.ts'
@@ -834,7 +833,7 @@ app.get('/api/agent-allowance', (req, res) => {
 const MODEL_MENUS: Record<modelAccounts.AccountKind, ModelOption[]> = {
   chatgpt: AGENT_MODELS.map((m) => ({ ...m, vision: true })),
   'openai-key': AGENT_MODELS.map((m) => ({ ...m, vision: true })),
-  'anthropic-key': CLAUDE_MODELS.map((m) => ({ ...m, vision: true })),
+  'anthropic-key': ANTHROPIC_MODELS,
   'openrouter-key': OPENROUTER_MODELS,
   'gemini-key': GEMINI_MODELS,
 }

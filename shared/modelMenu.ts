@@ -137,6 +137,33 @@ export const IMAGE_MODELS: ImageModelOption[] = [
 ]
 
 /** One place for "what do we call this account kind" — Settings, meter lines. */
+/** Claude API (a user's Anthropic key): full ids, which the Messages API
+ *  wants; the aliases in shared/localAgent.ts are Claude Code's, not the
+ *  API's. The live catalog (server/modelCatalog.ts) adds newer ones. */
+export const ANTHROPIC_MODELS: ModelOption[] = [
+  {
+    id: 'claude-fable-5-1',
+    name: 'Fable 5.1',
+    blurb: 'For the hardest problems and longer, multi-step design tasks.',
+    vision: true,
+  },
+  {
+    id: 'claude-opus-5',
+    name: 'Opus 5',
+    blurb: 'For complex layouts and demanding design or coding work.',
+    vision: true,
+  },
+  { id: 'claude-sonnet-5', name: 'Sonnet 5', blurb: 'A balanced default for everyday design work.', vision: true },
+  {
+    id: 'claude-haiku-4-5-20251001',
+    name: 'Haiku 4.5',
+    blurb: 'For quick edits and straightforward tasks.',
+    vision: true,
+  },
+]
+
+export const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-5'
+
 export const ACCOUNT_KIND_LABELS = {
   chatgpt: 'ChatGPT',
   'openai-key': 'OpenAI',

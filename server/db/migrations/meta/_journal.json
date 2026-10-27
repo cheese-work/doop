@@ -253,6 +253,13 @@
       "when": 1792917173712,
       "tag": "0036_canvas_guides",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1793060896296,
+      "tag": "0037_local_agent_effort",
+      "breakpoints": true
     }
   ]
 }
