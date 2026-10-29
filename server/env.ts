@@ -198,6 +198,8 @@ const schema = {
   BACKGROUNDS_ORIGIN: origin({ default: undefined }),
 
   /* ---------------------------------------------------- MCP behaviour */
+  /* 0 = tool results carry no piggybacked task feedback; get_feedback still claims it */
+  DOOP_MCP_FEEDBACK_PIGGYBACK: bool({ default: true }),
   /* 1 = set_frame_html needs expected_updated_at and append_frame_html is refused (no streaming) */
   DOOP_MCP_REQUIRE_FENCE: bool({ default: false }),
 
