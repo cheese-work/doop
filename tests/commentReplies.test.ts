@@ -8,6 +8,8 @@ vi.mock('../server/db/persist.ts', () => ({
   saveFeedback: () => {},
   saveComment: () => {},
   saveNewComment: async () => {},
+  findCommentRow: async () => undefined,
+  loadCommentThread: async () => [],
   saveActivity: () => {},
   saveDecision: () => {},
   saveProposal: () => {},
@@ -94,10 +96,10 @@ describe('replying to a comment', () => {
   it('reports whether a thread can take a reply before anything is metered', async () => {
     const parent = await root()
     const reply = (await actions.replyToComment(parent.id, 'Agreed', 'bob'))!
-    expect(actions.openThread(reply.id)?.root.id).toBe(parent.id)
+    expect((await actions.openThread(reply.id))?.root.id).toBe(parent.id)
     await actions.resolveComment(parent.id, 'alice')
-    expect(actions.openThread(reply.id)).toBeUndefined()
-    expect(actions.openThread('missing')).toBeUndefined()
+    expect(await actions.openThread(reply.id)).toBeUndefined()
+    expect(await actions.openThread('missing')).toBeUndefined()
   })
 
   it('refuses replies on a resolved thread or with empty text', async () => {
@@ -112,7 +114,7 @@ describe('replying to a comment', () => {
     const parent = await root()
     const reply = (await actions.replyToComment(parent.id, `@${DEFAULT_ROLE_ID} bigger`, 'alice', 'alice'))!
     await actions.resolveComment(parent.id, 'alice')
-    expect(actions.findComment(reply.id)?.resolvedAt).toBeDefined()
+    expect((await actions.findComment(reply.id))?.resolvedAt).toBeDefined()
     expect(actions.takeAgentCommentsFor(CANVAS, AGENT, 'alice')).toEqual([])
   })
 
@@ -120,6 +122,6 @@ describe('replying to a comment', () => {
     const parent = await root()
     const reply = (await actions.replyToComment(parent.id, `@${DEFAULT_ROLE_ID} bigger`, 'alice', 'alice'))!
     await actions.resolveComment(reply.id, AGENT)
-    expect(actions.findComment(parent.id)?.resolvedAt).toBeUndefined()
+    expect((await actions.findComment(parent.id))?.resolvedAt).toBeUndefined()
   })
 })

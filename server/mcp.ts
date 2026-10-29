@@ -743,9 +743,9 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
     },
     async ({ canvas_id, comment_id, text: body, agent_name }) => {
       if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
-      const found = actions.findComment(comment_id)
+      const found = await actions.findComment(comment_id)
       if (!found || found.canvasId !== canvas_id) return noComment(comment_id)
-      if (!body.trim() || !actions.openThread(comment_id)) return err('thread resolved or empty text')
+      if (!body.trim() || !(await actions.openThread(comment_id))) return err('thread resolved or empty text')
       const actor = actorFrom(agent_name)
       arrive(canvas_id, agent_name)
       /* A reply that @mentions a resident agent is a new command to the team,
@@ -802,7 +802,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
     },
     async ({ canvas_id, comment_id, agent_name }) => {
       if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
-      const found = actions.findComment(comment_id)
+      const found = await actions.findComment(comment_id)
       if (!found || found.canvasId !== canvas_id) return noComment(comment_id)
       const actor = actorFrom(agent_name)
       arrive(canvas_id, agent_name)

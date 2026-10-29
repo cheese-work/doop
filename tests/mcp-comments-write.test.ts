@@ -16,6 +16,8 @@ vi.mock('../server/db/persist.ts', () => ({
   saveFeedback: () => {},
   saveComment: () => {},
   saveNewComment: async () => {},
+  findCommentRow: async () => undefined,
+  loadCommentThread: async () => [],
   saveActivity: () => {},
   saveDecision: () => {},
   saveProposal: () => {},
@@ -157,8 +159,8 @@ describe('element-comment write MCP tools', () => {
   it('replies in a thread, attributes it to the agent, and announces presence', async () => {
     const root = comment({ id: 'm1' })
     const reply = comment({ id: 'm2', parentId: 'm1', from: 'Claude', text: 'Done' })
-    vi.spyOn(actions, 'findComment').mockReturnValue(root)
-    vi.spyOn(actions, 'openThread').mockReturnValue({ root, frame: FRAME })
+    vi.spyOn(actions, 'findComment').mockResolvedValue(root)
+    vi.spyOn(actions, 'openThread').mockResolvedValue({ root, frame: FRAME })
     const replySpy = vi.spyOn(actions, 'replyToComment').mockResolvedValue(reply)
     const heartbeat = vi.spyOn(actions, 'heartbeatAgent').mockImplementation(() => {})
     const { client, close } = await connect()
@@ -182,8 +184,8 @@ describe('element-comment write MCP tools', () => {
   it('bills a reply on a shared canvas to the collaborator who sent it, not the canvas owner', async () => {
     stubCanvas({ ...CANVAS, ownerId: 'someone-else', memberIds: ['mate-1'] })
     const root = comment({ id: 'm1' })
-    vi.spyOn(actions, 'findComment').mockReturnValue(root)
-    vi.spyOn(actions, 'openThread').mockReturnValue({ root, frame: FRAME })
+    vi.spyOn(actions, 'findComment').mockResolvedValue(root)
+    vi.spyOn(actions, 'openThread').mockResolvedValue({ root, frame: FRAME })
     const replySpy = vi
       .spyOn(actions, 'replyToComment')
       .mockResolvedValue(comment({ id: 'm2', parentId: 'm1', from: 'Claude', text: '@Doop tighten this' }))
@@ -204,8 +206,8 @@ describe('element-comment write MCP tools', () => {
   })
 
   it('rejects empty text and resolved threads', async () => {
-    vi.spyOn(actions, 'findComment').mockReturnValue(comment({ id: 'm1' }))
-    const openThread = vi.spyOn(actions, 'openThread').mockReturnValue(undefined)
+    vi.spyOn(actions, 'findComment').mockResolvedValue(comment({ id: 'm1' }))
+    const openThread = vi.spyOn(actions, 'openThread').mockResolvedValue(undefined)
     const replySpy = vi.spyOn(actions, 'replyToComment')
     const { client, close } = await connect()
     try {
@@ -235,8 +237,8 @@ describe('element-comment write MCP tools', () => {
 
   it('does not spend the resident meter on a plain reply', async () => {
     const root = comment({ id: 'm1' })
-    vi.spyOn(actions, 'findComment').mockReturnValue(root)
-    vi.spyOn(actions, 'openThread').mockReturnValue({ root, frame: FRAME })
+    vi.spyOn(actions, 'findComment').mockResolvedValue(root)
+    vi.spyOn(actions, 'openThread').mockResolvedValue({ root, frame: FRAME })
     vi.spyOn(actions, 'replyToComment').mockResolvedValue(comment({ id: 'm2', parentId: 'm1' }))
     const consume = vi.spyOn(allowance, 'consumeResidentTask')
     const { client, close } = await connect()
@@ -256,8 +258,8 @@ describe('element-comment write MCP tools', () => {
 
   it('meters an @mention of a resident role and refunds when the thread closes mid-write', async () => {
     const root = comment({ id: 'm1' })
-    vi.spyOn(actions, 'findComment').mockReturnValue(root)
-    vi.spyOn(actions, 'openThread').mockReturnValue({ root, frame: FRAME })
+    vi.spyOn(actions, 'findComment').mockResolvedValue(root)
+    vi.spyOn(actions, 'openThread').mockResolvedValue({ root, frame: FRAME })
     const consume = vi.spyOn(allowance, 'consumeResidentTask').mockResolvedValue(gate())
     const refund = vi.spyOn(allowance, 'refundResidentTask').mockResolvedValue(undefined)
     const replySpy = vi.spyOn(actions, 'replyToComment').mockResolvedValue(comment({ id: 'm2', parentId: 'm1' }))
@@ -293,8 +295,8 @@ describe('element-comment write MCP tools', () => {
 
   it('refuses a metered reply once the resident allowance is spent', async () => {
     const root = comment({ id: 'm1' })
-    vi.spyOn(actions, 'findComment').mockReturnValue(root)
-    vi.spyOn(actions, 'openThread').mockReturnValue({ root, frame: FRAME })
+    vi.spyOn(actions, 'findComment').mockResolvedValue(root)
+    vi.spyOn(actions, 'openThread').mockResolvedValue({ root, frame: FRAME })
     const replySpy = vi.spyOn(actions, 'replyToComment')
     vi.spyOn(allowance, 'consumeResidentTask').mockResolvedValue(gate({ ok: false, used: 5, limit: 5 }))
     const { client, close } = await connect()
@@ -314,7 +316,7 @@ describe('element-comment write MCP tools', () => {
   })
 
   it('rejects unknown/foreign comments and inaccessible canvases on reply', async () => {
-    const find = vi.spyOn(actions, 'findComment').mockReturnValue(undefined)
+    const find = vi.spyOn(actions, 'findComment').mockResolvedValue(undefined)
     const replySpy = vi.spyOn(actions, 'replyToComment')
     const { client, close } = await connect()
     try {
@@ -327,7 +329,7 @@ describe('element-comment write MCP tools', () => {
       expect(unknown.isError).toBe(true)
       expect(unknown.raw).toContain('no comment with id nope')
 
-      find.mockReturnValue(comment({ id: 'm9', canvasId: 'c2' }))
+      find.mockResolvedValue(comment({ id: 'm9', canvasId: 'c2' }))
       const foreign = await call(client, 'reply_to_comment', {
         canvas_id: CANVAS.id,
         comment_id: 'm9',
@@ -354,7 +356,7 @@ describe('element-comment write MCP tools', () => {
 
   it('resolves a thread and reports the already-resolved state', async () => {
     const root = comment({ id: 'm1' })
-    const find = vi.spyOn(actions, 'findComment').mockReturnValue(root)
+    const find = vi.spyOn(actions, 'findComment').mockResolvedValue(root)
     const resolvedAt = Date.UTC(2026, 0, 1)
     const resolveSpy = vi
       .spyOn(actions, 'resolveComment')
@@ -370,7 +372,7 @@ describe('element-comment write MCP tools', () => {
       expect(parsed).toMatchObject({ ok: true, id: 'm1', alreadyResolved: false, resolvedBy: 'Claude' })
       expect(resolveSpy).toHaveBeenCalledWith('m1', 'Claude')
 
-      find.mockReturnValue({ ...root, resolvedAt, resolvedBy: 'alice' })
+      find.mockResolvedValue({ ...root, resolvedAt, resolvedBy: 'alice' })
       const again = await call(client, 'resolve_comment', {
         canvas_id: CANVAS.id,
         comment_id: 'm1',
@@ -385,7 +387,7 @@ describe('element-comment write MCP tools', () => {
   it('allows link-edit access and rejects unknown comments on resolve', async () => {
     stubCanvas({ ...CANVAS, ownerId: 'someone-else', memberIds: [], linkAccess: 'edit' })
     const root = comment({ id: 'm1' })
-    const find = vi.spyOn(actions, 'findComment').mockReturnValue(root)
+    const find = vi.spyOn(actions, 'findComment').mockResolvedValue(root)
     vi.spyOn(actions, 'resolveComment').mockResolvedValue({ ...root, resolvedBy: 'Claude', resolvedAt: 1 })
     const { client, close } = await connect()
     try {
@@ -396,7 +398,7 @@ describe('element-comment write MCP tools', () => {
       })
       expect(allowed.isError).toBeFalsy()
 
-      find.mockReturnValue(undefined)
+      find.mockResolvedValue(undefined)
       const unknown = await call(client, 'resolve_comment', {
         canvas_id: CANVAS.id,
         comment_id: 'nope',
@@ -411,8 +413,8 @@ describe('element-comment write MCP tools', () => {
 
   it('delivers pending human feedback alongside the reply', async () => {
     const root = comment({ id: 'm1' })
-    vi.spyOn(actions, 'findComment').mockReturnValue(root)
-    vi.spyOn(actions, 'openThread').mockReturnValue({ root, frame: FRAME })
+    vi.spyOn(actions, 'findComment').mockResolvedValue(root)
+    vi.spyOn(actions, 'openThread').mockResolvedValue({ root, frame: FRAME })
     vi.spyOn(actions, 'replyToComment').mockResolvedValue(comment({ id: 'm2', parentId: 'm1' }))
     vi.spyOn(actions, 'takeFeedbackFor').mockReturnValue([
       {
@@ -505,7 +507,7 @@ describe('MCP comment write tools over real action state', () => {
         from: 'alice',
         agentName: 'Claude',
       })
-      const resolvedAt = actions.findComment(root.id)?.resolvedAt
+      const resolvedAt = (await actions.findComment(root.id))?.resolvedAt
       expect(resolvedAt).toBeDefined()
 
       const second = await call(client, 'resolve_comment', {
@@ -515,7 +517,7 @@ describe('MCP comment write tools over real action state', () => {
       })
       expect(second.parsed).toMatchObject({ ok: true, alreadyResolved: true })
       expect(actions.getDecisions(CANVAS.id)).toHaveLength(1)
-      expect(actions.findComment(root.id)?.resolvedAt).toBe(resolvedAt)
+      expect((await actions.findComment(root.id))?.resolvedAt).toBe(resolvedAt)
     } finally {
       await close()
     }
