@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { trimComments } from '../../shared/comments'
 import { canvasPages, framePageId } from '../../shared/pages'
 import type {
   ActivityItem,
@@ -369,9 +370,11 @@ export const useStore = create<State>((set, get) => ({
   setComments: (comments) => set({ comments }),
   upsertComment: (c) =>
     set((s) => {
-      const comments = s.comments.some((x) => x.id === c.id)
-        ? s.comments.map((x) => (x.id === c.id ? c : x))
-        : [c, ...s.comments].slice(0, 100)
+      if (s.comments.some((x) => x.id === c.id)) return { comments: s.comments.map((x) => (x.id === c.id ? c : x)) }
+      /* a thread restored after leaving the window arrives older than what is shown: keep the log
+         newest first, and trim the way the server does so the thread being replied to survives */
+      const comments = [c, ...s.comments].sort((a, b) => b.at - a.at)
+      trimComments(comments, c.parentId ?? c.id)
       return { comments }
     }),
   upsertFeedback: (fb) =>

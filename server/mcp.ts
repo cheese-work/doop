@@ -692,6 +692,42 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
   )
 
   server.registerTool(
+    'list_unacked_comment_events',
+    {
+      title: 'List unacknowledged comment events',
+      description:
+        'List comment events on a canvas that nobody has acknowledged yet, oldest first by event id, each with its comment (author, text, parentId, anchor). An event is stored in the same transaction as its comment, so a comment you can read always has one. There is no cursor: an event stays here until ack_comment_events names its id, so one that commits late is still returned on the next call. Reading does not acknowledge, claim or resolve anything.',
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: {
+        canvas_id: z.string(),
+        limit: z.number().int().min(1).max(200).default(50).describe('Most events to return. Default 50, max 200.'),
+        agent_name: agentName.optional(),
+      },
+    },
+    async ({ canvas_id, limit, agent_name }) => {
+      if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
+      arrive(canvas_id, agent_name)
+      return text(await persist.listUnackedCommentEvents(canvas_id, limit))
+    },
+  )
+
+  server.registerTool(
+    'ack_comment_events',
+    {
+      title: 'Acknowledge comment events',
+      description:
+        'Mark comment events as handled so list_unacked_comment_events stops returning them. Ids on canvases this account cannot reach are ignored. Acknowledging an already-acknowledged id is not an error.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: {
+        ids: z.array(z.number().int()).min(1).max(200).describe('Event ids from list_unacked_comment_events'),
+        agent_name: agentName.optional(),
+      },
+    },
+    async ({ ids }) =>
+      text({ acked: await persist.ackCommentEvents(ids, (canvasId) => canvasFor(canvasId) !== undefined) }),
+  )
+
+  server.registerTool(
     'reply_to_comment',
     {
       title: 'Reply to a comment',
@@ -707,9 +743,9 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
     },
     async ({ canvas_id, comment_id, text: body, agent_name }) => {
       if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
-      const found = actions.findComment(comment_id)
+      const found = await actions.findComment(comment_id)
       if (!found || found.canvasId !== canvas_id) return noComment(comment_id)
-      if (!body.trim() || !actions.openThread(comment_id)) return err('thread resolved or empty text')
+      if (!body.trim() || !(await actions.openThread(comment_id))) return err('thread resolved or empty text')
       const actor = actorFrom(agent_name)
       arrive(canvas_id, agent_name)
       /* A reply that @mentions a resident agent is a new command to the team,
@@ -726,7 +762,18 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       /* attributed to the agent, billed to the connecting user: the resident
          picks whose model account pays from the requester id, and without one
          it falls back to the canvas owner's — wrong on a shared canvas */
-      const reply = actions.replyToComment(comment_id, body, actor.name, ownerId, 'agent')
+      let reply: Awaited<ReturnType<typeof actions.replyToComment>>
+      try {
+        reply = await actions.replyToComment(comment_id, body, actor.name, ownerId, 'agent')
+      } catch (e) {
+        console.error('[mcp] could not store a reply:', e)
+        if (gate && ownerId) {
+          await allowance
+            .refundResidentTask(gate, ownerId)
+            .catch((e2) => console.error(`[mcp] could not refund a resident task for ${ownerId}:`, e2))
+        }
+        return err('reply not stored — nothing was saved, retry later')
+      }
       if (!reply) {
         /* the thread closed while the meter was being written: give the task back */
         if (gate && ownerId) {
@@ -755,12 +802,12 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
     },
     async ({ canvas_id, comment_id, agent_name }) => {
       if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
-      const found = actions.findComment(comment_id)
+      const found = await actions.findComment(comment_id)
       if (!found || found.canvasId !== canvas_id) return noComment(comment_id)
       const actor = actorFrom(agent_name)
       arrive(canvas_id, agent_name)
       const alreadyResolved = found.resolvedAt !== undefined
-      const resolved = actions.resolveComment(comment_id, actor.name)
+      const resolved = await actions.resolveComment(comment_id, actor.name)
       if (!resolved) return noComment(comment_id)
       return withFeedback(
         text({
