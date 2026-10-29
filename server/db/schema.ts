@@ -9,7 +9,9 @@ import {
   uniqueIndex,
   primaryKey,
   jsonb,
+  bigserial,
 } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
 import type { CanvasPageInfo } from '../../shared/types.ts'
 import type { Schedule, Step } from '../../shared/automations.ts'
 
@@ -385,6 +387,27 @@ export const comments = pgTable(
     parentId: text('parent_id'),
   },
   (t) => [index('comments_canvas_idx').on(t.canvasId)],
+)
+
+/** Append-only outbox of new comments, written in the same transaction as the
+ *  comment row. A consumer reads `acked_at IS NULL ORDER BY id`, handles each
+ *  event and acknowledges it, so a late-committing row is read on the next poll. */
+export const commentEvents = pgTable(
+  'comment_events',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    canvasId: text('canvas_id').notNull(),
+    commentId: text('comment_id').notNull(),
+    parentId: text('parent_id'),
+    fromUserId: text('from_user_id'),
+    at: bigint('at', { mode: 'number' }).notNull(),
+    ackedAt: bigint('acked_at', { mode: 'number' }),
+  },
+  (t) => [
+    index('comment_events_unacked_idx')
+      .on(t.canvasId, t.id)
+      .where(sql`${t.ackedAt} is null`),
+  ],
 )
 
 /** Uploaded image assets: metadata only — bytes live in object storage (or

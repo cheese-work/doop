@@ -1632,23 +1632,50 @@ app.post('/api/frames/:id/versions/:versionId/restore', async (req, res) => {
   res.json(restored)
 })
 
+/* A comment and its outbox event are stored in one awaited transaction; when it fails nothing was
+   stored, so the request fails (500), the resident-task meter is given back, and the error is logged. */
+async function storeComment<T>(
+  res: express.Response,
+  userId: string,
+  gate: Awaited<ReturnType<typeof allowance.consumeResidentTask>> | undefined,
+  post: () => Promise<T | undefined>,
+): Promise<{ value: T | undefined } | undefined> {
+  try {
+    return { value: await post() }
+  } catch (e) {
+    console.error('[comments] could not store a comment:', e)
+    if (gate) {
+      await allowance.refundResidentTask(gate, userId).catch((err) => {
+        console.error(`[comments] could not refund a resident task for ${userId}:`, err)
+      })
+    }
+    res.status(500).json({ error: 'comment not stored' })
+    return undefined
+  }
+}
+
 app.post('/api/frames/:id/comments', async (req, res) => {
   if (!requireFrame(req, res, req.params.id)) return
   const { selector, snippet, text } = req.body ?? {}
   /* a comment that @mentions a resident agent is a new command to the team,
      so it's metered like a card; plain comments and replies stay free */
+  let gate: Awaited<ReturnType<typeof allowance.consumeResidentTask>> | undefined
   if (mentionedRole(String(text ?? ''))) {
-    const gate = await allowance.consumeResidentTask(req.user!.id)
+    gate = await allowance.consumeResidentTask(req.user!.id)
     if (!gate.ok) {
       return res.status(403).json({ error: 'resident_limit', used: gate.used, limit: gate.limit })
     }
   }
-  const comment = actions.addElementComment(
-    req.params.id,
-    { selector: String(selector ?? ''), snippet: String(snippet ?? ''), text: String(text ?? '') },
-    req.user!.name,
-    req.user!.id,
+  const stored = await storeComment(res, req.user!.id, gate, () =>
+    actions.addElementComment(
+      req.params.id,
+      { selector: String(selector ?? ''), snippet: String(snippet ?? ''), text: String(text ?? '') },
+      req.user!.name,
+      req.user!.id,
+    ),
   )
+  if (!stored) return
+  const comment = stored.value
   if (!comment) return res.status(404).json({ error: 'frame not found or empty text' })
   res.json(comment)
 })
@@ -1672,12 +1699,16 @@ app.post('/api/canvases/:id/comments', async (req, res) => {
       return res.status(403).json({ error: 'resident_limit', used: gate.used, limit: gate.limit })
     }
   }
-  const comment = actions.addCanvasComment(
-    canvas.id,
-    { pageId, x: Number(x), y: Number(y), text: body },
-    req.user!.name,
-    req.user!.id,
+  const stored = await storeComment(res, req.user!.id, gate, () =>
+    actions.addCanvasComment(
+      canvas.id,
+      { pageId, x: Number(x), y: Number(y), text: body },
+      req.user!.name,
+      req.user!.id,
+    ),
   )
+  if (!stored) return
+  const comment = stored.value
   if (!comment) {
     /* the page went away while the meter was being written: give the task
        back — a failed refund is logged, never turned into a 500 */
@@ -1692,11 +1723,11 @@ app.post('/api/canvases/:id/comments', async (req, res) => {
 })
 
 app.post('/api/comments/:id/replies', async (req, res) => {
-  const found = actions.findComment(req.params.id)
+  const found = await actions.findComment(req.params.id)
   if (!found) return res.status(404).json({ error: 'comment not found' })
   if (!requireCanvas(req, res, found.canvasId)) return
   const text = String(req.body?.text ?? '')
-  if (!text.trim() || !actions.openThread(req.params.id)) {
+  if (!text.trim() || !(await actions.openThread(req.params.id))) {
     return res.status(404).json({ error: 'thread resolved or empty text' })
   }
   /* same rule as a fresh comment: only an @mention costs a resident task */
@@ -1707,7 +1738,11 @@ app.post('/api/comments/:id/replies', async (req, res) => {
       return res.status(403).json({ error: 'resident_limit', used: gate.used, limit: gate.limit })
     }
   }
-  const reply = actions.replyToComment(req.params.id, text, req.user!.name, req.user!.id)
+  const stored = await storeComment(res, req.user!.id, gate, () =>
+    actions.replyToComment(req.params.id, text, req.user!.name, req.user!.id),
+  )
+  if (!stored) return
+  const reply = stored.value
   if (!reply) {
     /* the thread closed while the meter was being written: give the task
        back — a failed refund is logged, never turned into a 500 */
@@ -1721,15 +1756,15 @@ app.post('/api/comments/:id/replies', async (req, res) => {
   res.json(reply)
 })
 
-app.post('/api/comments/:id/resolve', (req, res) => {
-  const found = actions.findComment(req.params.id)
+app.post('/api/comments/:id/resolve', async (req, res) => {
+  const found = await actions.findComment(req.params.id)
   if (!found) return res.status(404).json({ error: 'comment not found' })
   if (!requireCanvas(req, res, found.canvasId)) return
-  res.json(actions.resolveComment(req.params.id, req.user!.name))
+  res.json(await actions.resolveComment(req.params.id, req.user!.name))
 })
 
 app.post('/api/comments/:id/retry', async (req, res) => {
-  const found = actions.findComment(req.params.id)
+  const found = await actions.findComment(req.params.id)
   if (!found) return res.status(404).json({ error: 'comment not found' })
   if (!requireCanvas(req, res, found.canvasId)) return
   const gate = await allowance.consumeResidentTask(req.user!.id)
