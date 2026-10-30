@@ -182,7 +182,16 @@ interface HoverHit {
 /* Counter-scaled overlays (labels, pins, popovers) get their scale from the
    `--zoom` CSS variable the Stage sets, so a viewport change never re-renders
    this component — memo holds as long as the frame and layout zoom are unchanged. */
-export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame: Frame; layoutZoom: number }) {
+export const FrameView = memo(function FrameView({
+  frame,
+  layoutZoom,
+  mounted = true,
+}: {
+  frame: Frame
+  layoutZoom: number
+  /** False while the frame is far from the camera: it keeps its box but holds no iframe (frameCulling). */
+  mounted?: boolean
+}) {
   const [menuTarget, setMenuTarget] = useState<'frame' | 'loading' | { selector: string | null; html: string }>('frame')
   const [menuProbe, setMenuProbe] = useState<{ request: number; html: string; x: number; y: number } | null>(null)
   const menuKind = useRef<'frame' | 'element'>('frame')
@@ -225,6 +234,11 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
   const [duping, setDuping] = useState(false)
   const dupKeyHeld = useDupModifier()
   const [editing, setEditing] = useState(false)
+  /* A frame that has entered an edit session keeps its iframe for the page's lifetime: the runtime's last
+     text save arrives on a delay and a removed iframe's message is dropped, so there is no safe moment to
+     release it. Frames nobody edited (the bulk of a canvas) are still culled. */
+  const [everEdited, setEverEdited] = useState(false)
+  const keepIframe = mounted || everEdited
   /* after exiting edit mode, hold renders until the final serialized HTML
      lands in the store — otherwise a stale post would morph the edit away */
   const [suspendPost, setSuspendPost] = useState(false)
@@ -468,6 +482,18 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
      flipped or shifted it away from a viewport edge */
   const menuAt = useRef({ x: 0, y: 0 })
   const [runtimeReady, setRuntimeReady] = useState(false)
+  /* a frame that lost its iframe is not ready: the next one starts from the bootstrap */
+  const [wasKept, setWasKept] = useState(keepIframe)
+  if (keepIframe !== wasKept) {
+    setWasKept(keepIframe)
+    if (!keepIframe) {
+      setRuntimeReady(false)
+      setRuntimeDocument(null)
+    }
+  }
+  useEffect(() => {
+    if (!keepIframe) localHtml.current = null
+  }, [keepIframe])
   useEffect(() => {
     function onMsg(ev: MessageEvent) {
       if (ev.data?.type === 'doop:frame-ready' && ev.source === iframeRef.current?.contentWindow) {
@@ -927,6 +953,7 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
       )
     }
     setEditing(true)
+    setEverEdited(true)
     iframeRef.current?.contentWindow?.postMessage({ type: 'doop:edit', on: true }, '*')
   }
   function exitEdit() {
@@ -1200,14 +1227,15 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
             }}
             onPointerLeave={clearHover}
           >
-            <iframe
-              ref={iframeRef}
-              className={cn('block border-none', isCanvasElement(frame.html) ? 'bg-transparent' : 'bg-white')}
-              title={frame.name}
-              data-doop-frame=""
-              sandbox="allow-scripts"
-              srcDoc={FRAME_BOOTSTRAP}
-              /* The world is laid out at CSS zoom k (Stage), which an iframe
+            {keepIframe && (
+              <iframe
+                ref={iframeRef}
+                className={cn('block border-none', isCanvasElement(frame.html) ? 'bg-transparent' : 'bg-white')}
+                title={frame.name}
+                data-doop-frame=""
+                sandbox="allow-scripts"
+                srcDoc={FRAME_BOOTSTRAP}
+                /* The world is laid out at CSS zoom k (Stage), which an iframe
                  passes into its document. Chromium takes it as pixel density:
                  the document keeps its design-px viewport and rasterizes at
                  k×, even out of process, where a transform on this element
@@ -1215,15 +1243,16 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
                  document out at the zoomed width, so there the zoom is undone
                  here (keeping viewport, vh/vw, media queries and runtime rects
                  in design px) and the scale restores the box. */
-              style={{
-                width: frame.width,
-                height: frame.height,
-                ...(FRAME_DOCUMENTS_TAKE_ZOOM_AS_DENSITY
-                  ? null
-                  : { zoom: counterZoom(layoutZoom), transform: `scale(${layoutZoom})` }),
-                transformOrigin: '0 0',
-              }}
-            />
+                style={{
+                  width: frame.width,
+                  height: frame.height,
+                  ...(FRAME_DOCUMENTS_TAKE_ZOOM_AS_DENSITY
+                    ? null
+                    : { zoom: counterZoom(layoutZoom), transform: `scale(${layoutZoom})` }),
+                  transformOrigin: '0 0',
+                }}
+              />
+            )}
             {!frame.html && (
               <div className="absolute inset-0 grid place-items-center bg-[repeating-linear-gradient(45deg,transparent_0_10px,rgba(28,26,21,0.025)_10px_20px)] text-[13px] text-ink-faint">
                 empty frame — add HTML
