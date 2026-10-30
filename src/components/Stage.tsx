@@ -34,7 +34,7 @@ import { TOOLS, isDrawingTool, resolvePointerAction, toolForKey, type Tool } fro
 import { useCanvasDrawing } from './CanvasDrawing'
 import { FrameLabelLayer } from './FrameLabelLayer'
 import { layoutZoomFor } from '../lib/layoutZoom'
-import { useMountedFrames } from './useMountedFrames'
+import { useCulledFrames } from './useCulledFrames'
 
 const MIN_ZOOM = 0.08
 /* The settled world is laid out at up to this zoom too (layoutZoomFor), so
@@ -135,7 +135,7 @@ export function Stage({
   const zoomLabelRef = useRef<HTMLSpanElement>(null)
   const setViewport = useStore((s) => s.setViewport)
   const canvas = usePageCanvas()
-  const mountedFrames = useMountedFrames(ref)
+  const culledFrames = useCulledFrames(ref)
   const activePageId = useStore((s) => s.activePageId)
   const select = useStore((s) => s.select)
   const panMode = useStore((s) => s.panMode)
@@ -923,12 +923,7 @@ export function Stage({
                   f.hidden ? (
                     <HiddenFrameView key={f.id} frame={f} />
                   ) : (
-                    <FrameView
-                      key={f.id}
-                      frame={f}
-                      layoutZoom={layoutZoom}
-                      mounted={!mountedFrames || mountedFrames.has(f.id)}
-                    />
+                    <FrameView key={f.id} frame={f} layoutZoom={layoutZoom} mounted={!culledFrames.has(f.id)} />
                   ),
                 )}
               </FrameLabelLayer.Provider>

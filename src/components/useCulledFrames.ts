@@ -5,11 +5,13 @@ import { framesToMount } from '../lib/frameCulling'
 
 const sameSet = (a: ReadonlySet<string>, b: ReadonlySet<string>) => a.size === b.size && [...a].every((id) => b.has(id))
 
-/** Ids of the frames that hold an iframe (see frameCulling). Recomputed on a
+/** Ids of the frames that go without an iframe (see frameCulling). Recomputed on a
  *  camera move, a frame change or a selection change, but it only re-renders
- *  when a frame crosses the margin. */
-export function useMountedFrames(stage: RefObject<HTMLElement | null>): ReadonlySet<string> | null {
-  const [mounted, setMounted] = useState<ReadonlySet<string> | null>(null)
+ *  when a frame crosses the margin. It lists the culled, not the mounted: a frame
+ *  that just appeared has an iframe from its first render instead of one render
+ *  later, which a drag started right after drawing depends on. */
+export function useCulledFrames(stage: RefObject<HTMLElement | null>): ReadonlySet<string> {
+  const [culled, setCulled] = useState<ReadonlySet<string>>(new Set())
   useEffect(() => {
     function update() {
       const el = stage.current
@@ -22,7 +24,8 @@ export function useMountedFrames(stage: RefObject<HTMLElement | null>): Readonly
         { width: el.clientWidth, height: el.clientHeight },
         new Set(s.selectedIds),
       )
-      setMounted((prev) => (prev && sameSet(prev, next) ? prev : next))
+      const far = new Set(frames.filter((f) => !next.has(f.id)).map((f) => f.id))
+      setCulled((prev) => (sameSet(prev, far) ? prev : far))
     }
     update()
     /* the store also churns on cursors and presence: only these fields matter */
@@ -41,5 +44,5 @@ export function useMountedFrames(stage: RefObject<HTMLElement | null>): Readonly
       window.removeEventListener('resize', update)
     }
   }, [stage])
-  return mounted
+  return culled
 }
