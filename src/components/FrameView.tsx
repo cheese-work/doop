@@ -234,7 +234,7 @@ export const FrameView = memo(function FrameView({
   const [duping, setDuping] = useState(false)
   const dupKeyHeld = useDupModifier()
   const [editing, setEditing] = useState(false)
-  /* leaving edit mode makes the runtime flush its last text; the iframe has to outlive that save */
+  /* leaving edit mode makes the runtime flush its last text; the iframe stays until that save (`final`) arrives */
   const [flushing, setFlushing] = useState(false)
   const keepIframe = mounted || editing || flushing
   /* after exiting edit mode, hold renders until the final serialized HTML
@@ -957,7 +957,6 @@ export const FrameView = memo(function FrameView({
     iframeRef.current?.contentWindow?.postMessage({ type: 'doop:edit', on: false }, '*')
     setEditing(false)
     setFlushing(true)
-    window.setTimeout(() => setFlushing(false), 1000)
     setActiveHit(null)
     setComposing(false)
     activeSelRef.current = null
@@ -979,7 +978,7 @@ export const FrameView = memo(function FrameView({
     function onMsg(ev: MessageEvent) {
       if (ev.source !== iframeRef.current?.contentWindow) return
       if (ev.data?.type === 'doop:edited' && typeof ev.data.html === 'string') {
-        setFlushing(false)
+        if (ev.data.final === true) setFlushing(false)
         // The runtime already has this document. Echoing it through the HTML
         // throttle can overwrite a newer style edit still waiting to save.
         localHtml.current = ev.data.html
@@ -992,6 +991,7 @@ export const FrameView = memo(function FrameView({
       }
       if (ev.data?.type === 'doop:edit-esc') {
         setEditing(false)
+        setFlushing(false) // the runtime's final save went out just before this
         setSuspendPost(true)
         window.setTimeout(() => setSuspendPost(false), 500)
       }
