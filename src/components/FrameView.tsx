@@ -234,9 +234,11 @@ export const FrameView = memo(function FrameView({
   const [duping, setDuping] = useState(false)
   const dupKeyHeld = useDupModifier()
   const [editing, setEditing] = useState(false)
-  /* leaving edit mode makes the runtime flush its last text; the iframe stays until that save (`final`) arrives */
-  const [flushing, setFlushing] = useState(false)
-  const keepIframe = mounted || editing || flushing
+  /* A frame that has entered an edit session keeps its iframe for the page's lifetime: the runtime's last
+     text save arrives on a delay and a removed iframe's message is dropped, so there is no safe moment to
+     release it. Frames nobody edited (the bulk of a canvas) are still culled. */
+  const [everEdited, setEverEdited] = useState(false)
+  const keepIframe = mounted || everEdited
   /* after exiting edit mode, hold renders until the final serialized HTML
      lands in the store — otherwise a stale post would morph the edit away */
   const [suspendPost, setSuspendPost] = useState(false)
@@ -951,12 +953,12 @@ export const FrameView = memo(function FrameView({
       )
     }
     setEditing(true)
+    setEverEdited(true)
     iframeRef.current?.contentWindow?.postMessage({ type: 'doop:edit', on: true }, '*')
   }
   function exitEdit() {
     iframeRef.current?.contentWindow?.postMessage({ type: 'doop:edit', on: false }, '*')
     setEditing(false)
-    setFlushing(true)
     setActiveHit(null)
     setComposing(false)
     activeSelRef.current = null
@@ -978,7 +980,6 @@ export const FrameView = memo(function FrameView({
     function onMsg(ev: MessageEvent) {
       if (ev.source !== iframeRef.current?.contentWindow) return
       if (ev.data?.type === 'doop:edited' && typeof ev.data.html === 'string') {
-        if (ev.data.final === true) setFlushing(false)
         // The runtime already has this document. Echoing it through the HTML
         // throttle can overwrite a newer style edit still waiting to save.
         localHtml.current = ev.data.html
@@ -991,7 +992,6 @@ export const FrameView = memo(function FrameView({
       }
       if (ev.data?.type === 'doop:edit-esc') {
         setEditing(false)
-        setFlushing(false) // the runtime's final save went out just before this
         setSuspendPost(true)
         window.setTimeout(() => setSuspendPost(false), 500)
       }

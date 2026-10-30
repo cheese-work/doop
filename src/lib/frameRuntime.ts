@@ -234,8 +234,8 @@ export const FRAME_BOOTSTRAP = `<!doctype html>
     return '<!doctype html>\\n' + root.outerHTML
   }
 
-  function postEdited(discrete, final) {
-    parent.postMessage({ type: 'doop:edited', html: serialize(), discrete: discrete === true, final: final === true }, '*')
+  function postEdited(discrete) {
+    parent.postMessage({ type: 'doop:edited', html: serialize(), discrete: discrete === true }, '*')
     /* typing can move/grow the element — keep the parent's toolbar anchored */
     if (editing && activeEl) postActive()
   }
@@ -254,7 +254,7 @@ export const FRAME_BOOTSTRAP = `<!doctype html>
       clearHover()
       var st2 = document.querySelector('style[data-v-edit]')
       if (st2 && st2.parentNode) st2.parentNode.removeChild(st2)
-      postEdited(false, true) // flush the final state before renders resume; final: true lets the parent drop the iframe
+      postEdited() // flush the final state before renders resume
     }
   }
 
