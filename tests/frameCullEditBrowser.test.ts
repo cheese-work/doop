@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { createServer, type ViteDevServer } from 'vite'
 import type { Browser, Page } from 'puppeteer-core'
 import { findBrowserPath, getBrowser } from '../server/screenshot'
@@ -31,6 +31,9 @@ describe.skipIf(!findBrowserPath())('culling a frame that was edited', () => {
         await request.respond({ status: 200, contentType: 'application/json', body: JSON.stringify(saved) })
       } else await request.continue()
     })
+  }, 60_000)
+  /* a fresh page per case: an edited FrameView keeps its iframe, so cases must not share one */
+  beforeEach(async () => {
     await page.goto(`${vite.resolvedUrls!.local[0]}tests/fixtures/elementPanel.html`)
     await page.waitForFunction(() => !!(window as unknown as Partial<HarnessWindow>).elementPanelHarness)
     // Hand the page's message listeners the iframe's saves late, as a slow phone would (holdMs, set per test).
@@ -53,7 +56,7 @@ describe.skipIf(!findBrowserPath())('culling a frame that was edited', () => {
       window.removeEventListener = (type: string, listener: EventListenerOrEventListenerObject, options?: unknown) =>
         remove(type, (wrapped.get(listener) ?? listener) as EventListener, options as boolean)
     })
-  }, 60_000)
+  }, 30_000)
   afterAll(async () => {
     await page?.close()
     await browser?.close()

@@ -18,7 +18,6 @@
       import '/src/styles.css'
       let mounted = true
       let remount = () => {}
-      let epoch = 0 // a seed starts a fresh FrameView
       window.elementPanelHarness = {
         setMounted: (value) => {
           mounted = value
@@ -26,7 +25,6 @@
         },
         unselectFrame: () => useStore.setState({ selectedIds: [] }),
         seed: (frame) => {
-          epoch++
           clearHistory()
           useStore.getState().setSelectedElement(null)
           useStore.getState().setCanvas({
@@ -60,7 +58,7 @@
         return React.createElement(
           TooltipProvider,
           null,
-          React.createElement(FrameView, { key: epoch, frame, layoutZoom: 1, mounted }),
+          React.createElement(FrameView, { frame, layoutZoom: 1, mounted }),
           selected && React.createElement(ElementPanel, { frame, selector: selected.selector, style: { right: 12 } }),
         )
       }
