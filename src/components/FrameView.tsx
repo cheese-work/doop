@@ -234,6 +234,9 @@ export const FrameView = memo(function FrameView({
   const [duping, setDuping] = useState(false)
   const dupKeyHeld = useDupModifier()
   const [editing, setEditing] = useState(false)
+  /* leaving edit mode makes the runtime flush its last text; the iframe has to outlive that save */
+  const [flushing, setFlushing] = useState(false)
+  const keepIframe = mounted || editing || flushing
   /* after exiting edit mode, hold renders until the final serialized HTML
      lands in the store — otherwise a stale post would morph the edit away */
   const [suspendPost, setSuspendPost] = useState(false)
@@ -478,17 +481,17 @@ export const FrameView = memo(function FrameView({
   const menuAt = useRef({ x: 0, y: 0 })
   const [runtimeReady, setRuntimeReady] = useState(false)
   /* a frame that lost its iframe is not ready: the next one starts from the bootstrap */
-  const [wasMounted, setWasMounted] = useState(mounted)
-  if (mounted !== wasMounted) {
-    setWasMounted(mounted)
-    if (!mounted) {
+  const [wasKept, setWasKept] = useState(keepIframe)
+  if (keepIframe !== wasKept) {
+    setWasKept(keepIframe)
+    if (!keepIframe) {
       setRuntimeReady(false)
       setRuntimeDocument(null)
     }
   }
   useEffect(() => {
-    if (!mounted) localHtml.current = null
-  }, [mounted])
+    if (!keepIframe) localHtml.current = null
+  }, [keepIframe])
   useEffect(() => {
     function onMsg(ev: MessageEvent) {
       if (ev.data?.type === 'doop:frame-ready' && ev.source === iframeRef.current?.contentWindow) {
@@ -953,6 +956,8 @@ export const FrameView = memo(function FrameView({
   function exitEdit() {
     iframeRef.current?.contentWindow?.postMessage({ type: 'doop:edit', on: false }, '*')
     setEditing(false)
+    setFlushing(true)
+    window.setTimeout(() => setFlushing(false), 1000)
     setActiveHit(null)
     setComposing(false)
     activeSelRef.current = null
@@ -974,6 +979,7 @@ export const FrameView = memo(function FrameView({
     function onMsg(ev: MessageEvent) {
       if (ev.source !== iframeRef.current?.contentWindow) return
       if (ev.data?.type === 'doop:edited' && typeof ev.data.html === 'string') {
+        setFlushing(false)
         // The runtime already has this document. Echoing it through the HTML
         // throttle can overwrite a newer style edit still waiting to save.
         localHtml.current = ev.data.html
@@ -1221,7 +1227,7 @@ export const FrameView = memo(function FrameView({
             }}
             onPointerLeave={clearHover}
           >
-            {mounted && (
+            {keepIframe && (
               <iframe
                 ref={iframeRef}
                 className={cn('block border-none', isCanvasElement(frame.html) ? 'bg-transparent' : 'bg-white')}
