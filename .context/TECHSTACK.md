@@ -234,7 +234,7 @@
 - Add to Home Screen (iPhone Safari): `public/manifest.webmanifest` (`display: standalone`, 192/512 and
   maskable icons) plus the `apple-mobile-web-app-*` / `theme-color` tags in `index.html` make the home-screen
   icon open Doop without the Safari bar. `express.static` serves it as `application/manifest+json`;
-  `tests/webManifest.test.ts` pins both. No service worker (offline is out of scope).
+  `tests/webManifest.test.ts` builds the app and boots the production server to pin both. No service worker (offline is out of scope).
 - Home (`src/pages/Home.tsx`, `src/components/HomeHero.tsx`): a 12.5px rail (canvases, workspaces,
   explore, resources, agents, an Ask Doop pill bound to ⌘/), Import + New canvas in the top bar, and
   a hero over the brand's gradient wave: the hopping Disc-D, a greeting, a strip of suggestion chips
