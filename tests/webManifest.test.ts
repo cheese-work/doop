@@ -1,12 +1,9 @@
-import { readFileSync } from 'node:fs'
-import type { AddressInfo } from 'node:net'
-import { createServer } from 'node:http'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
-import express from 'express'
-import { describe, expect, it } from 'vitest'
-
-const root = path.join(import.meta.dirname, '..')
-const indexHtml = readFileSync(path.join(root, 'index.html'), 'utf8')
+import { build } from 'vite'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { freePort, startServer, type Server } from './harness'
 
 interface Manifest {
   name: string
@@ -19,27 +16,58 @@ interface Manifest {
   icons: { src: string; sizes: string; type: string; purpose?: string }[]
 }
 
-function readManifest(): Manifest {
-  return JSON.parse(readFileSync(path.join(root, 'public', 'manifest.webmanifest'), 'utf8')) as Manifest
+/* The production path end to end: `vite build` into a scratch dist, then the
+   real server in production mode with that dist as its working directory's
+   `dist/`, so the static handler and the SPA fallback are the shipped ones. */
+let dir: string
+let server: Server
+let builtIndex: string
+
+beforeAll(async () => {
+  dir = mkdtempSync(path.join(tmpdir(), 'doop-webmanifest-'))
+  await build({ logLevel: 'silent', build: { outDir: path.join(dir, 'dist'), emptyOutDir: true } })
+  builtIndex = readFileSync(path.join(dir, 'dist', 'index.html'), 'utf8')
+  server = await startServer(
+    {
+      NODE_ENV: 'production',
+      BETTER_AUTH_SECRET: 'webmanifest-test-secret-0123456789',
+      PORT: String(await freePort()),
+    },
+    dir,
+  )
+}, 180_000)
+
+afterAll(() => {
+  server?.stop()
+  if (dir) rmSync(dir, { recursive: true, force: true })
+})
+
+async function get(urlPath: string): Promise<Response> {
+  return fetch(`${server.base}${urlPath}`)
 }
 
 describe('home-screen web app', () => {
-  it('links the manifest and the iOS standalone meta tags from index.html', () => {
-    expect(indexHtml).toContain('<link rel="manifest" href="/manifest.webmanifest" />')
+  it('links the manifest and the iOS standalone meta tags from the built index.html', async () => {
+    expect(builtIndex).toContain('<link rel="manifest" href="/manifest.webmanifest" />')
     for (const name of [
       'apple-mobile-web-app-capable',
       'mobile-web-app-capable',
       'apple-mobile-web-app-title',
       'apple-mobile-web-app-status-bar-style',
     ]) {
-      expect(indexHtml, name).toMatch(new RegExp(`<meta\\s+name="${name}"`))
+      expect(builtIndex, name).toMatch(new RegExp(`<meta\\s+name="${name}"`))
     }
-    expect(indexHtml).toMatch(/<meta\s+name="theme-color"[^>]*media="\(prefers-color-scheme: light\)"/)
-    expect(indexHtml).toMatch(/<meta\s+name="theme-color"[^>]*media="\(prefers-color-scheme: dark\)"/)
+    expect(builtIndex).toMatch(/<meta\s+name="theme-color"[^>]*media="\(prefers-color-scheme: light\)"/)
+    expect(builtIndex).toMatch(/<meta\s+name="theme-color"[^>]*media="\(prefers-color-scheme: dark\)"/)
+    /* what Safari fetches is the same document */
+    expect(await (await get('/')).text()).toBe(builtIndex)
   })
 
-  it('opens standalone with the Doop name and 192, 512 and maskable icons', () => {
-    const m = readManifest()
+  it('serves the manifest as application/manifest+json, not the SPA fallback', async () => {
+    const res = await get('/manifest.webmanifest')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toMatch(/^application\/manifest\+json/)
+    const m = (await res.json()) as Manifest
     expect(m.display).toBe('standalone')
     expect(m.name).toBe('Doop')
     expect(m.short_name).toBe('Doop')
@@ -52,27 +80,15 @@ describe('home-screen web app', () => {
     expect(m.icons.some((i) => i.purpose === 'maskable' && i.sizes === '512x512')).toBe(true)
   })
 
-  it('ships every icon the manifest names', () => {
-    for (const icon of readManifest().icons) {
-      const png = readFileSync(path.join(root, 'public', icon.src))
+  it('serves every icon the manifest names as a PNG of the declared size', async () => {
+    const m = (await (await get('/manifest.webmanifest')).json()) as Manifest
+    for (const icon of m.icons) {
+      const res = await get(icon.src)
+      expect(res.headers.get('content-type'), icon.src).toBe('image/png')
+      const png = Buffer.from(await res.arrayBuffer())
       const [w, h] = icon.sizes.split('x').map(Number)
       expect(png.readUInt32BE(16), icon.src).toBe(w)
       expect(png.readUInt32BE(20), icon.src).toBe(h)
-    }
-  })
-
-  it('serves the manifest as application/manifest+json, not the SPA fallback', async () => {
-    /* same static handler as the production branch of server/index.ts */
-    const app = express()
-    app.use(express.static(path.join(root, 'public')))
-    const server = createServer(app).listen(0)
-    try {
-      const { port } = server.address() as AddressInfo
-      const res = await fetch(`http://127.0.0.1:${port}/manifest.webmanifest`)
-      expect(res.headers.get('content-type')).toMatch(/^application\/manifest\+json/)
-      expect(((await res.json()) as Manifest).display).toBe('standalone')
-    } finally {
-      server.close()
     }
   })
 })
