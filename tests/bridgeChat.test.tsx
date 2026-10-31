@@ -104,6 +104,26 @@ describe('agent picker', () => {
     expect(container.querySelector('[role="combobox"]')!.textContent).toContain('review-agent')
   })
 
+  it('takes one save at a time, so an older save cannot replace the latest choice', async () => {
+    await mount(bridge('ok'))
+    let finishSave!: (value: BridgeInfo) => void
+    vi.mocked(api.putBridge).mockReturnValueOnce(new Promise<BridgeInfo>((resolve) => (finishSave = resolve)))
+    const trigger = () => container.querySelector<HTMLButtonElement>('[role="combobox"]')!
+    act(() => trigger().focus())
+    act(() => {
+      trigger().dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
+    })
+    await act(async () => {
+      document
+        .querySelectorAll('[role="option"]')[1]!
+        .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    })
+    expect(trigger().disabled).toBe(true)
+    await act(async () => finishSave(bridge('ok', { agentRef: REVIEW, agentName: 'review-agent' })))
+    expect(trigger().disabled).toBe(false)
+    expect(trigger().textContent).toContain('review-agent')
+  })
+
   it('keeps a saved choice when an older poll response arrives after the save', async () => {
     vi.useFakeTimers()
     try {

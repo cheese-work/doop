@@ -66,6 +66,7 @@ export function BridgeChat({ canvasId }: { canvasId: string }) {
   const [bridge, setBridge] = useState<BridgeInfo | null>(null)
   const [loadFailed, setLoadFailed] = useState(false)
   const [pickFailed, setPickFailed] = useState(false)
+  const [saving, setSaving] = useState(false)
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [sendFailed, setSendFailed] = useState(false)
@@ -114,6 +115,7 @@ export function BridgeChat({ canvasId }: { canvasId: string }) {
 
   async function pick(next: string) {
     setPickFailed(false)
+    setSaving(true)
     newest.current++
     try {
       const saved = await api.putBridge(canvasId, next)
@@ -122,6 +124,8 @@ export function BridgeChat({ canvasId }: { canvasId: string }) {
     } catch (err) {
       console.error(err)
       setPickFailed(true)
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -148,7 +152,7 @@ export function BridgeChat({ canvasId }: { canvasId: string }) {
 
   return (
     <section aria-label="Chat with a Multica agent" className="flex flex-col gap-2 px-3 py-2">
-      <Select value={agentRef ?? ''} onValueChange={(next) => void pick(next)} disabled={!bridge}>
+      <Select value={agentRef ?? ''} onValueChange={(next) => void pick(next)} disabled={!bridge || saving}>
         <SelectTrigger size="sm" aria-label="Multica agent">
           <SelectValue placeholder="Pick a Multica agent" />
         </SelectTrigger>
