@@ -22,6 +22,7 @@ import { DotMatrix } from './ui/dot-matrix'
 import { Dot } from './ui/dot'
 import { isResidentLimit } from './TeamAllowance'
 import { CommentsPanel } from './CommentsPanel'
+import { BridgeChat } from './BridgeChat'
 import { PromptBar } from './PromptBar'
 import { taskFrameId } from '../lib/taskFrame'
 import { useOpenThreadCount } from '../lib/comments'
@@ -124,6 +125,7 @@ export function ActivityPanel({
         <PanelTabPanel value="tasks" className={tabEnter}>
           <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain">
             <RecentTasks />
+            <BridgeChat canvasId={canvasId} />
           </div>
           <PromptBar canvasId={canvasId} />
         </PanelTabPanel>
