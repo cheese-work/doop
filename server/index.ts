@@ -52,6 +52,8 @@ import * as github from './github.ts'
 import * as githubApp from './githubApp.ts'
 import { seed } from './seed.ts'
 import * as allowance from './allowance.ts'
+import * as chatBridge from './bridge.ts'
+import { MAX_BRIDGE_TEXT } from '../shared/bridge.ts'
 import * as modelAccounts from './modelAccounts.ts'
 import { getLocalAgentPreference, saveLocalAgentPreference } from './localAgentPreferences.ts'
 import { serverTierInfo } from './agentModel.ts'
@@ -1720,6 +1722,25 @@ app.post('/api/canvases/:id/comments', async (req, res) => {
     return res.status(409).json({ error: 'page removed meanwhile' })
   }
   res.json(comment)
+})
+
+/* chat bridge: which Multica agent this canvas chats with, plus the list and
+   liveness the watcher publishes. Same access gate as comments. */
+app.get('/api/canvases/:id/bridge', async (req, res) => {
+  const canvas = requireCanvas(req, res, req.params.id)
+  if (!canvas) return
+  res.json(await chatBridge.getBridge(canvas.id))
+})
+
+app.put('/api/canvases/:id/bridge', async (req, res) => {
+  const canvas = requireCanvas(req, res, req.params.id)
+  if (!canvas) return
+  const { agentRef } = req.body ?? {}
+  if (agentRef !== null && (typeof agentRef !== 'string' || !agentRef.trim() || agentRef.length > MAX_BRIDGE_TEXT)) {
+    return res.status(400).json({ error: 'agentRef must be a non-empty string or null' })
+  }
+  await chatBridge.selectBridgeAgent(canvas.id, agentRef, req.user!.id)
+  res.json(await chatBridge.getBridge(canvas.id))
 })
 
 app.post('/api/comments/:id/replies', async (req, res) => {

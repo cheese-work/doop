@@ -512,6 +512,7 @@ export function deleteCanvas(canvasId: string) {
   swallow(db.delete(t.feedback).where(eq(t.feedback.canvasId, canvasId)))
   swallow(db.delete(t.comments).where(eq(t.comments.canvasId, canvasId)))
   swallow(db.delete(t.commentEvents).where(eq(t.commentEvents.canvasId, canvasId)))
+  swallow(db.delete(t.canvasBridge).where(eq(t.canvasBridge.canvasId, canvasId)))
   swallow(db.delete(t.activity).where(eq(t.activity.canvasId, canvasId)))
   swallow(db.delete(t.guidelines).where(eq(t.guidelines.canvasId, canvasId)))
   swallow(db.delete(t.guidelineVersions).where(eq(t.guidelineVersions.canvasId, canvasId)))

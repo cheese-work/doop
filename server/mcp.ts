@@ -31,6 +31,8 @@ import { mentionedRole } from '../shared/agents.ts'
 import * as allowance from './allowance.ts'
 import { previewOf, previewToolMeta, registerFramePreview, type CanvasPreview } from './chatgptApp.ts'
 import * as persist from './db/persist.ts'
+import * as bridge from './bridge.ts'
+import { MAX_BRIDGE_TEXT } from '../shared/bridge.ts'
 
 const INSTRUCTIONS = `Doop is a shared multiplayer design canvas: humans and AI agents design together in real time. Canvases contain frames — artboards that render complete HTML documents live for everyone viewing.
 
@@ -673,6 +675,43 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
       actions.setAgentStatus(canvas_id, actorFrom(agent_name), status)
       return withFeedback(text({ ok: true, status: status.trim() || null }), canvas_id, actorFrom(agent_name))
+    },
+  )
+
+  const bridgeText = z.string().trim().min(1).max(MAX_BRIDGE_TEXT)
+
+  server.registerTool(
+    'set_bridge_agents',
+    {
+      title: 'Publish the chat-bridge agent list',
+      description:
+        'For the chat-bridge watcher: replace the list of Multica agents people can pick to chat with on this canvas. Each entry is { ref, name }; duplicate refs keep the first. Also stamps the watcher as alive.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: {
+        canvas_id: z.string(),
+        agents: z.array(z.object({ ref: bridgeText, name: bridgeText })).max(100),
+      },
+    },
+    async ({ canvas_id, agents }) => {
+      if (!ownerId || !canvasFor(canvas_id)) return noCanvas(canvas_id)
+      await bridge.setBridgeAgents(canvas_id, agents, ownerId)
+      return text({ ok: true, agents: agents.length })
+    },
+  )
+
+  server.registerTool(
+    'bridge_heartbeat',
+    {
+      title: 'Stamp the chat-bridge watcher as alive',
+      description:
+        'For the chat-bridge watcher: call at least every minute. A canvas shows the bridge as unreachable once the last stamp is more than 2 minutes old.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: { canvas_id: z.string() },
+    },
+    async ({ canvas_id }) => {
+      if (!ownerId || !canvasFor(canvas_id)) return noCanvas(canvas_id)
+      await bridge.bridgeHeartbeat(canvas_id, ownerId)
+      return text({ ok: true })
     },
   )
 
