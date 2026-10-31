@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { BridgeInfo, BridgeStatus } from '../../shared/bridge'
 import { canvasPages } from '../../shared/pages'
 import { api } from '../lib/api'
-import { chatThread, FAILURE_TAGS } from '../lib/bridgeChat'
+import { agentHandle, chatThread, failureOf } from '../lib/bridgeChat'
 import { isComposingEnter } from '../lib/keys'
 import { timeAgo } from '../lib/time'
 import { useStore } from '../lib/store'
@@ -44,12 +44,23 @@ const NOT_LINKED: Banner = {
   text: 'This canvas is not linked to a Multica issue, so the agent has nowhere to read your message. Link an issue to this canvas, then send again.',
 }
 
+const NOT_AN_AGENT: Banner = {
+  tone: 'error',
+  text: 'The watcher says that name is not a Multica agent. Pick an agent from the list.',
+}
+
+const NO_HANDLE: Banner = {
+  tone: 'error',
+  text: 'This agent cannot be addressed: its name has spaces or symbols the watcher cannot route. Rename it in Multica or pick another agent.',
+}
+
 /**
  * Chat with a Multica agent from the Agents tab. The picker writes the
  * canvas's choice to the bridge; a message is a canvas comment that starts
- * with the agent's handle, which the watcher relays to the linked issue. The
- * agent's answer returns as a reply in that comment's thread. doop never calls
- * Multica itself: "unreachable" is the watcher's stale stamp.
+ * with `@<agent name>` (the watcher routes by name, not by the picker's id),
+ * which the watcher relays to the linked issue. The agent's answer returns as
+ * a reply in that comment's thread. doop never calls Multica itself:
+ * "unreachable" is the watcher's stale stamp.
  */
 export function BridgeChat({ canvasId }: { canvasId: string }) {
   const [bridge, setBridge] = useState<BridgeInfo | null>(null)
@@ -62,20 +73,25 @@ export function BridgeChat({ canvasId }: { canvasId: string }) {
   const canvas = useStore((s) => s.canvas)
   const activePageId = useStore((s) => s.activePageId)
 
+  /* a response applies only if nothing newer (a later read or a save) was requested since */
+  const newest = useRef(0)
+
   useEffect(() => {
     let live = true
-    const load = () =>
-      api
+    const load = () => {
+      const mine = ++newest.current
+      return api
         .getBridge(canvasId)
         .then((next) => {
-          if (!live) return
+          if (!live || mine !== newest.current) return
           setBridge(next)
           setLoadFailed(false)
         })
         .catch((err) => {
           console.error(err)
-          if (live) setLoadFailed(true)
+          if (live && mine === newest.current) setLoadFailed(true)
         })
+    }
     void load()
     const timer = window.setInterval(() => void load(), REFRESH_MS)
     return () => {
@@ -85,20 +101,24 @@ export function BridgeChat({ canvasId }: { canvasId: string }) {
   }, [canvasId])
 
   const agentRef = bridge?.agentRef ?? null
-  const lines = useMemo(() => (agentRef ? chatThread(comments, agentRef) : []), [comments, agentRef])
-  const failure = lines.at(-1)?.tag
+  const handle = agentHandle(bridge?.agents.find((a) => a.ref === agentRef)?.name ?? bridge?.agentName ?? null)
+  const lines = useMemo(() => (handle ? chatThread(comments, handle) : []), [comments, handle])
+  const failure = failureOf(lines.at(-1)?.tag)
   const banner: Banner | null = loadFailed
     ? { tone: 'error', text: 'Could not read the chat bridge. Check the connection; this retries on its own.' }
     : bridge
       ? (statusBanner(bridge.status, bridge.agentName) ??
-        (failure && (FAILURE_TAGS as readonly string[]).includes(failure) ? NOT_LINKED : null))
+        (!handle ? NO_HANDLE : failure === 'nolink' ? NOT_LINKED : failure === 'noitem' ? NOT_AN_AGENT : null))
       : null
-  const canSend = bridge?.status === 'ok' && !loadFailed && !sending && draft.trim() !== ''
+  const canSend = bridge?.status === 'ok' && !!handle && !loadFailed && !sending && draft.trim() !== ''
 
   async function pick(next: string) {
     setPickFailed(false)
+    newest.current++
     try {
-      setBridge(await api.putBridge(canvasId, next))
+      const saved = await api.putBridge(canvasId, next)
+      newest.current++ // a read that started while the save ran may predate it
+      setBridge(saved)
     } catch (err) {
       console.error(err)
       setPickFailed(true)
@@ -107,11 +127,11 @@ export function BridgeChat({ canvasId }: { canvasId: string }) {
 
   async function send() {
     const pageId = activePageId ?? (canvas ? canvasPages(canvas)[0]?.id : undefined)
-    if (!canSend || !agentRef || !pageId) return
+    if (!canSend || !handle || !pageId) return
     setSending(true)
     setSendFailed(false)
     try {
-      await api.addCanvasComment(canvasId, { pageId, x: 0, y: 0, text: `@${agentRef} ${draft.trim()}` })
+      await api.addCanvasComment(canvasId, { pageId, x: 0, y: 0, text: `@${handle} ${draft.trim()}` })
       setDraft('')
     } catch (err) {
       setSendFailed(true)

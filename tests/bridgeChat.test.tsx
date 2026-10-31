@@ -18,18 +18,26 @@ const { useStore } = await import('../src/lib/store')
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
+/* refs are Multica agent UUIDs; the watcher routes a mention by the agent's name */
+const DEV = '8b5fe946-257a-460d-b5ea-53d9b85ad96f'
+const REVIEW = '2c1d7a40-91f3-4c55-9a0e-6f1b3e5d7c88'
 const AGENTS = [
-  { ref: 'dev', name: 'Dev Agent' },
-  { ref: 'review', name: 'Review Agent' },
+  { ref: DEV, name: 'dev-agent' },
+  { ref: REVIEW, name: 'review-agent' },
 ]
 
 function bridge(status: BridgeStatus, over: Partial<BridgeInfo> = {}): BridgeInfo {
-  return { agentRef: 'dev', agentName: 'Dev Agent', agents: AGENTS, watcherSeenAt: 1, status, ...over }
+  return { agentRef: DEV, agentName: 'dev-agent', agents: AGENTS, watcherSeenAt: 1, status, ...over }
 }
 
 function comment(over: Partial<ElementComment> & Pick<ElementComment, 'id' | 'text' | 'at'>): ElementComment {
   return { canvasId: 'c', selector: '', snippet: '', pageId: 'p', x: 0, y: 0, from: 'Ada', ...over }
 }
+
+/* the watcher's own reply when the canvas has no linked issue (intake.py / bridge.py answer_unlinked) */
+const NOLINK =
+  '[dsg:nolink:r] No issue is linked to this canvas, so nothing was sent. Link a Multica issue with designctl link, then ask again.'
+const NOITEM = '[dsg:noitem:r] No item: @ghost is not a Multica agent. Pick an agent from the list.'
 
 let container: HTMLDivElement
 let root: Root
@@ -76,24 +84,51 @@ afterEach(() => {
 describe('agent picker', () => {
   it('shows the saved choice after a reload', async () => {
     await mount(bridge('ok'))
-    expect(container.querySelector('[role="combobox"]')!.textContent).toContain('Dev Agent')
+    expect(container.querySelector('[role="combobox"]')!.textContent).toContain('dev-agent')
   })
 
   it('lists the published agents and saves the picked one', async () => {
     await mount(bridge('ok'))
-    vi.mocked(api.putBridge).mockResolvedValue(bridge('ok', { agentRef: 'review', agentName: 'Review Agent' }))
+    vi.mocked(api.putBridge).mockResolvedValue(bridge('ok', { agentRef: REVIEW, agentName: 'review-agent' }))
     const trigger = container.querySelector<HTMLButtonElement>('[role="combobox"]')!
     act(() => trigger.focus())
     act(() => {
       trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
     })
     const options = [...document.querySelectorAll('[role="option"]')]
-    expect(options.map((o) => o.textContent)).toEqual(['Dev Agent', 'Review Agent'])
+    expect(options.map((o) => o.textContent)).toEqual(['dev-agent', 'review-agent'])
     await act(async () => {
       options[1]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
     })
-    expect(api.putBridge).toHaveBeenCalledWith('c', 'review')
-    expect(container.querySelector('[role="combobox"]')!.textContent).toContain('Review Agent')
+    expect(api.putBridge).toHaveBeenCalledWith('c', REVIEW)
+    expect(container.querySelector('[role="combobox"]')!.textContent).toContain('review-agent')
+  })
+
+  it('keeps a saved choice when an older poll response arrives after the save', async () => {
+    vi.useFakeTimers()
+    try {
+      await mount(bridge('ok'))
+      let finishRead!: (value: BridgeInfo) => void
+      vi.mocked(api.getBridge).mockReturnValueOnce(new Promise<BridgeInfo>((resolve) => (finishRead = resolve)))
+      await act(async () => {
+        vi.advanceTimersByTime(30_000)
+      })
+      vi.mocked(api.putBridge).mockResolvedValue(bridge('ok', { agentRef: REVIEW, agentName: 'review-agent' }))
+      const trigger = container.querySelector<HTMLButtonElement>('[role="combobox"]')!
+      act(() => trigger.focus())
+      act(() => {
+        trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
+      })
+      const options = [...document.querySelectorAll('[role="option"]')]
+      await act(async () => {
+        options[1]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+      })
+      expect(container.querySelector('[role="combobox"]')!.textContent).toContain('review-agent')
+      await act(async () => finishRead(bridge('ok')))
+      expect(container.querySelector('[role="combobox"]')!.textContent).toContain('review-agent')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
@@ -113,8 +148,8 @@ describe('status banners', () => {
   })
 
   it('names the missing agent for agent_not_found, and blocks sending', async () => {
-    await mount(bridge('agent_not_found', { agentRef: 'gone', agentName: 'Gone Agent' }))
-    expect(banner()).toContain('Gone Agent')
+    await mount(bridge('agent_not_found', { agentRef: 'gone-ref', agentName: 'gone-agent' }))
+    expect(banner()).toContain('gone-agent')
     expect(banner()).toContain('not in the live Multica agent list')
     type(field(), 'hello')
     expect(sendButton().disabled).toBe(true)
@@ -138,8 +173,8 @@ describe('status banners', () => {
   it('shows issue_not_linked when the watcher answered with that failure', async () => {
     useStore.setState({
       comments: [
-        comment({ id: 'r', text: '@dev ship it', at: 1 }),
-        comment({ id: 'f', parentId: 'r', from: 'Watcher', text: '[dsg:issue_not_linked] No issue is linked.', at: 2 }),
+        comment({ id: 'r', text: '@dev-agent ship it', at: 1 }),
+        comment({ id: 'f', parentId: 'r', from: 'Watcher', text: NOLINK, at: 2 }),
       ],
     })
     await mount(bridge('ok'))
@@ -149,13 +184,32 @@ describe('status banners', () => {
   it('drops the issue_not_linked banner once a newer message is sent', async () => {
     useStore.setState({
       comments: [
-        comment({ id: 'r', text: '@dev ship it', at: 1 }),
-        comment({ id: 'f', parentId: 'r', from: 'Watcher', text: '[dsg:issue_not_linked] No issue is linked.', at: 2 }),
-        comment({ id: 'r2', text: '@dev again', at: 3 }),
+        comment({ id: 'r', text: '@dev-agent ship it', at: 1 }),
+        comment({ id: 'f', parentId: 'r', from: 'Watcher', text: NOLINK, at: 2 }),
+        comment({ id: 'r2', text: '@dev-agent again', at: 3 }),
       ],
     })
     await mount(bridge('ok'))
     expect(banner()).toBeNull()
+  })
+
+  it('shows a reply from the watcher that names an unknown agent', async () => {
+    useStore.setState({
+      comments: [
+        comment({ id: 'r', text: '@dev-agent hi @ghost', at: 1 }),
+        comment({ id: 'f', parentId: 'r', from: 'Watcher', text: NOITEM, at: 2 }),
+      ],
+    })
+    await mount(bridge('ok'))
+    expect(banner()).toContain('not a Multica agent')
+  })
+
+  it('blocks sending to an agent whose name the watcher cannot route', async () => {
+    const ref = '5d0a9c1e-0000-4000-8000-000000000001'
+    await mount(bridge('ok', { agentRef: ref, agentName: 'Review Agent', agents: [{ ref, name: 'Review Agent' }] }))
+    expect(banner()).toContain('cannot be addressed')
+    type(field(), 'hello')
+    expect(sendButton().disabled).toBe(true)
   })
 })
 
@@ -163,17 +217,17 @@ describe('chat thread', () => {
   it('shows messages to the agent and its replies in order, without the markers', async () => {
     useStore.setState({
       comments: [
-        comment({ id: 'a2', parentId: 'a', from: 'Dev Agent', text: '[dsg:7] Done.', at: 4 }),
-        comment({ id: 'other', text: '@review look', at: 3 }),
+        comment({ id: 'a2', parentId: 'a', from: 'dev-agent', text: '[dsg:7] Done.', at: 4 }),
+        comment({ id: 'other', text: '@review-agent look', at: 3 }),
         comment({ id: 'b', text: 'no mention', at: 2 }),
-        comment({ id: 'a', text: '@dev please start', at: 1 }),
+        comment({ id: 'a', text: '@dev-agent please start', at: 1 }),
       ],
     })
     await mount(bridge('ok'))
     const rows = [...container.querySelectorAll('[data-slot="chat-line"]')].map((el) => el.textContent)
     expect(rows).toHaveLength(2)
     expect(rows[0]).toContain('please start')
-    expect(rows[0]).not.toContain('@dev')
+    expect(rows[0]).not.toContain('@dev-agent')
     expect(rows[1]).toContain('Done.')
     expect(rows[1]).not.toContain('[dsg:')
   })
@@ -192,7 +246,12 @@ describe('sending', () => {
     await mount(bridge('ok'))
     type(field(), 'build the header')
     await act(async () => sendButton().click())
-    expect(api.addCanvasComment).toHaveBeenCalledWith('c', { pageId: 'p', x: 0, y: 0, text: '@dev build the header' })
+    expect(api.addCanvasComment).toHaveBeenCalledWith('c', {
+      pageId: 'p',
+      x: 0,
+      y: 0,
+      text: '@dev-agent build the header',
+    })
     expect(field().value).toBe('')
   })
 
