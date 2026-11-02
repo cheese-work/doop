@@ -1,5 +1,5 @@
 import pg from 'pg'
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { stubEnv, unstubAllEnvs } from './envStub.ts'
 import type { Canvas } from '../shared/types.ts'
 
@@ -51,6 +51,11 @@ describe.skipIf(!PG_URL)('a legacy comment older than the window, across a resta
     persist = await import('../server/db/persist.ts')
     actions = await import('../server/actions.ts')
     store = (await import('../server/store.ts')).store
+  })
+
+  /* before each test: the old comment still carries its selector, 100 newer ones push it out of the window */
+  beforeEach(async () => {
+    vi.restoreAllMocks()
     for (const table of ['comment_events', 'comments', 'frames', 'canvases']) await pool.query(`delete from ${table}`)
     await persist.saveCanvasCopy(CANVAS)
     const insert = `insert into comments (id, canvas_id, frame_id, element_id, selector, snippet, from_name, text, at)
@@ -89,6 +94,36 @@ describe.skipIf(!PG_URL)('a legacy comment older than the window, across a resta
     await vi.waitFor(async () => {
       const after = await pool.query('select element_id, resolved_by from comments where id = $1', ['legacy-old'])
       expect(after.rows[0]).toEqual({ element_id: rows[0].element_id, resolved_by: 'bob' })
+    })
+  })
+
+  it('keeps the anchor when a resolve restores the thread while the frame is being written', async () => {
+    const data = await persist.hydrate()
+    store.init(data.canvases)
+    actions.wire(
+      () => {},
+      () => {},
+    )
+    actions.hydrateLogs(data)
+    /* hold the frame write: the backfill has stamped the frame in memory and waits on the disk */
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const write = persist.saveFrameNow
+    const held = vi.spyOn(persist, 'saveFrameNow').mockImplementation(async (frame) => {
+      await gate
+      return write(frame)
+    })
+    const backfill = actions.backfillElementIds(data.legacyCommentSelectors)
+    await vi.waitFor(() => expect(held).toHaveBeenCalled())
+
+    expect((await actions.resolveComment('legacy-old', 'bob'))?.resolvedBy).toBe('bob')
+    release()
+    expect(await backfill).toEqual({ stamped: 1, lost: 0, failed: 0 })
+
+    await vi.waitFor(async () => {
+      const { rows } = await pool.query('select element_id, resolved_by from comments where id = $1', ['legacy-old'])
+      expect(rows[0].resolved_by).toBe('bob')
+      expect(rows[0].element_id).toMatch(/^[a-z0-9]{6}$/)
     })
   })
 })

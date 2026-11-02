@@ -693,17 +693,10 @@ export async function backfillElementIds(
         })
       }
       for (const { comment, id } of found) {
-        if (reanchored(comment)) continue
-        comment.elementId = id
-        await persist.saveCommentNow(comment)
-        /* a comment outside the window is not in the room: it only gets its id */
-        if (findInMemory(comment.id) === comment) broadcast(comment.canvasId, { type: 'comment', comment })
-        counts.stamped++
+        if (await settleAnchor(comment, id)) counts.stamped++
       }
       for (const comment of lost) {
-        if (reanchored(comment)) continue
-        await persist.saveCommentNow(comment)
-        counts.lost++
+        if (await settleAnchor(comment)) counts.lost++
       }
     } catch (err) {
       counts.failed += found.length + lost.length
@@ -713,12 +706,35 @@ export async function backfillElementIds(
   return counts
 }
 
-/* a thread moved while the backfill awaited a write: the move replaced the
-   comment in the log and saved its new anchor (spending the selector), so
-   the object the backfill holds is stale and writing it would undo the move */
-function reanchored(comment: ElementComment): boolean {
-  const live = findInMemory(comment.id)
-  return live !== undefined && live !== comment
+/* The last step of a backfill, for one comment, taken under its thread's lock:
+   a reply or a resolve restores a thread from its row inside that lock, so
+   none can run between the read here and the write. It acts on the comment
+   as it is now, in the room or, when it left the window, in its row: a
+   resolve that restored the thread while the frame was being written holds a
+   copy without the id, and saving that copy as it is would drop the anchor.
+   A thread moved meanwhile has another anchor and keeps it. */
+function settleAnchor(snapshot: ElementComment, elementId?: string): Promise<boolean> {
+  return withThreadLock(snapshot.parentId ?? snapshot.id, async () => {
+    const live = findInMemory(snapshot.id)
+    const current = live ?? (await persist.findCommentRow(snapshot.id))
+    if (!current || !sameAnchor(current, snapshot)) return false
+    if (elementId) current.elementId = elementId
+    await persist.saveCommentNow(current)
+    /* a comment outside the window is not in the room: it only gets its id */
+    if (live) broadcast(live.canvasId, { type: 'comment', comment: live })
+    return true
+  })
+}
+
+function sameAnchor(a: ElementComment, b: ElementComment): boolean {
+  return (
+    a.frameId === b.frameId &&
+    a.elementId === b.elementId &&
+    a.pageId === b.pageId &&
+    a.x === b.x &&
+    a.y === b.y &&
+    a.snippet === b.snippet
+  )
 }
 
 /** Re-pin a thread where its root pin was dropped: on an element, on a
