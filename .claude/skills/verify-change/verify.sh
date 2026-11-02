@@ -12,38 +12,44 @@ mapfile -t deleted < <(git diff --name-only --diff-filter=D "$base"...HEAD)
 [ "${#changed[@]}" -gt 0 ] || [ "${#deleted[@]}" -gt 0 ] || { echo "no changed files vs $base"; exit 2; }
 is_code='^(src|server|shared|tests)/.*\.(ts|tsx)$'
 mapfile -t code < <(printf '%s\n' "${changed[@]}" | grep -E "$is_code" || true)
-needs_build=$(printf '%s\n' "${changed[@]}" | grep -cE '^(src|shared|public|scripts|vite\.config|index\.html|package\.json)' || true)
-touches_ui=$(printf '%s\n' "${changed[@]}" "${deleted[@]}" | grep -cE '^(src|shared)/' || true)
+is_build='^(src|shared|public|scripts|vite\.config|index\.html|package\.json)'
+needs_build=$(printf '%s\n' "${changed[@]}" "${deleted[@]}" | grep -cE "$is_build" || true)
+# browser tests exercise the app through src/, shared/ and server/; a change to any of them can break one unseen
+touches_app=$(printf '%s\n' "${changed[@]}" "${deleted[@]}" | grep -E "$is_code" | grep -cvE '^tests/' || true)
 
-# Tests that mention a changed or deleted module by name. A deleted module has no graph to follow, so its importers
-# are the only tests that can show what the deletion broke.
-mapfile -t stems < <(printf '%s\n' "${changed[@]}" "${deleted[@]}" | grep -E "$is_code" | grep -vE '^tests/' | sed -E 's|.*/||; s|\.[a-z]+$||' | sort -u)
-importers=()
-for s in "${stems[@]}"; do
-  mapfile -t hit < <(grep -lE "/${s}(\.[a-z]+)?['\"]" tests/*.ts tests/*.tsx 2>/dev/null || true)
-  importers+=("${hit[@]}")
-done
+# A deleted module leaves no import graph to follow: an intermediate module can load it dynamically and no test names
+# it. So a deleted ts/tsx file falls back to the whole non-browser suite. Slow, but the only safe selection.
+related_all=no
+printf '%s\n' "${deleted[@]}" | grep -E "$is_code" | grep -qvE '^tests/' && related_all=yes
 
 # Real-Chromium tests (they import puppeteer) time out on a loaded shared X99, and `related` reaches them through hub
 # files like src/lib/api.ts. They run apart: serially, and only the ones the diff changes or whose imports it changes.
 mapfile -t chromium < <(grep -lE 'puppeteer' tests/*.ts tests/*.tsx 2>/dev/null || true)
 is_chromium() { local t; for t in "${chromium[@]}"; do [ "$t" = "$1" ] && return 0; done; return 1; }
 related=(); browser=()
-for f in "${code[@]}" "${importers[@]}"; do
+for f in "${code[@]}"; do
   [ -n "$f" ] || continue
   if is_chromium "$f"; then browser+=("$f"); else related+=("$f"); fi
+done
+# browser files that mention a changed source module by name (a direct import; the rest is flagged incomplete below)
+mapfile -t stems < <(printf '%s\n' "${code[@]}" | grep -vE '^tests/' | sed -E 's|.*/||; s|\.[a-z]+$||' | sort -u)
+for s in "${stems[@]}"; do
+  [ -n "$s" ] || continue
+  for t in "${chromium[@]}"; do grep -qE "/${s}(\.[a-z]+)?['\"]" "$t" && browser+=("$t"); done
 done
 [ "${VERIFY_BROWSER:-}" = all ] && browser=("${chromium[@]}")
 mapfile -t related < <(printf '%s\n' "${related[@]}" | sort -u | grep -v '^$' || true)
 mapfile -t browser < <(printf '%s\n' "${browser[@]}" | sort -u | grep -v '^$' || true)
 unrun=$(( ${#chromium[@]} - ${#browser[@]} ))
-incomplete=no; [ "$touches_ui" -gt 0 ] && [ "$unrun" -gt 0 ] && incomplete=yes
+incomplete=no; [ "$touches_app" -gt 0 ] && [ "$unrun" -gt 0 ] && incomplete=yes
 
 echo "base=$base head=$(git rev-parse --short HEAD) changed=${#changed[@]} deleted=${#deleted[@]} code=${#code[@]}"
 echo "plan related: ${related[*]}"
 echo "plan browser: ${browser[*]}"
 echo "plan browser-unrun: $unrun"
 echo "plan browser-incomplete: $incomplete"
+echo "plan related-all: $related_all"
+echo "plan build: $([ "$needs_build" -gt 0 ] && echo yes || echo no)"
 [ -n "${VERIFY_PLAN:-}" ] && exit 0
 
 fail=0
@@ -53,11 +59,13 @@ gate() { # gate <name> <cmd...>
   if "$@"; then echo "::: $name PASS"; else echo "::: $name FAIL"; fail=1; fi
 }
 
-if [ "${#related[@]}" -gt 0 ]; then
-  skip=(); for t in "${chromium[@]}"; do skip+=(--exclude "$t"); done
+skip=(); for t in "${chromium[@]}"; do skip+=(--exclude "$t"); done
+if [ "$related_all" = yes ]; then
+  gate related-tests bunx vitest run --maxWorkers="${VERIFY_WORKERS:-4}" "${skip[@]}"
+elif [ "${#related[@]}" -gt 0 ]; then
   gate related-tests bunx vitest related --run --maxWorkers="${VERIFY_WORKERS:-4}" "${skip[@]}" "${related[@]}"
 else
-  echo "::: related-tests SKIP (no ts/tsx changed, no test mentions a deleted module)"
+  echo "::: related-tests SKIP (no ts/tsx changed)"
 fi
 if [ "${#browser[@]}" -gt 0 ]; then
   gate browser-tests bunx vitest run --maxWorkers=1 "${browser[@]}"

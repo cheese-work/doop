@@ -20,13 +20,13 @@ The script runs exactly what CI runs, narrowed to your diff:
 
 | Gate          | Command                                                                                                                 | Same as CI job |
 | ------------- | ----------------------------------------------------------------------------------------------------------------------- | -------------- |
-| related-tests | `vitest related --run <changed ts/tsx>` plus tests that mention a deleted module (module graph, not filename)          | test           |
+| related-tests | `vitest related --run <changed ts/tsx>`; if a non-test ts/tsx file was deleted, the whole non-browser suite instead | test           |
 | browser-tests | `vitest run --maxWorkers=1 <puppeteer files>` the diff changes, or that mention a changed module                        | test           |
 | typecheck     | `bun run typecheck`                                                                                                     | typecheck      |
 | lint          | `bun run lint`                                                                                                          | lint           |
 | format        | `prettier --check` on changed files                                                                                     | lint           |
 | doc-lint      | `bun run doc-lint`                                                                                                      | lint           |
-| build         | `bun run --bun build`, only if `src/`, `shared/`, `public/`, `scripts/` or build config changed                         | build          |
+| build         | `bun run --bun build`, only if `src/`, `shared/`, `public/`, `scripts/` or build config changed or was deleted         | build          |
 
 The full suite and the PR-title commitlint check stay with CI. Do not add CI jobs here.
 
@@ -40,8 +40,8 @@ The full suite and the PR-title commitlint check stay with CI. Do not add CI job
 
 - `typecheck`, `lint`, `format`, `doc-lint` failures are real. Fix them.
 - Real-Chromium tests (files that import `puppeteer`) time out on a loaded shared X99, and `related` reaches them through hub files like `src/lib/api.ts`. The script keeps them out of the parallel pass and runs only the ones your diff changes or that mention a changed module, one at a time.
-- If the diff touches `src/` or `shared/` and other puppeteer files did not run, the last line reads `VERIFY PASS (browser coverage incomplete)`. That is not a full pass. Run `VERIFY_BROWSER=all .claude/skills/verify-change/verify.sh` (slow, serial), or say in the PR that CI covers them.
-- A deleted module has no import graph. The script runs the tests that mention its name. `typecheck` catches the importers that still compile against it.
+- If the diff touches `src/`, `server/` or `shared/` and other puppeteer files did not run, the last line reads `VERIFY PASS (browser coverage incomplete)`. That is not a full pass. Run `VERIFY_BROWSER=all .claude/skills/verify-change/verify.sh` (slow, serial), or say in the PR that CI covers them.
+- A deleted module has no import graph, and name matching misses indirect or dynamic imports. So any deleted non-test ts/tsx file makes the script run the whole non-browser suite. `typecheck` catches static importers. A deleted shipped asset (for example under `public/`) triggers `build`.
 - `doc-lint` warnings (stale docs) pass. Errors fail.
 
 ## Evidence
