@@ -1,5 +1,6 @@
 import { env } from './env.ts'
 import { canvasPages, samePages } from '../shared/pages.ts'
+import { prototypeReport, prototypeUrl, setPrototypeStart } from './prototypeTools.ts'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import type { Request, Response } from 'express'
@@ -7,12 +8,22 @@ import { fromNodeHeaders } from 'better-auth/node'
 import { z } from 'zod'
 import { store } from './store.ts'
 import * as actions from './actions.ts'
-import { canAccessCanvas } from './access.ts'
+import { canvasRole } from './access.ts'
+import { roleAllows, type CanvasRole } from '../shared/canvasRole.ts'
 import { isAgentKeySecret, verifyAgentKey } from './agentKeys.ts'
 import * as workspaces from './workspaces.ts'
 import { auth, getUserName, isBanned } from './auth.ts'
 import { capture, captureThrottled } from './analytics.ts'
 import { renderFrame } from './screenshot.ts'
+import {
+  MAX_PDF_FRAMES,
+  PDF_UNAVAILABLE_MESSAGE,
+  pdfFileName,
+  pdfRendererAvailable,
+  renderFramesPdf,
+  selectPdfFrames,
+  takePdfExportSlot,
+} from './pdfExport.ts'
 import { primeImage } from './previews.ts'
 import { DOOP_GUIDE, GUIDE_TOPICS } from './guide.ts'
 import { describeInspiration, INSPIRATION_USAGE_NOTE, searchInspiration } from './inspiration.ts'
@@ -33,22 +44,26 @@ import { previewOf, previewToolMeta, registerFramePreview, type CanvasPreview } 
 import * as persist from './db/persist.ts'
 import * as bridge from './bridge.ts'
 import { MAX_BRIDGE_TEXT } from '../shared/bridge.ts'
+import type { FrameApproval } from '../shared/types.ts'
 
 const INSTRUCTIONS = `Doop is a shared multiplayer design canvas: humans and AI agents design together in real time. Canvases contain frames — artboards that render complete HTML documents live for everyone viewing.
 
 You MUST call get_guide({ topic: "doop-instructions" }) once before using other Doop tools. Call it again if a long conversation may have compressed or dropped the guide text.
 
 - Context first: call get_canvas before adding or editing frames.
-- Element links: /c/<canvas_id>?frame=<frame_id>&selector=<URL-encoded CSS selector> identifies a specific element. Decode selector, read get_canvas and get_frame, and locate that element in the frame HTML before applying the feedback. If it no longer matches, ask for an updated reference.
+- Implementation handoff: get_canvas and get_frame expose approvalStatus (draft, ready_for_dev, needs_review) and human approval attribution. Use get_canvas with approval_status="ready_for_dev" to find approved screens. Re-read get_frame before implementing; only ready_for_dev is current sign-off. HTML or size edits invalidate approval. Approval does not automatically start an implementation task; follow the human's implementation request.
+- Element links: /c/<canvas_id>?frame=<frame_id>&element=<element_id> identifies one element: the one carrying data-doop-id="<element_id>" in that frame's HTML. Read get_canvas and get_frame and find that attribute before applying the feedback. If no element carries the id any more, ask for an updated reference.
+- Keep data-doop-* attributes on every element you rewrite: data-doop-id is how comments and links point at an element, data-doop-on / data-doop-action carry prototype wiring, data-doop-locked a layer lock. Drop one only together with its element.
 - Identity: pick an agent_name and reuse the SAME name on every call — your presence and edits are attributed live.
 - Narrate: call set_status with a one-line summary when you start a task and whenever your focus shifts — people watching the canvas see it live next to your name.
 - Creating: create_frame, then stream the design with append_frame_html one complete section at a time (~1–4 KB chunks; start=true on the first, done=true on the last). Each chunk renders the moment it arrives — viewers watch you work.
 - Review: after every create or significant edit you MUST call get_frame_screenshot and fix what looks wrong before moving on.
 - Small edits: edit_frame_html (exact find/replace — the change morphs into the rendered frame in place). Full redesigns: set_frame_html or a new stream. Rename/move/resize: update_frame.
+- Clickable prototypes: wire screens with data-doop-on / data-doop-action attributes in frame HTML (guide → Prototypes), set the flow start with set_prototype_start, and check the wiring with get_prototype.
 - History: every replace and stream files the design it overwrote. list_frame_versions shows a frame's earlier states; restore_frame_version brings one back (HTML and size) when a human asks for the previous version or your rework turned out worse.
 - Images: real imagery makes designs. search_images finds stock photos (you SEE thumbnails and pick), search_icons finds 200k+ UI icons as hotlinkable SVGs, search_logos finds real company logos by brand name or domain — call it once per brand BEFORE writing any logo wall, integration row, press bar or testimonial, and never ship a placeholder tile, "LOGO" text or an invented wordmark in its place, list_backgrounds shows a page of curated hero/section/bento backgrounds (glows, grainy meshes, aurora, painterly scenes) as thumbnails — browse it when a section wants atmosphere rather than defaulting to a flat CSS gradient, judge by eye whether one fits the frame, and draw your own when none does, upload_asset stores your own file (remote file → source_url; local file → local_file=true, returns a curl command) and returns a permanent URL. generate_image makes a new image from a prompt (a full-bleed hero background in the frame's exact palette, illustration, a product render, brand-specific hero art that stock cannot supply) and stores it as a permanent asset — reach for it when search_images cannot deliver the exact visual, or when the human asks for a generated image; it costs the human money or quota, so one considered prompt beats five drafts. Never inline images as data: URIs.
 - Websites: when a request names an existing site or URL — a redesign of it, or "like acme.com" — call import_webpage FIRST so an editable HTML snapshot lands on the canvas. Leave that source frame unchanged and design in a separate frame. view_website is only for read-only inspection when the page should not be added. If Doop cannot capture the site, do not retry with view_website because it uses the same capture path. Use your own browser or web tool and work only from content you actually observe; if that is unavailable, ask the user for screenshots or an HTML export rather than inventing content.
-${extensionGuideLines()}- Feedback: humans reply to your tasks; their notes arrive inside your tool results as HUMAN FEEDBACK blocks — address them before continuing.
+${extensionGuideLines()}- Feedback: humans reply to your tasks; their notes arrive inside your tool results as HUMAN FEEDBACK blocks (read-only tools only announce them: claim those with get_feedback) — address them before continuing.
 - Comments: call get_comments to read comments and replies on a canvas — pinned to an element inside a frame, or to a point on the canvas (pageId, x, y) — optionally filtered by frame; reply_to_comment answers a thread and resolve_comment closes it. Reading does not claim feedback or comments. A reply that @mentions a resident role is metered like a comment left in the browser.
 - Guidelines: canvases can carry named style guides (brand rules, style recipes). get_canvas lists them with one-line summaries — read the relevant ones with get_guidelines BEFORE designing and follow them.
 - Memory: canvases can also carry pinned style references — exemplar designs humans marked as "more like this". get_canvas lists them; read the relevant one with get_reference and match its look. When your human gives you design feedback in conversation and you address it, record it with save_decision so the canvas remembers their taste.`
@@ -78,11 +93,9 @@ const REVIEW_NUDGE =
 import type { Actor, Frame } from '../shared/types.ts'
 
 /** Reaches agents whose session predates set_status (or who skipped the guide). */
-function withStatusNudge<T extends { content: { type: 'text' | 'image'; [k: string]: unknown }[] }>(
-  result: T,
-  canvasId: string,
-  actor?: Actor,
-): T {
+type ToolContent = { content: { type: 'text' | 'image'; [k: string]: unknown }[] }
+
+function appendStatusNudge<T extends ToolContent>(result: T, canvasId: string, actor?: Actor): T {
   if (!actor) return result
   if (actions.hasAnnouncedTask(canvasId, actor)) return result
   result.content.push({
@@ -100,6 +113,9 @@ function withEscapeNote<T extends { content: { type: 'text' | 'image'; [k: strin
   if (looksEscapedHtml(sent)) result.content.push({ type: 'text' as const, text: ESCAPED_HTML_NOTE })
   return result
 }
+
+/** A PDF returned inline as base64; beyond this, export fewer frames. */
+const MAX_MCP_PDF_BYTES = 15_000_000
 
 function err(message: string) {
   return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true }
@@ -143,11 +159,7 @@ function withGuidelinesNudge<T extends { content: { type: 'text' | 'image'; [k: 
 /** Append any undelivered human feedback for this agent to a tool result.
  *  MCP is pull-based, so this is the channel through which humans steer agents.
  *  DOOP_MCP_FEEDBACK_PIGGYBACK=0 turns it off: feedback then stays open until get_feedback claims it. */
-function withFeedback<T extends { content: { type: 'text' | 'image'; [k: string]: unknown }[] }>(
-  result: T,
-  canvasId: string,
-  actor?: Actor,
-): T {
+function appendFeedback<T extends ToolContent>(result: T, canvasId: string, actor?: Actor): T {
   if (!actor || !env.DOOP_MCP_FEEDBACK_PIGGYBACK) return result
   const pending = actions.takeFeedbackFor(canvasId, actor.name)
   if (pending.length === 0) return result
@@ -161,6 +173,20 @@ function withFeedback<T extends { content: { type: 'text' | 'image'; [k: string]
   result.content.push({
     type: 'text' as const,
     text: `HUMAN FEEDBACK — open request(s) on this canvas, now assigned to YOU:\n${lines.join('\n')}\nAddress this NOW, before continuing your plan: locate the frame in question (get_canvas / get_frame), make the change, and review with get_frame_screenshot. If it concerns another agent's frame, edit it anyway — a human request overrides the don't-touch-others'-frames etiquette. Update your set_status to say what you're picking up.`,
+  })
+  return result
+}
+
+/** The read-only tools' share of the feedback channel: says open human
+ *  feedback is waiting without claiming it, so a read never writes. Claiming
+ *  stays with get_feedback and the tools that change the canvas. */
+function appendFeedbackNotice<T extends ToolContent>(result: T, canvasId: string, actor?: Actor): T {
+  if (!actor) return result
+  const open = actions.openFeedbackFor(canvasId, actor.name).length
+  if (open === 0) return result
+  result.content.push({
+    type: 'text' as const,
+    text: `HUMAN FEEDBACK — ${open} open request${open === 1 ? '' : 's'} on this canvas. Call get_feedback({ canvas_id, agent_name }) NOW to claim and read ${open === 1 ? 'it' : 'them'}, and address ${open === 1 ? 'it' : 'them'} before continuing your plan.`,
   })
   return result
 }
@@ -217,11 +243,14 @@ function frameSummary(f: {
   demo?: boolean
   hidden?: boolean
   locked?: boolean
+  approval?: FrameApproval | null
 }) {
   return {
     id: f.id,
     pageId: f.pageId,
     name: f.name,
+    approvalStatus: f.approval?.status ?? 'draft',
+    approval: f.approval ?? null,
     ...(f.demo ? { demo: true } : {}),
     ...(f.hidden ? { hidden: true } : {}),
     ...(f.locked ? { locked: true } : {}),
@@ -244,20 +273,79 @@ function frameSummary(f: {
 export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
   const actorFrom = (agent_name?: string) => actions.resolveActor({ name: agent_name, kind: 'agent', owner })
   /* Canvas access for agents mirrors the web UI: the OAuth user's id runs
-     through the same canAccessCanvas gate as browser sessions. Every tool
-     that takes a canvas or frame id resolves it through these. */
-  const canvasFor = (canvasId: string) => {
+     through the same canvasRole gate as browser sessions, so an agent
+     connected by someone holding a view or comment link reads but cannot
+     write. Every tool that takes a canvas or frame id resolves it through
+     these, naming the role it needs: 'view' to read, 'comment' for comment
+     threads, 'edit' for everything that changes the canvas. */
+  const roleOn = (canvasId: string) => {
     const c = store.getCanvas(canvasId)
-    return c && canAccessCanvas(ownerId, c) ? c : undefined
+    return c ? canvasRole(ownerId, c) : null
   }
-  const frameFor = (frameId: string) => {
+  const canvasFor = (canvasId: string, need: CanvasRole) =>
+    roleAllows(roleOn(canvasId), need) ? store.getCanvas(canvasId) : undefined
+  const frameFor = (frameId: string, need: CanvasRole) => {
     const f = store.getFrame(frameId)
-    if (!f) return undefined
-    return canvasFor(f.canvasId) ? f : undefined
+    return f && canvasFor(f.canvasId, need) ? f : undefined
   }
-  const noCanvas = (id: string) => err(`no canvas with id ${id} accessible to this account`)
-  const noFrame = (id: string) => err(`no frame with id ${id} accessible to this account`)
+  /* a canvas the account can read but not change says so, instead of
+     claiming the canvas is not there */
+  const readOnlyNote = (canvasId: string | undefined) => {
+    const role = canvasId ? roleOn(canvasId) : null
+    return role ? ` with the access this task needs — this account can only ${role} on that canvas` : ''
+  }
+  const noCanvas = (id: string) => err(`no canvas with id ${id} accessible to this account${readOnlyNote(id)}`)
+  const noFrame = (id: string) =>
+    err(`no frame with id ${id} accessible to this account${readOnlyNote(store.getFrame(id)?.canvasId)}`)
+  /* Feedback is claimed, and set_status nudged, only for agents that may
+     act on it: claiming assigns a human's request to this agent, which a
+     read-only agent could never carry out. */
+  const withFeedback = <T extends ToolContent>(result: T, canvasId: string, actor?: Actor): T =>
+    roleAllows(roleOn(canvasId), 'edit') ? appendFeedback(result, canvasId, actor) : result
+  const withFeedbackNotice = <T extends ToolContent>(result: T, canvasId: string, actor?: Actor): T =>
+    roleAllows(roleOn(canvasId), 'edit') ? appendFeedbackNotice(result, canvasId, actor) : result
+  const withStatusNudge = <T extends ToolContent>(result: T, canvasId: string, actor?: Actor): T =>
+    roleAllows(roleOn(canvasId), 'edit') ? appendStatusNudge(result, canvasId, actor) : result
   const noComment = (id: string) => err(`no comment with id ${id} on this canvas`)
+  /* export_frame's PDF: the file travels inside the tool result, not as a
+     public URL, so it stays behind the same canvas gate as the frames */
+  const exportPdf = async (first: Frame, more: string[]) => {
+    const canvas = canvasFor(first.canvasId, 'view')
+    if (!canvas) return noFrame(first.id)
+    const selection = selectPdfFrames(canvas, { frameIds: [first.id, ...more] })
+    if (!selection.ok) return err(selection.error)
+    if (!pdfRendererAvailable()) return err(PDF_UNAVAILABLE_MESSAGE)
+    if (!takePdfExportSlot(ownerId ?? `mcp:${owner ?? 'anonymous'}`))
+      return err('PDF export rate limit — wait a minute before exporting again')
+    try {
+      const pdf = await renderFramesPdf(selection.frames)
+      if (pdf.length > MAX_MCP_PDF_BYTES) return err('The PDF is too large to return — export fewer frames at once')
+      const fileName = pdfFileName(canvas, selection.frames)
+      return {
+        content: [
+          {
+            type: 'resource' as const,
+            resource: {
+              uri: `doop://canvas/${canvas.id}/${encodeURIComponent(fileName)}`,
+              mimeType: 'application/pdf',
+              blob: pdf.toString('base64'),
+            },
+          },
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              file_name: fileName,
+              bytes: pdf.length,
+              pages: selection.frames.length,
+              note: 'The PDF is the embedded application/pdf resource (base64). Save it to disk as the file name above; each page is one frame at its own size, text stays selectable.',
+            }),
+          },
+        ],
+      }
+    } catch (e) {
+      return err(`PDF export failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
   /* Reads count as arrival: presence (and with it every "your agent is
      connected" confirmation in the UI) must appear on an agent's FIRST
      canvas-scoped call, not only once it mutates something. */
@@ -323,7 +411,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
         })
         content.push({ type: 'text' as const, text: INSPIRATION_USAGE_NOTE })
         const result = { content }
-        return canvas_id ? withFeedback(result, canvas_id, actorFrom(agent_name)) : result
+        return canvas_id ? withFeedbackNotice(result, canvas_id, actorFrom(agent_name)) : result
       } catch (e) {
         return err(e instanceof Error ? e.message : 'inspiration search failed')
       }
@@ -407,12 +495,16 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       title: 'Get a canvas and its frames',
       _meta: previewToolMeta('Reading the canvas…', 'Canvas loaded'),
       description:
-        'Get a canvas: its name and every frame with position, size and metadata (not the HTML — use get_frame for that). Use this to see the current layout before adding or editing frames. Pass your agent_name so any human feedback waiting for you is delivered with the result.',
+        'Get a canvas: its name and frames with position, size, approvalStatus and human approval attribution (not the HTML — use get_frame for that). Filter approval_status to ready_for_dev to find screens approved for implementation. Use this to see the current layout before adding or editing frames. Pass your agent_name so any human feedback waiting for you is delivered with the result.',
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-      inputSchema: { canvas_id: z.string(), agent_name: agentName.optional() },
+      inputSchema: {
+        canvas_id: z.string(),
+        agent_name: agentName.optional(),
+        approval_status: z.enum(['draft', 'ready_for_dev', 'needs_review']).optional(),
+      },
     },
-    async ({ canvas_id, agent_name }) => {
-      const c = canvasFor(canvas_id)
+    async ({ canvas_id, agent_name, approval_status }) => {
+      const c = canvasFor(canvas_id, 'view')
       if (!c) return noCanvas(canvas_id)
       arrive(canvas_id, agent_name)
       const docs = store.getGuidelines(canvas_id)
@@ -438,7 +530,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
           : []),
       ]
       return withPreview(
-        withFeedback(
+        withFeedbackNotice(
           text({
             id: c.id,
             name: c.name,
@@ -446,7 +538,9 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
             /* demo frames (the Doop welcome show, seeded examples) are product
              content, not user work — hidden so agents never mistake them for
              the canvas's established style */
-            frames: c.frames.filter((f) => !f.demo).map(frameSummary),
+            frames: c.frames
+              .filter((f) => !f.demo && (!approval_status || (f.approval?.status ?? 'draft') === approval_status))
+              .map(frameSummary),
             guidelines: docs.map((d) => ({
               name: d.name,
               title: actions.guidelineTitle(d),
@@ -467,7 +561,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
           agent_name ? actorFrom(agent_name) : undefined,
         ),
         canvas_id,
-        c.frames.filter((f) => !f.demo),
+        c.frames.filter((f) => !f.demo && (!approval_status || (f.approval?.status ?? 'draft') === approval_status)),
       )
     },
   )
@@ -482,7 +576,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       inputSchema: { canvas_id: z.string(), agent_name: agentName.optional() },
     },
     async ({ canvas_id, agent_name }) => {
-      if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!canvasFor(canvas_id, 'view')) return noCanvas(canvas_id)
       if (agent_name) actions.markGuidelinesSeen(canvas_id, actorFrom(agent_name).name)
       const docs = store.getGuidelines(canvas_id)
       if (docs.length === 0)
@@ -490,7 +584,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
           guidelines: [],
           note: 'No style guides on this canvas yet. Set one with set_guidelines when a human hands you brand or style rules.',
         })
-      return withFeedback(
+      return withFeedbackNotice(
         text({
           guidelines: docs.map((d) => ({
             name: d.name,
@@ -521,7 +615,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ canvas_id, name, agent_name }) => {
-      if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!canvasFor(canvas_id, 'view')) return noCanvas(canvas_id)
       const doc = store.getGuidelines(canvas_id).find((d) => d.name === name.trim().toLowerCase())
       if (!doc) {
         const names = store.getGuidelines(canvas_id).map((d) => d.name)
@@ -532,7 +626,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
         )
       }
       if (agent_name) actions.markGuidelinesSeen(canvas_id, actorFrom(agent_name).name)
-      return withFeedback(text(doc.markdown), canvas_id, agent_name ? actorFrom(agent_name) : undefined)
+      return withFeedbackNotice(text(doc.markdown), canvas_id, agent_name ? actorFrom(agent_name) : undefined)
     },
   )
 
@@ -559,7 +653,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ canvas_id, name, markdown, title, agent_name }) => {
-      if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!canvasFor(canvas_id, 'edit')) return noCanvas(canvas_id)
       const actor = actorFrom(agent_name)
       try {
         const doc = actions.setGuideline(canvas_id, name, markdown, actor, undefined, title)
@@ -593,7 +687,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ canvas_id, reference_id, agent_name }) => {
-      if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!canvasFor(canvas_id, 'view')) return noCanvas(canvas_id)
       const ref = store.getReferences(canvas_id).find((r) => r.id === reference_id)
       if (!ref) {
         const ids = store.getReferences(canvas_id).map((r) => `${r.id} (“${r.title}”)`)
@@ -603,7 +697,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
             : 'no style references pinned on this canvas yet',
         )
       }
-      return withFeedback(
+      return withFeedbackNotice(
         text({
           id: ref.id,
           title: ref.title,
@@ -624,7 +718,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       title: 'Save a design decision',
       description:
         'Record a design decision your human made while talking to YOU — style feedback you carried out ("rounder corners", "less purple, more white and blue", "stop using italic serif"). Doop\'s UI feedback is captured automatically, but you are the only one who hears your own conversation, so report it with this tool AFTER you have addressed it. It lands in the canvas\'s Memory; recurring preferences become suggested style rules. Record design taste only — not one-off content edits like typo fixes or copy changes.',
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: {
         canvas_id: z.string(),
         decision: z
@@ -635,7 +729,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ canvas_id, decision, agent_name }) => {
-      if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!canvasFor(canvas_id, 'edit')) return noCanvas(canvas_id)
       const actor = actorFrom(agent_name)
       try {
         const saved = actions.recordChatDecision(canvas_id, decision, actor)
@@ -672,7 +766,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ canvas_id, status, agent_name }) => {
-      if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!canvasFor(canvas_id, 'edit')) return noCanvas(canvas_id)
       actions.setAgentStatus(canvas_id, actorFrom(agent_name), status)
       return withFeedback(text({ ok: true, status: status.trim() || null }), canvas_id, actorFrom(agent_name))
     },
@@ -693,7 +787,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ canvas_id, agents }) => {
-      if (!ownerId || !canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!ownerId || !canvasFor(canvas_id, 'comment')) return noCanvas(canvas_id)
       await bridge.setBridgeAgents(canvas_id, agents, ownerId)
       return text({ ok: true, agents: agents.length })
     },
@@ -709,7 +803,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       inputSchema: { canvas_id: z.string() },
     },
     async ({ canvas_id }) => {
-      if (!ownerId || !canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!ownerId || !canvasFor(canvas_id, 'comment')) return noCanvas(canvas_id)
       await bridge.bridgeHeartbeat(canvas_id, ownerId)
       return text({ ok: true })
     },
@@ -720,7 +814,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
     {
       title: 'Read comments',
       description:
-        'Read comments and replies on a canvas, newest first, including author, text, parentId thread links, and claim/failure/resolution metadata. An element comment carries its frameId, CSS selector and HTML snippet; a canvas comment is pinned to a point on the canvas instead and carries pageId, x and y (world coordinates) with no frame. Includes resolved comments by default so complete conversations remain readable; set include_resolved to false for unresolved comments only. Returns the retained comment history (up to 100 entries per canvas), not an archive. Reading does not claim feedback or comments, or mark them resolved.',
+        'Read comments and replies on a canvas, newest first, including author, text, parentId thread links, and claim/failure/resolution metadata. An element comment carries its frameId, its elementId (the data-doop-id attribute of the element in the frame HTML) and an HTML snippet from when it was left; a comment on a frame as a whole has no elementId and x, y (design px from the frame top-left) where it was left; a canvas comment is pinned to a point on the canvas instead and carries pageId, x and y (world coordinates) with no frame. Includes resolved comments by default so complete conversations remain readable; set include_resolved to false for unresolved comments only. Returns the retained comment history (up to 100 entries per canvas), not an archive. Reading does not claim feedback or comments, or mark them resolved.',
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: {
         canvas_id: z.string(),
@@ -735,9 +829,9 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ canvas_id, frame_id, include_resolved, agent_name }) => {
-      if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!canvasFor(canvas_id, 'view')) return noCanvas(canvas_id)
       if (frame_id !== undefined) {
-        const frame = frameFor(frame_id)
+        const frame = frameFor(frame_id, 'view')
         if (!frame || frame.canvasId !== canvas_id) return noFrame(frame_id)
       }
       arrive(canvas_id, agent_name)
@@ -764,7 +858,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ canvas_id, limit, agent_name }) => {
-      if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!canvasFor(canvas_id, 'view')) return noCanvas(canvas_id)
       arrive(canvas_id, agent_name)
       return text(await persist.listUnackedCommentEvents(canvas_id, limit))
     },
@@ -783,7 +877,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ ids }) =>
-      text({ acked: await persist.ackCommentEvents(ids, (canvasId) => canvasFor(canvasId) !== undefined) }),
+      text({ acked: await persist.ackCommentEvents(ids, (canvasId) => canvasFor(canvasId, 'comment') !== undefined) }),
   )
 
   server.registerTool(
@@ -801,10 +895,14 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ canvas_id, comment_id, text: body, agent_name }) => {
-      if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!canvasFor(canvas_id, 'comment')) return noCanvas(canvas_id)
       const found = await actions.findComment(comment_id)
       if (!found || found.canvasId !== canvas_id) return noComment(comment_id)
       if (!body.trim() || !(await actions.openThread(comment_id))) return err('thread resolved or empty text')
+      /* an @mention commands the resident agent to change frames — the REST
+         reply route holds comment-only visitors to the same rule */
+      if (mentionedRole(body) && !canvasFor(canvas_id, 'edit'))
+        return err('asking an agent to change the canvas needs edit access')
       const actor = actorFrom(agent_name)
       arrive(canvas_id, agent_name)
       /* A reply that @mentions a resident agent is a new command to the team,
@@ -860,7 +958,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ canvas_id, comment_id, agent_name }) => {
-      if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!canvasFor(canvas_id, 'comment')) return noCanvas(canvas_id)
       const found = await actions.findComment(comment_id)
       if (!found || found.canvasId !== canvas_id) return noComment(comment_id)
       const actor = actorFrom(agent_name)
@@ -887,12 +985,12 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
     {
       title: 'Claim open human feedback',
       description:
-        'Fetch and claim any open human feedback requests on a canvas. Feedback normally arrives automatically inside your other tool results, so you rarely need this — use it when you are specifically checking for feedback, e.g. an agent whose job is to poll the canvas every few minutes and address whatever humans have requested. Claiming assigns the requests to you: address each one, then review with get_frame_screenshot.',
+        'Fetch and claim any open human feedback requests on a canvas. Tools that change the canvas deliver feedback automatically and read-only tools announce waiting requests, so call this when a result says feedback is waiting, or when you are specifically checking for feedback, e.g. an agent whose job is to poll the canvas every few minutes and address whatever humans have requested. Claiming assigns the requests to you: address each one, then review with get_frame_screenshot.',
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       inputSchema: { canvas_id: z.string(), agent_name: agentName },
     },
     async ({ canvas_id, agent_name }) => {
-      if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!canvasFor(canvas_id, 'edit')) return noCanvas(canvas_id)
       const fbs = actions.takeFeedbackFor(canvas_id, actorFrom(agent_name).name)
       if (fbs.length === 0) return text({ feedback: [], note: 'No open feedback requests right now.' })
       const tasks = actions.getTasks(canvas_id)
@@ -931,7 +1029,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ canvas_id, pages, expectedPages, agent_name }) => {
-      const canvas = canvasFor(canvas_id)
+      const canvas = canvasFor(canvas_id, 'edit')
       if (!canvas) return noCanvas(canvas_id)
       if (!samePages(expectedPages, canvasPages(canvas)))
         return err('Pages changed. Read get_canvas again before saving.')
@@ -940,8 +1038,47 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       if (canvas.frames.some((f) => !pages.some((p) => p.id === (f.pageId ?? firstId))))
         return err('Move frames before deleting their page')
       const actor = actorFrom(agent_name)
-      actions.setCanvasPages(canvas_id, pages, actor)
-      return text({ ok: true, pages })
+      return text({ ok: true, pages: actions.setCanvasPages(canvas_id, pages, actor) })
+    },
+  )
+
+  server.registerTool(
+    'get_prototype',
+    {
+      title: 'Read a canvas prototype',
+      description:
+        'List the clickable-prototype wiring of a canvas: each page with its flow start frame, and every interaction with its trigger, action and target. Interactions are attributes on the triggering element in frame HTML, written with edit_frame_html: data-doop-on (click | hover | press | delay:<ms> | key:<Key>) and data-doop-action (navigate:<frameId> | back | overlay:<frameId> | close-overlay | scroll-to:<selector> | url:<https url>), optionally data-doop-transition and data-doop-duration; the guide\'s "Prototypes" section has the full syntax. Interactions whose target frame does not exist are flagged with a problem; fix them with edit_frame_html.',
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: { canvas_id: z.string(), agent_name: agentName },
+    },
+    async ({ canvas_id, agent_name }) => {
+      const canvas = canvasFor(canvas_id, 'view')
+      if (!canvas) return noCanvas(canvas_id)
+      arrive(canvas_id, agent_name)
+      return text(prototypeReport(canvas))
+    },
+  )
+
+  server.registerTool(
+    'set_prototype_start',
+    {
+      title: 'Set a prototype flow start',
+      description:
+        "Choose the frame a page's clickable prototype starts on (the player at /c/<canvas_id>/proto opens there). Pass frame_id null to clear it — the flow then starts on the page's top-left frame.",
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: {
+        canvas_id: z.string(),
+        pageId: z.string().optional().describe("Page ID from get_canvas; defaults to the start frame's page"),
+        frame_id: z.string().nullable().describe("The start frame, or null to clear the page's start"),
+        agent_name: agentName,
+      },
+    },
+    async ({ canvas_id, pageId, frame_id, agent_name }) => {
+      const canvas = canvasFor(canvas_id, 'edit')
+      if (!canvas) return noCanvas(canvas_id)
+      const result = setPrototypeStart(canvas, pageId, frame_id, actorFrom(agent_name))
+      if (!result.ok) return err(result.error)
+      return text({ ok: true, pages: result.pages, prototype_url: prototypeUrl(canvas.id) })
     },
   )
 
@@ -973,7 +1110,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ canvas_id, pageId, name, html, x, y, width, height, agent_name }) => {
-      if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!canvasFor(canvas_id, 'edit')) return noCanvas(canvas_id)
       const frame = actions.createFrame(canvas_id, { name, pageId, html, x, y, width, height }, actorFrom(agent_name))
       if (!frame) return noCanvas(canvas_id)
       const result = withEscapeNote(
@@ -999,10 +1136,10 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       inputSchema: { frame_id: z.string(), agent_name: agentName.optional() },
     },
     async ({ frame_id, agent_name }) => {
-      const f = frameFor(frame_id)
+      const f = frameFor(frame_id, 'view')
       if (!f) return noFrame(frame_id)
       arrive(f.canvasId, agent_name)
-      return withFeedback(
+      return withFeedbackNotice(
         text({ ...frameSummary(f), html: f.html }),
         f.canvasId,
         agent_name ? actorFrom(agent_name) : undefined,
@@ -1016,7 +1153,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       title: 'Replace a frame’s HTML',
       _meta: previewToolMeta('Redesigning the frame…', 'Frame redesigned'),
       description:
-        'Replace the HTML design of a frame in one shot. The change renders live for everyone viewing the canvas. For new or heavily reworked designs, prefer append_frame_html so viewers can watch the design stream in.',
+        'Replace the HTML design of a frame in one shot. The change renders live for everyone viewing the canvas. For new or heavily reworked designs, prefer append_frame_html so viewers can watch the design stream in. Keep data-doop-* attributes on elements you carry over: comments and links point at data-doop-id, prototype wiring and locks ride on the others.',
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
       inputSchema: {
         frame_id: z.string(),
@@ -1029,7 +1166,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ frame_id, html, expected_updated_at, agent_name }) => {
-      const current = frameFor(frame_id)
+      const current = frameFor(frame_id, 'edit')
       if (!current) return noFrame(frame_id)
       const refused = fenceError(current, expected_updated_at)
       if (refused) return refused
@@ -1058,19 +1195,27 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
   server.registerTool(
     'export_frame',
     {
-      title: 'Export frame as image',
+      title: 'Export frame as image or PDF',
       description:
-        "Get public image URLs (PNG/JPG) rendering the frame's CURRENT design — for publishing it elsewhere: download the URL and upload to a CMS media library, social post, or use directly as og:image. The URL re-renders when the frame changes.",
+        "Export the frame's CURRENT design. PNG/JPG return public URLs for publishing it elsewhere (CMS media library, social post, og:image; the URL re-renders when the frame changes). PDF returns the file itself (an embedded application/pdf resource): vector, text selectable, one page per frame sized to the frame; pass frame_ids to put several frames of the same canvas into one multi-page PDF (pages in the order given: frame_id first, then frame_ids as listed).",
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: {
         frame_id: z.string(),
-        format: z.enum(['png', 'jpg']).optional().describe('default png'),
+        format: z.enum(['png', 'jpg', 'pdf']).optional().describe('default png'),
         quality: z.number().min(1).max(100).optional().describe('jpg only, default 90'),
+        frame_ids: z
+          .array(z.string())
+          .max(MAX_PDF_FRAMES)
+          .optional()
+          .describe(
+            `pdf only: more frames from the same canvas to include as extra pages, in this order after frame_id (up to ${MAX_PDF_FRAMES} in all)`,
+          ),
       },
     },
-    async ({ frame_id, format, quality }) => {
-      const f = frameFor(frame_id)
+    async ({ frame_id, format, quality, frame_ids }) => {
+      const f = frameFor(frame_id, 'view')
       if (!f) return noFrame(frame_id)
+      if (format === 'pdf') return exportPdf(f, frame_ids ?? [])
       const ext = format === 'jpg' ? 'jpg' : 'png'
       const q = ext === 'jpg' ? `&quality=${quality ?? 90}` : ''
       return text({
@@ -1110,7 +1255,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
         return err(
           'provide exactly one of: source_url (remote file), local_file=true (local file — returns a curl command), or data (small base64)',
         )
-      if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!canvasFor(canvas_id, 'edit')) return noCanvas(canvas_id)
       const now = Date.now()
       const limitKey = ownerId ?? agent_name
       const hits = (uploadHits.get(limitKey) ?? []).filter((t) => now - t < 60_000)
@@ -1163,7 +1308,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       title: 'Generate an image with AI',
       description:
         "Generate an image from a text prompt and store it as a permanent asset on this origin — returns the URL to embed plus a preview you can look at. Use it for visuals stock search cannot supply: brand-specific illustration, a product render, a mascot, abstract hero art in the frame's exact palette. Prefer search_images for ordinary photography. It runs on the connecting human's connected ChatGPT subscription or OpenAI key (else the server's key) and costs them quota or money, so write ONE considered prompt: subject, style, composition, palette hexes, lighting, what to leave out. Generation takes 20–60 seconds. ONLY generate when the design genuinely needs it or the human asked.",
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
       inputSchema: {
         prompt: z.string().describe('What to draw: subject, style, composition, palette, lighting, mood'),
         aspect: z
@@ -1176,7 +1321,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ prompt, aspect, quality, canvas_id, agent_name }) => {
-      if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!canvasFor(canvas_id, 'edit')) return noCanvas(canvas_id)
       const now = Date.now()
       const limitKey = ownerId ?? agent_name
       const hits = (generateHits.get(limitKey) ?? []).filter((t) => now - t < 60_000)
@@ -1280,7 +1425,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
           text: 'Embed the chosen image_url directly (<img src> or CSS background, object-fit: cover), or upload_asset with source_url for a permanent copy. Pexels license: free to use and modify, no attribution required.',
         })
         const result = { content }
-        return canvas_id ? withFeedback(result, canvas_id, actorFrom(agent_name)) : result
+        return canvas_id ? withFeedbackNotice(result, canvas_id, actorFrom(agent_name)) : result
       } catch (e) {
         return err(e instanceof Error ? e.message : 'photo search failed')
       }
@@ -1337,7 +1482,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
         })
         content.push({ type: 'text' as const, text: backgrounds.BACKGROUND_USAGE_NOTE })
         const result = { content }
-        return canvas_id ? withFeedback(result, canvas_id, actorFrom(agent_name)) : result
+        return canvas_id ? withFeedbackNotice(result, canvas_id, actorFrom(agent_name)) : result
       } catch (e) {
         return err(e instanceof Error ? e.message : 'background search failed')
       }
@@ -1367,7 +1512,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
           ...(icons.length === 0 ? { note: `No results for "${query}" — try a synonym or broader concept.` } : {}),
           usage: imageSearch.ICON_USAGE_NOTE,
         })
-        return canvas_id ? withFeedback(result, canvas_id, actorFrom(agent_name)) : result
+        return canvas_id ? withFeedbackNotice(result, canvas_id, actorFrom(agent_name)) : result
       } catch (e) {
         return err(e instanceof Error ? e.message : 'icon search failed')
       }
@@ -1424,7 +1569,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
         }
         content.push({ type: 'text' as const, text: imageSearch.LOGO_USAGE_NOTE })
         const result = { content }
-        return canvas_id ? withFeedback(result, canvas_id, actorFrom(agent_name)) : result
+        return canvas_id ? withFeedbackNotice(result, canvas_id, actorFrom(agent_name)) : result
       } catch (e) {
         return err(e instanceof Error ? e.message : 'logo search failed')
       }
@@ -1491,7 +1636,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ url, canvas_id, agent_name }) => {
-      if (!canvasFor(canvas_id)) return noCanvas(canvas_id)
+      if (!canvasFor(canvas_id, 'edit')) return noCanvas(canvas_id)
       let normalizedUrl: string
       try {
         normalizedUrl = normalizeImportUrl(url).href
@@ -1594,7 +1739,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ frame_id, scale, agent_name }) => {
-      const live = frameFor(frame_id)
+      const live = frameFor(frame_id, 'view')
       if (!live) return noFrame(frame_id)
       arrive(live.canvasId, agent_name)
       /* a snapshot: an edit landing while Chromium renders must not stamp
@@ -1606,7 +1751,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
         /* the ChatGPT card loads this exact image next — serve it from cache */
         primeImage(f, scale ?? 1, png)
         return withPreview(
-          withFeedback(
+          withFeedbackNotice(
             {
               content: [
                 { type: 'image' as const, data: png.toString('base64'), mimeType: 'image/png' },
@@ -1633,8 +1778,8 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
     {
       title: 'Stream HTML into a frame',
       description:
-        'Stream a design into a frame section by section — every chunk renders for viewers the moment it arrives, so they watch the design build up live. Prefer this over set_frame_html when creating or reworking a whole design. Send the HTML in document order, ONE complete section per call (head+styles first, then the hero, then each following section), roughly 1–4 KB per chunk. Set start=true on the FIRST chunk (replaces any existing content and shows a live "designing…" badge) and done=true on the LAST chunk. End chunks at element boundaries — partial HTML is healed, but a complete section paints cleanly.',
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+        'Stream a design into a frame section by section — every chunk renders for viewers the moment it arrives, so they watch the design build up live. Prefer this over set_frame_html when creating or reworking a whole design. Send the HTML in document order, ONE complete section per call (head+styles first, then the hero, then each following section), roughly 1–4 KB per chunk. Set start=true on the FIRST chunk (replaces any existing content and shows a live "designing…" badge) and done=true on the LAST chunk. End chunks at element boundaries — partial HTML is healed, but a complete section paints cleanly. When reworking, keep data-doop-* attributes on elements you carry over (comments and links point at data-doop-id).',
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
       inputSchema: {
         frame_id: z.string(),
         html_chunk: z
@@ -1646,7 +1791,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ frame_id, html_chunk, start, done, agent_name }) => {
-      if (!frameFor(frame_id)) return noFrame(frame_id)
+      if (!frameFor(frame_id, 'edit')) return noFrame(frame_id)
       if (env.DOOP_MCP_REQUIRE_FENCE) {
         return err('append_frame_html is off (DOOP_MCP_REQUIRE_FENCE is on): send the design with set_frame_html')
       }
@@ -1677,8 +1822,8 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       title: 'Edit a frame’s HTML in place',
       _meta: previewToolMeta('Editing the frame…', 'Frame edited'),
       description:
-        'Make a targeted edit to a frame: exact find-and-replace in its HTML. Use this for small tweaks (copy, a color, spacing, one element) instead of resending the whole document — the change morphs into the rendered frame in place. old_str must appear EXACTLY ONCE in the current HTML (call get_frame first if unsure); include enough surrounding context to make it unique.',
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+        'Make a targeted edit to a frame: exact find-and-replace in its HTML. Use this for small tweaks (copy, a color, spacing, one element) instead of resending the whole document — the change morphs into the rendered frame in place. old_str must appear EXACTLY ONCE in the current HTML (call get_frame first if unsure); include enough surrounding context to make it unique. Keep data-doop-* attributes on the element you edit: comments and links point at its data-doop-id.',
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
       inputSchema: {
         frame_id: z.string(),
         old_str: z.string().describe('Exact text to find in the frame HTML — must occur exactly once'),
@@ -1687,7 +1832,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ frame_id, old_str, new_str, agent_name }) => {
-      const f = frameFor(frame_id)
+      const f = frameFor(frame_id, 'edit')
       if (!f) return noFrame(frame_id)
       const count = f.html.split(old_str).length - 1
       if (count === 0) return err('old_str not found in the frame HTML. Call get_frame to see the current content.')
@@ -1733,7 +1878,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
     async ({ frame_id, agent_name, ...patch }) => {
       const clean = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined))
       if (!Object.keys(clean).length) return err('nothing to update')
-      if (!frameFor(frame_id)) return noFrame(frame_id)
+      if (!frameFor(frame_id, 'edit')) return noFrame(frame_id)
       const frame = actions.updateFrame(frame_id, clean, actorFrom(agent_name))
       if (!frame) return noFrame(frame_id)
       return withPreview(
@@ -1754,7 +1899,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ frame_id, agent_name }) => {
-      const f = frameFor(frame_id)
+      const f = frameFor(frame_id, 'view')
       if (!f) return noFrame(frame_id)
       arrive(f.canvasId, agent_name)
       const versions = await persist.listFrameVersions(frame_id)
@@ -1783,7 +1928,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },
     async ({ frame_id, version_id, agent_name }) => {
-      if (!frameFor(frame_id)) return noFrame(frame_id)
+      if (!frameFor(frame_id, 'edit')) return noFrame(frame_id)
       const restored = await actions.restoreFrameVersion(frame_id, version_id, actorFrom(agent_name))
       if (restored === null) return err(`no version ${version_id} on frame ${frame_id} — call list_frame_versions`)
       if (!restored) return noFrame(frame_id)
@@ -1804,7 +1949,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       inputSchema: { frame_id: z.string(), agent_name: agentName },
     },
     async ({ frame_id, agent_name }) => {
-      if (!frameFor(frame_id)) return noFrame(frame_id)
+      if (!frameFor(frame_id, 'edit')) return noFrame(frame_id)
       const frame = actions.deleteFrame(frame_id, actorFrom(agent_name))
       if (!frame) return noFrame(frame_id)
       return text({ ok: true, deleted: frame.name })

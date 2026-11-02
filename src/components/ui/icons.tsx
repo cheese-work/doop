@@ -34,7 +34,6 @@ import {
   ArrowUp,
   Bell,
   Blocks,
-  Bookmark,
   Calendar,
   BookOpen,
   Brain,
@@ -47,9 +46,9 @@ import {
   Circle,
   CircleHelp,
   CirclePlus,
-  Command,
+  Clipboard,
+  CodeXml,
   Clock,
-  Compass,
   Copy,
   CreditCard,
   Download,
@@ -60,6 +59,7 @@ import {
   Folder,
   FolderPlus,
   File,
+  FileText,
   Frame,
   Globe,
   Hand,
@@ -71,7 +71,6 @@ import {
   Link2,
   Lock,
   LogOut,
-  MapPin,
   Menu,
   Minus,
   MousePointer2,
@@ -80,11 +79,14 @@ import {
   Monitor,
   Moon,
   PanelLeft,
+  PanelsLeftRight,
+  PictureInPicture2,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
-  PanelRightOpen,
   Paperclip,
+  Pencil,
+  PencilRuler,
   PenTool,
   Play,
   Plus,
@@ -92,7 +94,7 @@ import {
   RadioTower,
   RefreshCw,
   RotateCcw,
-  Scan,
+  Route,
   Search,
   Settings,
   Share,
@@ -113,6 +115,9 @@ import {
   User,
   Users,
   Workflow,
+  Flag,
+  MousePointerClick,
+  SquareMousePointer,
   X,
 } from 'lucide-react'
 
@@ -163,6 +168,7 @@ export const SquareDashedIcon = icon(SquareDashed)
 export const MoreHorizontalIcon = icon(Ellipsis)
 export const ShareIcon = icon(Share2)
 export const CopyIcon = icon(Copy)
+export const ClipboardIcon = icon(Clipboard)
 export const TrashIcon = icon(Trash2)
 export const CheckIcon = icon(Check)
 export const ChevronRightIcon = icon(ChevronRight)
@@ -209,7 +215,6 @@ export const ImportIcon = icon(Download)
 export const ExportIcon = icon(ExternalLink)
 export const PulseIcon = icon(Activity)
 export const BellIcon = icon(Bell)
-export const ChatIcon = icon(MessageCircle)
 export const SparkIcon = icon(Sparkles)
 export const SearchIcon = icon(Search)
 export const PlusIcon = icon(Plus)
@@ -218,16 +223,19 @@ export const PanelLeftIcon = icon(PanelLeft)
 export const PanelCollapseIcon = icon(PanelLeftClose)
 export const PanelExpandIcon = icon(PanelLeftOpen)
 export const PanelCollapseRightIcon = icon(PanelRightClose)
-export const PanelExpandRightIcon = icon(PanelRightOpen)
+/** the canvas panels' two layouts (Settings → Appearance) */
+export const PanelsFloatingIcon = icon(PictureInPicture2)
+export const PanelsDockedIcon = icon(PanelsLeftRight)
 export const LayersIcon = icon(Layers)
 export const FrameIcon = icon(Frame)
 /** a page of the canvas, in the Layers panel's Pages list */
 export const PageIcon = icon(File)
+/** a PDF document, the Export modal's PDF destination */
+export const PdfIcon = icon(FileText)
 export const BoxIcon = icon(Square)
 export const TextIcon = icon(Type)
 export const ImageIcon = icon(Image)
 export const VectorIcon = icon(PenTool)
-export const BookmarkIcon = icon(Bookmark)
 export const PlayIcon = icon(Play)
 export const ArrowUpIcon = icon(ArrowUp)
 export const ArrowLeftIcon = icon(ArrowLeft)
@@ -237,7 +245,6 @@ export const GridIcon = icon(LayoutGrid)
 export const ListIcon = icon(Menu)
 export const UserIcon = icon(User)
 export const UsersIcon = icon(Users)
-export const CompassIcon = icon(Compass)
 export const ClockIcon = icon(Clock)
 export const GearIcon = icon(Settings)
 export const ShieldIcon = icon(Shield)
@@ -267,7 +274,8 @@ export const HandIcon = icon(Hand)
 export const CursorIcon = icon(MousePointer2)
 /** comments: the round bubble, as on the side panel's Comments tab in the design */
 export const CommentIcon = icon(MessageCircle)
-export const PinIcon = icon(MapPin)
+export const CodeIcon = icon(CodeXml)
+export const EditIcon = icon(Pencil)
 export const EyeIcon = icon(Eye)
 export const EyeClosedIcon = icon(EyeOff)
 export const CircleIcon = icon(Circle)
@@ -277,7 +285,6 @@ export const WebIcon = icon(Globe)
 export const RadioTowerIcon = icon(RadioTower)
 export const MinusIcon = icon(Minus)
 /** zoom to fit: the four corners of the viewport */
-export const FitIcon = icon(Scan)
 /** sharing a canvas: the box with the arrow leaving it upward */
 export const ShareUpIcon = icon(Share)
 
@@ -295,9 +302,15 @@ export const UploadIcon = icon(Upload)
 export const CalendarIcon = icon(Calendar)
 /** what changed: the clock turned back */
 export const HistoryIcon = icon(RotateCcw)
+/* prototypes: the editor's Prototype mode, a flow's start, the player's hotspot hint */
+export const PrototypeIcon = icon(MousePointerClick)
+/** the tool rail's mode switch: drawing and editing, or wiring up the flow */
+export const EditModeIcon = icon(PencilRuler)
+export const PrototypeModeIcon = icon(Route)
+export const FlowStartIcon = icon(Flag)
+export const HotspotIcon = icon(SquareMousePointer)
 /** review comments: the square bubble */
 export const MessageSquareIcon = icon(MessageSquare)
 /** draft a page: a page skeleton */
 export const LayoutTemplateIcon = icon(LayoutTemplate)
 /** the ⌘ key, in shortcut hints */
-export const CommandIcon = icon(Command)

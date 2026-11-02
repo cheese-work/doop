@@ -4,6 +4,9 @@ import type { Frame } from '../shared/types.ts'
 /* Replies are persisted and broadcast like any comment; the unit tests only
    care about how a thread is shaped, so both sides are stubbed. */
 vi.mock('../server/db/persist.ts', () => ({
+  saveFrame: () => {},
+  saveFrameNow: async () => {},
+  saveCanvas: () => {},
   saveTask: () => {},
   saveFeedback: () => {},
   saveComment: () => {},
@@ -25,7 +28,7 @@ const FRAME: Frame = {
   id: 'f1',
   canvasId: CANVAS,
   name: 'Hero',
-  html: '<p/>',
+  html: '<h1>Hi</h1><p/>',
   x: 0,
   y: 0,
   width: 10,
@@ -49,12 +52,17 @@ beforeEach(() => {
     proposals: new Map(),
   })
   vi.spyOn(store, 'getFrame').mockImplementation((id) => (id === FRAME.id ? FRAME : undefined))
+  /* a comment stamps its element's id into the frame: apply it to the fixture */
+  vi.spyOn(store, 'updateFrame').mockImplementation((id, patch) => {
+    const f = store.getFrame(id)
+    return f ? Object.assign(f, patch) : undefined
+  })
 })
 
 async function root() {
   return (await actions.addElementComment(
     FRAME.id,
-    { selector: '.hero h1', snippet: '<h1>Hi</h1>', text: 'Too small' },
+    { selector: 'h1', snippet: '<h1>Hi</h1>', text: 'Too small' },
     'alice',
   ))!
 }
@@ -64,7 +72,7 @@ describe('replying to a comment', () => {
     const parent = await root()
     const reply = (await actions.replyToComment(parent.id, 'Agreed', 'bob'))!
     expect(reply.parentId).toBe(parent.id)
-    expect(reply.selector).toBe(parent.selector)
+    expect(reply.elementId).toBe(parent.elementId)
     expect(reply.snippet).toBe(parent.snippet)
     expect(actions.commentThread(reply).map((c) => c.text)).toEqual(['Too small', 'Agreed'])
   })

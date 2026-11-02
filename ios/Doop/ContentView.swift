@@ -146,7 +146,10 @@ private struct SignInView: View {
                             submitting = false
                         }
                     } label: {
-                        HStack { Spacer(); if submitting { ProgressView().tint(.white) }; Text(registering ? "Create account" : "Sign in").bold(); Spacer() }.padding(.vertical, 8)
+                        // The app tints with .primary, which is white in dark mode, so the label
+                        // takes the background colour rather than the prominent style's white.
+                        HStack { Spacer(); if submitting { ProgressView().tint(Color(uiColor: .systemBackground)) }; Text(registering ? "Create account" : "Sign in").bold(); Spacer() }.padding(.vertical, 8)
+                            .foregroundStyle(Color(uiColor: .systemBackground))
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(submitting || email.isEmpty || password.isEmpty || (registering && name.trimmingCharacters(in: .whitespaces).isEmpty))
@@ -190,6 +193,10 @@ private struct LibraryView: View {
     @State private var busy = false
     /// A Live Activity tapped before the library loaded; opened after the first reload.
     @State private var pendingLink: (canvasID: String, serverOrigin: String)?
+    #if DEBUG
+    /// `.task` restarts every time the library reappears, so `-openCanvas` must fire only once.
+    @State private var openedLaunchCanvas = false
+    #endif
 
     private var filtered: [CanvasSummary] {
         app.canvases.filter { canvas in
@@ -212,14 +219,15 @@ private struct LibraryView: View {
                             .font(.custom("HankenGrotesk-Regular_Light", size: 34, relativeTo: .largeTitle))
                         Text("Pick up an idea. Or start something new.").foregroundStyle(.secondary)
                     }.padding(.top, 12)
-                    HStack {
+                    // The count sits beside the scope it counts, not at the far edge.
+                    HStack(spacing: 4) {
                         Picker("Workspace", selection: $workspace) {
                             Text("All canvases").tag("all")
                             Text("Personal").tag("personal")
                             ForEach(app.workspaces) { Text($0.name).tag($0.id) }
                         }.pickerStyle(.menu)
-                        Spacer()
                         Text("\(filtered.count) \(filtered.count == 1 ? "canvas" : "canvases")").font(.caption).foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
                     }
                     if let error = app.error { Text(error).foregroundStyle(.red).font(.callout) }
                     if filtered.isEmpty {
@@ -247,10 +255,6 @@ private struct LibraryView: View {
             .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle(showingAgents ? "Agents" : "").navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Image("AppMark").resizable().frame(width: 26, height: 26)
-                        .clipShape(RoundedRectangle(cornerRadius: 6)).accessibilityLabel("Doop")
-                }
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
                     if !showingAgents {
                     Button { title = ""; creating = true } label: { Image(systemName: "plus") }
@@ -273,13 +277,14 @@ private struct LibraryView: View {
                 if let link = pendingLink { pendingLink = nil; open(link) }
                 #if DEBUG
                 // -openCanvas <id> jumps straight to a canvas (simulator automation).
-                if path.isEmpty, let id = UserDefaults.standard.string(forKey: "openCanvas"), let canvas = app.canvases.first(where: { $0.id == id }) {
+                if !openedLaunchCanvas, path.isEmpty, let id = UserDefaults.standard.string(forKey: "openCanvas"), let canvas = app.canvases.first(where: { $0.id == id }) {
+                    openedLaunchCanvas = true
                     path.append(canvas)
                 }
                 #endif
             }
 
-            .navigationDestination(for: CanvasSummary.self) { canvas in NativeCanvasView(summary: canvas, client: app.client) }
+            .navigationDestination(for: CanvasSummary.self) { canvas in NativeCanvasView(summary: canvas, client: app.client, currentUser: app.user) }
             .onOpenURL { url in
                 guard let link = CanvasLink.parse(url) else { return }
                 if app.canvases.isEmpty { pendingLink = link } else { open(link) }

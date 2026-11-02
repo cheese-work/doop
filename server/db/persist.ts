@@ -7,6 +7,7 @@ import * as t from './schema.ts'
 import { extractAssetIds } from '../assets.ts'
 import { roleByAgentName } from '../../shared/agents.ts'
 import { isCommunityCategory } from '../../shared/types.ts'
+import { storedLinkAccess } from '../../shared/canvasRole.ts'
 import type {
   ActivityItem,
   ActorKind,
@@ -41,8 +42,9 @@ function canvasColumns(c: Canvas) {
   return {
     name: c.name,
     pages: c.pages ?? null,
+    guides: c.guides?.length ? c.guides : null,
     ownerId: c.ownerId ?? null,
-    linkAccess: c.linkAccess ?? null,
+    linkAccess: storedLinkAccess(c.linkAccess) ?? null,
     publishedAt: c.publishedAt ?? null,
     description: c.description ?? null,
     category: c.category ?? null,
@@ -313,6 +315,15 @@ export async function savePageCopy(c: Canvas, frames: Frame[]): Promise<void> {
   })
 }
 
+/** Write the frame now and resolve once it is on disk, for a caller that
+ *  must write something naming the frame's content afterwards. */
+export async function saveFrameNow(f: Frame): Promise<void> {
+  const existing = frameTimers.get(f.id)
+  if (existing) clearTimeout(existing)
+  frameTimers.delete(f.id)
+  await writeFrame(f)
+}
+
 export function saveFrame(f: Frame, immediate = false) {
   const existing = frameTimers.get(f.id)
   if (existing) clearTimeout(existing)
@@ -347,6 +358,7 @@ async function writeFrame(f: Frame) {
     demo: f.demo ?? null,
     hidden: f.hidden ?? null,
     locked: f.locked ?? null,
+    approval: f.approval ?? null,
   }
   const { id, createdAt, ...set } = row
   await db.insert(t.frames).values(row).onConflictDoUpdate({ target: t.frames.id, set })
@@ -666,7 +678,7 @@ function commentFromRow(
     id: row.id,
     canvasId: row.canvasId,
     ...(row.frameId != null ? { frameId: row.frameId } : {}),
-    selector: row.selector,
+    ...(row.elementId != null ? { elementId: row.elementId } : {}),
     snippet: row.snippet,
     ...(row.pageId != null ? { pageId: row.pageId } : {}),
     ...(row.x != null ? { x: row.x } : {}),
@@ -692,7 +704,9 @@ function commentRow(c: ElementComment) {
     id: c.id,
     canvasId: c.canvasId,
     frameId: c.frameId ?? null,
-    selector: c.selector,
+    elementId: c.elementId ?? null,
+    /* the pre-element-id anchor is spent once the comment is saved again */
+    selector: null,
     snippet: c.snippet,
     pageId: c.pageId ?? null,
     x: c.x ?? null,
@@ -714,23 +728,38 @@ function commentRow(c: ElementComment) {
 }
 
 export function saveComment(c: ElementComment) {
+  swallow(writeComment(c))
+}
+
+/** The comment's write, for a caller that must know it landed. */
+export function saveCommentNow(c: ElementComment): Promise<void> {
+  return writeComment(c)
+}
+
+async function writeComment(c: ElementComment): Promise<void> {
   const row = commentRow(c)
-  swallow(
-    db
-      .insert(t.comments)
-      .values(row)
-      .onConflictDoUpdate({
-        target: t.comments.id,
-        set: {
-          claimedBy: row.claimedBy,
-          claimedAt: row.claimedAt,
-          failedAt: row.failedAt,
-          failureReason: row.failureReason,
-          resolvedBy: row.resolvedBy,
-          resolvedAt: row.resolvedAt,
-        },
-      }),
-  )
+  await db
+    .insert(t.comments)
+    .values(row)
+    .onConflictDoUpdate({
+      target: t.comments.id,
+      set: {
+        /* a moved thread keeps its id and takes a new anchor */
+        frameId: row.frameId,
+        elementId: row.elementId,
+        selector: row.selector,
+        snippet: row.snippet,
+        pageId: row.pageId,
+        x: row.x,
+        y: row.y,
+        claimedBy: row.claimedBy,
+        claimedAt: row.claimedAt,
+        failedAt: row.failedAt,
+        failureReason: row.failureReason,
+        resolvedBy: row.resolvedBy,
+        resolvedAt: row.resolvedAt,
+      },
+    })
 }
 
 /** A NEW comment: the row and its comment_events row in ONE transaction. Unlike
@@ -855,6 +884,9 @@ export interface Hydrated {
   tasks: Map<string, AgentTask[]> // canvasId -> newest first
   feedback: Map<string, TaskFeedback[]>
   comments: Map<string, ElementComment[]>
+  /** comment id -> the positional CSS path an element comment was anchored
+   *  by before element ids; `backfillElementIds` turns each into a stamp */
+  legacyCommentSelectors: Map<string, string>
   activity: Map<string, ActivityItem[]>
   decisions: Map<string, DesignDecision[]>
   proposals: Map<string, MemoryProposal[]>
@@ -893,8 +925,10 @@ export async function hydrate(): Promise<Hydrated> {
     id: c.id,
     name: c.name,
     pages: c.pages ?? undefined,
+    ...(c.guides?.length ? { guides: c.guides } : {}),
     ownerId: c.ownerId ?? undefined,
-    linkAccess: c.linkAccess === 'edit' ? 'edit' : undefined,
+    /* 'view' / 'comment' / 'edit'; null and anything unknown read as private */
+    linkAccess: storedLinkAccess(c.linkAccess),
     ...(c.publishedAt != null ? { publishedAt: c.publishedAt } : {}),
     ...(c.description ? { description: c.description } : {}),
     ...(isCommunityCategory(c.category) ? { category: c.category } : {}),
@@ -1025,9 +1059,13 @@ export async function hydrate(): Promise<Hydrated> {
   }
 
   const comments = new Map<string, ElementComment[]>()
+  const legacyCommentSelectors = new Map<string, string>()
   for (const row of commentRows) {
     const list = comments.get(row.canvasId) ?? []
     if (list.length >= LOG_CAP) continue
+    if (row.elementId == null && row.frameId != null && row.selector && row.selector !== 'body') {
+      legacyCommentSelectors.set(row.id, row.selector)
+    }
     const interrupted = row.claimedBy != null && row.resolvedAt == null && row.failedAt == null
     const failedAt = row.failedAt ?? (interrupted ? now : undefined)
     const failureReason = row.failureReason ?? (interrupted ? interruptedReason : undefined)
@@ -1089,7 +1127,7 @@ export async function hydrate(): Promise<Hydrated> {
     proposals.set(row.canvasId, list)
   }
 
-  return { canvases, tasks, feedback, comments, activity, decisions, proposals }
+  return { canvases, tasks, feedback, comments, legacyCommentSelectors, activity, decisions, proposals }
 }
 
 /** One-time import of the pre-DB data/store.json so existing canvases survive. */

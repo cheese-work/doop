@@ -5,6 +5,7 @@ import type {
   ActivityItem,
   AgentTask,
   Canvas,
+  CanvasGuide,
   DesignDecision,
   ElementComment,
   Frame,
@@ -15,8 +16,9 @@ import type {
   Presence,
   TaskFeedback,
 } from '../../shared/types'
+import { roleAllows, type CanvasRole } from '../../shared/canvasRole'
 import type { SnapGuide } from './snap'
-import type { Tool } from './tools'
+import { isDrawingTool, type Tool } from './tools'
 
 export interface Viewport {
   x: number
@@ -38,6 +40,10 @@ interface State {
   canvas: Canvas | null
   presences: Record<string, Presence>
   cursors: Record<string, { x: number; y: number }>
+  /** peers' cameras, keyed by clientId. Kept out of `presences` on purpose:
+   *  a camera moves many times a second, and a new presences map re-renders
+   *  everything that reads the roster (every FrameView among them). */
+  peerViewports: Record<string, PeerViewport>
   activity: ActivityItem[]
   /** agent task history (newest first) — every set_status becomes a task */
   tasks: AgentTask[]
@@ -62,6 +68,9 @@ interface State {
   tool: Tool
   /** space bar held: the stage pans on drag instead of drawing a marquee */
   panMode: boolean
+  /** a file is being dragged over the page: every frame keeps its shield up,
+   *  so a drop over a frame being edited still reaches the canvas */
+  fileDragging: boolean
   /** the Inspector panel is showing — opened by clicking a frame's name, not
    *  by mere selection, so clicking around a frame doesn't slide the panel in */
   inspectorOpen: boolean
@@ -72,9 +81,18 @@ interface State {
    *  surface and a click on a Layers row both land here, so the outline in
    *  the frame and the highlighted row stay in step */
   selectedElement: { frameId: string; selector: string } | null
+  /** every element picked in `selectedElement`'s frame, the primary last:
+   *  ⇧-click on the surface or ⇧/⌘-click in the Layers rail adds to it.
+   *  Read it through `pickedSelectors`, which ignores a list that no longer
+   *  holds the primary */
+  selectedElements: string[]
   /** the element under the pointer in the Layers panel — its frame outlines
    *  it on the canvas, the same as a hover over the frame itself */
   hoveredLayer: { frameId: string; selector: string } | null
+  /** a comment pin being dragged: its thread root and where the pointer
+   *  holds it, in world px — CanvasComments draws the ghost there, above
+   *  every frame, while the pin itself hides */
+  commentDrag: { id: string; x: number; y: number } | null
   /** the element properties panel is showing — opened by a pick (a click on
    *  the frame surface or a Layers row), it then follows whatever element is
    *  selected until it is closed */
@@ -85,9 +103,16 @@ interface State {
    *  A plain overlay flag: the panels' own open/closed state is untouched
    *  underneath, so toggling back shows exactly what was open before */
   uiHidden: boolean
+  /** Prototype mode: the element panel shows its Interactions tab and the
+   *  stage draws each interaction's connector to its target frame */
+  prototypeMode: boolean
   viewport: Viewport
   /** live alignment guide lines while a frame drag is snapped to a neighbour */
   snapGuides: SnapGuide[]
+  /** ⇧R — the rulers along the stage's top and left edges; the choice sticks */
+  rulers: boolean
+  /** the ruler guide clicked last, which Delete removes */
+  selectedGuideId: string | null
   connected: boolean
   /** the join for the current canvasId was refused: no such canvas (deleted,
    *  or the id in the URL was never one) — CanvasPage shows a not-found
@@ -188,27 +213,42 @@ interface State {
   toggleSelect(id: string): void
   /** marquee: replace the selection with these frames */
   selectMany(ids: string[]): void
+  /** picks a tool the caller's role allows; drawing needs edit, the
+   *  Comment tool needs comment — anything else is ignored */
   setTool(tool: Tool): void
+  /** the share link changed under an open canvas: the caller's role now */
+  setRole(role: CanvasRole): void
   setPanMode(v: boolean): void
+  setFileDragging(v: boolean): void
   setInspectorOpen(v: boolean): void
   openCtxMenu(menu: { frameId: string; deferPanel: boolean }): void
   closeCtxMenu(): void
   setSelectedElement(el: { frameId: string; selector: string } | null): void
   setHoveredLayer(el: { frameId: string; selector: string } | null): void
+  setCommentDrag(drag: { id: string; x: number; y: number } | null): void
   /** an element picked by the user — on the frame surface or in the Layers
    *  rail: selects it and opens its properties panel; picking nothing clears
    *  the selection and closes the panel */
-  pickElement(el: { frameId: string; selector: string } | null): void
+  pickElement(el: { frameId: string; selector: string } | null, only?: boolean): void
+  /** add the element to the picked set of its frame, or drop it from the
+   *  set; an element in another frame starts a new set */
+  toggleElement(el: { frameId: string; selector: string }): void
   setElementPanelOpen(v: boolean): void
   setLayersOpen(v: boolean): void
   toggleUiHidden(): void
+  setPrototypeMode(on: boolean): void
   setViewport(v: Viewport): void
   setSnapGuides(guides: SnapGuide[]): void
+  toggleRulers(): void
+  selectGuide(id: string | null): void
+  /** add or move (guide set) or remove (null) a ruler guide on the open canvas */
+  setGuideLocal(id: string, guide: CanvasGuide | null): void
   flash(frameId: string, color: string): void
   setStream(frameId: string, actor: { name: string; color: string } | null): void
 }
 
 const LAYERS_OPEN_KEY = 'doop:layers-open'
+const RULERS_KEY = 'doop:rulers'
 /* longer than the slowest real export (Canva: render + verify, ~3 min) */
 const BUSY_NOTICE_MAX_MS = 5 * 60_000
 
@@ -220,11 +260,20 @@ function readLayersOpen(): boolean {
   }
 }
 
+function readRulers(): boolean {
+  try {
+    return localStorage.getItem(RULERS_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
 export const useStore = create<State>((set, get) => ({
   canvas: null,
   activePageId: null,
   presences: {},
   cursors: {},
+  peerViewports: {},
   activity: [],
   tasks: [],
   feedback: [],
@@ -244,15 +293,21 @@ export const useStore = create<State>((set, get) => ({
   selectedId: null,
   tool: 'select',
   panMode: false,
+  fileDragging: false,
   inspectorOpen: false,
   ctxMenu: null,
   selectedElement: null,
+  selectedElements: [],
   hoveredLayer: null,
+  commentDrag: null,
   elementPanelOpen: false,
   layersOpen: readLayersOpen(),
   uiHidden: false,
+  prototypeMode: false,
   viewport: { x: 0, y: 0, zoom: 1 },
   snapGuides: [],
+  rulers: readRulers(),
+  selectedGuideId: null,
   connected: false,
   canvasNotFound: false,
   updateReady: false,
@@ -286,6 +341,7 @@ export const useStore = create<State>((set, get) => ({
         ctxMenu: null,
         following: null,
         snapGuides: [],
+        selectedGuideId: null,
         viewport: { x: 0, y: 0, zoom: 1 },
       }
     }),
@@ -294,10 +350,15 @@ export const useStore = create<State>((set, get) => ({
       if (!s.canvas || (canvasId !== undefined && s.canvas.id !== canvasId)) return {}
       const firstId = canvasPages(s.canvas)[0]!.id
       const canvas = { ...s.canvas, pages, frames: s.canvas.frames.map((f) => ({ ...f, pageId: f.pageId ?? firstId })) }
+      /* a deleted page takes its guides with it, as it does on the server */
+      if (canvas.guides?.some((g) => !pages.some((p) => p.id === g.pageId)))
+        canvas.guides = canvas.guides.filter((g) => pages.some((p) => p.id === g.pageId))
+      const selectedGuideId = canvas.guides?.some((g) => g.id === s.selectedGuideId) ? s.selectedGuideId : null
       const activePageId = pages.some((p) => p.id === s.activePageId) ? s.activePageId : pages[0]!.id
       return {
         canvas,
         activePageId,
+        selectedGuideId,
         ...(activePageId !== s.activePageId
           ? {
               selectedId: null,
@@ -317,27 +378,30 @@ export const useStore = create<State>((set, get) => ({
   setPresences: (list) =>
     set((s) => ({
       presences: Object.fromEntries(list.map((p) => [p.clientId, p])),
+      peerViewports: Object.fromEntries(list.flatMap((p) => (p.viewport ? [[p.clientId, p.viewport]] : []))),
       /* a fresh roster (new canvas, reconnect) without our leader ends the follow */
       ...(s.following && !list.some((p) => p.clientId === s.following) ? { following: null } : {}),
     })),
-  upsertPresence: (p) => set((s) => ({ presences: { ...s.presences, [p.clientId]: p } })),
+  upsertPresence: (p) =>
+    set((s) => ({
+      presences: { ...s.presences, [p.clientId]: p },
+      ...(p.viewport ? { peerViewports: { ...s.peerViewports, [p.clientId]: p.viewport } } : {}),
+    })),
   removePresence: (clientId) =>
     set((s) => {
       const presences = { ...s.presences }
       const cursors = { ...s.cursors }
+      const peerViewports = { ...s.peerViewports }
       delete presences[clientId]
       delete cursors[clientId]
+      delete peerViewports[clientId]
       /* the one we were following left: nothing to track any more */
-      return { presences, cursors, ...(s.following === clientId ? { following: null } : {}) }
+      return { presences, cursors, peerViewports, ...(s.following === clientId ? { following: null } : {}) }
     }),
   setPeerViewport: (clientId, viewport) =>
-    set((s) => {
-      const p = s.presences[clientId]
-      if (!p) return {}
-      return { presences: { ...s.presences, [clientId]: { ...p, viewport } } }
-    }),
+    set((s) => (s.presences[clientId] ? { peerViewports: { ...s.peerViewports, [clientId]: viewport } } : {})),
   setFollowing: (following) => {
-    const pageId = following ? get().presences[following]?.viewport?.pageId : undefined
+    const pageId = following ? get().peerViewports[following]?.pageId : undefined
     if (pageId) get().setActivePage(pageId)
     set({ following })
   },
@@ -538,30 +602,65 @@ export const useStore = create<State>((set, get) => ({
         : { selectedIds: ids, selectedId, inspectorOpen: false, selectedElement: null, elementPanelOpen: false }
     })
   },
-  setTool: (tool) => set({ tool }),
+  setTool: (tool) => set((s) => (toolAllowed(tool, roleOf(s)) ? { tool } : {})),
+  setRole: (role) =>
+    set((s) => {
+      if (!s.canvas) return {}
+      const demoted = !roleAllows(role, 'edit')
+      return {
+        canvas: { ...s.canvas, role },
+        tool: toolAllowed(s.tool, role) ? s.tool : 'select',
+        /* an open Design panel or Inspector would keep offering edits */
+        ...(demoted ? { inspectorOpen: false, elementPanelOpen: false } : {}),
+      }
+    }),
   setPanMode: (panMode) => set({ panMode }),
+  setFileDragging: (fileDragging) => set({ fileDragging }),
   setInspectorOpen: (inspectorOpen) => set({ inspectorOpen }),
   openCtxMenu: (ctxMenu) => set({ ctxMenu }),
   closeCtxMenu: () => set({ ctxMenu: null }),
+  setCommentDrag: (commentDrag) => set({ commentDrag }),
   setHoveredLayer: (hoveredLayer) =>
     set((s) =>
       s.hoveredLayer?.frameId === hoveredLayer?.frameId && s.hoveredLayer?.selector === hoveredLayer?.selector
         ? s
         : { hoveredLayer },
     ),
+  /* re-pointing at the primary keeps the set (the frame resolving a pick
+     lands here too); any other element starts a set of its own */
   setSelectedElement: (selectedElement) =>
     set((s) =>
       s.selectedElement?.frameId === selectedElement?.frameId &&
       s.selectedElement?.selector === selectedElement?.selector
         ? s
-        : { selectedElement },
+        : { selectedElement, selectedElements: selectedElement ? [selectedElement.selector] : [] },
     ),
-  pickElement: (el) =>
+  /* `only` collapses a set onto the element — a plain click on one that is
+     already picked */
+  pickElement: (el, only = false) =>
     set((s) => {
-      if (!el) return s.selectedElement || s.elementPanelOpen ? { selectedElement: null, elementPanelOpen: false } : s
+      if (!el)
+        return s.selectedElement || s.elementPanelOpen
+          ? { selectedElement: null, selectedElements: [], elementPanelOpen: false }
+          : s
       const same = s.selectedElement?.frameId === el.frameId && s.selectedElement?.selector === el.selector
-      if (same && s.elementPanelOpen) return s
-      return { selectedElement: same ? s.selectedElement : el, elementPanelOpen: true }
+      const collapse = only && pickedSelectors(s).length > 1
+      if (same && s.elementPanelOpen && !collapse) return s
+      return same && !collapse
+        ? { elementPanelOpen: true }
+        : { selectedElement: el, selectedElements: [el.selector], elementPanelOpen: true }
+    }),
+  toggleElement: (el) =>
+    set((s) => {
+      const picked = s.selectedElement?.frameId === el.frameId ? pickedSelectors(s) : []
+      if (!picked.includes(el.selector)) {
+        return { selectedElement: el, selectedElements: [...picked, el.selector], elementPanelOpen: true }
+      }
+      const rest = picked.filter((x) => x !== el.selector)
+      const primary = rest.at(-1)
+      return primary
+        ? { selectedElement: { frameId: el.frameId, selector: primary }, selectedElements: rest }
+        : { selectedElement: null, selectedElements: [], elementPanelOpen: false }
     }),
   setElementPanelOpen: (elementPanelOpen) => set({ elementPanelOpen }),
   setLayersOpen: (layersOpen) => {
@@ -572,13 +671,39 @@ export const useStore = create<State>((set, get) => ({
     }
     set({ layersOpen })
   },
-  toggleUiHidden: () => set((s) => ({ uiHidden: !s.uiHidden })),
+  /* hidden guides cannot stay selected: Delete would remove one unseen */
+  toggleUiHidden: () => set((s) => ({ uiHidden: !s.uiHidden, ...(s.uiHidden ? {} : { selectedGuideId: null }) })),
+  setPrototypeMode: (prototypeMode) => set({ prototypeMode }),
   /* every ordinary camera move (pan, zoom, fit, fly-to) is ours, so it ends a follow */
   setViewport: (viewport) => set({ viewport, following: null }),
   /* fires on every pointermove during a drag — skip the no-op transitions
      so unsnapped drags don't render the (empty) guide layer each frame */
   setSnapGuides: (snapGuides) =>
     set((s) => (snapGuides.length === 0 && s.snapGuides.length === 0 ? s : { snapGuides })),
+  toggleRulers: () =>
+    set((s) => {
+      try {
+        localStorage.setItem(RULERS_KEY, s.rulers ? '0' : '1')
+      } catch {
+        /* private mode: the choice just doesn't stick */
+      }
+      return { rulers: !s.rulers, ...(s.rulers ? { selectedGuideId: null } : {}) }
+    }),
+  selectGuide: (selectedGuideId) => set((s) => (s.selectedGuideId === selectedGuideId ? s : { selectedGuideId })),
+  setGuideLocal: (id, guide) =>
+    set((s) => {
+      if (!s.canvas) return {}
+      const guides = s.canvas.guides ?? []
+      const next = !guide
+        ? guides.filter((g) => g.id !== id)
+        : guides.some((g) => g.id === id)
+          ? guides.map((g) => (g.id === id ? guide : g))
+          : [...guides, guide]
+      return {
+        canvas: { ...s.canvas, guides: next },
+        ...(!guide && s.selectedGuideId === id ? { selectedGuideId: null } : {}),
+      }
+    }),
   setStream: (frameId, actor) =>
     set((s) => {
       const streams = { ...s.streams }
@@ -600,3 +725,35 @@ export const useStore = create<State>((set, get) => ({
     }, 1200)
   },
 }))
+
+/** The picked elements' selectors in `selectedElement`'s frame, the primary
+ *  last; empty when nothing is picked. A path that set the primary alone
+ *  leaves a stale list behind, which counts as a set of one. */
+export function pickedSelectors(s: Pick<State, 'selectedElement' | 'selectedElements'>): string[] {
+  const primary = s.selectedElement?.selector
+  if (!primary) return []
+  return s.selectedElements.at(-1) === primary ? s.selectedElements : [primary]
+}
+
+/** The caller's role on the open canvas. A canvas without one (an older
+ *  server) is treated as editable; the server enforces it either way. */
+export function roleOf(s: Pick<State, 'canvas'>): CanvasRole {
+  return s.canvas?.role ?? 'edit'
+}
+
+/** May the caller change the open canvas? View and comment links may not. */
+export function canEditOpenCanvas(s: Pick<State, 'canvas'>): boolean {
+  return roleAllows(roleOf(s), 'edit')
+}
+
+/** May the caller comment on the open canvas? */
+export function canCommentOpenCanvas(s: Pick<State, 'canvas'>): boolean {
+  return roleAllows(roleOf(s), 'comment')
+}
+
+/** Select, Hand and the Comment tool for commenters; every tool for editors. */
+export function toolAllowed(tool: Tool, role: CanvasRole): boolean {
+  if (isDrawingTool(tool)) return roleAllows(role, 'edit')
+  if (tool === 'comment') return roleAllows(role, 'comment')
+  return true
+}

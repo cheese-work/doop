@@ -10,6 +10,9 @@ const mocks = vi.hoisted(() => ({
   workspaceMembers: vi.fn((_id: string): string[] => []),
 }))
 vi.mock('../server/db/persist.ts', () => ({
+  saveFrame: () => {},
+  saveFrameNow: async () => {},
+  saveCanvas: () => {},
   saveTask: () => {},
   saveFeedback: () => {},
   saveComment: () => {},
@@ -49,7 +52,7 @@ const FRAME: Frame = {
   id: 'f1',
   canvasId: CANVAS.id,
   name: 'Hero',
-  html: '<p/>',
+  html: '<h1>Hi</h1><p/>',
   x: 0,
   y: 0,
   width: 10,
@@ -80,6 +83,11 @@ beforeEach(() => {
     proposals: new Map(),
   })
   vi.spyOn(store, 'getFrame').mockImplementation((id) => (id === FRAME.id ? FRAME : undefined))
+  /* a comment stamps its element's id into the frame: apply it to the fixture */
+  vi.spyOn(store, 'updateFrame').mockImplementation((id, patch) => {
+    const f = store.getFrame(id)
+    return f ? Object.assign(f, patch) : undefined
+  })
   vi.spyOn(store, 'getCanvas').mockImplementation((id) => (id === CANVAS.id ? { ...CANVAS, pages: PAGES } : undefined))
   unsubscribe = events.onCanvasEvent(notify.onCanvasEvent)
 })

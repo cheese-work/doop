@@ -171,6 +171,12 @@ describe('MCP ChatGPT app contract', () => {
       expect(byName.get_frame_screenshot!.annotations!.readOnlyHint).toBe(true)
       expect(byName.search_images!.annotations!.openWorldHint).toBe(true)
       expect(byName.list_backgrounds!.annotations!.openWorldHint).toBe(false)
+      expect(byName.save_decision!.annotations!.idempotentHint).toBe(true)
+      /* calls OpenAI on the person's account */
+      expect(byName.generate_image!.annotations!.openWorldHint).toBe(true)
+      /* start=true clears the frame; find-and-replace can delete content */
+      expect(byName.append_frame_html!.annotations!.destructiveHint).toBe(true)
+      expect(byName.edit_frame_html!.annotations!.destructiveHint).toBe(true)
     } finally {
       await close()
     }

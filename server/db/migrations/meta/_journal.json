@@ -236,15 +236,57 @@
     {
       "idx": 34,
       "version": "7",
-      "when": 1793092053628,
-      "tag": "0034_comment_events",
+      "when": 1793458475242,
+      "tag": "0034_frame_approval",
       "breakpoints": true
     },
     {
       "idx": 35,
       "version": "7",
+      "when": 1793458475243,
+      "tag": "0035_approval_automations",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1793458475244,
+      "tag": "0036_canvas_guides",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1793458475245,
+      "tag": "0037_local_agent_effort",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1793458475246,
+      "tag": "0038_reasoning_effort",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1793458475247,
+      "tag": "0039_comment_element_ids",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1793092053628,
+      "tag": "0040_comment_events",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
       "when": 1793458475241,
-      "tag": "0035_canvas_bridge",
+      "tag": "0041_canvas_bridge",
       "breakpoints": true
     }
   ]

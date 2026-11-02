@@ -13,8 +13,8 @@ import {
 } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 import type { BridgeAgent } from '../../shared/bridge.ts'
-import type { CanvasPageInfo } from '../../shared/types.ts'
-import type { Schedule, Step } from '../../shared/automations.ts'
+import type { CanvasGuide, CanvasPageInfo, FrameApproval } from '../../shared/types.ts'
+import type { AutomationRunState, AutomationTrigger, Schedule, Step } from '../../shared/automations.ts'
 
 /** ActivityKit tokens are delivery secrets: never return them through read APIs. */
 export const liveActivities = pgTable('live_activities', {
@@ -50,6 +50,8 @@ export const liveActivityStarters = pgTable('live_activity_starters', {
 
 export const canvases = pgTable('canvases', {
   pages: jsonb('pages').$type<CanvasPageInfo[]>(),
+  /** ruler guides of every page; null = none */
+  guides: jsonb('guides').$type<CanvasGuide[]>(),
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   ownerId: text('owner_id'),
@@ -171,6 +173,7 @@ export const frames = pgTable(
     hidden: boolean('hidden'),
     /** Figma-style lock; null = unlocked */
     locked: boolean('locked'),
+    approval: jsonb('approval').$type<FrameApproval>(),
   },
   (t) => [index('frames_canvas_idx').on(t.canvasId)],
 )
@@ -365,10 +368,14 @@ export const comments = pgTable(
   {
     id: text('id').primaryKey(),
     canvasId: text('canvas_id').notNull(),
-    /* element comment: the frame + selector + snippet; canvas comment: no
-       frame, a page and a world point instead (selector/snippet empty) */
+    /* element comment: the frame + the element's data-doop-id + snippet;
+       frame comment: the frame and a design point; canvas comment: no frame,
+       a page and a world point instead. `selector` is the positional CSS path
+       comments were anchored by before element ids: read once at boot to
+       stamp the element and fill `element_id`, never written again. */
     frameId: text('frame_id'),
-    selector: text('selector').notNull(),
+    elementId: text('element_id'),
+    selector: text('selector'),
     snippet: text('snippet').notNull(),
     pageId: text('page_id'),
     x: doublePrecision('x'),
@@ -591,6 +598,8 @@ export const modelAccounts = pgTable('model_accounts', {
   apiKey: text('api_key'),
   /** the model tier this user picked; null = the server default */
   model: text('model'),
+  /** OpenAI reasoning effort this user picked; null = the server default */
+  reasoningEffort: text('reasoning_effort'),
   connectedAt: bigint('connected_at', { mode: 'number' }).notNull(),
   updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
 })
@@ -654,6 +663,8 @@ export const automations = pgTable(
     name: text('name').notNull(),
     enabled: boolean('enabled').notNull().default(true),
     schedule: jsonb('schedule').$type<Schedule>().notNull(),
+    trigger: jsonb('trigger').$type<AutomationTrigger>().notNull().default({ type: 'schedule' }),
+    approvalSince: bigint('approval_since', { mode: 'number' }).notNull().default(0),
     steps: jsonb('steps').$type<Step[]>().notNull(),
     /** when the scheduler fires it next; null while disabled or incomplete */
     nextRunAt: bigint('next_run_at', { mode: 'number' }),
@@ -678,8 +689,21 @@ export const automationRuns = pgTable(
     canvasId: text('canvas_id'),
     /** 'reconnect' when the fix is re-authorising an integration */
     failure: text('failure'),
+    state: jsonb('state').$type<AutomationRunState>(),
+    leaseUntil: bigint('lease_until', { mode: 'number' }).notNull().default(0),
   },
   (t) => [index('automation_runs_automation_idx').on(t.automationId)],
+)
+
+/** Approval receipts outlive the run log so pruning cannot dispatch a design twice. */
+export const automationApprovals = pgTable(
+  'automation_approvals',
+  {
+    automationId: text('automation_id').notNull(),
+    frameId: text('frame_id').notNull(),
+    approvedAt: bigint('approved_at', { mode: 'number' }).notNull(),
+  },
+  (t) => [uniqueIndex('automation_approvals_event_idx').on(t.automationId, t.frameId, t.approvedAt)],
 )
 
 /** Local execution preference; Claude credentials never leave the desktop. */
@@ -687,6 +711,8 @@ export const localAgentPreferences = pgTable('local_agent_preferences', {
   userId: text('user_id').primaryKey(),
   enabled: boolean('enabled').notNull().default(false),
   model: text('model').notNull().default('default'),
+  /** `claude --effort`; null = the CLI's own setting */
+  effort: text('effort'),
 })
 
 /** Per-user notification switches. No row means everything is on: comment

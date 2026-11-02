@@ -3,6 +3,8 @@ import * as CollapsiblePrimitive from '@radix-ui/react-collapsible'
 
 import { cn } from '@/lib/utils'
 
+import { ChevronRightIcon } from './icons'
+
 /* A disclosure whose trigger is actually wired to its panel: Radix sets
    aria-controls and aria-expanded on the trigger and hides the content from
    the accessibility tree when closed — which two hand-rolled `{open && …}`
@@ -24,9 +26,10 @@ function CollapsibleTrigger({
       {...props}
     >
       {children}
-      <span aria-hidden className="transition-transform duration-150 group-data-[state=open]:rotate-90">
-        ▸
-      </span>
+      <ChevronRightIcon
+        size={12}
+        className="flex-none transition-transform duration-150 group-data-[state=open]:rotate-90"
+      />
     </CollapsiblePrimitive.Trigger>
   )
 }

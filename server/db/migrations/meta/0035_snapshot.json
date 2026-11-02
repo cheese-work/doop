@@ -1,6 +1,6 @@
 {
-  "id": "a28be5ec-13ef-4021-9044-bd84cf3709e5",
-  "prevId": "78b0f45a-bb22-4da9-8971-ed7179b8f80c",
+  "id": "cf3ea864-fb7f-425d-8ab8-14e2920e5a60",
+  "prevId": "f4e46d71-8a95-4dbb-97d1-5ae3063ef59f",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -290,6 +290,65 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.automation_approvals": {
+      "name": "automation_approvals",
+      "schema": "",
+      "columns": {
+        "automation_id": {
+          "name": "automation_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "frame_id": {
+          "name": "frame_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "approved_at": {
+          "name": "approved_at",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "automation_approvals_event_idx": {
+          "name": "automation_approvals_event_idx",
+          "columns": [
+            {
+              "expression": "automation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "frame_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "approved_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.automation_runs": {
       "name": "automation_runs",
       "schema": "",
@@ -347,6 +406,19 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "state": {
+          "name": "state",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lease_until": {
+          "name": "lease_until",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
         }
       },
       "indexes": {
@@ -407,6 +479,20 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": true
+        },
+        "trigger": {
+          "name": "trigger",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{\"type\":\"schedule\"}'::jsonb"
+        },
+        "approval_since": {
+          "name": "approval_since",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
         },
         "steps": {
           "name": "steps",
@@ -570,62 +656,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.canvas_bridge": {
-      "name": "canvas_bridge",
-      "schema": "",
-      "columns": {
-        "canvas_id": {
-          "name": "canvas_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "agent_ref": {
-          "name": "agent_ref",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "agent_name": {
-          "name": "agent_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "agents": {
-          "name": "agents",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "watcher_seen_at": {
-          "name": "watcher_seen_at",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "updated_by": {
-          "name": "updated_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.canvas_members": {
       "name": "canvas_members",
       "schema": "",
@@ -747,84 +777,6 @@
         }
       },
       "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.comment_events": {
-      "name": "comment_events",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "bigserial",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "canvas_id": {
-          "name": "canvas_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "comment_id": {
-          "name": "comment_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "parent_id": {
-          "name": "parent_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "from_user_id": {
-          "name": "from_user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "at": {
-          "name": "at",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "acked_at": {
-          "name": "acked_at",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "comment_events_unacked_idx": {
-          "name": "comment_events_unacked_idx",
-          "columns": [
-            {
-              "expression": "canvas_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"comment_events\".\"acked_at\" is null",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
@@ -1381,6 +1333,12 @@
           "type": "boolean",
           "primaryKey": false,
           "notNull": false
+        },
+        "approval": {
+          "name": "approval",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -1691,6 +1649,12 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "refresh_token": {
+          "name": "refresh_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "expires_at": {
           "name": "expires_at",
