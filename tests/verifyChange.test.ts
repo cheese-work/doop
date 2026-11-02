@@ -30,7 +30,9 @@ const plan = (env: NodeJS.ProcessEnv = {}) => {
   return {
     related: line('related'),
     browser: line('browser'),
-    incomplete: line('browser-incomplete')?.[0],
+    incomplete: line('browser-incomplete')[0],
+    all: line('related-all')[0],
+    build: line('build')[0],
   }
 }
 
@@ -42,6 +44,8 @@ beforeEach(() => {
   sh('git', ['init', '-q', '-b', 'main'])
   write('src/kept.ts', 'export const kept = 1\n')
   write('src/gone.ts', 'export const gone = 1\n')
+  write('server/api.ts', 'export const api = 1\n')
+  write('public/snippet.js', 'var s = 1\n')
   write('tests/gone.test.ts', "import { gone } from '../src/gone.ts'\n")
   write('tests/kept.test.ts', "import { kept } from '../src/kept.ts'\n")
   write('tests/keptBrowser.test.ts', `${BROWSER_IMPORT}\nimport { kept } from '../src/kept.ts'\n`)
@@ -53,17 +57,37 @@ beforeEach(() => {
 afterEach(() => rmSync(repo, { recursive: true, force: true }))
 
 describe('verify-change plan', () => {
-  it('selects the importers of a deleted module instead of exiting on a deletion-only diff', () => {
+  it('falls back to the whole non-browser suite when a module is deleted, even on a deletion-only diff', () => {
     sh('git', ['rm', '-q', 'src/gone.ts'])
     commit('delete gone')
-    expect(plan().related).toContain('tests/gone.test.ts')
+    expect(plan().all).toBe('yes')
   })
 
-  it('still selects the importers of a deleted module when an unrelated file also changed', () => {
+  it('does the same when an unrelated file also changed, and still selects that file', () => {
     sh('git', ['rm', '-q', 'src/gone.ts'])
     write('src/kept.ts', 'export const kept = 2\n')
     commit('delete gone, edit kept')
-    expect(plan().related).toEqual(expect.arrayContaining(['tests/gone.test.ts', 'src/kept.ts']))
+    const p = plan()
+    expect(p.all).toBe('yes')
+    expect(p.related).toContain('src/kept.ts')
+  })
+
+  it('keeps the targeted run when nothing is deleted', () => {
+    write('src/kept.ts', 'export const kept = 2\n')
+    commit('edit')
+    expect(plan().all).toBe('no')
+  })
+
+  it('builds when a shipped asset is deleted', () => {
+    sh('git', ['rm', '-q', 'public/snippet.js'])
+    commit('delete snippet')
+    expect(plan().build).toBe('yes')
+  })
+
+  it('reports browser coverage incomplete when only server/ changed', () => {
+    write('server/api.ts', 'export const api = 2\n')
+    commit('edit api')
+    expect(plan().incomplete).toBe('yes')
   })
 
   it('runs a browser test that the diff changes or that imports a changed module, and no other', () => {
