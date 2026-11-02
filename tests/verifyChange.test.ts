@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 /* .claude/skills/verify-change/verify.sh picks what to run from a diff. VERIFY_PLAN=1 prints that
    selection and stops, so these tests drive it against a throwaway repo instead of running the gates. */
+/* assembled so this file does not itself match the script's search for browser tests */
+const BROWSER_IMPORT = `import p from 'pup${'peteer'}-core'`
 const script = resolve('.claude/skills/verify-change/verify.sh')
 
 let repo: string
@@ -44,8 +46,8 @@ beforeEach(() => {
   write('src/gone.ts', 'export const gone = 1\n')
   write('tests/gone.test.ts', "import { gone } from '../src/gone.ts'\n")
   write('tests/kept.test.ts', "import { kept } from '../src/kept.ts'\n")
-  write('tests/keptBrowser.test.ts', "import puppeteer from 'puppeteer-core'\nimport { kept } from '../src/kept.ts'\n")
-  write('tests/otherBrowser.test.ts', "import puppeteer from 'puppeteer-core'\n")
+  write('tests/keptBrowser.test.ts', `${BROWSER_IMPORT}\nimport { kept } from '../src/kept.ts'\n`)
+  write('tests/otherBrowser.test.ts', `${BROWSER_IMPORT}\n`)
   commit('base')
   sh('git', ['switch', '-q', '-c', 'work'])
 })
@@ -68,7 +70,7 @@ describe('verify-change plan', () => {
 
   it('runs a browser test that the diff changes or that imports a changed module, and no other', () => {
     write('src/kept.ts', 'export const kept = 2\n')
-    write('tests/otherBrowser.test.ts', "import puppeteer from 'puppeteer-core'\n// changed\n")
+    write('tests/otherBrowser.test.ts', `${BROWSER_IMPORT}\n// changed\n`)
     commit('edit')
     expect(plan().browser.sort()).toEqual(['tests/keptBrowser.test.ts', 'tests/otherBrowser.test.ts'])
   })
