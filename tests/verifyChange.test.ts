@@ -23,15 +23,13 @@ const commit = (msg: string) => {
 }
 const plan = (env: NodeJS.ProcessEnv = {}) => {
   const out = sh('bash', [script, 'main'], { VERIFY_PLAN: '1', ...env })
-  const line = (key: string) =>
-    out
-      .match(new RegExp(`^plan ${key}: ?(.*)$`, 'm'))?.[1]
-      .trim()
-      .split(/\s+/)
-      .filter(Boolean)
+  const line = (key: string) => {
+    const raw = out.match(new RegExp(`^plan ${key}: ?(.*)$`, 'm'))?.[1] ?? ''
+    return raw.trim().split(/\s+/).filter(Boolean)
+  }
   return {
-    related: line('related') ?? [],
-    browser: line('browser') ?? [],
+    related: line('related'),
+    browser: line('browser'),
     incomplete: line('browser-incomplete')?.[0],
   }
 }
