@@ -736,8 +736,22 @@ export function saveCommentNow(c: ElementComment): Promise<void> {
   return writeComment(c)
 }
 
-async function writeComment(c: ElementComment): Promise<void> {
+/* the tail of each comment's writes still out: the next write for that id waits
+   for it, so they land in the order they were made, whichever call awaits */
+const commentWrites = new Map<string, Promise<void>>()
+
+/** The row is taken now; its write runs after every earlier write of the same
+ *  comment, so a slow write with an old copy cannot land over a newer one. */
+function writeComment(c: ElementComment): Promise<void> {
   const row = commentRow(c)
+  const write = (commentWrites.get(c.id) ?? Promise.resolve()).then(() => upsertComment(row))
+  const tail = write.catch(() => {})
+  commentWrites.set(c.id, tail)
+  void tail.then(() => commentWrites.get(c.id) === tail && commentWrites.delete(c.id))
+  return write
+}
+
+async function upsertComment(row: ReturnType<typeof commentRow>): Promise<void> {
   await db
     .insert(t.comments)
     .values(row)

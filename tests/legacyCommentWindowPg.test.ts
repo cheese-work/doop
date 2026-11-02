@@ -56,6 +56,7 @@ describe.skipIf(!PG_URL)('a legacy comment older than the window, across a resta
   /* before each test: the old comment still carries its selector, 100 newer ones push it out of the window */
   beforeEach(async () => {
     vi.restoreAllMocks()
+    await pool.query('drop trigger if exists slow_stale_resolve on comments')
     for (const table of ['comment_events', 'comments', 'frames', 'canvases']) await pool.query(`delete from ${table}`)
     await persist.saveCanvasCopy(CANVAS)
     const insert = `insert into comments (id, canvas_id, frame_id, element_id, selector, snippet, from_name, text, at)
@@ -113,6 +114,11 @@ describe.skipIf(!PG_URL)('a legacy comment older than the window, across a resta
       await gate
       return write(frame)
     })
+    /* and hold the resolve's own write (the copy without the id) before it reaches the row, so the backfill writes first */
+    await pool.query(`create or replace function slow_stale_resolve() returns trigger language plpgsql as $$
+      begin perform pg_sleep(0.6); return new; end $$`)
+    await pool.query(`create trigger slow_stale_resolve before insert on comments for each row
+      when (new.element_id is null and new.resolved_by is not null) execute function slow_stale_resolve()`)
     const backfill = actions.backfillElementIds(data.legacyCommentSelectors)
     await vi.waitFor(() => expect(held).toHaveBeenCalled())
 
@@ -120,10 +126,10 @@ describe.skipIf(!PG_URL)('a legacy comment older than the window, across a resta
     release()
     expect(await backfill).toEqual({ stamped: 1, lost: 0, failed: 0 })
 
-    await vi.waitFor(async () => {
-      const { rows } = await pool.query('select element_id, resolved_by from comments where id = $1', ['legacy-old'])
-      expect(rows[0].resolved_by).toBe('bob')
-      expect(rows[0].element_id).toMatch(/^[a-z0-9]{6}$/)
-    })
+    /* let the held write finish: it must not have undone the id */
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+    const { rows } = await pool.query('select element_id, resolved_by from comments where id = $1', ['legacy-old'])
+    expect(rows[0].resolved_by).toBe('bob')
+    expect(rows[0].element_id).toMatch(/^[a-z0-9]{6}$/)
   })
 })
