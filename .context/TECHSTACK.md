@@ -39,6 +39,10 @@
 - `@electric-sql/pglite` 0.5.4 - embedded Postgres so `bun run dev` works with zero external
   services.
 - `pg` 8.22.0 - Postgres driver for the real-database path.
+- Chat bridge (`server/bridge.ts`, `shared/bridge.ts`): one `canvas_bridge` row per canvas holds the Multica
+  agent people chat with, the agent list the watcher publishes (`set_bridge_agents`) and its liveness
+  stamp (`bridge_heartbeat`). `GET/PUT /api/canvases/:id/bridge` reads and selects; status (`ok`,
+  `no_agent_selected`, `agent_not_found`, `watcher_unreachable` after 2 min) is derived on read.
 
 ## 4. Canvas Drawing
 

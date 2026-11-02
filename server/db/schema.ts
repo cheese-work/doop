@@ -12,6 +12,7 @@ import {
   bigserial,
 } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
+import type { BridgeAgent } from '../../shared/bridge.ts'
 import type { CanvasPageInfo } from '../../shared/types.ts'
 import type { Schedule, Step } from '../../shared/automations.ts'
 
@@ -409,6 +410,19 @@ export const commentEvents = pgTable(
       .where(sql`${t.ackedAt} is null`),
   ],
 )
+
+/** Chat bridge, one row per canvas: the Multica agent the canvas chats with
+ *  (agent_ref/agent_name), the list the watcher last published and when it
+ *  last reported in. Status is derived on read. */
+export const canvasBridge = pgTable('canvas_bridge', {
+  canvasId: text('canvas_id').primaryKey(),
+  agentRef: text('agent_ref'),
+  agentName: text('agent_name'),
+  agents: jsonb('agents').$type<BridgeAgent[]>().notNull().default([]),
+  watcherSeenAt: bigint('watcher_seen_at', { mode: 'number' }),
+  updatedBy: text('updated_by'),
+  updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
+})
 
 /** Uploaded image assets: metadata only — bytes live in object storage (or
  *  ./data/assets in dev). canvas_id is a housekeeping hint, not ownership:

@@ -52,6 +52,7 @@ import * as github from './github.ts'
 import * as githubApp from './githubApp.ts'
 import { seed } from './seed.ts'
 import * as allowance from './allowance.ts'
+import { bridgeRouter } from './bridgeRoutes.ts'
 import * as modelAccounts from './modelAccounts.ts'
 import { getLocalAgentPreference, saveLocalAgentPreference } from './localAgentPreferences.ts'
 import { serverTierInfo } from './agentModel.ts'
@@ -1721,6 +1722,8 @@ app.post('/api/canvases/:id/comments', async (req, res) => {
   }
   res.json(comment)
 })
+
+app.use(bridgeRouter((req, res, canvasId) => requireCanvas(req, res, canvasId)))
 
 app.post('/api/comments/:id/replies', async (req, res) => {
   const found = await actions.findComment(req.params.id)

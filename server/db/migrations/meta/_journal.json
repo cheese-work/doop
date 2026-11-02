@@ -239,6 +239,13 @@
       "when": 1793092053628,
       "tag": "0034_comment_events",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1793458475241,
+      "tag": "0035_canvas_bridge",
+      "breakpoints": true
     }
   ]
 }
