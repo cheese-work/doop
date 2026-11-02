@@ -656,7 +656,7 @@ export async function backfillElementIds(
 ): Promise<{ stamped: number; lost: number; failed: number }> {
   const byFrame = new Map<string, Array<{ comment: ElementComment; selector: string }>>()
   for (const [commentId, selector] of legacy) {
-    const comment = findInMemory(commentId)
+    const comment = findInMemory(commentId) ?? (await persist.findCommentRow(commentId))
     if (!comment?.frameId || !store.getFrame(comment.frameId)) continue
     const list = byFrame.get(comment.frameId) ?? []
     list.push({ comment, selector })
@@ -696,7 +696,8 @@ export async function backfillElementIds(
         if (reanchored(comment)) continue
         comment.elementId = id
         await persist.saveCommentNow(comment)
-        broadcast(comment.canvasId, { type: 'comment', comment })
+        /* a comment outside the window is not in the room: it only gets its id */
+        if (findInMemory(comment.id) === comment) broadcast(comment.canvasId, { type: 'comment', comment })
         counts.stamped++
       }
       for (const comment of lost) {
@@ -716,7 +717,8 @@ export async function backfillElementIds(
    comment in the log and saved its new anchor (spending the selector), so
    the object the backfill holds is stale and writing it would undo the move */
 function reanchored(comment: ElementComment): boolean {
-  return findInMemory(comment.id) !== comment
+  const live = findInMemory(comment.id)
+  return live !== undefined && live !== comment
 }
 
 /** Re-pin a thread where its root pin was dropped: on an element, on a

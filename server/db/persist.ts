@@ -1061,11 +1061,14 @@ export async function hydrate(): Promise<Hydrated> {
   const comments = new Map<string, ElementComment[]>()
   const legacyCommentSelectors = new Map<string, string>()
   for (const row of commentRows) {
-    const list = comments.get(row.canvasId) ?? []
-    if (list.length >= LOG_CAP) continue
+    /* every legacy anchor is backfilled, also on a comment older than the
+       window: it is restored from its row later, and resolving it would
+       otherwise save the row again without its selector */
     if (row.elementId == null && row.frameId != null && row.selector && row.selector !== 'body') {
       legacyCommentSelectors.set(row.id, row.selector)
     }
+    const list = comments.get(row.canvasId) ?? []
+    if (list.length >= LOG_CAP) continue
     const interrupted = row.claimedBy != null && row.resolvedAt == null && row.failedAt == null
     const failedAt = row.failedAt ?? (interrupted ? now : undefined)
     const failureReason = row.failureReason ?? (interrupted ? interruptedReason : undefined)

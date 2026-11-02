@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   frameFails: false,
   /* runs while a frame write is out, for whatever a person does meanwhile */
   duringFrameWrite: undefined as (() => Promise<unknown>) | undefined,
+  /* stored comments that have left the in-memory window */
+  stored: new Map<string, unknown>(),
 }))
 vi.mock('../server/db/persist.ts', () => ({
   saveTask: () => {},
@@ -23,7 +25,7 @@ vi.mock('../server/db/persist.ts', () => ({
   saveNewComment: async (c: ElementComment) => {
     writes.push(`comment:${c.id}`)
   },
-  findCommentRow: async () => undefined,
+  findCommentRow: async (id: string) => mocks.stored.get(id),
   saveActivity: () => {},
   saveDecision: () => {},
   saveProposal: () => {},
@@ -78,6 +80,7 @@ beforeEach(() => {
   writes.length = 0
   mocks.frameFails = false
   mocks.duringFrameWrite = undefined
+  mocks.stored.clear()
   broadcast.mockClear()
   canvas = {
     id: 'c1',
@@ -195,6 +198,17 @@ describe('backfillElementIds', () => {
       type: 'comment',
       comment: expect.objectContaining({ id: 'k1', frameId: 'f1' }),
     })
+  })
+
+  it('anchors a comment older than the window from its stored row, without putting it in the room', async () => {
+    const old = comment('old', 'f1')
+    mocks.stored.set('old', old)
+    const counts = await actions.backfillElementIds(new Map([['old', 'body > p:nth-of-type(1)']]))
+    expect(counts).toEqual({ stamped: 1, lost: 0, failed: 0 })
+    expect(writes).toEqual(['frame:f1', 'comment:old'])
+    expect(old.elementId).toMatch(/^[a-z0-9]{6}$/)
+    expect(actions.getComments('c1').some((c) => c.id === 'old')).toBe(false)
+    expect(broadcast).not.toHaveBeenCalledWith('c1', expect.objectContaining({ type: 'comment', comment: old }))
   })
 
   it('survives frame HTML nested deeper than the call stack', async () => {
