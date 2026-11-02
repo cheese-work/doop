@@ -18,14 +18,15 @@ Proof means a command you ran and output you read. "Should work" is not proof.
 
 The script runs exactly what CI runs, narrowed to your diff:
 
-| Gate         | Command                                                              | Same as CI job |
-| ------------ | -------------------------------------------------------------------- | -------------- |
-| related-tests | `vitest related --run <changed ts/tsx>` (module graph, not filename) | test           |
-| typecheck    | `bun run typecheck`                                                  | typecheck      |
-| lint         | `bun run lint`                                                       | lint           |
-| format       | `prettier --check` on changed files                                  | lint           |
-| doc-lint     | `bun run doc-lint`                                                   | lint           |
-| build        | `bun run --bun build`, only if `src/`, `shared/`, `public/`, `scripts/` or build config changed | build |
+| Gate          | Command                                                                                                                 | Same as CI job |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------- | -------------- |
+| related-tests | `vitest related --run <changed ts/tsx>` plus tests that mention a deleted module (module graph, not filename)          | test           |
+| browser-tests | `vitest run --maxWorkers=1 <puppeteer files>` the diff changes, or that mention a changed module                        | test           |
+| typecheck     | `bun run typecheck`                                                                                                     | typecheck      |
+| lint          | `bun run lint`                                                                                                          | lint           |
+| format        | `prettier --check` on changed files                                                                                     | lint           |
+| doc-lint      | `bun run doc-lint`                                                                                                      | lint           |
+| build         | `bun run --bun build`, only if `src/`, `shared/`, `public/`, `scripts/` or build config changed                         | build          |
 
 The full suite and the PR-title commitlint check stay with CI. Do not add CI jobs here.
 
@@ -38,12 +39,14 @@ The full suite and the PR-title commitlint check stay with CI. Do not add CI job
 ## Reading failures
 
 - `typecheck`, `lint`, `format`, `doc-lint` failures are real. Fix them.
-- The script skips test files that import `puppeteer` (real Chromium). `related` reaches them through hub files like `src/lib/api.ts`, and on a loaded shared X99 they time out (`Navigation timeout`, `Hook timed out`) in changes that never touch them. If your diff touches canvas, frame or editor UI, run the matching files by hand: `bunx vitest run --maxWorkers=1 tests/<area>Browser.test.ts` (`grep -l puppeteer tests/*` lists them). CI runs them all.
+- Real-Chromium tests (files that import `puppeteer`) time out on a loaded shared X99, and `related` reaches them through hub files like `src/lib/api.ts`. The script keeps them out of the parallel pass and runs only the ones your diff changes or that mention a changed module, one at a time.
+- If the diff touches `src/` or `shared/` and other puppeteer files did not run, the last line reads `VERIFY PASS (browser coverage incomplete)`. That is not a full pass. Run `VERIFY_BROWSER=all .claude/skills/verify-change/verify.sh` (slow, serial), or say in the PR that CI covers them.
+- A deleted module has no import graph. The script runs the tests that mention its name. `typecheck` catches the importers that still compile against it.
 - `doc-lint` warnings (stale docs) pass. Errors fail.
 
 ## Evidence
 
-Paste into the PR body: the exact command, the `:::` gate lines, the `VERIFY` line, and the red and green output for new tests. Say which gates SKIPped and why.
+Paste into the PR body: the exact command, the `:::` gate lines, the `VERIFY` line, and the red and green output for new tests. Say which gates SKIPped and why, and whether the browser coverage was complete.
 
 ## Cleanup
 
