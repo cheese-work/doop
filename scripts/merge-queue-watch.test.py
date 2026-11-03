@@ -104,7 +104,7 @@ class MainTest(unittest.TestCase):
         graphql, rules = (call.args[0] for call in api.call_args_list)
         self.assertIn("graphql", graphql)
         self.assertTrue(any("mergeQueue" in part for part in graphql))
-        self.assertIn("repos/cheese-work/multica/rules/branches/main", rules)
+        self.assertIn("repos/cheese-work/doop/rules/branches/main", rules)
 
     def test_repo_without_required_checks_still_alarms_on_age(self):
         self.assertEqual(self.run_main("stuck-awaiting-checks", required=[])[0], 1)
