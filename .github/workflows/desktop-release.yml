@@ -1,3 +1,4 @@
+# ci-policy: class=deploy
 # Builds the distributable desktop installers: a universal macOS DMG (Apple
 # Silicon + Intel) and a Windows NSIS setup .exe.
 # - Tag `desktop-v*` → builds both, then one release job attaches them to a
