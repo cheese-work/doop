@@ -20,6 +20,7 @@ import type {
 } from '../../shared/types'
 import type { Automation, AutomationRun, Schedule, Step } from '../../shared/automations'
 import type { BillingInterval, Plan } from '../../shared/billing'
+import type { BridgeInfo } from '../../shared/bridge'
 
 export type HomeActivity = ActivityItem & { canvasId: string; canvasName: string }
 
@@ -482,6 +483,11 @@ export const api = {
   /** a comment pinned to a point on the canvas (world coordinates on a page) rather than to an element */
   addCanvasComment: (canvasId: string, input: { pageId: string; x: number; y: number; text: string }) =>
     req(`/api/canvases/${canvasId}/comments`, { method: 'POST', body: JSON.stringify(input) }),
+  /** which Multica agent the canvas chats with, the agents the watcher published, and the derived status */
+  getBridge: (canvasId: string) => req<BridgeInfo>(`/api/canvases/${canvasId}/bridge`),
+  /** select the agent (null clears); answers the refreshed bridge */
+  putBridge: (canvasId: string, agentRef: string | null) =>
+    req<BridgeInfo>(`/api/canvases/${canvasId}/bridge`, { method: 'PUT', body: JSON.stringify({ agentRef }) }),
   replyComment: (commentId: string, text: string) =>
     req(`/api/comments/${commentId}/replies`, { method: 'POST', body: JSON.stringify({ text }) }),
   resolveComment: (commentId: string) => req(`/api/comments/${commentId}/resolve`, { method: 'POST' }),
