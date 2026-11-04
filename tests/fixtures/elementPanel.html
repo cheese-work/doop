@@ -16,7 +16,14 @@
       import { clearHistory, undo, redo } from '/src/lib/history.ts'
       import { editElementGeometry } from '/src/lib/frameBridge.ts'
       import '/src/styles.css'
+      let mounted = true
+      let remount = () => {}
       window.elementPanelHarness = {
+        setMounted: (value) => {
+          mounted = value
+          remount()
+        },
+        unselectFrame: () => useStore.setState({ selectedIds: [] }),
         seed: (frame) => {
           clearHistory()
           useStore.getState().setSelectedElement(null)
@@ -44,12 +51,14 @@
       }
       function Fixture() {
         const frame = useStore((s) => s.canvas?.frames[0])
+        const [, force] = React.useState(0)
+        remount = () => force((n) => n + 1)
         const selected = useStore((s) => s.selectedElement)
         if (!frame) return null
         return React.createElement(
           TooltipProvider,
           null,
-          React.createElement(FrameView, { frame, layoutZoom: 1 }),
+          React.createElement(FrameView, { frame, layoutZoom: 1, mounted }),
           selected && React.createElement(ElementPanel, { frame, selector: selected.selector, style: { right: 12 } }),
         )
       }
