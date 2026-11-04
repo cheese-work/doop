@@ -15,6 +15,8 @@ beforeAll(async () => {
   dist = fs.mkdtempSync(path.join(os.tmpdir(), 'doop-dist-'))
   fs.mkdirSync(path.join(dist, 'assets'))
   fs.writeFileSync(path.join(dist, 'index.html'), `<html>${'x'.repeat(4000)}</html>`)
+  fs.copyFileSync('public/sw.js', path.join(dist, 'sw.js'))
+  fs.copyFileSync('public/offline.html', path.join(dist, 'offline.html'))
   fs.writeFileSync(path.join(dist, 'assets', 'index-ABC123.js'), `console.log("${'a'.repeat(50_000)}")`)
   const app = express()
   serveClient(app, dist)
@@ -43,5 +45,32 @@ describe('serveClient', () => {
     const res = await fetch(`${base}/c/MJ4yJPTHt6`)
     expect(res.status).toBe(200)
     expect(res.headers.get('cache-control')).toMatch(/no-cache/)
+  })
+
+  it('serves the service worker as JS, uncached, with scope /', async () => {
+    const res = await fetch(`${base}/sw.js`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toMatch(/javascript/)
+    expect(res.headers.get('cache-control')).toMatch(/no-cache/)
+    expect(res.headers.get('service-worker-allowed')).toBe('/')
+  })
+
+  it('serves the static offline page', async () => {
+    const res = await fetch(`${base}/offline.html`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toMatch(/html/)
+  })
+})
+
+describe('public/sw.js', () => {
+  const sw = fs.readFileSync('public/sw.js', 'utf8')
+
+  it('precaches only the offline page', () => {
+    expect(sw).toMatch(/addAll\(\[OFFLINE_URL\]\)|addAll\(\['\/offline\.html'\]\)/)
+  })
+
+  it('only intercepts navigations and never touches /api', () => {
+    expect(sw).toContain("request.mode !== 'navigate'")
+    expect(sw).not.toMatch(/cache\.put|\/api/)
   })
 })
