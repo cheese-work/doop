@@ -795,8 +795,9 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
             ) : (
               <LayersRailToggle />
             ))}
-          {isMobile && showPanels && !showActivity && (
+          {isMobile && !showActivity && (
             <MobilePanelTabs
+              commentsOnly={!showPanels}
               onOpen={(tab) => {
                 useStore.getState().setPanelTab(tab)
                 setShowActivity(true)
@@ -945,7 +946,7 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
               {selectedFrame && <Inspector frame={selectedFrame} surface="inline" />}
             </SheetContent>
           </Sheet>
-          <Sheet open={showPanels && showActivity && !uiHidden} onOpenChange={setShowActivity}>
+          <Sheet open={showActivity && !uiHidden} onOpenChange={setShowActivity}>
             <SheetContent
               side="bottom"
               showCloseButton={false}
