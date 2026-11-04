@@ -23,7 +23,7 @@ import { useIsMobile } from '../hooks/use-mobile'
 import { isTypingTarget, MOD_KEY } from '../lib/keys'
 import { cn } from '../lib/utils'
 import { gesture } from '../lib/gesture'
-import { isDoubleTap, type Tap } from '../lib/doubleTap'
+import { createTapDetector } from '../lib/doubleTap'
 import { hasFrameClip, pasteFrameAtScreen } from '../lib/frameClipboard'
 import { MenuHint } from './ui/menu'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from './ui/context-menu'
@@ -165,7 +165,7 @@ export function Stage({
   const [layoutZoom, setLayoutZoom] = useState(1)
   const layoutZoomRef = useRef(1)
   const fitted = useRef(false)
-  const lastTap = useRef<Tap | null>(null)
+  const taps = useRef(createTapDetector())
   const deepLinkHandled = useRef(false)
   const focusedPage = useRef<string | null>(null)
   const [linkSearch, setLinkSearch] = useState(location.search)
@@ -627,6 +627,24 @@ export function Stage({
     }
   }, [])
 
+  /* double-tap fit: judged on release so a pan or a pinch never counts (the
+     press itself still starts its pan — the detector only watches) */
+  useEffect(() => {
+    const t = taps.current
+    const touch = (fn: (e: PointerEvent) => void) => (e: PointerEvent) => e.pointerType === 'touch' && fn(e)
+    const onMove = touch((e) => t.move(e.pointerId, e.clientX, e.clientY))
+    const onUp = touch((e) => t.up(e.pointerId, e.timeStamp, e.clientX, e.clientY) && fit())
+    const onCancel = touch(() => t.cancel())
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onCancel)
+    return () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onCancel)
+    }
+  }, [fit])
+
   /* ⌘0 → 100%, ⌘+ / ⌘− → step zoom, all pivoting on the view center —
      preventDefault keeps the browser's own page zoom out of it. ⇧1 / ⇧2 fit
      everything / the selection and ⇧R shows or hides the rulers, as in Figma. */
@@ -745,14 +763,16 @@ export function Stage({
     const isBackground =
       e.target === e.currentTarget || target.classList.contains('world') || !!target.closest('[data-frame-locked]')
     const s = useStore.getState()
-    /* a second finger-tap on empty canvas fits the view, like ⇧1; drawing and
-       comment tools keep their taps */
-    if (e.pointerType === 'touch' && isBackground && (s.tool === 'select' || s.tool === 'hand')) {
-      const tap = { t: e.timeStamp, x: e.clientX, y: e.clientY }
-      const double = isDoubleTap(lastTap.current, tap)
-      lastTap.current = double ? null : tap
-      if (double) return fit()
-    }
+    /* a second finger-tap on empty canvas fits the view, like ⇧1 (see the
+       release listener above); drawing and comment tools keep their taps */
+    if (e.pointerType === 'touch')
+      taps.current.down(
+        e.pointerId,
+        e.timeStamp,
+        e.clientX,
+        e.clientY,
+        isBackground && (s.tool === 'select' || s.tool === 'hand'),
+      )
     const action = resolvePointerAction({
       tool: s.tool,
       target: isBackground ? 'background' : 'frame',
