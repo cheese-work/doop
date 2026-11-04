@@ -73,4 +73,8 @@ describe('public/sw.js', () => {
     expect(sw).toContain("request.mode !== 'navigate'")
     expect(sw).not.toMatch(/cache\.put|\/api/)
   })
+
+  it('deletes only its own old caches, never other apps on the origin', () => {
+    expect(sw).toContain("k.startsWith('doop-offline-')")
+  })
 })
