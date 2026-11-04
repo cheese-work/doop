@@ -111,7 +111,7 @@ export function BridgeChat({ canvasId }: { canvasId: string }) {
       ? (statusBanner(bridge.status, bridge.agentName) ??
         (!handle ? NO_HANDLE : failure === 'nolink' ? NOT_LINKED : failure === 'noitem' ? NOT_AN_AGENT : null))
       : null
-  const canSend = bridge?.status === 'ok' && !!handle && !loadFailed && !sending && draft.trim() !== ''
+  const canSend = bridge?.status === 'ok' && !!handle && !loadFailed && !saving && !sending && draft.trim() !== ''
 
   async function pick(next: string) {
     setPickFailed(false)

@@ -124,6 +124,26 @@ describe('agent picker', () => {
     expect(trigger().textContent).toContain('review-agent')
   })
 
+  it('blocks sending while a picker save is pending, so a message cannot reach the previous agent', async () => {
+    await mount(bridge('ok'))
+    let finishSave!: (value: BridgeInfo) => void
+    vi.mocked(api.putBridge).mockReturnValueOnce(new Promise<BridgeInfo>((resolve) => (finishSave = resolve)))
+    const trigger = container.querySelector<HTMLButtonElement>('[role="combobox"]')!
+    act(() => trigger.focus())
+    act(() => {
+      trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
+    })
+    await act(async () => {
+      document
+        .querySelectorAll('[role="option"]')[1]!
+        .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    })
+    type(field(), 'hello')
+    expect(sendButton().disabled).toBe(true)
+    await act(async () => finishSave(bridge('ok', { agentRef: REVIEW, agentName: 'review-agent' })))
+    expect(sendButton().disabled).toBe(false)
+  })
+
   it('keeps a saved choice when an older poll response arrives after the save', async () => {
     vi.useFakeTimers()
     try {
