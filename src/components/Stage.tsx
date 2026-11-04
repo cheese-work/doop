@@ -23,6 +23,7 @@ import { useIsMobile } from '../hooks/use-mobile'
 import { isTypingTarget, MOD_KEY } from '../lib/keys'
 import { cn } from '../lib/utils'
 import { gesture } from '../lib/gesture'
+import { isDoubleTap, type Tap } from '../lib/doubleTap'
 import { hasFrameClip, pasteFrameAtScreen } from '../lib/frameClipboard'
 import { MenuHint } from './ui/menu'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from './ui/context-menu'
@@ -164,6 +165,7 @@ export function Stage({
   const [layoutZoom, setLayoutZoom] = useState(1)
   const layoutZoomRef = useRef(1)
   const fitted = useRef(false)
+  const lastTap = useRef<Tap | null>(null)
   const deepLinkHandled = useRef(false)
   const focusedPage = useRef<string | null>(null)
   const [linkSearch, setLinkSearch] = useState(location.search)
@@ -743,6 +745,14 @@ export function Stage({
     const isBackground =
       e.target === e.currentTarget || target.classList.contains('world') || !!target.closest('[data-frame-locked]')
     const s = useStore.getState()
+    /* a second finger-tap on empty canvas fits the view, like ⇧1; drawing and
+       comment tools keep their taps */
+    if (e.pointerType === 'touch' && isBackground && (s.tool === 'select' || s.tool === 'hand')) {
+      const tap = { t: e.timeStamp, x: e.clientX, y: e.clientY }
+      const double = isDoubleTap(lastTap.current, tap)
+      lastTap.current = double ? null : tap
+      if (double) return fit()
+    }
     const action = resolvePointerAction({
       tool: s.tool,
       target: isBackground ? 'background' : 'frame',
