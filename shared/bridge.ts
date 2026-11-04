@@ -14,6 +14,15 @@ export interface BridgeState {
   watcherSeenAt: number | null
 }
 
+/** What `GET/PUT /api/canvases/:id/bridge` answers. */
+export interface BridgeInfo {
+  agentRef: string | null
+  agentName: string | null
+  agents: BridgeAgent[]
+  watcherSeenAt: number | null
+  status: BridgeStatus
+}
+
 /** Longest agent ref or name we store. */
 export const MAX_BRIDGE_TEXT = 200
 

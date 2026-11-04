@@ -28,6 +28,7 @@ vi.mock('../src/lib/auth', () => ({ authClient: { useSession: () => ({ data: { u
 vi.mock('../src/lib/frameClipboard', () => ({ uploadImageFrames: () => Promise.resolve([]) }))
 vi.mock('../src/components/ChatPanel', () => ({ ChatPanel: () => null }))
 vi.mock('../src/components/MemoryPanel', () => ({ MemoryPanel: () => null }))
+vi.mock('../src/components/BridgeChat', () => ({ BridgeChat: () => null }))
 
 const { useStore } = await import('../src/lib/store')
 const { ActivityPanel } = await import('../src/components/ActivityPanel')
