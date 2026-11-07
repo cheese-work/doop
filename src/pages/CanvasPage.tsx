@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { canEditOpenCanvas, pickedSelectors, roleOf, useStore } from '../lib/store'
 import { MOD_KEY, isHideUiShortcut } from '../lib/keys'
 import { canHideUi, hideUiHinted } from '../lib/hideUi'
+import { reviewLayout } from '../lib/reviewLayout'
 import { connect, disconnect, sendWs } from '../lib/ws'
 import {
   api,
@@ -184,6 +185,8 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
   const role = useStore(roleOf)
   const readOnly = useStore((s) => !canEditOpenCanvas(s))
   const isMobile = useIsMobile()
+  /* a phone on a view/comment link: canvas, zoom, comments — no editor panels */
+  const { panels: showPanels } = reviewLayout({ isMobile, role: useStore(roleOf) })
   const [panelWidths, setPanelWidths] = useState(readPanelWidths)
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth)
   useEffect(() => {
@@ -718,7 +721,7 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
         <Stage onAddFrame={addFrame} rightInset={isMobile ? 0 : chrome.right} />
         <div
           className={cn(
-            'pointer-events-none absolute inset-x-0 bottom-0 top-[50px] max-md:top-14 max-xs:top-[100px]',
+            'pointer-events-none absolute right-[env(safe-area-inset-right)] bottom-0 left-[env(safe-area-inset-left)] top-[calc(50px+env(safe-area-inset-top))] max-md:top-[calc(56px+env(safe-area-inset-top))] max-xs:top-[calc(100px+env(safe-area-inset-top))]',
             uiHidden && 'hidden',
           )}
           /* panel offsets are measured from this layer, so moving it past
@@ -794,6 +797,7 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
             ))}
           {isMobile && !showActivity && (
             <MobilePanelTabs
+              commentsOnly={!showPanels}
               onOpen={(tab) => {
                 useStore.getState().setPanelTab(tab)
                 setShowActivity(true)

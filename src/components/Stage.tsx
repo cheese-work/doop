@@ -20,6 +20,7 @@ import { cameraOnCursor, cameraToFollow } from '../lib/follow'
 import { SnapGuides } from './SnapGuides'
 import { GuideLines, Rulers } from './Rulers'
 import { useIsMobile } from '../hooks/use-mobile'
+import { reviewLayout } from '../lib/reviewLayout'
 import { isTypingTarget, MOD_KEY } from '../lib/keys'
 import { cn } from '../lib/utils'
 import { gesture } from '../lib/gesture'
@@ -149,6 +150,7 @@ export function Stage({
   /* view links get Select and Hand, comment links add the Comment tool */
   const role = useStore(roleOf)
   const readOnly = !roleAllows(role, 'edit')
+  const { toolRail } = reviewLayout({ isMobile, role })
   const setTool = useStore((s) => s.setTool)
   const [panning, setPanning] = useState(false)
   /* the selection rectangle being dragged out, in world coordinates */
@@ -991,7 +993,7 @@ export function Stage({
           className={cn(
             'absolute bottom-[calc(8px+env(safe-area-inset-bottom))] left-1/2 z-[35] -translate-x-1/2 sm:bottom-4',
             'md:top-[calc(var(--chrome-top,0px)+10px)] md:bottom-auto md:left-[var(--rail-left,14px)] md:translate-x-0 md:transition-[left] md:duration-150',
-            uiHidden && 'hidden',
+            (uiHidden || !toolRail) && 'hidden',
           )}
         >
           {isDrawingTool(tool) && (

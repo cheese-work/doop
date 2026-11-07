@@ -20,7 +20,7 @@ const topBarVariants = cva(
            Only the pills take the pointer; the gaps between them pan and
            select as canvas. */
         canvas:
-          'pointer-events-none absolute inset-x-0 top-0 h-[50px] items-start gap-2.5 bg-transparent px-3.5 pt-3.5 max-md:h-14 max-md:items-center max-md:gap-2 max-md:px-3 max-md:pt-0 [&>*]:pointer-events-auto',
+          'pointer-events-none absolute inset-x-0 top-[env(safe-area-inset-top)] h-[50px] items-start gap-2.5 bg-transparent pr-[max(14px,env(safe-area-inset-right))] pl-[max(14px,env(safe-area-inset-left))] pt-3.5 max-md:h-14 max-md:items-center max-md:gap-2 max-md:pr-[max(12px,env(safe-area-inset-right))] max-md:pl-[max(12px,env(safe-area-inset-left))] max-md:pt-0 [&>*]:pointer-events-auto',
       },
     },
     defaultVariants: { variant: 'solid' },
