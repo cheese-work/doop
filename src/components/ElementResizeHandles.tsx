@@ -2,6 +2,8 @@ import { useEffect, useRef } from 'react'
 import type { Frame } from '../../shared/types'
 import { useStore } from '../lib/store'
 import { gesture } from '../lib/gesture'
+import { visibleGuides } from '../lib/guides'
+import { guideDelta } from '../lib/snap'
 import { flexSizeAxis } from '../lib/flexLayout'
 import { styleElement, styleGesture, type ElementInfo, type StylePatch } from '../lib/frameBridge'
 import {
@@ -9,7 +11,6 @@ import {
   RESIZE_EDGES,
   handleAnchor,
   handleCursor,
-  handleLabel,
   movesHeight,
   movesWidth,
   resizePatch,
@@ -18,6 +19,7 @@ import {
   type ResizeHandle,
   type Size,
 } from '../lib/elementResize'
+import { useT, type PlainMessageKey } from '../lib/i18n'
 
 export interface ElementRect {
   x: number
@@ -43,6 +45,14 @@ const BADGE_CLASS =
 const BADGE_TRANSFORM = 'translate(-50%, calc(10px / var(--zoom, 1))) scale(calc(1 / var(--zoom, 1)))'
 /* a press that travels less than this is a click, not a resize */
 const MOVE_THRESHOLD_PX = 2
+
+/** A grip's accessible name: which way it resizes. Shared with the frame's
+ *  grips (FrameResizeHandles). */
+export function handleLabelKey(handle: ResizeHandle): PlainMessageKey {
+  if (!movesHeight(handle)) return 'stage.resizeWidth'
+  if (!movesWidth(handle)) return 'stage.resizeHeight'
+  return 'stage.resize'
+}
 
 /** The selection furniture of an element inside a frame, the way Paper draws
  *  it: a square grip in each corner, grabbable (unmarked) edges, and the box's
@@ -70,6 +80,7 @@ export function ElementResizeHandles({
      size in the live document */
   const stop = useRef<(() => void) | null>(null)
   useEffect(() => () => stop.current?.(), [])
+  const t = useT()
 
   function start(e: React.PointerEvent, handle: ResizeHandle) {
     if (e.button !== 0) return
@@ -82,6 +93,9 @@ export function ElementResizeHandles({
        resumes from where the finger is (at the zoom it is now) rather than
        jumping by the pinch's displacement, the way a frame drag does */
     let origin = { x: e.clientX, y: e.clientY }
+    /* the rendered box's far edges in world px, where a drag starts: flow
+       layout grows the box right and down whichever side is pulled */
+    let edges = { right: frame.x + rect.x + rect.width, bottom: frame.y + rect.y + rect.height }
     const pointerId = e.pointerId
     /* the computed size is what the inline value has to express: a
        content-box element's width excludes its padding, its rect does not */
@@ -108,7 +122,7 @@ export function ElementResizeHandles({
     })
     /* where the pointer is now: a flick that outruns the gesture's opening
        is applied the moment the base size lands */
-    let last: { x: number; y: number; shift: boolean } | null = null
+    let last: { x: number; y: number; shift: boolean; alt: boolean } | null = null
     let latest: StylePatch | null = null
     let inFlight = false
     let moved = false
@@ -139,10 +153,11 @@ export function ElementResizeHandles({
     }
     /** the styles the pointer's current place asks for; null before the
      *  gesture has travelled far enough to count as a drag */
-    function patchFor(pos: { x: number; y: number; shift: boolean }): StylePatch | null {
+    function patchFor(pos: { x: number; y: number; shift: boolean; alt: boolean }): StylePatch | null {
       if (!base || !moved) return null
       const zoom = useStore.getState().viewport.zoom
-      const delta = { dx: (pos.x - origin.x) / zoom / scale.x, dy: (pos.y - origin.y) / zoom / scale.y }
+      const world = snapToGuides({ dx: (pos.x - origin.x) / zoom, dy: (pos.y - origin.y) / zoom }, zoom, pos.alt)
+      const delta = { dx: world.dx / scale.x, dy: world.dy / scale.y }
       const keepRatio = pos.shift
       if (keepRatio) ratioUsed = true
       const patch = resizePatch(handle, resizedSize(handle, base, delta, { keepRatio }), { keepRatio, flexAxis })
@@ -155,6 +170,21 @@ export function ElementResizeHandles({
       }
       return patch
     }
+    /** The pointer's travel (world px) adjusted so a growing edge lands on
+     *  a ruler guide it comes close to; ⌥ resizes freely. A pull on a west
+     *  or north side grows the box the other way, so its sign flips. */
+    function snapToGuides(world: { dx: number; dy: number }, zoom: number, free: boolean) {
+      if (free) return world
+      const guides = visibleGuides()
+      const sx = handle.includes('w') ? -1 : 1
+      const sy = handle.includes('n') ? -1 : 1
+      return {
+        dx: movesWidth(handle) ? world.dx + sx * guideDelta(edges.right + sx * world.dx, guides, 'v', zoom) : world.dx,
+        dy: movesHeight(handle)
+          ? world.dy + sy * guideDelta(edges.bottom + sy * world.dy, guides, 'h', zoom)
+          : world.dy,
+      }
+    }
     function preview() {
       if (done || !last) return
       const patch = patchFor(last)
@@ -166,14 +196,20 @@ export function ElementResizeHandles({
 
     /* Pointer travel counts even while the runtime is still opening the gesture. */
     function trackPointer(ev: PointerEvent) {
-      last = { x: ev.clientX, y: ev.clientY, shift: ev.shiftKey }
+      last = { x: ev.clientX, y: ev.clientY, shift: ev.shiftKey, alt: ev.altKey }
       if (Math.abs(ev.clientX - origin.x) + Math.abs(ev.clientY - origin.y) >= MOVE_THRESHOLD_PX) moved = true
     }
     function onMove(ev: PointerEvent) {
       if (ev.pointerId !== pointerId) return
       if (gesture.pinching) {
         origin = { x: ev.clientX, y: ev.clientY }
-        if (current) base = current
+        if (current && base) {
+          edges = {
+            right: edges.right + (current.width - base.width) * scale.x,
+            bottom: edges.bottom + (current.height - base.height) * scale.y,
+          }
+          base = current
+        }
         last = null
         return
       }
@@ -248,7 +284,7 @@ export function ElementResizeHandles({
           <div
             key={handle}
             data-resize-handle={handle}
-            aria-label={handleLabel(handle)}
+            aria-label={t(handleLabelKey(handle))}
             className="pointer-events-auto absolute touch-none"
             style={{
               left: `${anchor.x * 100}%`,
@@ -269,7 +305,7 @@ export function ElementResizeHandles({
           <div
             key={handle}
             data-resize-handle={handle}
-            aria-label={handleLabel(handle)}
+            aria-label={t(handleLabelKey(handle))}
             className={CORNER_CLASS}
             style={{
               left: `${anchor.x * 100}%`,

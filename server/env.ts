@@ -1,6 +1,7 @@
 import { bool, cleanEnv, EnvMissingError, makeExactValidator, port, str } from 'envalid'
 import type { ReporterOptions } from 'envalid'
 import { DEFAULT_GEMINI_MODEL, DEFAULT_OPENROUTER_MODEL } from '../shared/modelMenu.ts'
+import { FALLBACK_LOCALE, LOCALES } from '../shared/locales.ts'
 
 /**
  * Every environment variable the server reads, declared once with its type
@@ -66,6 +67,8 @@ const nonNegativeInt = int(0)
 const schema = {
   NODE_ENV: str({ choices: ['development', 'test', 'production'], default: 'development' }),
   PORT: port({ default: 4400 }),
+  /* the interface language for anyone who has not picked one in Settings */
+  DEFAULT_LOCALE: str({ choices: LOCALES, default: FALLBACK_LOCALE }),
   /* unset = embedded Postgres (PGlite) under ./data/pg */
   DATABASE_URL: str({ default: undefined }),
 
@@ -134,8 +137,13 @@ const schema = {
   CHATGPT_AUTH_USER_AGENT: str({ default: 'doop/0.1 (+https://doop.design)' }),
   CHATGPT_DEVICE_URL: str({ default: undefined }),
   CHATGPT_RESPONSES_URL: str({ default: 'https://chatgpt.com/backend-api/codex/responses' }),
+  /* the Codex backend's model catalog; it answers for a Codex CLI version it
+     knows, so the pin moves with the CLI releases */
+  CHATGPT_MODELS_URL: str({ default: 'https://chatgpt.com/backend-api/codex/models' }),
+  CHATGPT_CODEX_CLIENT_VERSION: str({ default: '0.163.0' }),
   CHATGPT_ORIGINATOR: str({ default: 'codex_cli_rs' }),
   OPENAI_RESPONSES_URL: str({ default: 'https://api.openai.com/v1/responses' }),
+  OPENAI_MODELS_URL: str({ default: 'https://api.openai.com/v1/models' }),
   OPENROUTER_CHAT_URL: str({ default: 'https://openrouter.ai/api/v1/chat/completions' }),
   GEMINI_OPENAI_CHAT_URL: str({
     default: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
@@ -264,6 +272,13 @@ export type Env = ReturnType<typeof parse>
 /* `let` so reloadEnv can swap the snapshot; ESM live bindings mean every
    importer sees the new one. Nothing outside this file assigns it. */
 export let env: Env = parse()
+
+/** Windows browser install roots: both Program Files directories and the current user's LocalAppData. */
+export function windowsBrowserDirectories(): string[] {
+  return [process.env.PROGRAMFILES, process.env['PROGRAMFILES(X86)'], process.env.LOCALAPPDATA].filter(
+    (dir): dir is string => !!dir,
+  )
+}
 
 /** Re-read process.env. For tests that change a variable after import;
  *  the server itself parses once at boot. */

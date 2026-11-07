@@ -2,6 +2,8 @@ import * as React from 'react'
 
 import { cn } from '@/lib/utils'
 
+import { CheckIcon } from './icons'
+
 /* A checkbox drawn as a square that fills with ink when checked. The real
    input stays in the DOM (visually hidden, not display:none) so the control
    keeps native keyboard behaviour and form semantics; `peer-focus-visible`
@@ -18,11 +20,11 @@ function Checkbox({ className, boxClassName, ...props }: React.ComponentProps<'i
       <span
         aria-hidden="true"
         className={cn(
-          'grid size-5 flex-none place-items-center rounded-tag border border-ink-faint bg-surface text-label font-extrabold text-paper transition-colors peer-checked:border-ink peer-checked:bg-ink peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-brand peer-disabled:opacity-50',
+          'grid size-5 flex-none place-items-center rounded-tag border border-ink-faint bg-surface text-paper transition-colors peer-checked:border-ink peer-checked:bg-ink peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-brand peer-disabled:opacity-50',
           boxClassName,
         )}
       >
-        {props.checked ? '✓' : ''}
+        {props.checked ? <CheckIcon size={14} /> : null}
       </span>
     </>
   )

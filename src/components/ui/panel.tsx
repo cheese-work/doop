@@ -2,6 +2,7 @@ import * as React from 'react'
 import { cva, type VariantProps } from 'class-variance-authority'
 
 import { cn } from '@/lib/utils'
+import { useT } from '@/lib/i18n'
 import * as TabsPrimitive from '@radix-ui/react-tabs'
 
 import { Button } from './button'
@@ -17,6 +18,10 @@ const panelVariants = cva('flex min-w-0 flex-col overflow-hidden bg-surface', {
   variants: {
     surface: {
       floating: 'pointer-events-auto absolute z-[35] rounded-[14px] shadow-float',
+      /* a column flush with the window's edge and the bar above it, the
+         canvas beside it (Settings → Appearance → Canvas panels); the
+         caller says which side takes the hairline */
+      docked: 'pointer-events-auto absolute inset-y-0 z-[35] rounded-none border-line-soft shadow-none',
       /* filling a Sheet: no chrome of its own, the sheet provides it */
       inline: 'h-full w-full rounded-none border-0 shadow-none',
     },
@@ -24,8 +29,98 @@ const panelVariants = cva('flex min-w-0 flex-col overflow-hidden bg-surface', {
   defaultVariants: { surface: 'floating' },
 })
 
-function Panel({ className, surface, ...props }: React.ComponentProps<'div'> & VariantProps<typeof panelVariants>) {
-  return <div data-slot="panel" className={cn(panelVariants({ surface, className }))} {...props} />
+/** where a canvas panel lives: over the board, docked to its edge, or
+ *  filling a phone's sheet */
+export type PanelSurface = NonNullable<VariantProps<typeof panelVariants>['surface']>
+
+export interface PanelResize {
+  label: string
+  edge: 'left' | 'right'
+  width: number
+  min: number
+  max: number
+  onResize: (width: number) => void
+}
+
+function Panel({
+  className,
+  surface,
+  resize,
+  style,
+  children,
+  ...props
+}: React.ComponentProps<'div'> & VariantProps<typeof panelVariants> & { resize?: PanelResize }) {
+  const drag = React.useRef<{ x: number; width: number } | null>(null)
+  /* marks the panel while its edge is dragged; styles.css pauses the chrome's
+     position transitions then, so neighbours follow the pointer in step */
+  const [dragging, setDragging] = React.useState(false)
+  const endDrag = () => {
+    drag.current = null
+    setDragging(false)
+  }
+  const resizing = surface !== 'inline' ? resize : undefined
+  const setWidth = (width: number) => {
+    if (resizing) resizing.onResize(Math.round(Math.max(resizing.min, Math.min(resizing.max, width))))
+  }
+
+  return (
+    <div
+      data-slot="panel"
+      data-panel-resizing={dragging || undefined}
+      className={cn(panelVariants({ surface, className }))}
+      style={resizing ? { ...style, width: resizing.width } : style}
+      {...props}
+    >
+      {children}
+      {resizing && (
+        <div
+          role="separator"
+          tabIndex={0}
+          aria-label={resizing.label}
+          aria-orientation="vertical"
+          aria-valuemin={resizing.min}
+          aria-valuemax={resizing.max}
+          aria-valuenow={resizing.width}
+          className={cn(
+            'absolute inset-y-2 z-10 w-1.5 touch-none cursor-col-resize rounded-full focus-visible:bg-ink/20 focus-visible:outline-none',
+            resizing.edge === 'right' ? 'right-0' : 'left-0',
+          )}
+          onPointerDown={(e) => {
+            if (e.button !== 0) return
+            e.preventDefault()
+            e.stopPropagation()
+            drag.current = { x: e.clientX, width: resizing.width }
+            setDragging(true)
+            e.currentTarget.setPointerCapture(e.pointerId)
+          }}
+          onPointerMove={(e) => {
+            if (!drag.current) return
+            e.stopPropagation()
+            const delta = (e.clientX - drag.current.x) * (resizing.edge === 'right' ? 1 : -1)
+            setWidth(drag.current.width + delta)
+          }}
+          onPointerUp={(e) => {
+            endDrag()
+            if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
+          }}
+          onLostPointerCapture={endDrag}
+          onPointerCancel={endDrag}
+          onKeyDown={(e) => {
+            const direction = resizing.edge === 'right' ? 1 : -1
+            let width: number
+            if (e.key === 'ArrowLeft') width = resizing.width - 10 * direction
+            else if (e.key === 'ArrowRight') width = resizing.width + 10 * direction
+            else if (e.key === 'Home') width = resizing.min
+            else if (e.key === 'End') width = resizing.max
+            else return
+            e.preventDefault()
+            e.stopPropagation()
+            setWidth(width)
+          }}
+        />
+      )}
+    </div>
+  )
 }
 
 /** Sticky header: title or tabs on the left, actions on the right. Sentence
@@ -152,16 +247,18 @@ function PanelDisclosure({ className, ...props }: React.ComponentProps<typeof Co
  *  baseline and never centres in the button, the icon does. */
 function PanelClose({
   className,
-  label = 'Close',
+  label,
   children: _children,
   ...props
 }: React.ComponentProps<'button'> & { label?: string }) {
+  const t = useT()
+  const text = label ?? t('common.close')
   return (
-    <Tooltip label={label} side="bottom" align="end">
+    <Tooltip label={text} side="bottom" align="end">
       <Button
         variant="bare"
         size="icon-sm"
-        aria-label={label}
+        aria-label={text}
         className={cn('size-7 shrink-0 rounded-[7px] text-ink-faint hover:bg-paper-deep hover:text-ink', className)}
         {...props}
       >

@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { Frame } from '../shared/types'
-import { copyFramePng, downloadFrameExport } from '../src/lib/frameExport'
+import { copyFramePng, downloadFrameExport, downloadFramesPdf } from '../src/lib/frameExport'
 import { useStore } from '../src/lib/store'
 
 const frame: Frame = {
@@ -113,6 +113,54 @@ it('in the desktop shell leaves the outcome to the save panel, which may be canc
 
   expect(clicked).toHaveLength(1)
   expect(useStore.getState().notice).toBeNull()
+})
+
+it('binds several frames into one PDF request and saves the file the server names', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(
+      async () =>
+        new Response('%PDF-1.7', {
+          headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': 'attachment; filename="Deck.pdf"' },
+        }),
+    ),
+  )
+
+  await downloadFramesPdf('canvas', [frame, { ...frame, id: 'second' }])
+
+  expect(fetch).toHaveBeenCalledExactlyOnceWith(
+    '/api/canvases/canvas/export.pdf?frames=export-frame,second',
+    expect.anything(),
+  )
+  expect(clicked[0]!.download).toBe('Deck.pdf')
+  expect(useStore.getState().notice).toMatchObject({ text: '“Deck.pdf” is ready', busy: false })
+})
+
+it('shows why a PDF could not be made, such as a server without a browser', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => Response.json({ error: 'PDF export is unavailable' }, { status: 503 })),
+  )
+
+  await downloadFramesPdf('canvas', [frame])
+
+  expect(clicked).toHaveLength(0)
+  expect(useStore.getState().notice?.text).toBe('PDF export is unavailable')
+})
+
+it('gives a PDF of many frames longer than a single frame to render', async () => {
+  const timeout = vi.spyOn(AbortSignal, 'timeout')
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => new Response('%PDF-1.7', { headers: { 'Content-Type': 'application/pdf' } })),
+  )
+
+  await downloadFramesPdf('canvas', [frame])
+  const many = Array.from({ length: 40 }, (_, index) => ({ ...frame, id: `frame-${index}` }))
+  await downloadFramesPdf('canvas', many)
+
+  /* one frame keeps the two-minute floor; forty print three at a time, a minute per wave */
+  expect(timeout.mock.calls.map(([ms]) => ms)).toEqual([2 * 60_000, 14 * 60_000])
 })
 
 /* A clipboard that resolves each item's pending data the way browsers do. */

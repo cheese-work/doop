@@ -6,6 +6,7 @@ import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Tooltip } from './ui/tooltip'
 import { cn } from '@/lib/utils'
+import { useT } from '../lib/i18n'
 
 const topBarVariants = cva(
   'z-40 flex flex-none items-center max-xs:h-[100px] max-xs:flex-wrap max-xs:content-center max-xs:gap-y-2 max-xs:py-2',
@@ -21,6 +22,11 @@ const topBarVariants = cva(
            select as canvas. */
         canvas:
           'pointer-events-none absolute inset-x-0 top-0 h-[50px] items-start gap-2.5 bg-transparent px-3.5 pt-3.5 max-md:h-14 max-md:items-center max-md:gap-2 max-md:px-3 max-md:pt-0 [&>*]:pointer-events-auto',
+        /* the canvas editor with docked panels: a solid strip over the
+           columns, the pills flat inside it. The leading folder glyph lines
+           up with the Layers panel's own icon, 14px in. */
+        docked:
+          'absolute inset-x-0 top-0 h-11 items-center gap-2.5 border-b border-line-soft bg-surface pr-3.5 pl-0.5 [&_[data-slot=bar-pill]]:shadow-none',
       },
     },
     defaultVariants: { variant: 'solid' },
@@ -67,16 +73,21 @@ const titleCls = 'min-w-0 max-w-[240px] sm:min-w-[60px] sm:max-w-[320px]'
 export function TopBarTitle({
   value,
   onCommit,
-  placeholder = 'Untitled',
+  placeholder,
   loading = false,
   pill = false,
+  readOnly = false,
 }: {
   value: string
   onCommit: (name: string) => void
   placeholder?: string
   loading?: boolean
   pill?: boolean
+  /** shows the name as text: the caller cannot rename it */
+  readOnly?: boolean
 }) {
+  const t = useT()
+  const shownPlaceholder = placeholder ?? t('canvas.untitled')
   const [draft, setDraft] = useState<string | null>(null)
   const pillCls =
     'h-7 rounded-[6px] px-1.5 font-sans text-[12.5px] font-medium hover:border-transparent hover:bg-paper-deep focus:border-transparent focus:bg-surface focus:shadow-elevation-1-focus md:text-[12.5px]'
@@ -91,6 +102,18 @@ export function TopBarTitle({
         …
       </span>
     )
+  if (readOnly)
+    return (
+      <span
+        className={cn(
+          titleCls,
+          'truncate',
+          pill ? 'px-1.5 text-[12.5px] font-medium' : 'px-2 py-[5px] font-display text-[15px] font-semibold',
+        )}
+      >
+        {value || shownPlaceholder}
+      </span>
+    )
   const shown = draft ?? value
   /* the field is as wide as its text and no wider: an invisible mirror of the
      text in the same font sits in the same grid cell and sets the width, so a
@@ -100,14 +123,14 @@ export function TopBarTitle({
   return (
     <span className="grid min-w-0">
       <span aria-hidden className={cn(fieldCls, 'invisible col-start-1 row-start-1 whitespace-pre')}>
-        {shown || placeholder}
+        {shown || shownPlaceholder}
       </span>
       <Input
         variant="title"
         inputSize="sm"
         className={cn(fieldCls, 'col-start-1 row-start-1 truncate')}
         value={shown}
-        placeholder={placeholder}
+        placeholder={shownPlaceholder}
         onFocus={() => setDraft(value)}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={() => {
@@ -142,7 +165,7 @@ export function BarPill({ className, ...props }: React.ComponentProps<'div'>) {
 
 /** A quiet text-and-icon action inside a BarPill. */
 export const barPillBtn =
-  'h-[30px] gap-[7px] rounded-[8px] px-2.5 text-[12px] font-normal text-ink hover:bg-paper-deep hover:text-ink [&_svg]:text-ink-soft'
+  'h-[30px] gap-[7px] rounded-[8px] px-2.5 text-[12px] font-medium text-ink hover:bg-paper-deep hover:text-ink [&_svg]:text-ink-soft'
 /** An icon-only action inside a BarPill. */
 export const barPillIconBtn =
   'size-[30px] rounded-[8px] p-0 text-ink-soft hover:bg-paper-deep hover:text-ink disabled:opacity-40'
@@ -150,4 +173,7 @@ export const barPillIconBtn =
 /* the bar's button sizes, so every screen's actions line up */
 export const barGhostBtn = 'h-9 rounded-[10px] bg-surface px-3.5 text-[12.5px] font-medium hover:bg-paper-deep'
 export const barIconBtn = 'size-9 rounded-[10px] bg-surface hover:bg-paper-deep disabled:opacity-40'
-export const barPrimaryBtn = 'h-9 rounded-[10px] px-3.5 text-[12.5px] font-normal'
+export const barPrimaryBtn = 'h-9 rounded-[10px] px-3.5 text-[12.5px] font-medium'
+/** The primary action in the docked bar, where the pills are flat: the
+ *  same 30px as the actions beside it. */
+export const barPrimaryCompactBtn = 'h-[30px] gap-[7px] rounded-[8px] px-2.5 text-[12px] font-medium'

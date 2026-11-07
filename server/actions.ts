@@ -5,11 +5,20 @@ import * as thumbs from './thumbs.ts'
 import { colorFor } from '../shared/types.ts'
 import { DEFAULT_ROLE_ID, mentionedRole, normalizePipeline, roleByAgentName, roleName } from '../shared/agents.ts'
 import { canvasPages } from '../shared/pages.ts'
-import { isCanvasComment, trimComments } from '../shared/comments.ts'
+import {
+  FRAME_COMMENT_SELECTOR,
+  isCanvasComment,
+  isFrameComment,
+  trimComments,
+  type CommentAnchorInput,
+} from '../shared/comments.ts'
+import { isElementId } from '../shared/elementId.ts'
+import { hasElementId, stampElementId } from './elementIds.ts'
 import { decodeEscapedHtml, looksEscapedHtml, repairEscapedHtml } from './escapedHtml.ts'
 import { emitCanvasEvent } from './events.ts'
 import type {
   Actor,
+  CanvasGuide,
   ActorKind,
   ActivityItem,
   AgentTask,
@@ -354,17 +363,23 @@ export function addTaskFeedback(
   return undefined
 }
 
-/** Open feedback this agent may take: everything addressed to it, plus
- *  untargeted feedback — that part stays a canvas-level queue where the first
- *  identified agent call wins. */
-export function takeFeedbackFor(canvasId: string, agentName: string, payer?: string): TaskFeedback[] {
-  const pending = (feedbackLog.get(canvasId) ?? []).filter(
+/** The feedback takeFeedbackFor would claim, left unclaimed: what read-only
+ *  tools mention without assigning anything. */
+export function openFeedbackFor(canvasId: string, agentName: string, payer?: string): TaskFeedback[] {
+  return (feedbackLog.get(canvasId) ?? []).filter(
     (f) =>
       !f.deliveredAt &&
       !f.failedAt &&
       (!f.targetAgent || f.targetAgent === agentName) &&
       (payer === undefined || (f.fromUserId ?? '') === payer),
   )
+}
+
+/** Open feedback this agent may take: everything addressed to it, plus
+ *  untargeted feedback — that part stays a canvas-level queue where the first
+ *  identified agent call wins. */
+export function takeFeedbackFor(canvasId: string, agentName: string, payer?: string): TaskFeedback[] {
+  const pending = openFeedbackFor(canvasId, agentName, payer)
   for (const f of pending) {
     f.deliveredAt = Date.now()
     f.claimedBy = agentName
@@ -467,25 +482,306 @@ async function restoreThread(comment: ElementComment) {
   for (const c of missing) if (list.includes(c)) broadcast(comment.canvasId, { type: 'comment', comment: c })
 }
 
-/** Where a new comment sits: on an element inside a frame, or at a world
+/** Where a new comment sits: on an element inside a frame (by its
+ *  `data-doop-id`), on a frame as a whole at a design point, or at a world
  *  point on one page of the canvas. */
-type CommentAnchor = { frame: Frame; selector: string; snippet: string } | { pageId: string; x: number; y: number }
+type CommentAnchor =
+  | { frame: Frame; elementId?: string; snippet: string; point?: { x: number; y: number } }
+  | { pageId: string; x: number; y: number }
 
-export function addElementComment(
+/** What a client knows about the element it is pointing at: the positional
+ *  path the live document answered with, the id the element already wears if
+ *  any, an excerpt, and the design point of the click. */
+export interface FrameAnchorInput {
+  selector?: unknown
+  elementId?: unknown
+  snippet?: unknown
+  x?: unknown
+  y?: unknown
+}
+
+export const MAX_ELEMENT_SELECTOR_CHARS = 1_000
+
+/* Stamps that are in a frame's HTML in memory but not yet known to be on
+   disk, per frame: the write that carries them, while one is out. An id is
+   handed out only once its frame write has landed, whichever request made
+   it and whether or not that first write failed. */
+const unsavedStamps = new Map<string, { ids: Set<string>; write?: Promise<void> }>()
+
+/** Resolves true once `id` is in a stored copy of the frame: at once for an
+ *  id that was never pending, else after the write that carries it (a write
+ *  already out is waited for; one that failed is retried once by this
+ *  caller). False when the frame is gone or the write fails. */
+async function stampSaved(frameId: string, id: string): Promise<boolean> {
+  let tried = false
+  for (;;) {
+    const pending = unsavedStamps.get(frameId)
+    if (!pending?.ids.has(id)) return true
+    if (pending.write) {
+      await pending.write
+      continue
+    }
+    const frame = store.getFrame(frameId)
+    if (tried || !frame) return false
+    tried = true
+    /* the row is taken from the frame as it is now: every stamp so far goes in */
+    const carried = new Set(pending.ids)
+    const write: Promise<void> = persist
+      .saveFrameNow(frame)
+      .then(
+        () => {
+          /* deleted while the write was out: the write must not bring it back */
+          if (!store.getFrame(frameId)) persist.deleteFrame(frameId)
+          for (const stamp of carried) pending.ids.delete(stamp)
+          if (!pending.ids.size && unsavedStamps.get(frameId) === pending) unsavedStamps.delete(frameId)
+        },
+        (err: unknown) => {
+          console.error(`[comments] element id stamp on frame ${frameId} not written:`, err)
+        },
+      )
+      .finally(() => {
+        if (pending.write === write) pending.write = undefined
+      })
+    pending.write = write
+  }
+}
+
+/** Make the element a positional selector names addressable by id: the id
+ *  it already carries, or a fresh `data-doop-id` written into the frame's
+ *  HTML as an annotation (sign-off stands, no design-history version, no
+ *  activity line). Whatever names the id (a comment, a copied link) is
+ *  written after this returns, so the frame carrying it is on disk first.
+ *  Undefined when the frame is gone, is being streamed into, the selector
+ *  does not resolve in the stored HTML, or the stamp cannot be written (it
+ *  then stays in memory, unnamed, and goes to disk with a later save). */
+export async function ensureElementId(
   frameId: string,
-  input: { selector: string; snippet: string; text: string },
+  selector: string,
+  by: string,
+  /** the live element's excerpt, when known: the stamp is refused if the
+   *  saved element at that path is not the one the client saw */
+  like?: string,
+): Promise<{ id: string; frame: Frame } | undefined> {
+  const frame = store.getFrame(frameId)
+  if (!frame || isFrameStreaming(frameId)) return undefined
+  const stamped = stampElementId(frame.html, selector.slice(0, MAX_ELEMENT_SELECTOR_CHARS), { like })
+  if (!stamped) return undefined
+  if (stamped.html === frame.html) {
+    if (!(await stampSaved(frameId, stamped.id))) return undefined
+    /* the frame may have been deleted while the write was awaited */
+    const current = store.getFrame(frameId)
+    return current ? { id: stamped.id, frame: current } : undefined
+  }
+  const next = store.updateFrame(frameId, { html: stamped.html }, by, { annotation: true })
+  if (!next) return undefined
+  const pending = unsavedStamps.get(frameId) ?? { ids: new Set<string>() }
+  pending.ids.add(stamped.id)
+  unsavedStamps.set(frameId, pending)
+  if (!(await stampSaved(frameId, stamped.id))) return undefined
+  /* deleted meanwhile: an update now would put it back on every screen */
+  if (!store.getFrame(frameId)) return undefined
+  broadcast(next.canvasId, { type: 'frame:updated', frame: next, actor: resolveActor({ name: by, kind: 'user' }) })
+  return { id: stamped.id, frame: next }
+}
+
+/** An anchor inside a frame, as a client sent it. An element is kept by the
+ *  id it carries, else stamped from the positional selector; when neither
+ *  works (the element came from a script, or the frame is mid-stream) the
+ *  comment lands on the frame at the point instead, so it is never lost. A
+ *  client that sends no point (older apps) still gets a frame comment, one
+ *  that is listed without a pin. */
+async function frameAnchor(frame: Frame, input: FrameAnchorInput, by: string): Promise<CommentAnchor> {
+  const point =
+    Number.isFinite(input.x) && Number.isFinite(input.y) ? { x: Number(input.x), y: Number(input.y) } : undefined
+  const snippet = String(input.snippet ?? '').slice(0, 400)
+  const selector = String(input.selector ?? '').trim()
+  const onElement = selector !== '' && selector !== FRAME_COMMENT_SELECTOR
+  if (
+    isElementId(input.elementId) &&
+    hasElementId(frame.html, input.elementId) &&
+    (await stampSaved(frame.id, input.elementId))
+  ) {
+    return { frame, elementId: input.elementId, snippet }
+  }
+  if (onElement) {
+    const stamped = await ensureElementId(frame.id, selector, by, snippet || undefined)
+    if (stamped) return { frame: stamped.frame, elementId: stamped.id, snippet }
+  }
+  return { frame, snippet: '', ...(point ? { point } : {}) }
+}
+
+export async function addElementComment(
+  frameId: string,
+  input: FrameAnchorInput & { text: string },
   from: string,
   fromUserId?: string,
 ): Promise<ElementComment | undefined> {
   const frame = store.getFrame(frameId)
-  if (!frame) return Promise.resolve(undefined)
-  return postComment(
-    frame.canvasId,
-    { frame, selector: String(input.selector ?? '').slice(0, 300), snippet: String(input.snippet ?? '').slice(0, 400) },
-    input.text,
-    from,
-    fromUserId,
+  if (!frame || !input.text.trim()) return undefined
+  const anchor = await frameAnchor(frame, input, from)
+  /* a frame deleted while its element was being stamped takes no comment */
+  if (!store.getFrame(frameId)) return undefined
+  return postComment(frame.canvasId, anchor, input.text, from, fromUserId)
+}
+
+/** The anchor as it is written onto a comment; what the anchor does not
+ *  carry is absent, so a moved comment sheds its old frame, element or page. */
+function anchorFields(
+  anchor: CommentAnchor,
+): Pick<ElementComment, 'frameId' | 'elementId' | 'snippet' | 'pageId' | 'x' | 'y'> {
+  if ('frame' in anchor) {
+    return {
+      frameId: anchor.frame.id,
+      ...(anchor.elementId ? { elementId: anchor.elementId } : {}),
+      snippet: anchor.snippet,
+      ...anchor.point,
+    }
+  }
+  return { snippet: '', pageId: anchor.pageId, x: anchor.x, y: anchor.y }
+}
+
+/** Comments anchored by a positional CSS path before element ids existed:
+ *  stamp each element and keep the comment on it. Runs once after boot, frame
+ *  by frame: every stamp for a frame is written and awaited before the
+ *  comments naming those ids are, so a crash in between leaves selectors to
+ *  retry, never a comment pointing at an id no frame carries. A path that no
+ *  longer resolves spends its selector and leaves a lost anchor (frame and
+ *  snippet, no pin): HTML only drifts further, so retrying it would not help.
+ *  A malformed selector, a frame that will not parse or a failed write is
+ *  logged and left for the next boot; one bad row never stops the others.
+ *  The comments are in memory and displayed throughout; pins appear as the
+ *  stamps land, with the frames broadcast to anyone already in the room. */
+export async function backfillElementIds(
+  legacy: Map<string, string>,
+): Promise<{ stamped: number; lost: number; failed: number }> {
+  const byFrame = new Map<string, Array<{ comment: ElementComment; selector: string }>>()
+  for (const [commentId, selector] of legacy) {
+    const comment = findInMemory(commentId) ?? (await persist.findCommentRow(commentId))
+    if (!comment?.frameId || !store.getFrame(comment.frameId)) continue
+    const list = byFrame.get(comment.frameId) ?? []
+    list.push({ comment, selector })
+    byFrame.set(comment.frameId, list)
+  }
+  const counts = { stamped: 0, lost: 0, failed: 0 }
+  for (const [frameId, rows] of byFrame) {
+    const found: Array<{ comment: ElementComment; id: string }> = []
+    const lost: ElementComment[] = []
+    let html = store.getFrame(frameId)?.html
+    if (html === undefined) continue
+    for (const { comment, selector } of rows) {
+      try {
+        const result = stampElementId(html, selector)
+        if (result) {
+          html = result.html
+          found.push({ comment, id: result.id })
+        } else lost.push(comment)
+      } catch (err) {
+        counts.failed++
+        console.error(`[comments] element id backfill: comment ${comment.id} on frame ${frameId}:`, err)
+      }
+    }
+    try {
+      const frame = store.getFrame(frameId)
+      if (frame && html !== frame.html) {
+        const next = store.updateFrame(frameId, { html }, frame.updatedBy, { annotation: true })
+        if (!next) continue
+        await persist.saveFrameNow(next)
+        broadcast(next.canvasId, {
+          type: 'frame:updated',
+          frame: next,
+          actor: resolveActor({ name: next.updatedBy, kind: 'user' }),
+        })
+      }
+      for (const { comment, id } of found) {
+        if (await settleAnchor(comment, id)) counts.stamped++
+      }
+      for (const comment of lost) {
+        if (await settleAnchor(comment)) counts.lost++
+      }
+    } catch (err) {
+      counts.failed += found.length + lost.length
+      console.error(`[comments] element id backfill: frame ${frameId} not written, left for the next boot:`, err)
+    }
+  }
+  return counts
+}
+
+/* The last step of a backfill, for one comment, taken under its thread's lock:
+   a reply or a resolve restores a thread from its row inside that lock, so
+   none can run between the read here and the write. It acts on the comment
+   as it is now, in the room or, when it left the window, in its row: a
+   resolve that restored the thread while the frame was being written holds a
+   copy without the id, and saving that copy as it is would drop the anchor.
+   A thread moved meanwhile has another anchor and keeps it. */
+function settleAnchor(snapshot: ElementComment, elementId?: string): Promise<boolean> {
+  return withThreadLock(snapshot.parentId ?? snapshot.id, async () => {
+    const live = findInMemory(snapshot.id)
+    const current = live ?? (await persist.findCommentRow(snapshot.id))
+    if (!current || !sameAnchor(current, snapshot)) return false
+    if (elementId) current.elementId = elementId
+    await persist.saveCommentNow(current)
+    /* a comment outside the window is not in the room: it only gets its id */
+    if (live) broadcast(live.canvasId, { type: 'comment', comment: live })
+    return true
+  })
+}
+
+function sameAnchor(a: ElementComment, b: ElementComment): boolean {
+  return (
+    a.frameId === b.frameId &&
+    a.elementId === b.elementId &&
+    a.pageId === b.pageId &&
+    a.x === b.x &&
+    a.y === b.y &&
+    a.snippet === b.snippet
   )
+}
+
+/** Re-pin a thread where its root pin was dropped: on an element, on a
+ *  frame as a whole or on the canvas, on any frame of the same canvas. The
+ *  root and its replies move together, since replies inherit the anchor.
+ *  Undefined when the comment, the frame or the page is not there. */
+export async function moveComment(
+  commentId: string,
+  input: CommentAnchorInput,
+  by: string,
+): Promise<ElementComment | undefined> {
+  const found = findInMemory(commentId)
+  if (!found) return undefined
+  const root = found.parentId ? findInMemory(found.parentId) : found
+  if (!root) return undefined
+  const canvas = store.getCanvas(root.canvasId)
+  if (!canvas) return undefined
+  let anchor: CommentAnchor
+  if ('frameId' in input) {
+    const frame = store.getFrame(input.frameId)
+    if (!frame || frame.canvasId !== root.canvasId) return undefined
+    anchor = await frameAnchor(frame, input, by)
+    if (!store.getFrame(frame.id)) return undefined
+  } else {
+    if (!canvasPages(canvas).some((page) => page.id === input.pageId)) return undefined
+    anchor = { pageId: input.pageId, x: input.x, y: input.y }
+  }
+  const fields = anchorFields(anchor)
+  const list = commentLog.get(root.canvasId) ?? []
+  let moved = root
+  list.forEach((c, i) => {
+    if (c.id !== root.id && c.parentId !== root.id) return
+    const { frameId: _frameId, elementId: _elementId, pageId: _pageId, x: _x, y: _y, ...rest } = c
+    const next: ElementComment = { ...rest, ...fields }
+    list[i] = next
+    if (c.id === root.id) moved = next
+    persist.saveComment(next)
+    broadcast(root.canvasId, { type: 'comment', comment: next })
+  })
+  const frame = 'frame' in anchor ? anchor.frame : undefined
+  logActivity(
+    root.canvasId,
+    resolveActor({ name: by, kind: 'user' }),
+    frame ? `moved a comment to “${frame.name}”` : 'moved a comment onto the canvas',
+    frame?.id,
+  )
+  return moved
 }
 
 /** A comment pinned to a point on the canvas (world coordinates on one of
@@ -539,7 +835,10 @@ export async function replyToComment(
 }
 
 function replyAnchor({ root, frame }: { root: ElementComment; frame?: Frame }): CommentAnchor | undefined {
-  if (frame) return { frame, selector: root.selector, snippet: root.snippet }
+  if (frame) {
+    const point = isFrameComment(root) ? { point: { x: root.x, y: root.y } } : {}
+    return { frame, ...(root.elementId ? { elementId: root.elementId } : {}), snippet: root.snippet, ...point }
+  }
   return isCanvasComment(root) ? { pageId: root.pageId, x: root.x, y: root.y } : undefined
 }
 
@@ -586,9 +885,7 @@ async function postComment(
   const comment: ElementComment = {
     id: nanoid(8),
     canvasId,
-    ...('frame' in anchor
-      ? { frameId: anchor.frame.id, selector: anchor.selector, snippet: anchor.snippet }
-      : { selector: '', snippet: '', pageId: anchor.pageId, x: anchor.x, y: anchor.y }),
+    ...anchorFields(anchor),
     from,
     ...(fromUserId ? { fromUserId } : {}),
     text: clean,
@@ -1035,7 +1332,8 @@ export function takeQueuedCardsFor(canvasId: string, agentName: string, payer?: 
  *  pipeline, or complete it if that was the last one. */
 export function advanceCard(canvasId: string, cardId: string, by: Actor): AgentTask | undefined {
   const card = (taskLog.get(canvasId) ?? []).find((t) => t.id === cardId && t.queuedBy)
-  if (!card || card.endedAt) return card
+  /* a card stopped while its run went on stays stopped */
+  if (!card || card.endedAt || card.failedAt) return card
   const pipeline = pipelineOf(card)
   const next = (card.stage ?? 0) + 1
   if (next >= pipeline.length) return completeCard(canvasId, cardId)
@@ -1073,6 +1371,18 @@ export function failCard(canvasId: string, cardId: string, reason: string): Agen
   persist.saveTask(canvasId, card)
   broadcast(canvasId, { type: 'task', task: card })
   emitCanvasEvent(canvasId, { type: 'task.failed', task: card, reason })
+  /* a run whose every card is now failed lets go of its model call at once */
+  import('./resident.ts').then((r) => r.onCardStopped(canvasId)).catch(() => {})
+  return card
+}
+
+/** A person stops a card, waiting or mid-run. It pauses like any failed card,
+ *  so Retry starts it over. */
+export function stopCard(canvasId: string, cardId: string, by: string): AgentTask | undefined {
+  const card = (taskLog.get(canvasId) ?? []).find((t) => t.id === cardId && t.queuedBy)
+  if (!card || card.endedAt || card.failedAt) return card
+  failCard(canvasId, cardId, `Stopped by ${by}.`)
+  logActivity(canvasId, resolveActor({ name: by, kind: 'user' }), `stopped a card: “${card.status}”`)
   return card
 }
 
@@ -1366,8 +1676,31 @@ export function appendFrameHtml(
 /* ------------------------------------------------------------------ */
 
 export function setCanvasPages(canvasId: string, pages: import('../shared/types.ts').CanvasPageInfo[], actor: Actor) {
-  store.setPages(canvasId, pages)
-  broadcast(canvasId, { type: 'canvas:pages', pages, actor })
+  const saved = store.setPages(canvasId, pages)
+  const next = saved?.pages ?? pages
+  broadcast(canvasId, { type: 'canvas:pages', pages: next, actor })
+  for (const guide of saved?.dropped ?? []) broadcast(canvasId, { type: 'guide', id: guide.id, guide: null, actor })
+  return next
+}
+
+/** Point a page's prototype flow at a frame (or clear it); peers get the page list. */
+export function setFlowStart(canvasId: string, pageId: string, frameId: string | null, actor: Actor) {
+  const pages = store.setFlowStart(canvasId, pageId, frameId)
+  if (pages) broadcast(canvasId, { type: 'canvas:pages', pages, actor })
+  return pages
+}
+
+/** Add or move a ruler guide; peers see it at once. Guides are view
+ *  furniture, not design content, so the canvas stays as recently edited
+ *  as it was and no activity is logged. */
+export function setGuide(canvasId: string, guide: CanvasGuide, actor: Actor) {
+  const saved = store.setGuide(canvasId, guide)
+  if (saved) broadcast(canvasId, { type: 'guide', id: saved.id, guide: saved, actor })
+  return saved
+}
+
+export function deleteGuide(canvasId: string, guideId: string, actor: Actor) {
+  if (store.deleteGuide(canvasId, guideId)) broadcast(canvasId, { type: 'guide', id: guideId, guide: null, actor })
 }
 
 /** Copy a page with its frames; peers get the page list and each new frame. */
@@ -1375,6 +1708,7 @@ export async function duplicatePage(canvasId: string, pageId: string, actor: Act
   const copy = await store.duplicatePage(canvasId, pageId, actor.name)
   if (!copy) return undefined
   broadcast(canvasId, { type: 'canvas:pages', pages: copy.pages, actor })
+  for (const guide of copy.guides) broadcast(canvasId, { type: 'guide', id: guide.id, guide, actor })
   for (const frame of copy.frames) {
     broadcast(canvasId, { type: 'frame:created', frame, actor })
     emitCanvasEvent(canvasId, { type: 'frame.created', frame, actor })
@@ -1488,6 +1822,40 @@ export function updateFrame(
   return frame
 }
 
+/** Sign-off is a human action, separate from ordinary frame editing. */
+export function setFrameApproval(
+  frameId: string,
+  ready: boolean,
+  user: { id: string; name: string },
+): Frame | undefined {
+  const current = store.getFrame(frameId)
+  if (!current) return undefined
+  if (ready && current.approval?.status === 'ready_for_dev') return current
+  const actor = resolveActor({ name: user.name, kind: 'user' })
+  const approval = ready
+    ? {
+        status: 'ready_for_dev' as const,
+        approvedBy: user.name,
+        approvedByUserId: user.id,
+        approvedAt: Math.max(Date.now(), current.updatedAt + 1),
+        approvedFrameUpdatedAt: current.updatedAt,
+      }
+    : null
+  const frame = store.updateFrame(frameId, { approval }, user.name)!
+  broadcast(frame.canvasId, { type: 'frame:updated', frame, actor })
+  logActivity(
+    frame.canvasId,
+    actor,
+    ready ? `marked “${frame.name}” ready for dev` : `moved “${frame.name}” back to draft`,
+    frameId,
+  )
+  return frame
+}
+
+export function isFrameStreaming(frameId: string): boolean {
+  return streams.has(frameId) || reveals.has(frameId)
+}
+
 export function deleteFrame(frameId: string, actor: Actor): Frame | undefined {
   /* close any live stream or playback while the frame still exists,
      so their auto “Designing…” tasks end with it */
@@ -1495,6 +1863,7 @@ export function deleteFrame(frameId: string, actor: Actor): Frame | undefined {
   finishReveal(frameId)
   const frame = store.deleteFrame(frameId)
   if (!frame) return undefined
+  unsavedStamps.delete(frameId)
   bursts.delete(frameId)
   thumbs.purge(frameId)
   broadcast(frame.canvasId, { type: 'frame:deleted', frameId, actor })

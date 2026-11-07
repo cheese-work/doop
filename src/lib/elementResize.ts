@@ -13,7 +13,6 @@ import type { StylePatch } from './frameBridge'
 export type ResizeHandle = 'n' | 'e' | 's' | 'w' | 'nw' | 'ne' | 'sw' | 'se'
 export const RESIZE_CORNERS: readonly ResizeHandle[] = ['nw', 'ne', 'sw', 'se']
 export const RESIZE_EDGES: readonly ResizeHandle[] = ['n', 'e', 's', 'w']
-export const RESIZE_HANDLES: readonly ResizeHandle[] = [...RESIZE_EDGES, ...RESIZE_CORNERS]
 
 export interface Size {
   width: number
@@ -111,12 +110,6 @@ export function handleCursor(handle: ResizeHandle): string {
     default:
       return 'nesw-resize'
   }
-}
-
-export function handleLabel(handle: ResizeHandle): string {
-  if (!movesHeight(handle)) return 'Resize width'
-  if (!movesWidth(handle)) return 'Resize height'
-  return 'Resize'
 }
 
 /** The size badge under a selected element: whole pixels of its box. */

@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, type ReactNode } from 'react'
 
 import { cn } from '@/lib/utils'
+import { useT } from '@/lib/i18n'
 import { useValueScrub } from '@/hooks/use-value-scrub'
 import { ChevronDownIcon } from './icons'
 
@@ -14,7 +15,6 @@ const fieldCls =
 const unitCls = 'ml-auto flex-none font-sans text-[10.5px] text-ink-ghost'
 const scrubUnitCls =
   'self-stretch content-center -mr-2 pr-2 pl-1 cursor-ew-resize touch-none select-none hover:text-ink'
-const scrubTitle = 'Drag to adjust · Shift: ×10 · Alt/Option: ×0.1 · Esc: cancel'
 
 /** The panel owns CSS snapshots and persistence; fields only own the gesture. */
 export const PropertyScrubContext = createContext<{
@@ -41,7 +41,7 @@ export function PropertySection({
   children: ReactNode
 }) {
   return (
-    <section className="border-b border-line-soft px-3 pt-[7px] pb-2.5">
+    <section className="border-b border-line-soft px-3 pt-[7px] pb-2.5 last:border-b-0">
       <div className="mb-[5px] flex min-h-5 items-center justify-between">
         <h3 className="text-[12px] font-normal text-ink-soft">{title}</h3>
         {action}
@@ -83,6 +83,7 @@ export function NumberField({
   min?: number
   max?: number
 }) {
+  const t = useT()
   const shown = value === null ? '' : String(value)
   const [draft, setDraft] = useState(shown)
   const [seen, setSeen] = useState({ value: shown, scrubbing: false })
@@ -115,34 +116,42 @@ export function NumberField({
   }
   return (
     <label className={cn(fieldCls, disabled && 'opacity-50', className)}>
-      {prefix && (
-        <span className="grid size-3.5 flex-none place-items-center font-sans text-ink-faint" aria-hidden>
-          {prefix}
-        </span>
-      )}
-      <input
-        aria-label={label}
-        disabled={disabled}
-        placeholder={placeholder}
-        className="w-full min-w-0 bg-transparent font-mono text-[11px] text-ink outline-none placeholder:text-ink-faint"
-        value={draft}
-        inputMode="decimal"
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
-          if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-            e.preventDefault()
-            const n = Number(draft) || 0
-            const next = Math.min(max, Math.max(min, n + (e.key === 'ArrowUp' ? 1 : -1) * (e.shiftKey ? 10 : 1)))
-            setDraft(String(next))
-            onCommit(next)
-          }
-        }}
-      />
+      <span className="flex min-w-0 flex-1 items-baseline gap-1">
+        {prefix && (
+          <span
+            className={cn(
+              'grid w-3.5 flex-none place-items-center font-sans text-ink-faint',
+              typeof prefix !== 'string' && 'self-center',
+            )}
+            aria-hidden
+          >
+            {prefix}
+          </span>
+        )}
+        <input
+          aria-label={label}
+          disabled={disabled}
+          placeholder={placeholder}
+          className="w-full min-w-0 bg-transparent font-mono text-[11px] text-ink outline-none placeholder:text-ink-faint"
+          value={draft}
+          inputMode="decimal"
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+            if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+              e.preventDefault()
+              const n = Number(draft) || 0
+              const next = Math.min(max, Math.max(min, n + (e.key === 'ArrowUp' ? 1 : -1) * (e.shiftKey ? 10 : 1)))
+              setDraft(String(next))
+              onCommit(next)
+            }
+          }}
+        />
+      </span>
       <span
         className={cn(unitCls, scrub.canScrub && scrubUnitCls)}
-        title={scrub.canScrub ? scrubTitle : undefined}
+        title={scrub.canScrub ? t('inspector.scrubHint') : undefined}
         onPointerDown={scrub.onPointerDown}
         onClick={(e) => scrub.canScrub && e.preventDefault()}
       >
@@ -171,6 +180,7 @@ export function TextField({
   scrub?: boolean
   min?: number
 }) {
+  const t = useT()
   const [draft, setDraft] = useState(value)
   const [seen, setSeen] = useState({ value, scrubbing: false })
   const scrubLifecycle = useContext(PropertyScrubContext)
@@ -202,7 +212,7 @@ export function TextField({
       {u && (
         <span
           className={cn(unitCls, scrub.canScrub && scrubUnitCls)}
-          title={scrub.canScrub ? scrubTitle : undefined}
+          title={scrub.canScrub ? t('inspector.scrubHint') : undefined}
           onPointerDown={scrub.onPointerDown}
           onClick={(e) => scrub.canScrub && e.preventDefault()}
         >
@@ -273,35 +283,6 @@ export function SelectField<T extends string>({
   )
 }
 
-export function ToggleField({
-  value,
-  labels,
-  onChange,
-}: {
-  value: boolean
-  labels: [string, string]
-  onChange: (on: boolean) => void
-}) {
-  return (
-    <div className="flex h-[26px] flex-1 gap-0.5 overflow-hidden rounded-[7px] bg-sub p-0.5">
-      {[true, false].map((on, i) => (
-        <button
-          key={labels[i]}
-          type="button"
-          aria-pressed={value === on}
-          className={cn(
-            'flex-1 rounded-[5px] text-[11.5px] text-ink-soft transition-colors hover:text-ink',
-            value === on && 'bg-surface font-medium text-ink shadow-ring',
-          )}
-          onClick={() => value !== on && onChange(on)}
-        >
-          {labels[i]}
-        </button>
-      ))}
-    </div>
-  )
-}
-
 /** Swatch + hex. Typing a hex or picking from the swatch commits; clearing
  *  the text removes the colour. */
 export function ColorField({
@@ -315,6 +296,7 @@ export function ColorField({
   className?: string
   onCommit: (v: string | null) => void
 }) {
+  const t = useT()
   const shown = value ?? ''
   const [draft, setDraft] = useState(shown)
   const [seen, setSeen] = useState(shown)
@@ -339,7 +321,7 @@ export function ColorField({
         <span className="absolute inset-0" style={{ background: value ?? 'transparent' }} />
         <input
           type="color"
-          aria-label={label ? `Pick ${label.toLowerCase()}` : 'Pick colour'}
+          aria-label={label ? t('inspector.pickLabel', { label: label.toLowerCase() }) : t('inspector.pickColour')}
           className="absolute -inset-1 cursor-pointer opacity-0"
           value={value ?? '#ffffff'}
           onChange={(e) => onCommit(e.target.value)}
@@ -349,7 +331,7 @@ export function ColorField({
         aria-label={label}
         className="w-full min-w-0 bg-transparent font-mono text-[11px] uppercase text-ink outline-none placeholder:normal-case placeholder:text-ink-faint"
         value={draft}
-        placeholder="none"
+        placeholder={t('inspector.colorNone')}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}

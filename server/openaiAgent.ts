@@ -61,6 +61,11 @@ export function isKnownModel(id: string): boolean {
 export function modelFor(account: Pick<ModelAccount, 'model'>): string {
   return account.model || DEFAULT_OPENAI_MODEL
 }
+
+/** How hard it thinks per turn: the user's choice, else the server default. */
+export function effortFor(account: Pick<ModelAccount, 'effort'>): string {
+  return account.effort || REASONING_EFFORT
+}
 /* The Codex backend only answers clients it recognises, so this is the value
    it expects rather than a free-form product name. Override if OpenAI ever
    admits other originators. */
@@ -74,6 +79,7 @@ export interface TurnRequest {
   tools: Anthropic.Tool[]
   messages: Anthropic.MessageParam[]
   maxTokens: number
+  signal?: AbortSignal
 }
 
 export interface TurnResult {
@@ -366,10 +372,11 @@ async function runChatgpt(account: ModelAccount, req: TurnRequest): Promise<Turn
       tools: toTools(req.tools),
       tool_choice: 'auto',
       parallel_tool_calls: false,
-      reasoning: { effort: REASONING_EFFORT, summary: 'auto' },
+      reasoning: { effort: effortFor(account), summary: 'auto' },
       store: false,
       stream: true,
     }),
+    signal: req.signal,
   })
   if (!res.ok) throw await responseError(res, 'ChatGPT')
   return fromResponse(await readEventStream(res))
@@ -387,10 +394,11 @@ async function runApiKey(account: ModelAccount, req: TurnRequest): Promise<TurnR
       tools: toTools(req.tools),
       tool_choice: 'auto',
       parallel_tool_calls: false,
-      reasoning: { effort: REASONING_EFFORT },
+      reasoning: { effort: effortFor(account) },
       max_output_tokens: req.maxTokens,
       store: false,
     }),
+    signal: req.signal,
   })
   if (!res.ok) throw await responseError(res, 'OpenAI')
   return fromResponse((await res.json()) as ResponseBody)
@@ -430,6 +438,7 @@ export async function runAzureTurn(config: AzureConfig, req: TurnRequest): Promi
       max_output_tokens: req.maxTokens,
       store: false,
     }),
+    signal: req.signal,
   })
   if (!res.ok) throw await responseError(res, 'Azure OpenAI')
   return fromResponse((await res.json()) as ResponseBody)
