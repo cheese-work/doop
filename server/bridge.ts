@@ -1,19 +1,13 @@
 import { eq } from 'drizzle-orm'
 import { db } from './db/index.ts'
 import { canvasBridge } from './db/schema.ts'
-import { bridgeStatus, type BridgeAgent, type BridgeStatus } from '../shared/bridge.ts'
+import { bridgeStatus, type BridgeAgent, type BridgeInfo } from '../shared/bridge.ts'
 
 /** Chat bridge storage: one canvas_bridge row per canvas. The browser writes
  *  the selection, the watcher (agent key) writes the agent list and the
  *  liveness stamp; each write touches only its own columns. */
 
-export interface Bridge {
-  agentRef: string | null
-  agentName: string | null
-  agents: BridgeAgent[]
-  watcherSeenAt: number | null
-  status: BridgeStatus
-}
+export type Bridge = BridgeInfo
 
 export async function getBridge(canvasId: string, now = Date.now()): Promise<Bridge> {
   const [row] = await db.select().from(canvasBridge).where(eq(canvasBridge.canvasId, canvasId))
