@@ -1,5 +1,59 @@
 # Changelog
 
+## [0.11.0](https://github.com/cheese-work/doop/compare/v0.10.0...v0.11.0) (2026-11-07)
+
+
+### Features
+
+* **canvas:** phone review layout and safe-area insets ([42123e4](https://github.com/cheese-work/doop/commit/42123e47669f2ba57fcbe5093b962f40e07edb46))
+* **canvas:** phone review layout and safe-area insets (CHE-3467) [squash] ([9a22fde](https://github.com/cheese-work/doop/commit/9a22fde15418cff2f18cd5cd6aa8fd383fb5bbd4))
+* **desktop:** follow new Claude models by alias, and pick the effort ([#251](https://github.com/cheese-work/doop/issues/251)) ([bfcec7d](https://github.com/cheese-work/doop/commit/bfcec7d318cf03df440a852844fd0033a05e5e47))
+* **doop:** double-tap fit on Stage ([9cadcf9](https://github.com/cheese-work/doop/commit/9cadcf9a51279c797162bdf98c345525142ecd43))
+* **doop:** double-tap fit on Stage (CHE-3466) [squash] ([6d346c7](https://github.com/cheese-work/doop/commit/6d346c7ca5c86b4a731c42db1958955cca8c30ec))
+* **ios:** move page picker and frame count into the canvas actions menu ([#248](https://github.com/cheese-work/doop/issues/248)) ([21ddd8c](https://github.com/cheese-work/doop/commit/21ddd8c7f79780550aaa7f7d48d02416f81969dc))
+* **models:** discover ChatGPT subscription models from the Codex catalog ([#250](https://github.com/cheese-work/doop/issues/250)) ([ad028ab](https://github.com/cheese-work/doop/commit/ad028ab9ae2a0e2bd26c3f2718361e32d48e2b58))
+* **models:** let users pick the OpenAI reasoning effort ([#246](https://github.com/cheese-work/doop/issues/246)) ([b28219a](https://github.com/cheese-work/doop/commit/b28219a779169b53303aec48e8cd45c0e555e042))
+* **pwa:** service worker with offline fallback page ([52cfbf7](https://github.com/cheese-work/doop/commit/52cfbf7ceec8a87cd15d90f530fd05579df03965))
+* **pwa:** service worker with offline fallback page (CHE-3468) [squash] ([d7a3a05](https://github.com/cheese-work/doop/commit/d7a3a05144894cb96aa82c7ff7564894bbdc3638))
+* **skills:** add verify-change, a repo skill that proves a change works ([98ee1d8](https://github.com/cheese-work/doop/commit/98ee1d88f53921f2b37e60284239f8c547a4cff3))
+* **skills:** add verify-change, a repo skill that proves a change works [squash] ([94b38f3](https://github.com/cheese-work/doop/commit/94b38f3f354dd95dcb1a752392faa4bdea4d97d0))
+* **web:** add to home screen opens Doop full-screen on iPhone ([9ae29e7](https://github.com/cheese-work/doop/commit/9ae29e79cad7b21da8f4fdf6c664adc4fc55aac1))
+* **web:** add to home screen opens Doop full-screen on iPhone [squash] ([6de7a8b](https://github.com/cheese-work/doop/commit/6de7a8bbda199f8f0b7923157c75dc3fa54dbf59))
+
+
+### Bug Fixes
+
+* **auth:** keep canvas link when a provider sign-in fails (CHE-3469) ([6e6e18b](https://github.com/cheese-work/doop/commit/6e6e18b4ddd07b3c7be880c994174a864fe2b32b))
+* **auth:** keep canvas link when a provider sign-in fails [squash] ([1620d7e](https://github.com/cheese-work/doop/commit/1620d7e17ad437d3e688ad48f8e75d91b6818a0f))
+* **canvas:** keep a culled frame's iframe until its pending text edit is saved ([579d46a](https://github.com/cheese-work/doop/commit/579d46a3d3d5769516de46599baf093a34c24cc4))
+* **canvas:** keep Comments reachable in the phone review layout ([a7c95d9](https://github.com/cheese-work/doop/commit/a7c95d9020776273b56297feaf02f950afa9a3dc))
+* **canvas:** mount a new frame's iframe on its first render ([4626f1d](https://github.com/cheese-work/doop/commit/4626f1d9937e6b992b0c200cd9d975fd6373ae48))
+* **canvas:** never cull a frame once it has been edited ([93ce941](https://github.com/cheese-work/doop/commit/93ce9415684d763c1fbe5f67576d1305f14b50ae))
+* **canvas:** release a culled frame's iframe only when its final save arrives ([7188353](https://github.com/cheese-work/doop/commit/7188353e3119a23b80a853334fdef43f3e77ba93))
+* **canvas:** unmount frames far from the camera to cap iframe memory ([a8a6009](https://github.com/cheese-work/doop/commit/a8a60099954be885dfbbcc439466541a8cd5dda1))
+* **canvas:** unmount frames far from the camera to cap iframe memory CHE-2663 [squash] ([c3c93ce](https://github.com/cheese-work/doop/commit/c3c93ce7a8c6b122c8ca8435cc5e78f680023948))
+* **ci:** report headless AWAITING_CHECKS entries as inconclusive ([c48bdbc](https://github.com/cheese-work/doop/commit/c48bdbcf5b8311cef506063a47392de166aa2d3d))
+* **ci:** time merge-queue stalls from the merge-group head, not enqueue ([a93ecb9](https://github.com/cheese-work/doop/commit/a93ecb9db46ee24c31832654d2029fcfe2a59a41))
+* **ci:** use the doop repo name in the merge-queue-watch test ([2e88a5c](https://github.com/cheese-work/doop/commit/2e88a5cfee9783207bfe4399c4966cec38ad3afa))
+* **doop:** judge double-tap on release so pan and pinch never fit ([1597033](https://github.com/cheese-work/doop/commit/15970336efc29f3cd0e70f5f336550310896ea08))
+* **pwa:** scope SW cache cleanup to own caches; add browser offline test ([9c47f58](https://github.com/cheese-work/doop/commit/9c47f589c095b0e3f627b1b99a3efbd84434c10c))
+* **skills:** cover deleted modules and browser tests in verify-change ([7bcc0f1](https://github.com/cheese-work/doop/commit/7bcc0f19dc1a6e21a102a29290f366bbe700255b))
+* **skills:** keep the verify-change test out of its own browser-test search ([157b937](https://github.com/cheese-work/doop/commit/157b937b894662c31bc7cba65288d27f3d486600))
+* **skills:** run the whole suite on deleted modules and flag server/ browser gaps in verify-change ([7d5c0b4](https://github.com/cheese-work/doop/commit/7d5c0b41569232a4bb1a2f7906359b40b19c884b))
+* **skills:** satisfy noUncheckedIndexedAccess in the verify-change test ([92f76b8](https://github.com/cheese-work/doop/commit/92f76b8111cab17393ea9c6fadd98593dd6d270a))
+* **ui:** draw icons from the Lucide set instead of text glyphs ([#244](https://github.com/cheese-work/doop/issues/244)) ([6dedda8](https://github.com/cheese-work/doop/commit/6dedda83b049626004a4f1db10dc7671d9d2d606))
+
+
+### Performance
+
+* **server:** gzip the client and cache hashed assets (CHE-2690) [squash] ([362fd99](https://github.com/cheese-work/doop/commit/362fd99f66f75aa7c44f78988a9db401116b21cc))
+* **server:** gzip the client and cache hashed assets as immutable ([d8869aa](https://github.com/cheese-work/doop/commit/d8869aa7f35e4a34a6e382d1fb3439aa9dcd6707))
+
+
+### Documentation
+
+* note the built-app manifest test ([18552e4](https://github.com/cheese-work/doop/commit/18552e44fbe16ac55bbe0f33fd91ca908ef5f4af))
+
 ## [0.10.0](https://github.com/kgoedecke/doop/compare/v0.9.0...v0.10.0) (2026-10-26)
 
 
