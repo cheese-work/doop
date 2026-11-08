@@ -757,6 +757,13 @@ export async function moveComment(
   if (!root) return undefined
   const canvas = store.getCanvas(root.canvasId)
   if (!canvas) return undefined
+  const inThread = (c: ElementComment) => c.id === root.id || c.parentId === root.id
+  const hasPendingCommand = () =>
+    (commentLog.get(root.canvasId) ?? []).some(
+      (c) => inThread(c) && c.forAgent && !c.claimedBy && !c.failedAt && !c.resolvedAt,
+    )
+  /* refuse before the anchor work, which may stamp an element id into the frame */
+  if (!canEdit && hasPendingCommand()) return 'edit_required'
   let anchor: CommentAnchor
   if ('frameId' in input) {
     const frame = store.getFrame(input.frameId)
@@ -769,10 +776,8 @@ export async function moveComment(
   }
   const fields = anchorFields(anchor)
   const list = commentLog.get(root.canvasId) ?? []
-  const inThread = (c: ElementComment) => c.id === root.id || c.parentId === root.id
-  if (!canEdit && list.some((c) => inThread(c) && c.forAgent && !c.claimedBy && !c.failedAt && !c.resolvedAt)) {
-    return 'edit_required'
-  }
+  /* recheck: a command may have landed while the anchor was being worked out */
+  if (!canEdit && hasPendingCommand()) return 'edit_required'
   let moved = root
   list.forEach((c, i) => {
     if (!inThread(c)) return
