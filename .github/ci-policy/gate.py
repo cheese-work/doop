@@ -62,7 +62,9 @@ def extract_head(root: Path, head: str, dest: Path) -> None:
 
     Reads blobs with `ls-tree` and `cat-file`, not `git archive`: archive honors the head's own `export-ignore`
     attributes, which would let a PR hide a committed workflow from the checker. Submodule entries are skipped and a
-    symlink is written as a plain file holding its target text, so nothing in the head is followed."""
+    symlink is written as a plain file holding its target text, so nothing in the head is followed.
+    A path component of `.`, `..`, empty or `.git`, or a target that resolves outside `dest`, raises ValueError (fail closed)."""
+    root_dest = dest.resolve()
     listing = subprocess.run(["git", "-C", str(root), "ls-tree", "-r", "-z", head, ".github"], capture_output=True)
     if listing.returncode != 0:
         return
@@ -71,7 +73,12 @@ def extract_head(root: Path, head: str, dest: Path) -> None:
         mode, kind, sha = meta.decode().split()
         if kind != "blob":
             continue
-        target = dest / raw.decode()
+        rel = raw.decode(errors="surrogateescape")
+        if any(part in ("", ".", "..") or part.lower() == ".git" for part in rel.split("/")):
+            raise ValueError(f"unsafe path in head tree: {rel!r}")
+        target = dest / rel
+        if not target.resolve().is_relative_to(root_dest):
+            raise ValueError(f"head path escapes the extract dir: {rel!r}")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(subprocess.run(["git", "-C", str(root), "cat-file", "blob", sha], check=True, capture_output=True).stdout)
 
@@ -86,7 +93,10 @@ def check_pr(root: Path, repo: str, pr: int, base: str, head: str, private: bool
         found.append(ci_check.Violation(touched[0], "policy-changed",
                                         f"PR edits {', '.join(touched)}: needs a non-author human APPROVED review on head {head[:12]}"))
     with tempfile.TemporaryDirectory() as tmp:
-        extract_head(root, head, Path(tmp))
+        try:
+            extract_head(root, head, Path(tmp))
+        except ValueError as e:
+            return found + [ci_check.Violation("-", "unsafe-path", str(e))]
         violations, _ = ci_check.check(Path(tmp), repo, private, default_branch)
     return found + violations
 
