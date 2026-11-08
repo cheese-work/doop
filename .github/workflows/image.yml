@@ -1,3 +1,4 @@
+# ci-policy: class=deploy
 name: Image
 
 # CD slice A: every merge into cheese/main publishes the app image to GHCR and

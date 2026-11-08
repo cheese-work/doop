@@ -41,6 +41,12 @@ describe('image workflow', () => {
     expect(wf).toContain('cancel-in-progress: false')
   })
 
+  it('declares its ci-policy class: a per-SHA, never-cancelled publish is a deploy', () => {
+    /* The base ci-policy gate (D-1) fails an unclassified workflow, and its
+       main-build class forbids the per-SHA group above. */
+    expect(wf).toMatch(/^# ci-policy: class=deploy$/m)
+  })
+
   it('records digest and source SHA as an evidence artifact', () => {
     expect(wf).toContain('steps.build.outputs.digest')
     expect(wf).toContain('scripts/image-evidence.mjs')
