@@ -58,10 +58,22 @@ def changed_paths(root: Path, base: str, head: str) -> list[str]:
 
 
 def extract_head(root: Path, head: str, dest: Path) -> None:
-    """The head's `.github` tree as plain files; a repo without one yields an empty dir (the checker then reports D-2)."""
-    archive = subprocess.run(["git", "-C", str(root), "archive", head, ".github"], capture_output=True)
-    if archive.returncode == 0:
-        subprocess.run(["tar", "-x", "-C", str(dest)], input=archive.stdout, check=True)
+    """The head's `.github` tree as plain files; a repo without one yields an empty dir (the checker then reports D-2).
+
+    Reads blobs with `ls-tree` and `cat-file`, not `git archive`: archive honors the head's own `export-ignore`
+    attributes, which would let a PR hide a committed workflow from the checker. Submodule entries are skipped and a
+    symlink is written as a plain file holding its target text, so nothing in the head is followed."""
+    listing = subprocess.run(["git", "-C", str(root), "ls-tree", "-r", "-z", head, ".github"], capture_output=True)
+    if listing.returncode != 0:
+        return
+    for entry in filter(None, listing.stdout.split(b"\0")):
+        meta, _, raw = entry.partition(b"\t")
+        mode, kind, sha = meta.decode().split()
+        if kind != "blob":
+            continue
+        target = dest / raw.decode()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(subprocess.run(["git", "-C", str(root), "cat-file", "blob", sha], check=True, capture_output=True).stdout)
 
 
 def check_pr(root: Path, repo: str, pr: int, base: str, head: str, private: bool, default_branch: str, api=gh_api) -> list:
