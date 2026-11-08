@@ -1,0 +1,63 @@
+name: Image
+
+# CD slice A: every merge into cheese/main publishes the app image to GHCR and
+# records its digest. Build happens here on GitHub runners, never on a deploy host.
+# Consumers pull by digest (`ref` in the evidence artifact), not by tag.
+on:
+  push:
+    branches: [cheese/main]
+  workflow_dispatch:
+
+# Never cancelled: a half-pushed run would leave digest and source SHA unrecorded.
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # The full existing suite (typecheck, lint, build, sharded tests); no image
+  # is built from a SHA that has not passed it.
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  image:
+    needs: ci
+    # Forks never hold the right to push to this org's registry.
+    if: github.repository == 'cheese-work/doop'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          # The SHA tag is a human convenience; the digest is the identity.
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # Via env, never inlined into the script.
+      - name: Record evidence
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node scripts/image-evidence.mjs image-evidence.json && cat image-evidence.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-evidence
+          path: image-evidence.json
+          if-no-files-found: error
