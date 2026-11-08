@@ -97,8 +97,22 @@ describe('deploy job', () => {
     expect(deploy).toMatch(/uses: actions\/checkout@v4\s*\n\s*with:\s*\n\s*ref: \$\{\{ github\.sha \}\}/)
   })
 
+  it('defaults the C00 compose dir to the real path, a repo variable still overrides', () => {
+    expect(deploy).toContain("C00_COMPOSE_DIR: ${{ vars.C00_DOOP_COMPOSE_DIR || '/home/congvc/.local/share/doop' }}")
+  })
+
   it('holds a hard timeout above the 15 minute readback window', () => {
     expect(deploy).toMatch(/timeout-minutes: (2\d|3\d)/)
+  })
+})
+
+describe('compose overlay', () => {
+  const overlay = readFileSync('deploy/cd/compose.image.yml', 'utf8')
+
+  it('overrides the C00 service `app`, never a made-up name', () => {
+    expect(overlay).toMatch(/^services:\n {2}app:\n/m)
+    expect(overlay).not.toMatch(/^ {2}doop:/m)
+    expect(overlay).toContain('pull_policy: never')
   })
 })
 

@@ -115,7 +115,7 @@ jobs:
     env:
       DEPLOY_REF: ${{ format('ghcr.io/{0}@{1}', github.repository, needs.image.outputs.digest) }}
       DEPLOY_SHA: ${{ github.sha }}
-      C00_COMPOSE_DIR: ${{ vars.C00_DOOP_COMPOSE_DIR }}
+      C00_COMPOSE_DIR: ${{ vars.C00_DOOP_COMPOSE_DIR || '/home/congvc/.local/share/doop' }}
     steps:
       - uses: actions/checkout@v4
         with:

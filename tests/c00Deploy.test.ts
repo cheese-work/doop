@@ -79,6 +79,15 @@ describe('c00.sh apply', () => {
     expect(l).not.toMatch(/docker (build|buildx)|compose .* build( |$)/)
   })
 
+  it('recreates only the C00 service `app` from compose.yaml, with the image overlay', () => {
+    const r = c00('apply')
+    expect(r.status, r.stderr).toBe(0)
+    const l = log()
+    expect(l).toContain('-f /srv/doop/compose.yaml')
+    expect(l).toMatch(/--force-recreate app\n/)
+    expect(l).toMatch(/--no-build --pull never --force-recreate app\n/)
+  })
+
   it('drops a stale rollback tag on a first deploy (no container yet)', () => {
     rmSync(join(dir, 'container_image'))
     const r = c00('apply')

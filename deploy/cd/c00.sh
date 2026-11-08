@@ -24,8 +24,8 @@ need_dir() { [ -n "${C00_COMPOSE_DIR:-}" ] || die "C00_COMPOSE_DIR is not set"; 
 compose_up() { # $1 = image to run
   need_dir
   DOOP_IMAGE=$1 docker compose --project-directory "$C00_COMPOSE_DIR" \
-    -f "$C00_COMPOSE_DIR/${C00_COMPOSE_FILE:-docker-compose.yml}" -f "$here/compose.image.yml" \
-    up -d --no-build --pull never --force-recreate doop
+    -f "$C00_COMPOSE_DIR/${C00_COMPOSE_FILE:-compose.yaml}" -f "$here/compose.image.yml" \
+    up -d --no-build --pull never --force-recreate app
 }
 
 # Healthy on N consecutive polls inside the window; unhealthy or stopped fails at once.

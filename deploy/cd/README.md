@@ -35,13 +35,15 @@ push to cheese/main -> ci -> image (digest) -> gate -> deploy [cheese-c00-deploy
 
 ## Prerequisites (set once; not in this repo)
 
-| Where         | Name                      | Value                                                                                                       |
-| ------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| Runner        | label `cheese-c00-deploy` | self-hosted runner on C00 with Docker and `docker compose`, in a runner group limited to `cheese-work/doop` |
-| Repo variable | `C00_DOOP_COMPOSE_DIR`    | directory on C00 with the doop compose project (service `doop`, its `.env`)                                 |
-| Repo variable | `C00_DEPLOY_AUTHORIZERS`  | extra logins, e.g. the agent-merge identity                                                                 |
-| Repo variable | `MAIN_RED_PAUSED`         | empty, or a reason to pause                                                                                 |
+| Where         | Name                      | Value                                                                                                                                                  |
+| ------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Runner        | label `cheese-c00-deploy` | self-hosted runner on C00 with Docker and `docker compose`, in runner group `c00-deploy` (D1), limited to `cheese-work/doop` and `cheese-work/multica` |
+| Repo variable | `C00_DOOP_COMPOSE_DIR`    | optional; default `/home/congvc/.local/share/doop` (`compose.yaml`, service `app`, its `.env`)                                                         |
+| Repo variable | `C00_DEPLOY_AUTHORIZERS`  | extra logins, e.g. the agent-merge identity                                                                                                            |
+| Repo variable | `MAIN_RED_PAUSED`         | empty, or a reason to pause                                                                                                                            |
 
-Optional on the runner: `C00_COMPOSE_FILE` (default `docker-compose.yml`), `C00_CONTAINER` (default `doop`).
+Optional on the runner: `C00_COMPOSE_FILE` (default `compose.yaml`), `C00_CONTAINER` (default `doop`).
+The compose service is `app` (container name `doop`); `compose.image.yml` overrides only its image.
+`C00_DEPLOY_AUTHORIZERS` stays unset until the agent-merge identity is live (CHE-3123); only `congvc-dev` deploys until then.
 
 Rollback-by-digest has not been drilled yet (slice C). Until then the first live deploy needs Cheese's go-ahead.
