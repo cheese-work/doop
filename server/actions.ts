@@ -744,12 +744,25 @@ function sameAnchor(a: ElementComment, b: ElementComment): boolean {
  *  A thread holding an agent command nobody has claimed yet carries an
  *  editor's request aimed at its anchor, so only an editor (`canEdit`) may
  *  move it; anyone else gets 'edit_required'. The check runs after the last
- *  await, in the same synchronous step as the move itself. */
+ *  await, in the same synchronous step as the move itself. The move waits
+ *  for a reply to the same thread that is still being saved. */
 export async function moveComment(
   commentId: string,
   input: CommentAnchorInput,
   by: string,
   { canEdit = false }: { canEdit?: boolean } = {},
+): Promise<ElementComment | 'edit_required' | undefined> {
+  const found = findInMemory(commentId)
+  if (!found) return undefined
+  /* under the thread's lock, so a reply being saved joins the log before the move reads it */
+  return withThreadLock(found.parentId ?? found.id, () => moveThread(commentId, input, by, canEdit))
+}
+
+async function moveThread(
+  commentId: string,
+  input: CommentAnchorInput,
+  by: string,
+  canEdit: boolean,
 ): Promise<ElementComment | 'edit_required' | undefined> {
   const found = findInMemory(commentId)
   if (!found) return undefined
