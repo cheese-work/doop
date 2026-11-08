@@ -33,6 +33,14 @@ describe('image workflow', () => {
     expect(wf).toContain("github.repository == 'cheese-work/doop'")
   })
 
+  it('gives every merge its own concurrency group, so a queued run is never replaced', () => {
+    /* One shared group keeps at most one pending run: a third merge would
+       cancel the second's pending run, and that SHA would get no image. */
+    expect(wf).toMatch(/group: image-\$\{\{ github\.sha \}\}/)
+    expect(wf).not.toMatch(/group: image-\$\{\{ github\.ref \}\}/)
+    expect(wf).toContain('cancel-in-progress: false')
+  })
+
   it('records digest and source SHA as an evidence artifact', () => {
     expect(wf).toContain('steps.build.outputs.digest')
     expect(wf).toContain('scripts/image-evidence.mjs')

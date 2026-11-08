@@ -8,9 +8,11 @@ on:
     branches: [cheese/main]
   workflow_dispatch:
 
-# Never cancelled: a half-pushed run would leave digest and source SHA unrecorded.
+# One group per SHA: a group keeps at most one pending run, so a shared group would
+# drop the middle of three quick merges. Never cancelled: a half-pushed run would
+# leave digest and source SHA unrecorded.
 concurrency:
-  group: image-${{ github.ref }}
+  group: image-${{ github.sha }}
   cancel-in-progress: false
 
 permissions:
