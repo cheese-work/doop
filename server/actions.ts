@@ -781,18 +781,30 @@ function reanchored(comment: ElementComment): boolean {
 /** Re-pin a thread where its root pin was dropped: on an element, on a
  *  frame as a whole or on the canvas, on any frame of the same canvas. The
  *  root and its replies move together, since replies inherit the anchor.
- *  Undefined when the comment, the frame or the page is not there. */
+ *  Undefined when the comment, the frame or the page is not there.
+ *  A thread holding an agent command nobody has claimed yet carries an
+ *  editor's request aimed at its anchor, so only an editor (`canEdit`) may
+ *  move it; anyone else gets 'edit_required'. The check runs after the last
+ *  await, in the same synchronous step as the move itself. */
 export async function moveComment(
   commentId: string,
   input: CommentAnchorInput,
   by: string,
-): Promise<ElementComment | undefined> {
+  { canEdit = false }: { canEdit?: boolean } = {},
+): Promise<ElementComment | 'edit_required' | undefined> {
   const found = findComment(commentId)
   if (!found) return undefined
   const root = found.parentId ? findComment(found.parentId) : found
   if (!root) return undefined
   const canvas = store.getCanvas(root.canvasId)
   if (!canvas) return undefined
+  const inThread = (c: ElementComment) => c.id === root.id || c.parentId === root.id
+  const hasPendingCommand = () =>
+    (commentLog.get(root.canvasId) ?? []).some(
+      (c) => inThread(c) && c.forAgent && !c.claimedBy && !c.failedAt && !c.resolvedAt,
+    )
+  /* refuse before the anchor work, which may stamp an element id into the frame */
+  if (!canEdit && hasPendingCommand()) return 'edit_required'
   let anchor: CommentAnchor
   if ('frameId' in input) {
     const frame = store.getFrame(input.frameId)
@@ -805,9 +817,11 @@ export async function moveComment(
   }
   const fields = anchorFields(anchor)
   const list = commentLog.get(root.canvasId) ?? []
+  /* recheck: a command may have landed while the anchor was being worked out */
+  if (!canEdit && hasPendingCommand()) return 'edit_required'
   let moved = root
   list.forEach((c, i) => {
-    if (c.id !== root.id && c.parentId !== root.id) return
+    if (!inThread(c)) return
     const {
       frameId: _frameId,
       elementId: _elementId,

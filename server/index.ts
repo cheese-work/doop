@@ -2231,7 +2231,8 @@ app.post('/api/comments/:id/resolve', (req, res) => {
 })
 
 /* drag a thread's pin somewhere else: onto an element, a frame as a whole
-   or the canvas. The whole thread moves, and anyone who may comment may move */
+   or the canvas. The whole thread moves, and anyone who may comment may move,
+   unless it holds an agent command not yet claimed: that needs edit access */
 app.patch('/api/comments/:id/anchor', async (req, res) => {
   const found = actions.findComment(req.params.id)
   if (!found) return res.status(404).json({ error: 'comment not found' })
@@ -2253,7 +2254,11 @@ app.patch('/api/comments/:id/anchor', async (req, res) => {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return res.status(400).json({ error: 'x and y must be numbers' })
     anchor = { pageId, x: Number(x), y: Number(y) }
   } else return res.status(400).json({ error: 'frameId or pageId required' })
-  const moved = await actions.moveComment(req.params.id, anchor, req.user!.name)
+  const canvas = store.getCanvas(found.canvasId)
+  const moved = await actions.moveComment(req.params.id, anchor, req.user!.name, {
+    canEdit: !!canvas && canEditCanvas(req.user!.id, canvas),
+  })
+  if (moved === 'edit_required') return res.status(403).json({ error: ROLE_DENIED.edit, role: 'comment' })
   if (!moved) return res.status(404).json({ error: 'frame or page not found' })
   res.json(moved)
 })
