@@ -3,6 +3,9 @@ name: Image
 # CD slice A: every merge into cheese/main publishes the app image to GHCR and
 # records its digest. Build happens here on GitHub runners, never on a deploy host.
 # Consumers pull by digest (`ref` in the evidence artifact), not by tag.
+# CD slice B (CHE-4585): `gate` then `deploy` roll that digest out to C00 when an
+# allowlisted actor merged. They sit in this file, not in a workflow_run workflow,
+# because workflow_run fires only from the default branch and this deploys cheese/main.
 on:
   push:
     branches: [cheese/main]
@@ -30,6 +33,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     env:
       IMAGE: ghcr.io/${{ github.repository }}
     steps:
@@ -47,6 +52,8 @@ jobs:
           push: true
           # The SHA tag is a human convenience; the digest is the identity.
           tags: ${{ env.IMAGE }}:${{ github.sha }}
+          # The C00 readback compares this label with the SHA it deployed.
+          labels: org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
       # Via env, never inlined into the script.
@@ -61,3 +68,71 @@ jobs:
           name: image-evidence
           path: image-evidence.json
           if-no-files-found: error
+
+  # Reads only. Decides who may deploy; the deploy job sees just the verdict.
+  gate:
+    needs: image
+    if: github.repository == 'cheese-work/doop'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    outputs:
+      authorized: ${{ steps.decide.outputs.authorized }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # Via env, never inlined into the script. Unset variables read as ''.
+      # An error here fails the job, so the deploy never starts (fail closed).
+      - id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          ACTOR: ${{ github.actor }}
+          EXTRA: ${{ vars.C00_DEPLOY_AUTHORIZERS }}
+          PAUSED: ${{ vars.MAIN_RED_PAUSED }}
+        run: node scripts/deploy-gate.mjs
+
+  # Runs on the C00 deploy runner. Pulls the digest this run built; builds nothing.
+  deploy:
+    needs: [image, gate]
+    if: needs.gate.outputs.authorized == 'true' && github.repository == 'cheese-work/doop'
+    runs-on: [self-hosted, cheese-c00-deploy]
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    # One deploy at a time; a started deploy is never cancelled midway.
+    concurrency:
+      group: c00-deploy-doop
+      cancel-in-progress: false
+    env:
+      DEPLOY_REF: ${{ format('ghcr.io/{0}@{1}', github.repository, needs.image.outputs.digest) }}
+      DEPLOY_SHA: ${{ github.sha }}
+      C00_COMPOSE_DIR: ${{ vars.C00_DOOP_COMPOSE_DIR }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Log in to GHCR
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Apply
+        run: bash deploy/cd/c00.sh apply
+      - name: Read back (digest, SHA, 15 min health)
+        run: bash deploy/cd/c00.sh readback
+      # The job stays failed, which suspends auto-deploy until an allowlisted dispatch succeeds.
+      - name: Roll back by digest
+        if: failure()
+        run: bash deploy/cd/c00.sh rollback
+      - name: Log out of GHCR
+        if: always()
+        run: docker logout ghcr.io

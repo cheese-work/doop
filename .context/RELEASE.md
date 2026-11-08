@@ -38,7 +38,15 @@ A push to `cheese/main` (or a manual dispatch) runs `ci.yml` as a reusable workf
 `scripts/image-evidence.mjs` writes `image-evidence.json` (`image`, `digest`, `ref` =
 `image@digest`, `sha`, `run_url`) and the run uploads it as the `image-evidence` artifact. The script
 exits non-zero on an empty or non-sha256 digest, so a failed push leaves no evidence. Nothing builds
-on a deploy host; deploying `ref` is a separate slice. Fork runs skip the push.
+on a deploy host. Fork runs skip the push.
+
+### C00 deploy (`image.yml`, CD slice B)
+
+After `image`, the `gate` job lets the merger of `cheese/main` (`congvc-dev` or a login in
+`C00_DEPLOY_AUTHORIZERS`) through; anyone else builds and stops. `MAIN_RED_PAUSED` pauses it and a failed
+deploy suspends it. The `deploy` job then runs on the `cheese-c00-deploy` runner: pull the digest, start
+it, read back digest, SHA label and health within 15 minutes, and on failure roll back to the previous
+image. Setup and rules: [`deploy/cd/README.md`](../deploy/cd/README.md).
 
 ## Desktop app (Tauri: macOS DMG + Windows NSIS installer)
 

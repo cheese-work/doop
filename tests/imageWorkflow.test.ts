@@ -24,7 +24,10 @@ describe('image workflow', () => {
     expect(wf).toContain('docker/build-push-action@')
     expect(wf).toContain('ghcr.io/${{ github.repository }}')
     expect(wf).toContain('push: true')
-    expect(wf).not.toMatch(/runs-on:.*(c00|self-hosted)/i)
+    // The build never runs on a deploy host. Only the deploy job (slice B,
+    // tests/deployWorkflow.test.ts) may name the C00 runner.
+    const image = /^ {2}image:\n([\s\S]*?)(?=^ {2}[a-z][a-z0-9-]*:\n|(?![\s\S]))/m.exec(wf)?.[1] ?? ''
+    expect(image).not.toMatch(/runs-on:.*(c00|self-hosted)/i)
   })
 
   it('takes least-privilege token permissions and never lets a fork push', () => {
