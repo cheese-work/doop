@@ -24,9 +24,12 @@ push to cheese/main -> ci -> image (digest) -> gate -> deploy [cheese-c00-deploy
   failed deploy attempt keeps counting as a failure, for this run and for older runs, unless the login that
   started the rerun (`github.triggering_actor`) is on the allowlist. A rerun of a `workflow_dispatch` run is
   judged by whoever reran it, not by the original dispatcher.
-- The deploy job asks again once it holds the deploy lock (`deploy-gate.mjs recheck`, merge-triggered runs
-  only). A run that passed the gate while an earlier deploy was still running stops there if that deploy
-  failed. The job fails, so the suspension holds, and nothing has touched C00.
+- The deploy job asks again once it holds the deploy lock (`deploy-gate.mjs recheck`), before login or apply,
+  on every attempt. GitHub reuses a passed `gate` when failed jobs are rerun, so the recheck is the check that
+  sees the rerun. A dispatch passes only if the login that started this attempt (`github.triggering_actor`)
+  is on the allowlist; `decide` and `recheck` use the same rule. A push stops there if a deploy ahead of it
+  failed. Any other event is refused. A refusal fails the job, so the suspension holds, and nothing has
+  touched C00.
 - Rebase and merge-queue merges whose commit differs from the pull request's `merge_commit_sha`
   are not matched and deploy by dispatch only.
 

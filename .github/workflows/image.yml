@@ -128,7 +128,8 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       # The gate ran before this job queued for the lock. A deploy ahead of us may
-      # have failed since, so ask again now that we hold it. A failure here fails the
+      # have failed since, and a rerun of failed jobs reuses the passed gate, so ask again now
+      # that we hold it (suspension, and who started this attempt). A failure here fails the
       # job, which keeps auto-deploy suspended; nothing has touched C00 yet.
       - uses: actions/setup-node@v4
         with:
@@ -140,6 +141,7 @@ jobs:
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
           ATTEMPT: ${{ github.run_attempt }}
+          ACTOR: ${{ github.actor }}
           TRIGGER: ${{ github.triggering_actor }}
           EXTRA: ${{ vars.C00_DEPLOY_AUTHORIZERS }}
         run: node scripts/deploy-gate.mjs recheck

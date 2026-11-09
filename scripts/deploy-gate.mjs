@@ -5,7 +5,8 @@
 //   1. who merged cheese/main (or who dispatched) must be on the allowlist;
 //   2. MAIN_RED_PAUSED stops merge-triggered deploys;
 //   3. a failed deploy suspends auto-deploy until an allowlisted human dispatches one.
-// `recheck` repeats step 3 inside the deploy lock, where the answer can no longer change.
+// `recheck` repeats the dispatch rule of step 1 and step 3 inside the deploy lock, where the
+// answer can no longer change and a rerun of failed jobs cannot skip it.
 // A thrown error fails the gate job, so the deploy job never starts.
 import { appendFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
@@ -73,15 +74,22 @@ async function suspendedBy({ repo, runId, attempt, trigger, allowed, ghApi }) {
   return runs.length >= RUN_PAGE ? 'the last deploy result is unknown (no deploy in the last 100 runs)' : null
 }
 
+// The one dispatch rule, used by `decide` and by `recheck` so the two cannot disagree. A rerun keeps
+// the original actor and GitHub reuses a passed gate, so whoever started THIS attempt decides, on
+// every attempt. Returns the refusal, or null when an allowlisted login started it.
+function dispatchRefusal({ actor, trigger, allowed }) {
+  const who = trigger || actor
+  return allowed.has(lower(who)) ? null : `${who || 'an unknown login'} is not on the deploy allowlist`
+}
+
 export async function decide({ event, ref, sha, repo, runId, attempt, actor, trigger, extra, paused, ghApi }) {
   if (ref !== `refs/heads/${BRANCH}`) throw new Error(`deploys run only from ${BRANCH}, not ${ref}`)
   const allowed = logins(extra)
 
   if (event === 'workflow_dispatch') {
-    // A rerun keeps the original actor; the one who reran it is the one who decides.
-    const who = trigger || actor
-    if (!allowed.has(lower(who))) throw new Error(`${who} is not on the deploy allowlist`)
-    return { authorized: true, reason: `dispatched by ${who}` }
+    const refusal = dispatchRefusal({ actor, trigger, allowed })
+    if (refusal) throw new Error(refusal)
+    return { authorized: true, reason: `dispatched by ${trigger || actor}` }
   }
   if (event !== 'push') throw new Error(`event ${event} may not deploy`)
 
@@ -101,12 +109,20 @@ export async function decide({ event, ref, sha, repo, runId, attempt, actor, tri
 }
 
 // Plain REST, so it also runs on the C00 runner, which has node but not `gh`.
-// The gate runs before the deploy job queues for the lock, so a run that passed it
-// can wait behind a deploy that then fails. The deploy job calls this once it
-// holds the lock; a dispatch is a deliberate human act and is never re-judged.
-export async function recheck({ event, repo, runId, attempt, trigger, extra, ghApi }) {
-  if (event !== 'push') return { authorized: true, reason: `${event} is not re-judged` }
-  const suspended = await suspendedBy({ repo, runId, attempt, trigger, allowed: logins(extra), ghApi })
+// The gate runs before the deploy job queues for the lock, and a rerun of failed jobs reuses its
+// passed gate, so the deploy job judges again once it holds the lock. A dispatch is judged by the
+// login that started this attempt and, if allowlisted, bypasses suspension. A push checks the
+// failure history. Any other event is refused.
+export async function recheck({ event, repo, runId, attempt, actor, trigger, extra, ghApi }) {
+  const allowed = logins(extra)
+  if (event === 'workflow_dispatch') {
+    const refusal = dispatchRefusal({ actor, trigger, allowed })
+    return refusal
+      ? { authorized: false, reason: refusal }
+      : { authorized: true, reason: `dispatched by ${trigger || actor}` }
+  }
+  if (event !== 'push') return { authorized: false, reason: `event ${event} may not deploy` }
+  const suspended = await suspendedBy({ repo, runId, attempt, trigger, allowed, ghApi })
   return suspended
     ? { authorized: false, reason: `auto-deploy suspended: ${suspended}` }
     : { authorized: true, reason: 'no failed deploy while this run waited for the lock' }
@@ -128,6 +144,7 @@ async function main() {
       repo: env.REPO,
       runId: env.RUN_ID,
       attempt: env.ATTEMPT,
+      actor: env.ACTOR,
       trigger: env.TRIGGER,
       extra: env.EXTRA,
       ghApi: gh,

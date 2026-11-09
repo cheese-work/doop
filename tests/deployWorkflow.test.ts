@@ -101,6 +101,12 @@ describe('deploy job', () => {
     }
   })
 
+  it('gives the recheck the dispatching actor too, so it can judge a dispatch', () => {
+    expect(deploy.slice(deploy.indexOf('Recheck suspension'), deploy.indexOf('deploy-gate.mjs recheck'))).toContain(
+      'ACTOR: ${{ github.actor }}',
+    )
+  })
+
   it('rolls back only after this run captured its rollback target and tried the change', () => {
     expect(deploy).toMatch(/- name: Apply\n\s+id: apply\n/)
     const rollback = deploy.indexOf('c00.sh rollback')

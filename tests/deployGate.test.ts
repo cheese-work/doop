@@ -223,11 +223,68 @@ describe('deploy gate: recheck inside the deploy lock', () => {
     expect(await recheck({ event: 'push', repo: REPO, runId: '2', ghApi: api })).toMatchObject({ authorized: true })
   })
 
-  it('never reads history for a dispatch: that is a deliberate human act', async () => {
-    const { api, calls } = fakeApi({})
-    expect(await recheck({ event: 'workflow_dispatch', repo: REPO, runId: '2', ghApi: api })).toMatchObject({
+  // Sol's HIGH (CWE-863): the gate passed for an owner dispatch, the deploy failed, and a writer
+  // reran the failed jobs. GitHub reuses the successful gate, so only recheck can refuse.
+  const rerun = { event: 'workflow_dispatch', repo: REPO, runId: '2', attempt: 2 }
+
+  it('refuses a failed-job rerun of an owner dispatch started by someone off the allowlist', async () => {
+    const { api } = fakeApi({})
+    const out = await recheck({ ...rerun, actor: 'congvc-dev', trigger: 'some-writer', ghApi: api })
+    expect(out.authorized).toBe(false)
+    expect(out.reason).toContain('some-writer')
+  })
+
+  it('control: the owner, or an allowlisted login, may rerun a dispatch', async () => {
+    const { api } = fakeApi({})
+    for (const [trigger, extra] of [
+      ['congvc-dev', ''],
+      ['agent-merger', 'agent-merger'],
+    ]) {
+      expect(await recheck({ ...rerun, actor: 'congvc-dev', trigger, extra, ghApi: api })).toMatchObject({
+        authorized: true,
+      })
+    }
+  })
+
+  it('judges the first attempt of a dispatch by its actor, and refuses an unknown actor', async () => {
+    const { api } = fakeApi({})
+    const first = { ...rerun, attempt: 1 }
+    expect(await recheck({ ...first, actor: 'congvc-dev', ghApi: api })).toMatchObject({ authorized: true })
+    expect((await recheck({ ...first, actor: 'mallory', ghApi: api })).authorized).toBe(false)
+    expect((await recheck({ ...first, ghApi: api })).authorized).toBe(false)
+  })
+
+  it('decide and recheck share one dispatch rule: they agree for every actor', async () => {
+    const { api } = fakeApi({})
+    for (const trigger of ['congvc-dev', 'CONGVC-DEV', 'some-writer', '', undefined]) {
+      for (const actor of ['congvc-dev', 'mallory', undefined]) {
+        const args = { ...push, ...rerun, actor, trigger, ghApi: api }
+        const gate = await decide(args).then(
+          (o: { authorized: boolean }) => o.authorized,
+          () => false,
+        )
+        expect((await recheck(args)).authorized).toBe(gate)
+      }
+    }
+  })
+
+  it('a dispatch bypasses suspension only when an authorized login started it', async () => {
+    const { api } = fakeApi({ ...history([[1, 'failure']]) })
+    expect(await recheck({ ...rerun, actor: 'congvc-dev', trigger: 'congvc-dev', ghApi: api })).toMatchObject({
       authorized: true,
     })
+    expect((await recheck({ ...rerun, actor: 'congvc-dev', trigger: 'some-writer', ghApi: api })).authorized).toBe(
+      false,
+    )
+  })
+
+  it('rejects any other event', async () => {
+    const { api, calls } = fakeApi({})
+    for (const event of ['pull_request', 'schedule', 'workflow_run', undefined]) {
+      expect(
+        (await recheck({ ...rerun, event, actor: 'congvc-dev', trigger: 'congvc-dev', ghApi: api })).authorized,
+      ).toBe(false)
+    }
     expect(calls).toEqual([])
   })
 
