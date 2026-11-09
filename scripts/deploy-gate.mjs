@@ -34,19 +34,46 @@ async function mergerOf({ repo, sha, ghApi }) {
 
 const lower = (s) => String(s ?? '').toLowerCase()
 
+const isDeploy = (j) => j.name === 'deploy'
+
 // A rerun keeps its run id, so its earlier attempts are only visible per attempt.
 async function failedBefore({ repo, id, attempt, ghApi }) {
   for (let n = 1; n < attempt; n++) {
     const { jobs } = await ghApi(`repos/${repo}/actions/runs/${id}/attempts/${n}/jobs?per_page=100`)
-    if (jobs.find((j) => j.name === 'deploy')?.conclusion === 'failure') return true
+    if (jobs.find(isDeploy)?.conclusion === 'failure') return true
   }
   return false
 }
 
-// Newest first. The newest run whose deploy job finished decides: failure suspends.
-// A rerun is not a recovery: an earlier failed attempt keeps counting as a failure, unless an
-// allowlisted login started the rerun. Only a successful deploy that someone on the allowlist
-// started lifts a suspension.
+// The finished deploys of one run, each with when it finished. A deploy that has not finished says
+// nothing yet. A success lifts a suspension only if an allowlisted login started it: attempt 1 passed
+// the gate, a later attempt counts if its initiator is on the list. The initiator of an attempt that a
+// newer one replaced is unknown, so its success does not lift (fail closed).
+async function deploysOf({ repo, run, allowed, ghApi }) {
+  const latest = run.run_attempt ?? 1
+  const by = run.triggering_actor?.login
+  const out = []
+  const add = (job, lifts, who) => {
+    const result = job?.conclusion
+    if (result !== 'success' && result !== 'failure') return
+    const at = Date.parse(job.completed_at)
+    if (Number.isNaN(at)) throw new Error(`the deploy of run ${run.id} finished without a completion time`)
+    out.push({ id: run.id, result, at, lifts: result === 'success' && lifts, who })
+  }
+  for (let n = 1; n < latest; n++) {
+    const { jobs } = await ghApi(`repos/${repo}/actions/runs/${run.id}/attempts/${n}/jobs?per_page=100`)
+    add(jobs.find(isDeploy), n === 1)
+  }
+  const { jobs } = await ghApi(`repos/${repo}/actions/runs/${run.id}/jobs?per_page=100`)
+  add(jobs.find(isDeploy), latest === 1 || allowed.has(lower(by)), by)
+  return out
+}
+
+// Deploys run one at a time under the lock but finish in their own order, not in the order GitHub
+// lists the runs (creation). So the history is every finished deploy on the page, sorted by when it
+// finished. The latest decides: a lifting success (an allowlisted login started it) clears the
+// suspension, a failure suspends. A success nobody on the allowlist started is skipped, so a rerun
+// is not a recovery. A failure and a success finishing at the same instant count as the failure.
 async function suspendedBy({ repo, runId, attempt, trigger, allowed, ghApi }) {
   const own = Number(attempt) || 1
   if (own > 1 && !allowed.has(lower(trigger)) && (await failedBefore({ repo, id: runId, attempt: own, ghApi }))) {
@@ -55,22 +82,30 @@ async function suspendedBy({ repo, runId, attempt, trigger, allowed, ghApi }) {
   const { workflow_runs: runs } = await ghApi(
     `repos/${repo}/actions/workflows/image.yml/runs?branch=${BRANCH}&per_page=${RUN_PAGE}`,
   )
+  const deploys = []
+  let lifted = -Infinity // a run last updated before this cannot have finished a deploy after it
   for (const run of runs) {
     if (String(run.id) === String(runId)) continue // this attempt's own deploy has not run yet
-    const { jobs } = await ghApi(`repos/${repo}/actions/runs/${run.id}/jobs?per_page=100`)
-    const conclusion = jobs.find((j) => j.name === 'deploy')?.conclusion
-    const attempts = run.run_attempt ?? 1
-    const rerunAfterFailure =
-      attempts > 1 &&
-      !allowed.has(lower(run.triggering_actor?.login)) &&
-      (await failedBefore({ repo, id: run.id, attempt: attempts, ghApi }))
-    if (rerunAfterFailure) {
-      return `the deploy of run ${run.id} failed and ${run.triggering_actor?.login} reran it; a rerun is not a recovery`
+    if (Date.parse(run.updated_at) < lifted) continue
+    for (const d of await deploysOf({ repo, run, allowed, ghApi })) {
+      deploys.push(d)
+      if (d.lifts) lifted = Math.max(lifted, d.at)
     }
-    if (conclusion === 'success') return null
-    if (conclusion === 'failure') return `the deploy of run ${run.id} failed`
   }
-  // Page full and no deploy seen: older history is unknown, so stay suspended.
+  deploys.sort((x, y) => x.at - y.at || (x.result === 'failure' ? 1 : 0) - (y.result === 'failure' ? 1 : 0))
+  const skipped = []
+  for (const d of deploys.reverse()) {
+    if (d.lifts) return null
+    if (d.result === 'success') {
+      skipped.push(d)
+      continue
+    }
+    const rerun = skipped.find((r) => r.id === d.id)
+    return rerun
+      ? `the deploy of run ${d.id} failed and ${rerun.who} reran it; a rerun is not a recovery`
+      : `the deploy of run ${d.id} failed`
+  }
+  // Page full and nothing decided: older history is unknown, so stay suspended.
   return runs.length >= RUN_PAGE ? 'the last deploy result is unknown (no deploy in the last 100 runs)' : null
 }
 

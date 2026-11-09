@@ -36,16 +36,33 @@ const pullRoutes = (login: string | null, over: Record<string, unknown> = {}) =>
 const push = { event: 'push', ref: 'refs/heads/cheese/main', sha: SHA, repo: REPO, runId: '99', extra: '', paused: '' }
 const noRuns = { [`repos/${REPO}/actions/workflows/image.yml/runs`]: { workflow_runs: [] } }
 
-/* history: newest first, each [runId, deploy job conclusion | null for "no deploy job ran"] */
+/* Deploy jobs finish in an order of their own, not in run-creation order. Unless a test says otherwise,
+   run N's deploy completes N seconds after midnight, so a higher id finishes later. */
+const done = (id: number, ms = 500) => new Date(Date.UTC(2026, 10, 9, 0, 0, id, ms)).toISOString()
+const deployJob = (id: number, c: string, completed_at?: string | null) =>
+  c === 'in_progress'
+    ? { name: 'deploy', status: 'in_progress', conclusion: null, completed_at: null }
+    : { name: 'deploy', conclusion: c, completed_at: completed_at === undefined ? done(id) : completed_at }
+
+/* history: newest created first, each [runId, deploy job conclusion | null for "no deploy job ran" |
+   'in_progress', extra run fields; `completed_at` in extra goes on the deploy job instead] */
 function history(entries: [number, string | null, Record<string, unknown>?][]) {
   return {
     [`repos/${REPO}/actions/workflows/image.yml/runs`]: {
-      workflow_runs: entries.map(([id, , extra]) => ({ id, ...extra })),
+      workflow_runs: entries.map(([id, , extra]) => {
+        const { completed_at: _skip, ...run } = extra ?? {}
+        return { id, ...run }
+      }),
     },
     ...Object.fromEntries(
-      entries.map(([id, c]) => [
+      entries.map(([id, c, extra]) => [
         `repos/${REPO}/actions/runs/${id}/jobs`,
-        { jobs: [{ name: 'image', conclusion: 'success' }, ...(c ? [{ name: 'deploy', conclusion: c }] : [])] },
+        {
+          jobs: [
+            { name: 'image', conclusion: 'success' },
+            ...(c ? [deployJob(id, c, extra?.completed_at as string | null | undefined)] : []),
+          ],
+        },
       ]),
     ),
   }
@@ -295,8 +312,8 @@ describe('deploy gate: recheck inside the deploy lock', () => {
 })
 
 /* A rerun keeps the run id. Its earlier attempts live under /attempts/N/jobs. */
-const attempt = (id: number, n: number, deploy: string) => ({
-  [`repos/${REPO}/actions/runs/${id}/attempts/${n}/jobs`]: { jobs: [{ name: 'deploy', conclusion: deploy }] },
+const attempt = (id: number, n: number, deploy: string, at = done(id, n)) => ({
+  [`repos/${REPO}/actions/runs/${id}/attempts/${n}/jobs`]: { jobs: [deployJob(id, deploy, at)] },
 })
 
 describe('deploy gate: a rerun is not a recovery (Sol finding 2, CWE-841)', () => {
@@ -433,5 +450,162 @@ describe('deploy gate: workflow_dispatch', () => {
   it('refuses an event it does not know', async () => {
     const { api } = fakeApi({})
     await expect(decide({ ...push, event: 'pull_request', ghApi: api })).rejects.toThrow(/event/)
+  })
+})
+
+/* Sol, HIGH (CWE-841): the API lists runs by creation, but deploys finish in their own order. */
+describe('deploy gate: history is read in deployment completion order (Sol, CWE-841)', () => {
+  const auth = pullRoutes('congvc-dev')
+  const at = (hhmm: string) => `2026-11-09T${hhmm}:00Z`
+  // A (id 1) is created 01:00 and builds slowly. B (id 2) is created 01:01 and deploys at 01:02.
+  // A then holds the lock and fails at 01:03. C (id 3) starts at 01:04.
+  const abc = {
+    ...auth,
+    ...history([
+      [3, null],
+      [2, 'success', { completed_at: at('01:02') }],
+      [1, 'failure', { completed_at: at('01:03') }],
+    ]),
+  }
+  const c = { ...push, runId: '3', attempt: '1', trigger: 'congvc-dev' }
+  const lock = (api: (p: string) => Promise<unknown>) =>
+    recheck({ event: 'push', repo: REPO, runId: '3', attempt: '1', trigger: 'congvc-dev', extra: '', ghApi: api })
+
+  it('A fails after the newer-created B succeeded: C stays suspended at the gate and under the lock', async () => {
+    const gate = await decide({ ...c, ghApi: fakeApi(abc).api })
+    expect(gate.authorized).toBe(false)
+    expect(gate.reason).toContain('run 1 failed')
+    const held = await lock(fakeApi(abc).api)
+    expect(held.authorized).toBe(false)
+    expect(held.reason).toContain('run 1 failed')
+  })
+
+  it('control: A may still deploy after B, because only runs other than the current one count', async () => {
+    const { api } = fakeApi(abc)
+    const a = { event: 'push', repo: REPO, runId: '1', attempt: '1', trigger: 'congvc-dev', extra: '', ghApi: api }
+    expect(await recheck(a)).toMatchObject({ authorized: true })
+  })
+
+  it('control: an allowlisted deploy that succeeds after the failure lifts the suspension', async () => {
+    const routes = {
+      ...auth,
+      ...history([
+        [4, 'success', { completed_at: at('01:06') }],
+        [3, null],
+        [2, 'success', { completed_at: at('01:02') }],
+        [1, 'failure', { completed_at: at('01:03') }],
+      ]),
+    }
+    expect(await decide({ ...c, runId: '5', ghApi: fakeApi(routes).api })).toMatchObject({ authorized: true })
+    expect(await lock(fakeApi(routes).api)).toMatchObject({ authorized: true })
+  })
+
+  it('the same list order does not matter: a failure that finished first is lifted by a later success', async () => {
+    const routes = {
+      ...auth,
+      ...history([
+        [3, null],
+        [2, 'failure', { completed_at: at('01:02') }],
+        [1, 'success', { completed_at: at('01:03') }],
+      ]),
+    }
+    expect(await decide({ ...c, ghApi: fakeApi(routes).api })).toMatchObject({ authorized: true })
+  })
+
+  it('a failure and a success that finish at the same instant stay suspended', async () => {
+    const routes = {
+      ...auth,
+      ...history([
+        [3, null],
+        [2, 'success', { completed_at: at('01:02') }],
+        [1, 'failure', { completed_at: at('01:02') }],
+      ]),
+    }
+    expect((await decide({ ...c, ghApi: fakeApi(routes).api })).authorized).toBe(false)
+  })
+
+  it('a deploy still in progress says nothing yet: the lock decides, and holds the failure that follows', async () => {
+    const running = {
+      ...auth,
+      ...history([
+        [3, null],
+        [2, 'success', { completed_at: at('01:02') }],
+        [1, 'in_progress'],
+      ]),
+    }
+    expect(await decide({ ...c, ghApi: fakeApi(running).api })).toMatchObject({ authorized: true })
+    expect((await lock(fakeApi(abc).api)).authorized).toBe(false)
+  })
+
+  it('fails closed when a finished deploy has no completion time', async () => {
+    const routes = {
+      ...auth,
+      ...history([
+        [3, null],
+        [1, 'failure', { completed_at: null }],
+      ]),
+    }
+    await expect(decide({ ...c, ghApi: fakeApi(routes).api })).rejects.toThrow(/completion time/)
+  })
+
+  it('orders the attempts of one run too: a failed attempt 2 after a successful attempt 1', async () => {
+    const routes = {
+      ...auth,
+      ...attempt(2, 1, 'success', at('01:01')),
+      ...history([
+        [3, null],
+        [2, 'failure', { run_attempt: 2, triggering_actor: { login: 'congvc-dev' }, completed_at: at('01:05') }],
+      ]),
+    }
+    expect((await decide({ ...c, ghApi: fakeApi(routes).api })).authorized).toBe(false)
+  })
+
+  it('an owner rerun that goes green after the failure lifts it; a writer rerun does not', async () => {
+    const run5 = (login: string) => ({
+      ...auth,
+      ...attempt(5, 1, 'failure', at('01:01')),
+      ...history([[5, 'success', { run_attempt: 2, triggering_actor: { login }, completed_at: at('01:03') }]]),
+    })
+    expect(await decide({ ...push, ghApi: fakeApi(run5('congvc-dev')).api })).toMatchObject({ authorized: true })
+    expect((await decide({ ...push, ghApi: fakeApi(run5('some-writer')).api })).authorized).toBe(false)
+  })
+
+  it('a rerun attempt that is no longer the latest keeps its own initiator: a writer attempt 2 stays unlifting', async () => {
+    const routes = {
+      ...auth,
+      ...attempt(5, 1, 'failure', at('01:01')),
+      ...attempt(5, 2, 'success', at('01:03')),
+      ...history([
+        [5, 'success', { run_attempt: 3, triggering_actor: { login: 'congvc-dev' }, completed_at: at('01:09') }],
+      ]),
+    }
+    // attempt 3 (owner) is a success later than the failure, so it lifts; attempt 2 alone would not.
+    expect(await decide({ ...push, ghApi: fakeApi(routes).api })).toMatchObject({ authorized: true })
+    const only2 = { ...routes, ...history([[5, 'in_progress', { run_attempt: 3 }]]) }
+    expect((await decide({ ...push, ghApi: fakeApi(only2).api })).authorized).toBe(false)
+  })
+
+  it('skips runs that stopped changing before the newest lifting success, and reads those that did not', async () => {
+    const routes = {
+      ...auth,
+      ...history([
+        [4, 'success', { updated_at: at('01:09'), completed_at: at('01:08') }],
+        [3, 'failure', { updated_at: at('01:04'), completed_at: at('01:03') }],
+        [2, 'failure', { updated_at: at('01:12'), completed_at: at('01:11') }],
+      ]),
+    }
+    const { api, calls } = fakeApi(routes)
+    const out = await decide({ ...push, ghApi: api })
+    // run 2 was created earlier but finished at 01:11, after run 4's success at 01:08
+    expect(out.authorized).toBe(false)
+    expect(out.reason).toContain('run 2 failed')
+    expect(calls.some((x) => x.includes('/runs/3/'))).toBe(false)
+  })
+
+  it('stays suspended when the page is full and only skipped deploys are in it', async () => {
+    const page = Array.from({ length: 100 }, (_, i) => [1000 + i, 'skipped'] as [number, string])
+    const out = await decide({ ...push, ghApi: fakeApi({ ...auth, ...history(page) }).api })
+    expect(out.authorized).toBe(false)
+    expect(out.reason).toContain('unknown')
   })
 })

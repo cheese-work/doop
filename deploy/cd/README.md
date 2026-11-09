@@ -20,6 +20,11 @@ push to cheese/main -> ci -> image (digest) -> gate -> deploy [cheese-c00-deploy
 - `MAIN_RED_PAUSED` (repo variable): any non-empty value skips merge-triggered deploys. A dispatch ignores it.
 - After a failed deploy, merge-triggered deploys stay off until a deploy job succeeds (an allowlisted
   dispatch). Skipped and cancelled runs are ignored. If the last 100 runs hold no deploy, it stays off.
+- The history is read in the order deploys finished, not the order GitHub lists the runs (creation). A slow
+  older run can fail after a newer run succeeded; the failure is the later event, so it suspends. Every
+  finished deploy in the last 100 runs counts, each attempt of a rerun too, and the latest finish decides. A
+  failure and a success that finish at the same instant count as the failure. A deploy still running says
+  nothing yet. A finished deploy with no completion time fails the gate.
 - A rerun is not a recovery. A rerun keeps its run id, so the gate reads the earlier attempts too: an earlier
   failed deploy attempt keeps counting as a failure, for this run and for older runs, unless the login that
   started the rerun (`github.triggering_actor`) is on the allowlist. A rerun of a `workflow_dispatch` run is
