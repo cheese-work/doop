@@ -133,8 +133,22 @@ describe('deploy job', () => {
     expect(deploy).toContain("C00_COMPOSE_DIR: ${{ vars.C00_DOOP_COMPOSE_DIR || '/home/congvc/.local/share/doop' }}")
   })
 
-  it('holds a hard timeout above the 15 minute readback window', () => {
-    expect(deploy).toMatch(/timeout-minutes: (2\d|3\d)/)
+  it('holds a hard timeout above the 15 minute readback window, and at most 30 minutes', () => {
+    expect(deploy).toMatch(/^ {4}timeout-minutes: (1[6-9]|2\d|30)$/m)
+  })
+
+  // The recheck refuses a run 30 days old; this bound is what makes that refusal cover the whole deploy
+  // (a run created at T finishes before T + 30 days + 30 minutes). The lock is taken before the job
+  // starts, so no wait follows the recheck.
+  it('enforces the run-age bound: job-level lock, a 30 minute cap, recheck before every C00 step', () => {
+    const header = deploy.slice(0, deploy.indexOf('    steps:'))
+    expect(header).toMatch(/^ {4}concurrency:\n\s+group: c00-deploy-doop\n\s+cancel-in-progress: false$/m)
+    expect(header).toMatch(/^ {4}timeout-minutes: (\d|1\d|2\d|30)$/m)
+    const recheck = deploy.indexOf('deploy-gate.mjs recheck')
+    for (const c00 of ['Log in to GHCR', 'name: Apply', 'c00.sh apply', 'c00.sh readback', 'docker login'])
+      expect(deploy.indexOf(c00), c00).toBeGreaterThan(recheck)
+    const steps = deploy.slice(deploy.indexOf('    steps:'))
+    expect(steps).not.toMatch(/timeout-minutes|continue-on-error|nohup|setsid|disown/)
   })
 })
 

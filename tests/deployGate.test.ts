@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 // @ts-expect-error plain .mjs script, no type declarations
-import { decide, recheck } from '../scripts/deploy-gate.mjs'
+import { decide, recheck as recheckAt } from '../scripts/deploy-gate.mjs'
 
 type Api = (path: string) => Promise<unknown>
 const SHA = 'c'.repeat(40)
@@ -12,12 +12,30 @@ function fakeApi(routes: Record<string, unknown>) {
   const calls: string[] = []
   const api: Api = async (path) => {
     calls.push(path)
+    if (path in routes) {
+      const v = routes[path]
+      return typeof v === 'function' ? v(path) : v
+    }
     for (const [prefix, value] of Object.entries(routes)) {
       if (path.startsWith(prefix)) return typeof value === 'function' ? value(path) : value
     }
     throw new Error(`unexpected read ${path}`)
   }
   return { api, calls }
+}
+
+/* `recheck` first reads its own run to enforce the maximum run age. Tests that are not about age get a run
+   created a day before NOW; `created: null` is a run with no creation time. NOW is 9 Nov 2026 08:00 ICT. */
+const NOW = Date.parse('2026-11-09T01:00:00Z')
+const DAY = 24 * 3600 * 1000
+type RecheckArgs = Record<string, unknown> & { ghApi: Api; created?: string | null }
+const recheck = ({ created, ...args }: RecheckArgs) => {
+  const own = `repos/${REPO}/actions/runs/${args.runId}`
+  const ghApi: Api = (path) =>
+    path === own
+      ? Promise.resolve(created === null ? {} : { created_at: created ?? new Date(NOW - DAY).toISOString() })
+      : args.ghApi(path)
+  return recheckAt({ now: NOW, ...args, ghApi })
 }
 
 const mergedPull = (login: string | null, over: Record<string, unknown> = {}) => ({
@@ -312,6 +330,53 @@ describe('deploy gate: recheck inside the deploy lock', () => {
 })
 
 /* A rerun keeps the run id. Its earlier attempts live under /attempts/N/jobs. */
+describe('deploy gate: maximum run age enforced in recheck (Sol, f75bfc8 P1)', () => {
+  const auth = pullRoutes('congvc-dev')
+  const ICT = (iso: string) => new Date(Date.parse(iso)).toISOString()
+  // Run A is created 9 Oct 2026 07:00 ICT, is on attempt 2, and is judged 9 Nov 2026 08:00 ICT,
+  // after B's lifting success at 07:30 ICT. Run 1 stays in the failure history as a decoy.
+  const aCreated = ICT('2026-10-09T00:00:00Z')
+  const b = history([[2, 'success', { created_at: '2026-11-08T00:00:00Z', completed_at: '2026-11-09T00:30:00Z' }]])
+  const a = { event: 'push', repo: REPO, runId: '1', attempt: '2', trigger: 'congvc-dev', extra: '' }
+
+  it('refuses a push whose run is older than 30 days, whatever the history says', async () => {
+    const out = await recheck({ ...a, created: aCreated, ghApi: fakeApi({ ...auth, ...b }).api })
+    expect(out.authorized).toBe(false)
+    expect(out.reason).toContain('older than 30 days')
+  })
+
+  it('refuses a workflow_dispatch from an allowlisted login the same way', async () => {
+    const out = await recheck({
+      ...a,
+      event: 'workflow_dispatch',
+      actor: 'congvc-dev',
+      created: aCreated,
+      ghApi: fakeApi({}).api,
+    })
+    expect(out.authorized).toBe(false)
+    expect(out.reason).toContain('older than 30 days')
+  })
+
+  it('refuses an age of exactly 30 days: the bound is a strict maximum', async () => {
+    const exact = new Date(NOW - 30 * DAY).toISOString()
+    expect((await recheck({ ...a, created: exact, ghApi: fakeApi(b).api })).reason).toContain('older than 30 days')
+  })
+
+  it('refuses a run with no creation time (fail closed)', async () => {
+    const out = await recheck({ ...a, created: null, ghApi: fakeApi(b).api })
+    expect(out.authorized).toBe(false)
+    expect(out.reason).toContain('creation time')
+  })
+
+  it('control: a run created 29 days before now still passes', async () => {
+    const created = new Date(NOW - 29 * DAY).toISOString()
+    expect(await recheck({ ...a, created, ghApi: fakeApi(b).api })).toMatchObject({ authorized: true })
+    expect(
+      await recheck({ ...a, event: 'workflow_dispatch', actor: 'congvc-dev', created, ghApi: fakeApi({}).api }),
+    ).toMatchObject({ authorized: true })
+  })
+})
+
 const attempt = (id: number, n: number, deploy: string, at = done(id, n)) => ({
   [`repos/${REPO}/actions/runs/${id}/attempts/${n}/jobs`]: { jobs: [deployJob(id, deploy, at)] },
 })

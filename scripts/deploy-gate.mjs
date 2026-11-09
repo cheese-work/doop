@@ -14,11 +14,14 @@ import { pathToFileURL } from 'node:url'
 const OWNER = 'congvc-dev'
 const BRANCH = 'cheese/main'
 const RUN_PAGE = 100
-// The run list is by creation, but a deploy finishes long after its run was created: GitHub lets a run
-// be re-run up to 30 days after it started, and a rerun keeps the original creation time. A run created
-// more than LAG (30 days plus a day for the lock and build) before the newest lifting success cannot
-// finish after it. Paging stops there; it never reads more than MAX_PAGES.
-const LAG = 31 * 24 * 3600 * 1000
+// A deploy finishes long after its run was created, and a rerun keeps the original creation time. The
+// bound is enforced, not assumed: `recheck` refuses a run MAX_AGE or more past its creation, inside the
+// deploy lock (job-level `concurrency`, so every lock and runner wait is over before the job starts), and
+// the deploy job's `timeout-minutes` (30) bounds every step after it. So a deploy that touches C00 ends
+// before created_at + MAX_AGE + 30 minutes, and a run created more than LAG (MAX_AGE plus a day) before
+// the newest lifting success cannot finish after it. Paging stops there; it never reads more than MAX_PAGES.
+const MAX_AGE = 30 * 24 * 3600 * 1000
+const LAG = MAX_AGE + 24 * 3600 * 1000
 const MAX_PAGES = 10
 const UNKNOWN = `the last deploy result is unknown (${MAX_PAGES * RUN_PAGE} runs read, no later deploy decided it)`
 
@@ -166,9 +169,13 @@ export async function decide({ event, ref, sha, repo, runId, attempt, actor, tri
 // The gate runs before the deploy job queues for the lock, and a rerun of failed jobs reuses its
 // passed gate, so the deploy job judges again once it holds the lock. A dispatch is judged by the
 // login that started this attempt and, if allowlisted, bypasses suspension. A push checks the
-// failure history. Any other event is refused.
-export async function recheck({ event, repo, runId, attempt, actor, trigger, extra, ghApi }) {
+// failure history. Any other event is refused. A run MAX_AGE old is refused first (see LAG).
+export async function recheck({ event, repo, runId, attempt, actor, trigger, extra, ghApi, now = Date.now() }) {
   const allowed = logins(extra)
+  // The age bound comes first and covers every event: a failed dispatch deploy enters the history too.
+  const created = Date.parse((await ghApi(`repos/${repo}/actions/runs/${runId}`)).created_at)
+  if (Number.isNaN(created)) return { authorized: false, reason: `run ${runId} has no creation time` }
+  if (now - created >= MAX_AGE) return { authorized: false, reason: `run ${runId} is older than 30 days` }
   if (event === 'workflow_dispatch') {
     const refusal = dispatchRefusal({ actor, trigger, allowed })
     return refusal
