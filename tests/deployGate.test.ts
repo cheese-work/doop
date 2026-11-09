@@ -37,9 +37,11 @@ const push = { event: 'push', ref: 'refs/heads/cheese/main', sha: SHA, repo: REP
 const noRuns = { [`repos/${REPO}/actions/workflows/image.yml/runs`]: { workflow_runs: [] } }
 
 /* history: newest first, each [runId, deploy job conclusion | null for "no deploy job ran"] */
-function history(entries: [number, string | null][]) {
+function history(entries: [number, string | null, Record<string, unknown>?][]) {
   return {
-    [`repos/${REPO}/actions/workflows/image.yml/runs`]: { workflow_runs: entries.map(([id]) => ({ id })) },
+    [`repos/${REPO}/actions/workflows/image.yml/runs`]: {
+      workflow_runs: entries.map(([id, , extra]) => ({ id, ...extra })),
+    },
     ...Object.fromEntries(
       entries.map(([id, c]) => [
         `repos/${REPO}/actions/runs/${id}/jobs`,
@@ -232,6 +234,115 @@ describe('deploy gate: recheck inside the deploy lock', () => {
   it('fails closed on a GitHub error', async () => {
     const { api } = fakeApi({})
     await expect(recheck({ event: 'push', repo: REPO, runId: '2', ghApi: api })).rejects.toThrow()
+  })
+})
+
+/* A rerun keeps the run id. Its earlier attempts live under /attempts/N/jobs. */
+const attempt = (id: number, n: number, deploy: string) => ({
+  [`repos/${REPO}/actions/runs/${id}/attempts/${n}/jobs`]: { jobs: [{ name: 'deploy', conclusion: deploy }] },
+})
+
+describe('deploy gate: a rerun is not a recovery (Sol finding 2, CWE-841)', () => {
+  const auth = pullRoutes('congvc-dev')
+  const rerun = { ...push, runId: '99', attempt: '2', trigger: 'some-writer' }
+
+  it('a writer reruns a failed push run: its own failed attempt 1 suspends, whatever older run succeeded', async () => {
+    const { api } = fakeApi({
+      ...auth,
+      ...attempt(99, 1, 'failure'),
+      ...history([
+        [99, null],
+        [2, 'success'],
+      ]),
+    })
+    const out = await decide({ ...rerun, ghApi: api })
+    expect(out.authorized).toBe(false)
+    expect(out.reason).toContain('suspended')
+  })
+
+  it('an allowlisted rerun initiator is a deliberate recovery', async () => {
+    const { api } = fakeApi({
+      ...auth,
+      ...attempt(99, 1, 'failure'),
+      ...history([
+        [99, null],
+        [2, 'success'],
+      ]),
+    })
+    expect(await decide({ ...rerun, trigger: 'CongVC-Dev', ghApi: api })).toMatchObject({ authorized: true })
+  })
+
+  it('a rerun after a skipped or cancelled attempt 1 is not suspended', async () => {
+    const { api } = fakeApi({
+      ...auth,
+      ...attempt(99, 1, 'skipped'),
+      ...history([
+        [99, null],
+        [2, 'success'],
+      ]),
+    })
+    expect(await decide({ ...rerun, ghApi: api })).toMatchObject({ authorized: true })
+  })
+
+  it('the lock-time recheck sees the same earlier failure', async () => {
+    const { api } = fakeApi({
+      ...attempt(99, 1, 'failure'),
+      ...history([
+        [99, null],
+        [2, 'success'],
+      ]),
+    })
+    const out = await recheck({
+      event: 'push',
+      repo: REPO,
+      runId: '99',
+      attempt: '2',
+      trigger: 'some-writer',
+      extra: '',
+      ghApi: api,
+    })
+    expect(out.authorized).toBe(false)
+  })
+
+  it('an older run that failed, then was rerun to green by a writer, does not lift the suspension', async () => {
+    const { api } = fakeApi({
+      ...auth,
+      ...attempt(5, 1, 'failure'),
+      ...history([[5, 'success', { run_attempt: 2, triggering_actor: { login: 'some-writer' } }]]),
+    })
+    const out = await decide({ ...push, ghApi: api })
+    expect(out.authorized).toBe(false)
+    expect(out.reason).toContain('run 5')
+  })
+
+  it('the same rerun by an allowlisted login does lift it', async () => {
+    const { api } = fakeApi({
+      ...auth,
+      ...attempt(5, 1, 'failure'),
+      ...history([[5, 'success', { run_attempt: 2, triggering_actor: { login: 'congvc-dev' } }]]),
+    })
+    expect(await decide({ ...push, ghApi: api })).toMatchObject({ authorized: true })
+  })
+
+  it('an older run rerun by a writer that is still unfinished stays suspended', async () => {
+    const { api } = fakeApi({
+      ...auth,
+      ...attempt(5, 1, 'failure'),
+      ...history([[5, null, { run_attempt: 2, triggering_actor: { login: 'some-writer' } }]]),
+    })
+    expect((await decide({ ...push, ghApi: api })).authorized).toBe(false)
+  })
+
+  it('a rerun of an owner dispatch is judged by whoever reran it, not the original dispatcher', async () => {
+    const d = {
+      ...push,
+      event: 'workflow_dispatch',
+      actor: 'congvc-dev',
+      trigger: 'some-writer',
+      ghApi: fakeApi({}).api,
+    }
+    await expect(decide(d)).rejects.toThrow(/some-writer/)
+    expect(await decide({ ...d, trigger: 'congvc-dev' })).toMatchObject({ authorized: true })
   })
 })
 

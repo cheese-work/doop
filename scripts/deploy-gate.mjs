@@ -31,30 +31,57 @@ async function mergerOf({ repo, sha, ghApi }) {
   return { login }
 }
 
+const lower = (s) => String(s ?? '').toLowerCase()
+
+// A rerun keeps its run id, so its earlier attempts are only visible per attempt.
+async function failedBefore({ repo, id, attempt, ghApi }) {
+  for (let n = 1; n < attempt; n++) {
+    const { jobs } = await ghApi(`repos/${repo}/actions/runs/${id}/attempts/${n}/jobs?per_page=100`)
+    if (jobs.find((j) => j.name === 'deploy')?.conclusion === 'failure') return true
+  }
+  return false
+}
+
 // Newest first. The newest run whose deploy job finished decides: failure suspends.
-async function suspendedBy({ repo, runId, ghApi }) {
+// A rerun is not a recovery: an earlier failed attempt keeps counting as a failure, unless an
+// allowlisted login started the rerun. Only a successful deploy that someone on the allowlist
+// started lifts a suspension.
+async function suspendedBy({ repo, runId, attempt, trigger, allowed, ghApi }) {
+  const own = Number(attempt) || 1
+  if (own > 1 && !allowed.has(lower(trigger)) && (await failedBefore({ repo, id: runId, attempt: own, ghApi }))) {
+    return `an earlier attempt of run ${runId} failed, and ${trigger} is not on the deploy allowlist`
+  }
   const { workflow_runs: runs } = await ghApi(
     `repos/${repo}/actions/workflows/image.yml/runs?branch=${BRANCH}&per_page=${RUN_PAGE}`,
   )
   for (const run of runs) {
-    if (String(run.id) === String(runId)) continue
+    if (String(run.id) === String(runId)) continue // this attempt's own deploy has not run yet
     const { jobs } = await ghApi(`repos/${repo}/actions/runs/${run.id}/jobs?per_page=100`)
-    const deploy = jobs.find((j) => j.name === 'deploy')
-    if (deploy?.conclusion === 'success') return null
-    if (deploy?.conclusion === 'failure') return `the deploy of run ${run.id} failed`
+    const conclusion = jobs.find((j) => j.name === 'deploy')?.conclusion
+    const attempts = run.run_attempt ?? 1
+    const rerunAfterFailure =
+      attempts > 1 &&
+      !allowed.has(lower(run.triggering_actor?.login)) &&
+      (await failedBefore({ repo, id: run.id, attempt: attempts, ghApi }))
+    if (rerunAfterFailure) {
+      return `the deploy of run ${run.id} failed and ${run.triggering_actor?.login} reran it; a rerun is not a recovery`
+    }
+    if (conclusion === 'success') return null
+    if (conclusion === 'failure') return `the deploy of run ${run.id} failed`
   }
   // Page full and no deploy seen: older history is unknown, so stay suspended.
   return runs.length >= RUN_PAGE ? 'the last deploy result is unknown (no deploy in the last 100 runs)' : null
 }
 
-export async function decide({ event, ref, sha, repo, runId, actor, extra, paused, ghApi }) {
+export async function decide({ event, ref, sha, repo, runId, attempt, actor, trigger, extra, paused, ghApi }) {
   if (ref !== `refs/heads/${BRANCH}`) throw new Error(`deploys run only from ${BRANCH}, not ${ref}`)
   const allowed = logins(extra)
 
   if (event === 'workflow_dispatch') {
-    const who = String(actor ?? '').toLowerCase()
-    if (!allowed.has(who)) throw new Error(`${actor} is not on the deploy allowlist`)
-    return { authorized: true, reason: `dispatched by ${actor}` }
+    // A rerun keeps the original actor; the one who reran it is the one who decides.
+    const who = trigger || actor
+    if (!allowed.has(lower(who))) throw new Error(`${who} is not on the deploy allowlist`)
+    return { authorized: true, reason: `dispatched by ${who}` }
   }
   if (event !== 'push') throw new Error(`event ${event} may not deploy`)
 
@@ -68,7 +95,7 @@ export async function decide({ event, ref, sha, repo, runId, actor, extra, pause
   }
   if (String(paused ?? '') !== '') return { authorized: false, reason: `MAIN_RED_PAUSED is set: ${paused}` }
 
-  const suspended = await suspendedBy({ repo, runId, ghApi })
+  const suspended = await suspendedBy({ repo, runId, attempt, trigger, allowed, ghApi })
   if (suspended) return { authorized: false, reason: `auto-deploy suspended: ${suspended}` }
   return { authorized: true, reason: `merged by ${merger.login}` }
 }
@@ -77,9 +104,9 @@ export async function decide({ event, ref, sha, repo, runId, actor, extra, pause
 // The gate runs before the deploy job queues for the lock, so a run that passed it
 // can wait behind a deploy that then fails. The deploy job calls this once it
 // holds the lock; a dispatch is a deliberate human act and is never re-judged.
-export async function recheck({ event, repo, runId, ghApi }) {
+export async function recheck({ event, repo, runId, attempt, trigger, extra, ghApi }) {
   if (event !== 'push') return { authorized: true, reason: `${event} is not re-judged` }
-  const suspended = await suspendedBy({ repo, runId, ghApi })
+  const suspended = await suspendedBy({ repo, runId, attempt, trigger, allowed: logins(extra), ghApi })
   return suspended
     ? { authorized: false, reason: `auto-deploy suspended: ${suspended}` }
     : { authorized: true, reason: 'no failed deploy while this run waited for the lock' }
@@ -96,7 +123,15 @@ const gh = async (path) => {
 async function main() {
   const env = process.env
   if (process.argv[2] === 'recheck') {
-    const out = await recheck({ event: env.EVENT, repo: env.REPO, runId: env.RUN_ID, ghApi: gh })
+    const out = await recheck({
+      event: env.EVENT,
+      repo: env.REPO,
+      runId: env.RUN_ID,
+      attempt: env.ATTEMPT,
+      trigger: env.TRIGGER,
+      extra: env.EXTRA,
+      ghApi: gh,
+    })
     console.log(`deploy recheck: authorized=${out.authorized} (${out.reason})`)
     if (!out.authorized) throw new Error(out.reason) // the job stays failed, so the suspension holds
     return
@@ -107,7 +142,9 @@ async function main() {
     sha: env.SHA,
     repo: env.REPO,
     runId: env.RUN_ID,
+    attempt: env.ATTEMPT,
     actor: env.ACTOR,
+    trigger: env.TRIGGER,
     extra: env.EXTRA,
     paused: env.PAUSED,
     ghApi: gh,

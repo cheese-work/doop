@@ -98,6 +98,8 @@ jobs:
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
           ACTOR: ${{ github.actor }}
+          ATTEMPT: ${{ github.run_attempt }}
+          TRIGGER: ${{ github.triggering_actor }}
           EXTRA: ${{ vars.C00_DEPLOY_AUTHORIZERS }}
           PAUSED: ${{ vars.MAIN_RED_PAUSED }}
         run: node scripts/deploy-gate.mjs
@@ -137,6 +139,9 @@ jobs:
           EVENT: ${{ github.event_name }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
+          TRIGGER: ${{ github.triggering_actor }}
+          EXTRA: ${{ vars.C00_DEPLOY_AUTHORIZERS }}
         run: node scripts/deploy-gate.mjs recheck
       - name: Log in to GHCR
         env:

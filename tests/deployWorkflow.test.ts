@@ -93,6 +93,14 @@ describe('deploy job', () => {
     expect(deploy.slice(recheck - 500, recheck)).not.toMatch(/run:[^\n]*\$\{\{/)
   })
 
+  it('passes the attempt number, rerun initiator and allowlist to the gate and to the recheck', () => {
+    for (const j of [job('gate'), deploy]) {
+      expect(j).toContain('ATTEMPT: ${{ github.run_attempt }}')
+      expect(j).toContain('TRIGGER: ${{ github.triggering_actor }}')
+      expect(j).toContain('EXTRA: ${{ vars.C00_DEPLOY_AUTHORIZERS }}')
+    }
+  })
+
   it('rolls back only after this run captured its rollback target and tried the change', () => {
     expect(deploy).toMatch(/- name: Apply\n\s+id: apply\n/)
     const rollback = deploy.indexOf('c00.sh rollback')
