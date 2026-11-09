@@ -80,7 +80,25 @@ describe('deploy job', () => {
     expect(deploy).toMatch(/c00\.sh readback/)
     const rollback = deploy.indexOf('c00.sh rollback')
     expect(rollback).toBeGreaterThan(deploy.indexOf('c00.sh readback'))
-    expect(deploy.slice(rollback - 400, rollback)).toMatch(/if: (failure\(\)|\$\{\{ failure\(\) \}\})/)
+    expect(deploy.slice(rollback - 400, rollback)).toMatch(/if: .*failure\(\)/)
+  })
+
+  it('rechecks suspension after the lock is held, before anything touches C00', () => {
+    const recheck = deploy.indexOf('deploy-gate.mjs recheck')
+    expect(recheck).toBeGreaterThan(deploy.indexOf('uses: actions/checkout@v4'))
+    expect(recheck).toBeLessThan(deploy.indexOf('c00.sh apply'))
+    expect(recheck).toBeLessThan(deploy.indexOf('docker login'))
+    expect(deploy).toMatch(/actions: read/)
+    expect(deploy).toMatch(/uses: actions\/setup-node@v4/)
+    expect(deploy.slice(recheck - 500, recheck)).not.toMatch(/run:[^\n]*\$\{\{/)
+  })
+
+  it('rolls back only after this run captured its rollback target and tried the change', () => {
+    expect(deploy).toMatch(/- name: Apply\n\s+id: apply\n/)
+    const rollback = deploy.indexOf('c00.sh rollback')
+    expect(deploy.slice(rollback - 400, rollback)).toMatch(
+      /if: \$\{\{ failure\(\) && steps\.apply\.outputs\.attempted == 'true' \}\}/,
+    )
   })
 
   it('serializes deploys and never cancels one midway', () => {

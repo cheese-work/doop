@@ -55,6 +55,8 @@ case $cmd in
       docker tag "$prev" "$rollback_tag"
     fi
     docker pull "$ref"
+    # From here the running service may change; only then is a rollback meaningful.
+    [ -z "${GITHUB_OUTPUT:-}" ] || echo "attempted=true" >> "$GITHUB_OUTPUT"
     compose_up "$ref"
     ;;
 

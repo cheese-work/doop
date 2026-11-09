@@ -20,6 +20,9 @@ push to cheese/main -> ci -> image (digest) -> gate -> deploy [cheese-c00-deploy
 - `MAIN_RED_PAUSED` (repo variable): any non-empty value skips merge-triggered deploys. A dispatch ignores it.
 - After a failed deploy, merge-triggered deploys stay off until a deploy job succeeds (an allowlisted
   dispatch). Skipped and cancelled runs are ignored. If the last 100 runs hold no deploy, it stays off.
+- The deploy job asks again once it holds the deploy lock (`deploy-gate.mjs recheck`, merge-triggered runs
+  only). A run that passed the gate while an earlier deploy was still running stops there if that deploy
+  failed. The job fails, so the suspension holds, and nothing has touched C00.
 - Rebase and merge-queue merges whose commit differs from the pull request's `merge_commit_sha`
   are not matched and deploy by dispatch only.
 
@@ -30,17 +33,18 @@ push to cheese/main -> ci -> image (digest) -> gate -> deploy [cheese-c00-deploy
 2. `readback`: the running image has the evidence digest; its `org.opencontainers.image.revision`
    label equals the deployed SHA; the container reports `healthy` on 3 consecutive checks inside
    15 minutes. `unhealthy` or a stopped container fails at once.
-3. `rollback` (only on failure): starts `doop-rollback:previous` and waits up to 5 minutes for `healthy`.
+3. `rollback` (only on failure, and only if `apply` got as far as starting the change; a login, recheck
+   or pull failure leaves the running service alone): starts `doop-rollback:previous` and waits up to 5 minutes for `healthy`.
    The job stays failed, which suspends auto-deploy. On a first deploy there is nothing to roll back to.
 
 ## Prerequisites (set once; not in this repo)
 
-| Where         | Name                      | Value                                                                                                                                                  |
-| ------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Runner        | label `cheese-c00-deploy` | self-hosted runner on C00 with Docker and `docker compose`, in runner group `c00-deploy` (D1), limited to `cheese-work/doop` and `cheese-work/multica` |
-| Repo variable | `C00_DOOP_COMPOSE_DIR`    | optional; default `/home/congvc/.local/share/doop` (`compose.yaml`, service `app`, its `.env`)                                                         |
-| Repo variable | `C00_DEPLOY_AUTHORIZERS`  | extra logins, e.g. the agent-merge identity                                                                                                            |
-| Repo variable | `MAIN_RED_PAUSED`         | empty, or a reason to pause                                                                                                                            |
+| Where         | Name                      | Value                                                                                                                                                                                                                                    |
+| ------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Runner        | label `cheese-c00-deploy` | self-hosted runner on C00 with Docker and `docker compose` (node 22 comes from `actions/setup-node`; the runner needs egress to download it), in runner group `c00-deploy` (D1), limited to `cheese-work/doop` and `cheese-work/multica` |
+| Repo variable | `C00_DOOP_COMPOSE_DIR`    | optional; default `/home/congvc/.local/share/doop` (`compose.yaml`, service `app`, its `.env`)                                                                                                                                           |
+| Repo variable | `C00_DEPLOY_AUTHORIZERS`  | extra logins, e.g. the agent-merge identity                                                                                                                                                                                              |
+| Repo variable | `MAIN_RED_PAUSED`         | empty, or a reason to pause                                                                                                                                                                                                              |
 
 Optional on the runner: `C00_COMPOSE_FILE` (default `compose.yaml`), `C00_CONTAINER` (default `doop`).
 The compose service is `app` (container name `doop`); `compose.image.yml` overrides only its image.

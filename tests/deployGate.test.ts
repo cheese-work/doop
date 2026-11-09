@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 // @ts-expect-error plain .mjs script, no type declarations
-import { decide } from '../scripts/deploy-gate.mjs'
+import { decide, recheck } from '../scripts/deploy-gate.mjs'
 
 type Api = (path: string) => Promise<unknown>
 const SHA = 'c'.repeat(40)
@@ -199,6 +199,39 @@ describe('deploy gate: suspension after a failed deploy (CHE-2365)', () => {
     const out = await decide({ ...push, ghApi: api })
     expect(out.authorized).toBe(false)
     expect(out.reason).toContain('unknown')
+  })
+})
+
+describe('deploy gate: recheck inside the deploy lock', () => {
+  const auth = pullRoutes('congvc-dev')
+
+  it('overlap: run B passes the gate while A deploys, then A fails; B is stopped at the lock', async () => {
+    // At gate time A's deploy job has no conclusion yet, so B is authorized.
+    const atGate = fakeApi({ ...auth, ...history([[1, 'in_progress']]) })
+    expect(await decide({ ...push, runId: '2', ghApi: atGate.api })).toMatchObject({ authorized: true })
+    // B gets the lock only after A released it as failed.
+    const atLock = fakeApi({ ...history([[1, 'failure']]) })
+    const out = await recheck({ event: 'push', repo: REPO, runId: '2', ghApi: atLock.api })
+    expect(out.authorized).toBe(false)
+    expect(out.reason).toContain('run 1 failed')
+  })
+
+  it('lets a push through when no deploy failed', async () => {
+    const { api } = fakeApi({ ...history([[1, 'success']]) })
+    expect(await recheck({ event: 'push', repo: REPO, runId: '2', ghApi: api })).toMatchObject({ authorized: true })
+  })
+
+  it('never reads history for a dispatch: that is a deliberate human act', async () => {
+    const { api, calls } = fakeApi({})
+    expect(await recheck({ event: 'workflow_dispatch', repo: REPO, runId: '2', ghApi: api })).toMatchObject({
+      authorized: true,
+    })
+    expect(calls).toEqual([])
+  })
+
+  it('fails closed on a GitHub error', async () => {
+    const { api } = fakeApi({})
+    await expect(recheck({ event: 'push', repo: REPO, runId: '2', ghApi: api })).rejects.toThrow()
   })
 })
 

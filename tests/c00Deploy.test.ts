@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -94,6 +94,33 @@ describe('c00.sh apply', () => {
     expect(r.status, r.stderr).toBe(0)
     expect(log()).toContain('docker rmi doop-rollback:previous')
     expect(log()).not.toContain('docker tag')
+  })
+
+  describe('attempted flag (rollback only after a real attempt)', () => {
+    const out = () => join(dir, 'gh_output')
+    const run = () => c00('apply', { GITHUB_OUTPUT: out() })
+    const flag = () => (existsSync(out()) ? readFileSync(out(), 'utf8') : '')
+
+    it('is set after the rollback target is captured, before compose starts the new image', () => {
+      put('container_image', 'sha256:oldimageid\n')
+      expect(run().status).toBe(0)
+      expect(flag()).toBe('attempted=true\n')
+    })
+
+    it('is not set when the pull fails: the running deployment was never touched', () => {
+      writeFileSync(
+        join(dir, 'bin', 'docker'),
+        STUB.replace('case "$1" in compose)', 'case "$1" in pull) exit 1 ;; compose)'),
+      )
+      expect(run().status).not.toBe(0)
+      expect(flag()).toBe('')
+      expect(log()).not.toContain('docker compose')
+    })
+
+    it('is not set for a refused ref', () => {
+      expect(c00('apply', { GITHUB_OUTPUT: out(), DEPLOY_REF: 'x:latest' }).status).not.toBe(0)
+      expect(flag()).toBe('')
+    })
   })
 
   it.each([

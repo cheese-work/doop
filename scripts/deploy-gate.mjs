@@ -5,8 +5,8 @@
 //   1. who merged cheese/main (or who dispatched) must be on the allowlist;
 //   2. MAIN_RED_PAUSED stops merge-triggered deploys;
 //   3. a failed deploy suspends auto-deploy until an allowlisted human dispatches one.
+// `recheck` repeats step 3 inside the deploy lock, where the answer can no longer change.
 // A thrown error fails the gate job, so the deploy job never starts.
-import { execFileSync } from 'node:child_process'
 import { appendFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 
@@ -73,10 +73,34 @@ export async function decide({ event, ref, sha, repo, runId, actor, extra, pause
   return { authorized: true, reason: `merged by ${merger.login}` }
 }
 
-const gh = async (path) => JSON.parse(execFileSync('gh', ['api', path], { encoding: 'utf8', maxBuffer: 32 << 20 }))
+// Plain REST, so it also runs on the C00 runner, which has node but not `gh`.
+// The gate runs before the deploy job queues for the lock, so a run that passed it
+// can wait behind a deploy that then fails. The deploy job calls this once it
+// holds the lock; a dispatch is a deliberate human act and is never re-judged.
+export async function recheck({ event, repo, runId, ghApi }) {
+  if (event !== 'push') return { authorized: true, reason: `${event} is not re-judged` }
+  const suspended = await suspendedBy({ repo, runId, ghApi })
+  return suspended
+    ? { authorized: false, reason: `auto-deploy suspended: ${suspended}` }
+    : { authorized: true, reason: 'no failed deploy while this run waited for the lock' }
+}
+
+const gh = async (path) => {
+  const res = await fetch(`${process.env.GITHUB_API_URL || 'https://api.github.com'}/${path}`, {
+    headers: { Authorization: `Bearer ${process.env.GH_TOKEN}`, Accept: 'application/vnd.github+json' },
+  })
+  if (!res.ok) throw new Error(`GitHub ${res.status} for ${path}`)
+  return res.json()
+}
 
 async function main() {
   const env = process.env
+  if (process.argv[2] === 'recheck') {
+    const out = await recheck({ event: env.EVENT, repo: env.REPO, runId: env.RUN_ID, ghApi: gh })
+    console.log(`deploy recheck: authorized=${out.authorized} (${out.reason})`)
+    if (!out.authorized) throw new Error(out.reason) // the job stays failed, so the suspension holds
+    return
+  }
   const out = await decide({
     event: env.EVENT,
     ref: env.REF,
