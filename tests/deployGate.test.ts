@@ -664,18 +664,26 @@ describe('deploy gate: history past the 100-run page (Sol, CWE-841)', () => {
     expect(lock.reason).toContain('run 1 failed')
   })
 
-  it('stops paging once a page is older than the newest success by more than a day (control)', async () => {
-    const routes = {
-      ...auth,
-      ...paged({
-        1: [
-          [2000, 'success', { created_at: hour(11), updated_at: hour(11), completed_at: '2026-11-09T11:30:00Z' }],
-          ...filler(1000, '2026-11-07T10:00:00Z'),
-        ],
-        2: [[1, 'failure', { created_at: '2026-11-07T09:00:00Z', completed_at: '2026-11-09T11:45:00Z' }]],
-      }),
-    }
-    const { api, calls } = fakeApi(routes)
+  const pagesWith = (created: string) => ({
+    ...auth,
+    ...paged({
+      1: [
+        [2000, 'success', { created_at: hour(11), updated_at: hour(11), completed_at: '2026-11-09T11:30:00Z' }],
+        ...filler(1000, created),
+      ],
+      2: [[1, 'failure', { created_at: created, completed_at: '2026-11-09T11:45:00Z' }]],
+    }),
+  })
+
+  // Sol, HIGH, b31573e: a rerun keeps its creation time, so a run two days old can fail after the success.
+  it('reads past a page two days older than the newest success: a rerun finishes later than it was created', async () => {
+    const out = await decide({ ...c, ghApi: fakeApi(pagesWith('2026-11-07T09:00:00Z')).api })
+    expect(out.authorized).toBe(false)
+    expect(out.reason).toContain('run 1 failed')
+  })
+
+  it('stops paging once a page is older than the 30-day rerun window before the newest success (control)', async () => {
+    const { api, calls } = fakeApi(pagesWith('2026-09-01T09:00:00Z'))
     expect((await decide({ ...c, ghApi: api })).authorized).toBe(true)
     expect(calls.some((x) => x.includes('page=2'))).toBe(false)
   })

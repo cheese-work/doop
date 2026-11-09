@@ -14,10 +14,11 @@ import { pathToFileURL } from 'node:url'
 const OWNER = 'congvc-dev'
 const BRANCH = 'cheese/main'
 const RUN_PAGE = 100
-// The run list is by creation, but a deploy finishes later than its run was created: a slow build, then
-// the lock (one deploy at a time, 30 minutes at most). A run created more than LAG before the newest
-// lifting success cannot finish after it. Paging stops there; it never reads more than MAX_PAGES.
-const LAG = 24 * 3600 * 1000
+// The run list is by creation, but a deploy finishes long after its run was created: GitHub lets a run
+// be re-run up to 30 days after it started, and a rerun keeps the original creation time. A run created
+// more than LAG (30 days plus a day for the lock and build) before the newest lifting success cannot
+// finish after it. Paging stops there; it never reads more than MAX_PAGES.
+const LAG = 31 * 24 * 3600 * 1000
 const MAX_PAGES = 10
 const UNKNOWN = `the last deploy result is unknown (${MAX_PAGES * RUN_PAGE} runs read, no later deploy decided it)`
 
