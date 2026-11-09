@@ -22,9 +22,13 @@ push to cheese/main -> ci -> image (digest) -> gate -> deploy [cheese-c00-deploy
   dispatch). Skipped and cancelled runs are ignored. If the last 100 runs hold no deploy, it stays off.
 - The history is read in the order deploys finished, not the order GitHub lists the runs (creation). A slow
   older run can fail after a newer run succeeded; the failure is the later event, so it suspends. Every
-  finished deploy in the last 100 runs counts, each attempt of a rerun too, and the latest finish decides. A
+  finished deploy in the runs read counts, each attempt of a rerun too, and the latest finish decides. A
   failure and a success that finish at the same instant count as the failure. A deploy still running says
   nothing yet. A finished deploy with no completion time fails the gate.
+- The run list is by creation, and a run created earlier can finish later. So the gate reads 100 runs a page and
+  keeps paging until the newest lifting success is more than 24 hours newer than the oldest run on the page
+  (a run that old cannot finish after it), or a page is short. It reads at most 10 pages. If that does not
+  decide, or a run has no creation time, the last result is unknown and it stays off.
 - A rerun is not a recovery. A rerun keeps its run id, so the gate reads the earlier attempts too: an earlier
   failed deploy attempt keeps counting as a failure, for this run and for older runs, unless the login that
   started the rerun (`github.triggering_actor`) is on the allowlist. A rerun of a `workflow_dispatch` run is

@@ -14,6 +14,12 @@ import { pathToFileURL } from 'node:url'
 const OWNER = 'congvc-dev'
 const BRANCH = 'cheese/main'
 const RUN_PAGE = 100
+// The run list is by creation, but a deploy finishes later than its run was created: a slow build, then
+// the lock (one deploy at a time, 30 minutes at most). A run created more than LAG before the newest
+// lifting success cannot finish after it. Paging stops there; it never reads more than MAX_PAGES.
+const LAG = 24 * 3600 * 1000
+const MAX_PAGES = 10
+const UNKNOWN = `the last deploy result is unknown (${MAX_PAGES * RUN_PAGE} runs read, no later deploy decided it)`
 
 const logins = (extra) =>
   new Set([OWNER, ...String(extra ?? '').split(',')].map((s) => s.trim().toLowerCase()).filter(Boolean))
@@ -70,7 +76,7 @@ async function deploysOf({ repo, run, allowed, ghApi }) {
 }
 
 // Deploys run one at a time under the lock but finish in their own order, not in the order GitHub
-// lists the runs (creation). So the history is every finished deploy on the page, sorted by when it
+// lists the runs (creation). So the history is every finished deploy in the pages read, sorted by when it
 // finished. The latest decides: a lifting success (an allowlisted login started it) clears the
 // suspension, a failure suspends. A success nobody on the allowlist started is skipped, so a rerun
 // is not a recovery. A failure and a success finishing at the same instant count as the failure.
@@ -79,23 +85,35 @@ async function suspendedBy({ repo, runId, attempt, trigger, allowed, ghApi }) {
   if (own > 1 && !allowed.has(lower(trigger)) && (await failedBefore({ repo, id: runId, attempt: own, ghApi }))) {
     return `an earlier attempt of run ${runId} failed, and ${trigger} is not on the deploy allowlist`
   }
-  const { workflow_runs: runs } = await ghApi(
-    `repos/${repo}/actions/workflows/image.yml/runs?branch=${BRANCH}&per_page=${RUN_PAGE}`,
-  )
   const deploys = []
+  const seen = new Set()
   let lifted = -Infinity // a run last updated before this cannot have finished a deploy after it
-  for (const run of runs) {
-    if (String(run.id) === String(runId)) continue // this attempt's own deploy has not run yet
-    if (Date.parse(run.updated_at) < lifted) continue
-    for (const d of await deploysOf({ repo, run, allowed, ghApi })) {
-      deploys.push(d)
-      if (d.lifts) lifted = Math.max(lifted, d.at)
+  let complete = false // true once every run that could still decide has been read
+  for (let page = 1; page <= MAX_PAGES && !complete; page++) {
+    const { workflow_runs: runs } = await ghApi(
+      `repos/${repo}/actions/workflows/image.yml/runs?branch=${BRANCH}&per_page=${RUN_PAGE}&page=${page}`,
+    )
+    let oldest = Infinity
+    let dated = true // a run without a creation time cannot show that older runs are out of reach
+    for (const run of runs) {
+      const created = Date.parse(run.created_at)
+      if (Number.isNaN(created)) dated = false
+      else oldest = Math.min(oldest, created)
+      if (seen.has(run.id)) continue
+      seen.add(run.id)
+      if (String(run.id) === String(runId)) continue // this attempt's own deploy has not run yet
+      if (Date.parse(run.updated_at) < lifted) continue
+      for (const d of await deploysOf({ repo, run, allowed, ghApi })) {
+        deploys.push(d)
+        if (d.lifts) lifted = Math.max(lifted, d.at)
+      }
     }
+    complete = runs.length < RUN_PAGE || (dated && oldest < lifted - LAG)
   }
   deploys.sort((x, y) => x.at - y.at || (x.result === 'failure' ? 1 : 0) - (y.result === 'failure' ? 1 : 0))
   const skipped = []
   for (const d of deploys.reverse()) {
-    if (d.lifts) return null
+    if (d.lifts) return complete ? null : UNKNOWN
     if (d.result === 'success') {
       skipped.push(d)
       continue
@@ -105,8 +123,8 @@ async function suspendedBy({ repo, runId, attempt, trigger, allowed, ghApi }) {
       ? `the deploy of run ${d.id} failed and ${rerun.who} reran it; a rerun is not a recovery`
       : `the deploy of run ${d.id} failed`
   }
-  // Page full and nothing decided: older history is unknown, so stay suspended.
-  return runs.length >= RUN_PAGE ? 'the last deploy result is unknown (no deploy in the last 100 runs)' : null
+  // Older history was not read and nothing decided: it is unknown, so stay suspended.
+  return complete ? null : UNKNOWN
 }
 
 // The one dispatch rule, used by `decide` and by `recheck` so the two cannot disagree. A rerun keeps

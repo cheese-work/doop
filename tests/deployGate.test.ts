@@ -609,3 +609,120 @@ describe('deploy gate: history is read in deployment completion order (Sol, CWE-
     expect(out.reason).toContain('unknown')
   })
 })
+
+/* Sol, HIGH (CWE-841), run seq 71: the 100-run page ends where the history does not. A run created
+   before the page can still finish its deploy after a success on the page. */
+describe('deploy gate: history past the 100-run page (Sol, CWE-841)', () => {
+  const auth = pullRoutes('congvc-dev')
+  const runsPath = `repos/${REPO}/actions/workflows/image.yml/runs`
+  const hour = (h: number) => `2026-11-09T${String(h).padStart(2, '0')}:00:00Z`
+  // 99 runs with no deploy, created 10:00-ish, plus `top` first. Newest created first.
+  const filler = (from: number, created: string) =>
+    Array.from(
+      { length: 99 },
+      (_, i) => [from + i, null, { created_at: created }] as [number, null, Record<string, unknown>],
+    )
+  const paged = (pages: Record<number, [number, string | null, Record<string, unknown>?][]>) => {
+    const all = Object.values(pages).flat()
+    const jobs = history(all)
+    return {
+      ...jobs,
+      [runsPath]: (path: string) => {
+        const page = Number(/[?&]page=(\d+)/.exec(path)?.[1] ?? 1)
+        return {
+          workflow_runs: (jobs[runsPath] as { workflow_runs: unknown[] }).workflow_runs.filter((r) =>
+            (pages[page] ?? []).some(([id]) => id === (r as { id: number }).id),
+          ),
+        }
+      },
+    }
+  }
+  const c = { ...push, runId: '9000', attempt: '1', trigger: 'congvc-dev' }
+  // page 1: B (success 11:30) on top of 99 deploy-less runs. page 2: A, created earlier, fails 11:45.
+  const slowA = (aCreated: string) =>
+    paged({
+      1: [
+        [2000, 'success', { created_at: hour(11), updated_at: hour(11), completed_at: '2026-11-09T11:30:00Z' }],
+        ...filler(1000, hour(10)),
+      ],
+      2: [
+        [
+          1,
+          'failure',
+          { created_at: aCreated, updated_at: '2026-11-09T11:45:00Z', completed_at: '2026-11-09T11:45:00Z' },
+        ],
+      ],
+    })
+
+  it('reads the next page when the newest success is not yet older than the page, and finds the later failure', async () => {
+    const routes = { ...auth, ...slowA(hour(9)) }
+    const gate = await decide({ ...c, ghApi: fakeApi(routes).api })
+    const lock = await recheck({ ...c, ghApi: fakeApi(routes).api })
+    expect(gate.authorized).toBe(false)
+    expect(gate.reason).toContain('run 1 failed')
+    expect(lock.authorized).toBe(false)
+    expect(lock.reason).toContain('run 1 failed')
+  })
+
+  it('stops paging once a page is older than the newest success by more than a day (control)', async () => {
+    const routes = {
+      ...auth,
+      ...paged({
+        1: [
+          [2000, 'success', { created_at: hour(11), updated_at: hour(11), completed_at: '2026-11-09T11:30:00Z' }],
+          ...filler(1000, '2026-11-07T10:00:00Z'),
+        ],
+        2: [[1, 'failure', { created_at: '2026-11-07T09:00:00Z', completed_at: '2026-11-09T11:45:00Z' }]],
+      }),
+    }
+    const { api, calls } = fakeApi(routes)
+    expect((await decide({ ...c, ghApi: api })).authorized).toBe(true)
+    expect(calls.some((x) => x.includes('page=2'))).toBe(false)
+  })
+
+  it('ends when a page is short: a repository whose history is read in full may deploy', async () => {
+    const routes = {
+      ...auth,
+      ...paged({
+        1: filler(1000, hour(10)).concat([[1500, null, { created_at: hour(10) }]]),
+        2: [[1, null, { created_at: hour(9) }]],
+      }),
+    }
+    expect((await decide({ ...c, ghApi: fakeApi(routes).api })).authorized).toBe(true)
+  })
+
+  it('stays suspended when the page budget runs out before the history is decided', async () => {
+    // every page is full of recent runs with no deploy: older history is never reached
+    const routes = {
+      ...auth,
+      [`repos/${REPO}/actions/runs/`]: { jobs: [] },
+      [runsPath]: (path: string) => {
+        const page = Number(/[?&]page=(\d+)/.exec(path)?.[1] ?? 1)
+        return {
+          workflow_runs: Array.from({ length: 100 }, (_, i) => ({ id: page * 1000 + i, created_at: hour(10) })),
+        }
+      },
+    }
+    const { api, calls } = fakeApi(routes)
+    const out = await decide({ ...c, ghApi: api })
+    expect(out.authorized).toBe(false)
+    expect(out.reason).toContain('unknown')
+    expect(calls.filter((x) => x.includes('/image.yml/runs')).length).toBeLessThanOrEqual(10)
+  })
+
+  it('keeps paging when a run has no creation time, since it cannot prove older runs are out of reach', async () => {
+    const routes = {
+      ...auth,
+      ...paged({
+        1: [
+          [2000, 'success', { updated_at: hour(11), completed_at: '2026-11-09T11:30:00Z' }],
+          ...filler(1000, hour(10)).map(([id, c]) => [id, c, {}] as [number, null, Record<string, unknown>]),
+        ],
+        2: [[1, 'failure', { updated_at: '2026-11-09T11:45:00Z', completed_at: '2026-11-09T11:45:00Z' }]],
+      }),
+    }
+    const out = await decide({ ...c, ghApi: fakeApi(routes).api })
+    expect(out.authorized).toBe(false)
+    expect(out.reason).toContain('run 1 failed')
+  })
+})
