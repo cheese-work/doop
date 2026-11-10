@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* global process, console, fetch, document -- node globals, plus the two the page.evaluate callbacks run with in the browser */
 // Drive one doop feature in a real browser against a launch.sh run.
 // Usage: drive.mjs <run-dir> <feature> <evidence-dir>   feature: auth | canvas | pages
 // Writes <feature>-*.png and <feature>.json (every step, pass or fail) into the evidence dir. Exit 1 if a check fails.
