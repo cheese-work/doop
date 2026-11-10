@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { createServer, type ViteDevServer } from 'vite'
-import type { Browser, Page } from 'puppeteer-core'
-import { findBrowserPath, getBrowser } from '../server/screenshot'
+import type { Page } from 'puppeteer-core'
+import { findBrowserPath } from '../server/screenshot'
+import { fixtureUrl, openBrowser, type TestBrowser } from './browser'
 import type { Frame } from '../shared/types'
 import type { ElementInfo, GeometryEdit } from '../src/lib/frameBridge'
 
@@ -15,6 +15,9 @@ declare global {
       select: (selector: string) => void
       selectFrame: () => void
       deselect: () => void
+      picked: () => string[]
+      pickAlso: (selector: string) => void
+      nudge: (dx: number, dy: number) => boolean
       setTool: (tool: 'select' | 'hand') => void
       setZoom: (zoom: number) => void
       undo: () => Promise<void>
@@ -49,8 +52,7 @@ const HTML = `<!doctype html><html><head><style>
 </body></html>`
 
 describe.skipIf(!findBrowserPath())('element resize handles', () => {
-  let vite: ViteDevServer
-  let browser: Browser
+  let browser: TestBrowser
   let page: Page
   let saved: Frame
   let saves = 0
@@ -111,9 +113,7 @@ describe.skipIf(!findBrowserPath())('element resize handles', () => {
   }
 
   beforeAll(async () => {
-    vite = await createServer({ server: { port: 0 }, logLevel: 'error' })
-    await vite.listen()
-    browser = await getBrowser()
+    browser = await openBrowser()
     page = await browser.newPage()
     // Install before frameBridge so the reply cannot resolve its promise early.
     await page.evaluateOnNewDocument(() => {
@@ -135,7 +135,7 @@ describe.skipIf(!findBrowserPath())('element resize handles', () => {
         await request.respond({ status: 200, contentType: 'application/json', body: JSON.stringify(saved) })
       } else await request.continue()
     })
-    await page.goto(`${vite.resolvedUrls!.local[0]}tests/fixtures/elementPanel.html`)
+    await page.goto(fixtureUrl('elementPanel.html'))
     await page.waitForFunction(() => !!window.elementPanelHarness)
     saved = {
       id: 'f',
@@ -157,7 +157,6 @@ describe.skipIf(!findBrowserPath())('element resize handles', () => {
     await page?.screenshot({ path: '/tmp/doop-element-resize.png' })
     await page?.close()
     await browser?.close()
-    await vite?.close()
     expect(errors).toEqual([])
   })
 
@@ -579,5 +578,38 @@ describe.skipIf(!findBrowserPath())('element resize handles', () => {
     await page.evaluate((s) => window.elementPanelHarness.select(s), '#locked')
     await new Promise((r) => setTimeout(r, 300))
     expect(await page.$('[data-resize-handles]')).toBeNull()
+  }, 20_000)
+
+  it('⇧-click picks several elements in the frame, outlining each, and a plain click narrows back to one', async () => {
+    await reset()
+    async function click(selector: string, { shift = false } = {}) {
+      const frame = (await frameDoc())!
+      const inner = await frame.$eval(selector, (el) => el.getBoundingClientRect().toJSON() as DOMRect)
+      const outer = await page.$eval('iframe', (el) => el.getBoundingClientRect().toJSON() as DOMRect)
+      if (shift) await page.keyboard.down('Shift')
+      await page.mouse.click(outer.left + inner.left + inner.width / 2, outer.top + inner.top + inner.height / 2)
+      if (shift) await page.keyboard.up('Shift')
+    }
+    const picked = () => page.evaluate(() => window.elementPanelHarness.picked())
+
+    await click('#box')
+    await expect.poll(picked).toHaveLength(1)
+    await click('#pad', { shift: true })
+    await expect.poll(picked).toHaveLength(2)
+    await click('#pic', { shift: true })
+    await expect.poll(picked).toHaveLength(3)
+    /* the primary keeps its outline; the other two get their own, and no
+       grips offer to size just one of them */
+    await page.waitForFunction(() => document.querySelectorAll('[data-picked-element]').length === 2)
+    expect(await page.$('[data-resize-handles]')).toBeNull()
+
+    await click('#pad', { shift: true })
+    await expect.poll(picked).toHaveLength(2)
+    await page.waitForFunction(() => document.querySelectorAll('[data-picked-element]').length === 1)
+
+    await click('#box')
+    await expect.poll(picked).toHaveLength(1)
+    await page.waitForFunction(() => document.querySelectorAll('[data-picked-element]').length === 0)
+    await page.waitForFunction(() => !!document.querySelector('[data-resize-handles]'))
   }, 20_000)
 })

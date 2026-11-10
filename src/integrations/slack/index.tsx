@@ -1,3 +1,4 @@
+import { connectIntegration } from '../../lib/integrationConnect'
 import { useState } from 'react'
 import type { ClientIntegration, SettingsCardProps } from '../index'
 import { ApiError, req, type IntegrationsStatus } from '../../lib/api'
@@ -5,6 +6,7 @@ import { Button } from '../../components/ui/button'
 import { Note } from '../../components/ui/note'
 import { DisconnectButton, IntegrationCard } from '../ui'
 import { BrandMark } from '@/components/ui/brand-mark'
+import { useT } from '@/lib/i18n'
 
 interface SlackStatus {
   connected: boolean
@@ -22,6 +24,7 @@ function SlackTile({ size = 24, className }: { size?: number; className?: string
 }
 
 function SlackSettingsCard({ status, busy, setBusy, requestDisconnect }: SettingsCardProps) {
+  const t = useT()
   const slack = statusOf(status)
   const [error, setError] = useState<string | null>(null)
 
@@ -30,11 +33,12 @@ function SlackSettingsCard({ status, busy, setBusy, requestDisconnect }: Setting
     setBusy(true)
     setError(null)
     try {
-      const { url } = await req<{ url: string }>('/api/integrations/slack/start', { method: 'POST' })
-      location.assign(url)
+      if ((await connectIntegration('slack')) === 'browser') setBusy(false)
     } catch (error) {
       setError(
-        error instanceof ApiError ? String(error.body.error ?? 'Could not install Doop.') : 'Could not install Doop.',
+        error instanceof ApiError
+          ? String(error.body.error ?? t('automations.installFailed'))
+          : t('automations.installFailed'),
       )
       setBusy(false)
     }
@@ -46,21 +50,19 @@ function SlackSettingsCard({ status, busy, setBusy, requestDisconnect }: Setting
       name="Slack"
       detail={
         slack.connected
-          ? `Doop agent · ${slack.workspaceName ?? 'Slack workspace'}`
-          : 'Mention @Doop with a design brief'
+          ? t('automations.doopAgentIn', { workspace: slack.workspaceName ?? t('automations.slackWorkspace') })
+          : t('automations.slackPitch')
       }
       connected={slack.connected}
       footnote={
-        slack.agentConfigured || slack.connected
-          ? 'Anyone in the workspace can mention @Doop; every run spends your model account or task allowance'
-          : 'Needs a Slack app configured by this server’s administrator'
+        slack.agentConfigured || slack.connected ? t('automations.slackFootnote') : t('automations.slackNeedsApp')
       }
       actions={
         slack.connected ? (
           <DisconnectButton disabled={busy} onClick={requestDisconnect} />
         ) : (
           <Button size="sm" disabled={busy || !slack.agentConfigured} onClick={() => void install()}>
-            Install Doop in Slack
+            {t('automations.installSlack')}
           </Button>
         )
       }
@@ -81,6 +83,5 @@ export const slackIntegration: ClientIntegration = {
   SettingsCard: SlackSettingsCard,
   isConnected: (status) => statusOf(status).connected,
   disconnect: () => req<IntegrationsStatus>('/api/integrations/slack', { method: 'DELETE' }),
-  disconnectCopy:
-    'Stop @Doop mentions and pending Slack design work in this workspace. Existing canvases stay. To remove Doop from Slack too, uninstall the app in Slack’s workspace settings.',
+  disconnectCopy: 'automations.slackDisconnectCopy',
 }

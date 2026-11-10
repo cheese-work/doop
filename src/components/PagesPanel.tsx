@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } f
 import { nanoid } from 'nanoid'
 import { canvasPages } from '../../shared/pages'
 import type { CanvasPageInfo } from '../../shared/types'
-import { useStore } from '../lib/store'
+import { canEditOpenCanvas, useStore } from '../lib/store'
 import { savePages, duplicatePage, moveFramesToPage } from '../lib/pageEdits'
 import { ApiError } from '../lib/api'
 import { Button } from './ui/button'
@@ -10,6 +10,7 @@ import { PageIcon, PlusIcon } from './ui/icons'
 import { cn } from '../lib/utils'
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem } from './ui/context-menu'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
+import { useT } from '@/lib/i18n'
 
 /** The small grey sub-heading over a section of the Layers panel, shared with
  *  its "Layers" row: the two must read as one family (a browser test checks
@@ -21,6 +22,8 @@ export function PagesPanel({ fill = false }: { fill?: boolean }) {
   const canvas = useStore((s) => s.canvas)
   const activePageId = useStore((s) => s.activePageId)
   const selectedIds = useStore((s) => s.selectedIds)
+  /* view and comment links switch pages; they add, rename and move none */
+  const readOnly = useStore((s) => !canEditOpenCanvas(s))
   const [busy, setBusy] = useState(false)
   const [renaming, setRenaming] = useState<string | null>(null)
   const [name, setName] = useState('')
@@ -28,6 +31,7 @@ export function PagesPanel({ fill = false }: { fill?: boolean }) {
   const didDrag = useRef(false)
   const stopDrag = useRef<(() => void) | null>(null)
   useEffect(() => () => stopDrag.current?.(), [])
+  const t = useT()
   if (!canvas) return null
   const pages = canvasPages(canvas)
   const movableIds = canvas.frames.filter((f) => selectedIds.includes(f.id) && !f.locked).map((f) => f.id)
@@ -38,8 +42,7 @@ export function PagesPanel({ fill = false }: { fill?: boolean }) {
     try {
       await moveFramesToPage(canvas, movableIds, pageId)
     } catch {
-      if (useStore.getState().canvas?.id === canvas.id)
-        useStore.getState().pushNotice('Could not move all selected frames to the page')
+      if (useStore.getState().canvas?.id === canvas.id) useStore.getState().pushNotice(t('panels.pagesMoveFailed'))
     } finally {
       setBusy(false)
     }
@@ -57,7 +60,9 @@ export function PagesPanel({ fill = false }: { fill?: boolean }) {
       useStore
         .getState()
         .pushNotice(
-          error instanceof ApiError && typeof error.body.error === 'string' ? error.body.error : 'Could not save pages',
+          error instanceof ApiError && typeof error.body.error === 'string'
+            ? error.body.error
+            : t('panels.pagesSaveFailed'),
         )
     } finally {
       setBusy(false)
@@ -125,7 +130,7 @@ export function PagesPanel({ fill = false }: { fill?: boolean }) {
         .pushNotice(
           error instanceof ApiError && typeof error.body.error === 'string'
             ? error.body.error
-            : 'Could not duplicate the page',
+            : t('panels.pagesDuplicateFailed'),
         )
     } finally {
       setBusy(false)
@@ -137,7 +142,7 @@ export function PagesPanel({ fill = false }: { fill?: boolean }) {
       variant="bare"
       size="icon-sm"
       className={sectionBtn}
-      aria-label="Add page"
+      aria-label={t('panels.pagesAdd')}
       disabled={busy}
       onClick={() => {
         const page = { id: nanoid(10), name: `Page ${pages.length + 1}` }
@@ -152,7 +157,7 @@ export function PagesPanel({ fill = false }: { fill?: boolean }) {
     <>
       {pages.map((page) => (
         <ContextMenu key={page.id}>
-          <ContextMenuTrigger asChild>
+          <ContextMenuTrigger asChild disabled={readOnly}>
             <div
               data-page-id={page.id}
               onContextMenu={() => useStore.getState().setActivePage(page.id)}
@@ -185,7 +190,7 @@ export function PagesPanel({ fill = false }: { fill?: boolean }) {
                 >
                   <input
                     autoFocus
-                    aria-label="Page name"
+                    aria-label={t('panels.pagesName')}
                     maxLength={100}
                     disabled={busy}
                     onFocus={(e) => e.target.select()}
@@ -203,7 +208,7 @@ export function PagesPanel({ fill = false }: { fill?: boolean }) {
                   aria-current={page.id === activePageId ? 'page' : undefined}
                   onPointerDown={(e) => {
                     didDrag.current = false
-                    startDrag(e, page.id)
+                    if (!readOnly) startDrag(e, page.id)
                   }}
                   onClick={(e) => {
                     if (didDrag.current) {
@@ -213,7 +218,7 @@ export function PagesPanel({ fill = false }: { fill?: boolean }) {
                     useStore.getState().setActivePage(page.id)
                   }}
                   onDoubleClick={() => {
-                    if (busy || didDrag.current) return
+                    if (busy || readOnly || didDrag.current) return
                     setRenaming(page.id)
                     setName(page.name)
                   }}
@@ -235,17 +240,17 @@ export function PagesPanel({ fill = false }: { fill?: boolean }) {
                 setName(page.name)
               }}
             >
-              Rename
+              {t('panels.pagesRename')}
             </ContextMenuItem>
             <ContextMenuItem disabled={busy || pages.length >= 100} onSelect={() => void duplicate(page.id)}>
-              Duplicate page
+              {t('panels.pagesDuplicate')}
             </ContextMenuItem>
             <ContextMenuItem
               tone="danger"
               disabled={busy || pages.length === 1}
               onSelect={() => void save(pages.filter((p) => p.id !== page.id))}
             >
-              Delete page
+              {t('panels.pagesDelete')}
             </ContextMenuItem>
           </ContextMenuContent>
         </ContextMenu>
@@ -257,20 +262,20 @@ export function PagesPanel({ fill = false }: { fill?: boolean }) {
     <div className={cn('flex flex-none flex-col', fill && 'min-h-0 flex-1')}>
       <div className={cn('mt-1.5 flex h-6 flex-none items-center justify-between pr-2.5 pl-3.5', sectionHeading)}>
         <span data-slot="page-section-heading" className={sectionHeading}>
-          Pages
+          {t('panels.pagesTitle')}
         </span>
-        {addPage}
+        {!readOnly && addPage}
       </div>
       <div className={cn('overflow-y-auto px-2 pb-1', fill ? 'min-h-0 flex-1' : 'max-h-[30vh]')}>{list}</div>
-      {selectedIds.length > 0 && pages.length > 1 && (
+      {!readOnly && selectedIds.length > 0 && pages.length > 1 && (
         /* the canvas shortcuts listen on window: ⌫ would delete the frames
            being moved and typed letters would switch tools, so the picker's
            keys stop here; React bubbles the portalled list's keys through this
            div too, before the native event reaches window */
         <div className="px-2 pb-2" onKeyDown={(e) => e.stopPropagation()}>
           <Select value="" disabled={busy || !movableIds.length} onValueChange={(id) => void moveSelection(id)}>
-            <SelectTrigger size="sm" className="w-full" aria-label="Move selection to page">
-              <SelectValue placeholder="Move selection to page…" />
+            <SelectTrigger size="sm" className="w-full" aria-label={t('panels.pagesMoveSelection')}>
+              <SelectValue placeholder={t('panels.pagesMoveSelectionPlaceholder')} />
             </SelectTrigger>
             <SelectContent>
               {pages

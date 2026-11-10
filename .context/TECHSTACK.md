@@ -16,19 +16,66 @@
 - Express 4.19.2 - HTTP server framework in `server/`.
 - React 18.3.1 - UI framework in `src/`.
 - Zustand 4.5.4 - client-side state management.
-- Element links use `/c/<canvasId>?frame=<frameId>&selector=<encoded CSS selector>`.
-  `src/lib/elementLink.ts` owns copying from the element toolbar and Layers menu;
-  `Stage.tsx` focuses its page and frame; `FrameView.tsx` resolves the selector in
-  the ready iframe, including script-created elements, and falls back to frame
-  details if it no longer resolves. Browser regressions in
-  `tests/pageCanvasBrowser.test.ts` cover initial loading, cross-page links,
+- Element ids (`shared/elementId.ts`): anything outside a frame that points at an element
+  inside it uses the element's `data-doop-id` attribute, stamped into the frame HTML the first
+  time something needs it (a comment, an element link) and kept by agents like every other
+  `data-doop-*` attribute. The server stamps (`server/elementIds.ts`, parse5 by source offset,
+  so nothing else is re-serialized; `actions.ensureElementId`, exposed as
+  `POST /api/frames/:id/element-id` to the comment role) as an annotation: `store.updateFrame`'s
+  `annotation` option keeps `ready_for_dev` sign-off, and no version or activity line is written.
+  A positional path that does not resolve in the saved HTML (a script-made element, a frame
+  mid-stream) is refused, and a comment falls back to the frame at its point. The frame runtime's
+  probe reports an existing id as `elementId`; its positional `cssPath` is now only the editor's
+  internal selection language.
+- Element links use `/c/<canvasId>?frame=<frameId>&element=<data-doop-id>` (no selector form,
+  and no backwards compatibility for the old one). `src/lib/elementLink.ts` owns copying from the
+  element toolbar and Layers menu, stamping first when the element has no id; `Stage.tsx`
+  focuses its page and frame; `FrameView.tsx` resolves the id in the ready iframe, including
+  script-created elements, re-picks the positional path so the Layers panel follows, and falls
+  back to frame details if nothing carries the id. Browser regressions in
+  `tests/pageCanvasBrowser.test.ts` cover initial loading, cross-page links, stamping on copy,
   clipboard round trips, history and script-created or script-removed elements.
 - Radix UI primitives (`@radix-ui/react-*`, ^1.x-2.x) + shadcn 4.19.0 - accessible UI primitives
   generated into `src/components/ui`.
 - `@anthropic-ai/sdk` 0.115.0 and `@modelcontextprotocol/sdk` 1.12.0 - power the built-in Doop
   Agent and the MCP server that lets external agents (e.g. Claude Code) design on a canvas.
+- Claude Code on the desktop (`shared/localAgent.ts`, `server/localAgent.ts`,
+  `desktop/src-tauri/src/claude.rs`): the model menu is the CLI's aliases (`CLAUDE_MODEL_ALIASES`),
+  which `claude --model` resolves to the newest model the installed CLI knows, plus a pinned
+  `claude-*` id accepted by shape (`isClaudeModel`, mirrored by `valid_model` in the shell before the
+  value becomes an argument); `effort` (`CLAUDE_EFFORTS`, `local_agent_preferences.effort`) rides the
+  job and becomes `--effort`. A pre-alias shell's "Invalid model" is reworded by
+  `localAgentRuns` into an update prompt. Which `claude` runs: the one picked in Settings
+  (`claude_choose_cli`, a native file panel, never a page-supplied path; `cli.json` in the app's
+  data dir), else what the login shell's `command -v claude` names (aliases included) when it is
+  2.1+, else the newest known install. The shell is asked once per launch (`$SHELL -l -i -c`, 5s
+  bound; Refresh asks again) and its `PATH` is given to every CLI process, since a GUI app's
+  `/usr/bin:/bin` PATH lacks the `node` an npm install needs. Shells advertise this with
+  `__DOOP_CLAUDE_CHOOSE__`.
+- Model menus (`server/modelCatalog.ts`, `GET /api/model-account/models`): the connected
+  account's picker asks the provider's catalog with the user's own key when it opens (the
+  composer's `ModelPicker`) or mounts (Settings, `useAgentModels`), merging the curated entries of
+  `shared/modelMenu.ts` / `shared/localAgent.ts` on top as `recommended`; a provider without a
+  loader, or one that cannot be reached, gets the curated menu with `live: false`. Anthropic and
+  OpenAI (`/v1/models`), Gemini (`/v1beta/models`) and ChatGPT subscriptions (the Codex backend's
+  catalog, `CHATGPT_MODELS_URL`, asked with the account's token as Codex CLI
+  `CHATGPT_CODEX_CLIENT_VERSION`; the route refreshes the token first) have loaders, each with a
+  family filter for reasoning chat models with tools, images and a 16k output window; a picked id
+  only has to be shaped like the provider's, and the run is the final check. OpenRouter stays on
+  its curated roster (the run-time vision check knows only the roster's flags).
+- Reasoning effort on a user's OpenAI account (ChatGPT subscription or OpenAI key): the pick lives
+  in `model_accounts.reasoning_effort` (`REASONING_EFFORTS` in `shared/modelMenu.ts`: low / medium /
+  high / xhigh), set through `PATCH /api/model-account { effort }`, read by `effortFor` in
+  `server/openaiAgent.ts` for every turn, with `DOOP_AGENT_OPENAI_EFFORT` as the default until a
+  user picks. The status reports the resolved `effort` for the OpenAI kinds only, which is what
+  shows the `Segmented` switch in Settings and the radio group in the composer's `ModelPicker`.
 - `ws` 8.18.0 - WebSocket server for realtime multiplayer (cursors, presence, frame edits,
   activity feed) over one room per canvas.
+- `pdf-lib` 1.17.1 - joins the vector PDF export (`server/pdfExport.ts`): headless Chrome prints
+  each frame onto a page of its own size, pages in the order the frames are listed (a whole page
+  in canvas reading order, `shared/frameOrder.ts`; the Export checklist sends its displayed
+  order); render limits in `shared/pdfLimits.ts`, which also sizes the browser's download
+  timeout; served by `GET /api/canvases/:id/export.pdf` and MCP `export_frame`.
 
 ## 3. Data and Persistence
 
@@ -43,6 +90,19 @@
   agent people chat with, the agent list the watcher publishes (`set_bridge_agents`) and its liveness
   stamp (`bridge_heartbeat`). `GET/PUT /api/canvases/:id/bridge` reads and selects; status (`ok`,
   `no_agent_selected`, `agent_not_found`, `watcher_unreachable` after 2 min) is derived on read.
+- Automations (`shared/automations.ts`, `server/automations.ts`) support schedules and
+  approval triggers scoped to one canvas. The five-second worker groups up to ten signed-off
+  frames per run. `automation_approvals` retains dispatch receipts independently of the
+  pruned run log. Run state stores the approved source identities, frozen steps, current
+  step, task ID, summaries and result links; database leases serialize execution. Agent tasks
+  and their wait points commit together. The next step waits for completion, checks source
+  approvals and access again, and stops on failure or after one hour. Interrupted external
+  calls require a destination check rather than automatic replay. Integration-owned action
+  hooks create Linear issues or send Slack messages using the workflow owner's connection.
+  Approval presets create draft sizes, translations and companion assets on the watched canvas.
+  The worker queues independent workflows with concurrency four and keeps discovering work
+  while integrations await I/O. Receipt lookup is batched. Later agent briefs include earlier
+  draft-result links and completion summaries, so localization can build on generated sizes.
 
 ## 4. Canvas Drawing
 
@@ -58,15 +118,41 @@
   WebKit (the desktop app) rasterizes a composited layer at its CSS size, so a transform-only
   scale went soft past 100%. Both engines tile what is on screen, so backing memory follows the
   viewport, not k. From 300% a 1px pixel grid fades in over the frames (full at 500%). Frame
-  names live in a screen-space layer (`FrameLabelLayer`), placed from `--vx`/`--vy`/`--zoom`, so
-  they keep size, gap and crisp text at every zoom.
+  names sit inside their frame, counter-scaled by `--zoom`, so they keep size and gap at every
+  zoom and stack with their own frame (a later frame covers an earlier frame's name, never the
+  reverse). The selected frame's size badge lives in a screen-space layer (`FrameLabelLayer`),
+  placed from `--vx`/`--vy`/`--zoom`. ⇧1 / ⇧2 (fit all / fit selection), frame deep links and
+  fly-tos fit into the stage area the top bar and floating panels leave open: `CanvasPage` passes
+  `Stage` the `insets` its chrome covers and `fitBox` (`src/lib/viewFit.ts`) centres there.
+  Tests: `viewFit.test.ts`, `fitSelectionBrowser.test.ts`.
+- Canvas panel layout (Settings → Appearance → Canvas panels, `src/lib/panelLayout.ts`, per
+  browser under `doop:panel-layout`): `floating` (the default) keeps the islands over a
+  full-window stage; `docked` makes Layers, the tool rail, the icon islands, the Inspector /
+  element panel and Agents flush columns (`Panel surface="docked"`), the bar a solid strip
+  (`TopBar variant="docked"`), and the stage itself the gap between them (`Stage bounds`), so its
+  rulers sit on its own edges and fits need no insets. Phones and ⌘. ignore it. `chromeLayout` in
+  `CanvasPage.tsx` holds both geometries; docked panels keep the stage at least 320px wide as far as their minimums allow, and ⌘V / image drops centre on the stage (`stageViewportSize`), not the window. Tests: `panelLayout.test.ts`, the docked case in
+  `fitSelectionBrowser.test.ts`.
 - `src/lib/tools.ts` defines bottom-toolbar tools and shortcuts. `Stage.tsx` delegates drawing
   gestures and world-space previews to `CanvasDrawing.tsx`; Space/middle-button panning takes
   precedence over drawing.
 - `src/lib/drawing.ts` creates rectangles, circles, straight and cubic Bézier SVG paths, text and empty
   frames through the existing frame API. Drawing inside a frame appends a positioned HTML/SVG
   layer. Standalone elements use frame persistence with a `data-doop-canvas-element` body marker
-  for transparent canvas chrome; no separate shape schema or protocol is required.
+  for transparent canvas chrome; no separate shape schema or protocol is required. Pasted and
+  dropped images (`src/lib/frameClipboard.ts`) are standalone elements too: one
+  `<img data-doop-drawing="image">` named after its file. The Layers
+  panel shows one as a single layer at the root (no frame row, no name label on the canvas) and
+  its rows drag between frames and the root: a drop on another frame's row moves the element
+  there (`transferLayer` in `src/lib/layerEdits.ts`, removing a standalone's shell), a drop on
+  the band above a root row or the list's tail lifts it onto the canvas at its rendered spot
+  (`detachLayer`, measured through the frame bridge). On the canvas a standalone element moves
+  through the frame drag (live, snapping, one undo step) and, let go over a frame, goes into it
+  through `moveDrawing`. A layer leaving its frame takes the CSS it
+  relies on along (`src/lib/styleCarry.ts`: the matching rules, their keyframes, font faces and
+  custom properties, as one `<style data-doop-carried>`, every rule scoped through a
+  `data-doop-carried-scope` mark on the moved root so the destination's own layers keep their
+  look); copy/paste across frames carries it the same way. Tests: `layerTransfer.test.ts`, `layersDragAcross.test.tsx`, `styleCarry.test.ts`.
 - The pen snaps to the nearest anchor on its unfinished path within eight screen pixels,
   highlights the target, and previews a closed curve when approaching the first anchor.
   Alt bypasses snapping. Double-clicking a native path opens `PathEditor.tsx`: anchors and
@@ -89,7 +175,9 @@
   completed gesture has its own undo entry. The Layers panel shows the drawing's `data-name`.
   Completed saves survive navigation; unfinished drafts are cancelled. Drawing shortcuts leave
   native fields and rich-text editors alone, except for the drawing textarea's save/cancel keys.
-- `DrawingMove.tsx` renders an unclipped drag preview and highlights the destination frame.
+- `ElementMove.tsx` renders an unclipped drawing preview and highlights the destination frame.
+  Ordinary HTML/SVG layers move in place through the runtime's geometry/style gesture bridge,
+  preserving layout and transforms and committing one undo step per drag.
   The iframe runtime hit-tests the pointer in browser paint order and measures CSS layout
   size separately from transformed bounds. Pending pointer events are buffered until its
   reply, so fast drags and cancellation remain reliable. `src/lib/drawingMove.ts` preserves markup and translates coordinates when
@@ -110,12 +198,63 @@
   text runs, rotated or skewed elements, locked layers, locked frames and the Comment tool get no
   grips. `tests/elementResize.test.ts` covers the geometry and `tests/elementResizeBrowser.test.ts`
   drags the grips in Chromium.
+- A selected frame wears the same furniture as a selected element (`FrameResizeHandles.tsx`,
+  geometry in `src/lib/frameResize.ts`): a grip in each corner, grabbable edges, a two-pixel
+  ring, all in screen px at every zoom, and a `W × H` badge under the frame in the label layer.
+  A west or north pull moves that edge and keeps the far one still; Shift keeps the ratio; the
+  dragged edges snap to neighbours and guides (`snapFrame` takes the handle). Frames go down to
+  1×1 (`MIN_FRAME_SIZE`, also the Inspector's floor). `tests/frameResize.test.ts` covers the
+  geometry, `tests/frameResizeBrowser.test.ts` drags the grips in Chromium.
+- Rulers and guides (`src/components/Rulers.tsx`, math in `src/lib/rulers.ts`): ⇧R or the zoom menu
+  toggles `<canvas>` rulers docked on the stage's top and left edges (the top bar and the floating
+  chrome step in by `RULER_PX`) (remembered under
+  `doop:rulers`, hidden on phones and under ⌘.). Ticks step 1/2/5×10ⁿ by zoom; labels count from the
+  selected frames' top-left, whose extent is highlighted. Dragging out of a ruler adds a guide;
+  guides drag, drop back on their ruler or Delete to remove, and undo/redo (`history.ts` `guide`
+  entries). Guides live in `canvases.guides` (jsonb, per page, client-generated ids), written one
+  at a time through `PUT`/`DELETE /api/canvases/:id/guides/:guideId` behind `requireCanvas` and
+  broadcast as `guide` room messages; page copies and canvas copies take them along (within
+  `MAX_GUIDES`), a deleted page drops its guides and page undo/redo puts them back. Writes to
+  one guide run in order, and a failed one rolls back only when no newer edit follows. Visible
+  guides join `snapFrame` (frame move/resize, element moves), element resize and drawing points
+  at the same 8-screen-px tolerance; Alt bypasses. Tests: `rulers.test.ts`, `snapGuides.test.ts`,
+  `guides.test.ts`, `guideEdits.test.ts`, `rulersBrowser.test.ts`.
 - `tests/drawing.test.ts` covers geometry, serialization and persistence; `drawingBrowser.test.ts`
   exercises the toolbar and gestures in Chromium, including Bézier paths, frame transfers,
   cancellation, mobile input, and coexistence with canvas comment pins and reply fields.
   `tests/drawingMove.test.ts` covers transfer persistence, locks, failed saves and rollbacks,
   creation queued with transfers, and undo/redo. Browser regressions cover transformed shapes,
   stacking contexts, covered shapes, and delayed hit-test replies.
+
+- Comment anchors (`shared/comments.ts`): an element comment is `frameId` + `elementId` (the
+  element's `data-doop-id`) + `snippet`; a frame comment is `frameId` + design-px `x`/`y` and no
+  `elementId`; a canvas comment is `pageId` + world `x`/`y`. One whose element is gone keeps the
+  frame and snippet only and is listed without a pin. The browser still sends the runtime's
+  positional selector (plus `elementId` when the element already wears one, and always the
+  point); the server stamps and stores the id. `FrameView` places pins by
+  `doop:locate` on `[data-doop-id="…"]`. Comments stored before element ids carry their old
+  selector in the `selector` column, which `actions.backfillElementIds` resolves once after the
+  server starts listening, frame by frame with awaited, ordered writes (the stamped frame, then
+  the comments naming its ids); unresolvable paths become lost anchors, a row that throws or a
+  frame write that fails is logged and left for the next boot. Tests: `elementIdBackfill.test.ts`.
+- Comment pins move by drag (`src/lib/commentMove.ts`, gesture in `CommentPin`): anyone who may
+  comment drags a thread's root pin; a ghost rides the pointer in the world layer
+  (`CanvasComments`), above every frame, since the pin itself sits inside a clipped frame surface.
+  On release the drop point is resolved in order: the topmost visible frame under it is probed
+  (`doop:probe`) for an element, else the frame as a whole at that design point, else the canvas
+  at that world point, so a thread changes kind either way (element → canvas comment and back).
+  `PATCH /api/comments/:id/anchor` (comment role; `CommentAnchorInput` in `shared/comments.ts`)
+  re-anchors the root and its replies together and broadcasts each; a drop on the same anchor
+  sends nothing, Esc mid-drag puts the pin back. Tests: `commentMove.test.ts`,
+  `canvasCommentsRoute.test.ts`, `elementIds.test.ts`, the drag case in `drawingBrowser.test.ts`.
+- Prototypes (`.context/specs/prototyping.md`): interactions are `data-doop-on` /
+  `data-doop-action` (or the JSON `data-doop-interactions`) attributes in frame HTML, parsed by
+  `shared/prototype.ts`, whose parser the frame runtime inlines by source. `PrototypePlayer.tsx`
+  (Play, and the full-page `/c/<id>/proto`) runs them with Web Animations transitions, under the
+  desktop tab strip (`--app-inset`), scaled by the viewer's pick (actual size, responsive, fit width,
+  fit, fill; `screenLayout`, remembered under `doop:proto-scaling`); the
+  Prototype tab and `PrototypeOverlay.tsx` edit and draw them; MCP has `get_prototype` and
+  `set_prototype_start`. `tests/prototypeBrowser.test.ts` drives the player in Chromium.
 
 ## 5. Security and Secrets
 
@@ -127,6 +266,11 @@
 
 ## 6. Build and Dependency Management
 
+- Canvas access: `canvasRole` in `server/access.ts` gives owners, members and workspace members
+  edit, and share-link visitors the link's level (`none` / `view` / `comment` / `edit`). REST,
+  the WebSocket room and MCP gate reads, comments and writes on it separately; spec in
+  `.context/specs/share-link-roles.md`.
+
 - Bun 1.3.10 - package manager; lockfile at `bun.lock`, installed with `bun install
 --frozen-lockfile` in CI.
 - Vite 8 (Rolldown-based) - frontend build tool (`vite build`), with `@vitejs/plugin-react` 6.
@@ -135,6 +279,11 @@
 
 - Vitest 5 - unit/integration tests across `server/` and `src/`; run via `bun run test`
   (`vitest run`). Tests live in `tests/`.
+- Browser tests drive one shared Chromium and one Vite fixture server (`tests/browser.ts`), which
+  `tests/globalSetup.ts` starts and warms (every `tests/fixtures/*.html` loaded once) before any
+  worker runs; a file calls `openBrowser()` for its own context (focus emulated, 30s navigation
+  bound) and `fixtureUrl()` for its page. A test that needs its own Vite server (a proxy) builds it
+  from `fixtureServerConfig()`, so every server shares one dependency hash and cache directory.
 
 ## 8. CI/CD and Delivery
 
@@ -147,8 +296,9 @@
     on a GitHub runner, pushes to GHCR and uploads the digest + source SHA as `image-evidence`.
   - `.github/workflows/cla.yml` - CLA check (this is an AGPL-3.0 project with CLA-based
     contribution).
-  - `.github/workflows/desktop.yml` / `desktop-release.yml` - Tauri desktop app CI and DMG
-    release (tag `desktop-v*`, universal macOS build, optional Apple signing/notarization).
+  - `.github/workflows/desktop.yml` / `desktop-release.yml` - Tauri desktop app CI and installer
+    release (tag `desktop-v*`, universal macOS DMG, Windows NSIS, Linux AppImage/.deb/.rpm,
+    optional Apple signing/notarization).
 
 ## 9. Infrastructure and Deployment
 
@@ -167,6 +317,15 @@
 - Tailwind CSS 4.3.3 (`@tailwindcss/vite` 4.3.3) - styling; `tw-animate-css` 1.4.0 for animation
   utilities. Design tokens in `src/styles.css` (see `.context/DESIGN.md`).
 - Tauri 2.9.0 (`@tauri-apps/cli`, `desktop/src-tauri`) - desktop app wrapper around the web build.
+- Interface language (`src/lib/i18n/`, no library): English (`en/`, the source catalog, one
+  `as const` namespace per area) and Brazilian Portuguese (`pt-BR/`, typed `Catalog`, so a missing
+  key fails typecheck). Components call `useT()` and `t('namespace.key', vars)`; `{name}`
+  placeholders are type-checked, `{ one, other }` values pick a plural by `{count}`, and a key kept
+  in a table is a `PlainMessageKey` translated at render. The active language is this browser's pick
+  (`doop-locale` in `localStorage`, Settings -> Appearance or the account menu), else the server's
+  `DEFAULT_LOCALE` (`GET /api/locale-config`, asked once before React mounts), else `en`; the list
+  lives in `shared/locales.ts`. `tests/i18n.test.ts` checks every catalog against English. Screens
+  not yet converted still render English.
 - Home (`src/pages/Home.tsx`, `src/components/HomeHero.tsx`): a 12.5px rail (canvases, workspaces,
   explore, resources, agents, an Ask Doop pill bound to ⌘/), Import + New canvas in the top bar, and
   a hero over the brand's gradient wave: the hopping Disc-D, a greeting, a strip of suggestion chips

@@ -1,18 +1,22 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import type { Frame } from '../../shared/types'
 import { useStore } from '../lib/store'
-import { api } from '../lib/api'
+import { api, errorMessage } from '../lib/api'
+import { beginFrameSave } from '../lib/frameSaves'
 import { copyFramePng, downloadFrameExport, downloadFrameHtml } from '../lib/frameExport'
 import { deleteFrameTracked, recordUpdate } from '../lib/history'
 import { setFramesLocked } from '../lib/layerEdits'
 import { FrameHistoryModal } from './FrameHistoryModal'
+import { FrameApprovalControl } from './FrameApproval'
 import { cn } from '@/lib/utils'
-import { Panel, PanelClose, PanelHeader } from './ui/panel'
+import { Panel, PanelClose, PanelHeader, type PanelSurface } from './ui/panel'
 import { Collapsible, CollapsibleContent } from './ui/collapsible'
 import { CopyIcon, DownloadIcon, FrameIcon, LockIcon } from './ui/icons'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Textarea } from './ui/textarea'
+import { MIN_FRAME_SIZE } from '../lib/frameResize'
+import { t as translate, useT, type PlainMessageKey } from '../lib/i18n'
 
 const HTML_OPEN_KEY = 'doop:inspector-html'
 
@@ -27,10 +31,11 @@ export function Inspector({
 }: {
   frame: Frame
   /* 'inline' when the inspector is filling a mobile Sheet */
-  surface?: 'floating' | 'inline'
+  surface?: PanelSurface
   className?: string
   style?: CSSProperties
 }) {
+  const t = useT()
   const select = useStore((s) => s.select)
   /* the raw HTML editor is a power tool — collapsed by default so the panel
      reads as frame properties, not a code dump; the choice sticks */
@@ -41,7 +46,7 @@ export function Inspector({
   const [historyOpen, setHistoryOpen] = useState(false)
   const [htmlCopy, setHtmlCopy] = useState<'idle' | 'copied' | 'failed'>('idle')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const saveTimer = useRef<number | null>(null)
+  const queuedSave = useRef<{ timer: number; finish: () => void } | null>(null)
   const copyTimer = useRef<number | null>(null)
   const frameId = useRef(frame.id)
 
@@ -70,14 +75,27 @@ export function Inspector({
   function onHtmlChange(value: string) {
     setDraft(value)
     setSaveState('dirty')
-    if (saveTimer.current) window.clearTimeout(saveTimer.current)
-    saveTimer.current = window.setTimeout(async () => {
+    if (queuedSave.current) {
+      window.clearTimeout(queuedSave.current.timer)
+      queuedSave.current.finish()
+    }
+    const finish = beginFrameSave(frame.id)
+    const timer = window.setTimeout(async () => {
+      if (queuedSave.current?.timer === timer) queuedSave.current = null
       const before = useStore.getState().canvas?.frames.find((f) => f.id === frame.id)?.html
       if (before !== undefined) recordUpdate(frame.id, { html: before }, { html: value })
-      await api.updateFrame(frame.id, { html: value }).catch(console.error)
-      setSaveState('saved')
-      window.setTimeout(() => setSaveState((s) => (s === 'saved' ? 'idle' : s)), 1500)
+      try {
+        await api.updateFrame(frame.id, { html: value })
+        setSaveState('saved')
+        window.setTimeout(() => setSaveState((s) => (s === 'saved' ? 'idle' : s)), 1500)
+      } catch (err) {
+        setSaveState('dirty')
+        useStore.getState().pushNotice(errorMessage(err, translate('inspector.saveFailed')))
+      } finally {
+        finish()
+      }
     }, 700)
+    queuedSave.current = { timer, finish }
   }
 
   async function copyHtml() {
@@ -111,6 +129,7 @@ export function Inspector({
       surface={surface}
       className={cn(
         surface === 'floating' && 'top-2.5 bottom-3.5 w-[244px] transition-[right] duration-150',
+        surface === 'docked' && 'w-[244px] border-l',
         'max-md:overflow-y-auto max-md:overscroll-contain',
         className,
       )}
@@ -127,39 +146,50 @@ export function Inspector({
         <div className="flex items-center justify-between gap-2 border-b border-line-soft bg-sub py-1.5 pr-2 pl-3">
           <span
             className="flex min-w-0 items-center gap-1.5 text-[12px] text-ink-soft"
-            title="Locked — can’t be moved, resized or deleted on the canvas"
+            title={t('inspector.lockedTitle')}
           >
             <LockIcon className="size-3 flex-none" />
-            Locked
+            {t('inspector.locked')}
           </span>
           <Button
             variant="bare"
             className="h-6 rounded-[6px] bg-surface px-2 text-[12px] font-normal text-ink shadow-ring"
             onClick={() => setFramesLocked([frame], false)}
           >
-            Unlock
+            {t('inspector.unlock')}
           </Button>
         </div>
       )}
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-        <InspectorGroup title="Position">
+        <InspectorGroup title={t('inspector.groupDevelopment')}>
+          <FrameApprovalControl key={frame.id} frame={frame} hasUnsavedChanges={saveState === 'dirty'} />
+        </InspectorGroup>
+        <InspectorGroup title={t('inspector.sectionPosition')}>
           <div className="grid grid-cols-2 gap-1.5">
             <NumInput label="X" value={frame.x} onCommit={(v) => commitMeta({ x: v })} />
             <NumInput label="Y" value={frame.y} onCommit={(v) => commitMeta({ y: v })} />
           </div>
         </InspectorGroup>
-        <InspectorGroup title="Layout">
+        <InspectorGroup title={t('inspector.sectionLayout')}>
           <div className="grid grid-cols-2 gap-1.5">
-            <NumInput label="W" value={frame.width} onCommit={(v) => commitMeta({ width: Math.max(120, v) })} />
-            <NumInput label="H" value={frame.height} onCommit={(v) => commitMeta({ height: Math.max(80, v) })} />
+            <NumInput
+              label="W"
+              value={frame.width}
+              onCommit={(v) => commitMeta({ width: Math.max(MIN_FRAME_SIZE, v) })}
+            />
+            <NumInput
+              label="H"
+              value={frame.height}
+              onCommit={(v) => commitMeta({ height: Math.max(MIN_FRAME_SIZE, v) })}
+            />
           </div>
         </InspectorGroup>
-        <InspectorGroup title="Export">
+        <InspectorGroup title={t('inspector.groupExport')}>
           <div className="grid grid-cols-2 gap-1.5">
             <Button
               variant="bare"
               className={fillBtn}
-              title="Download as PNG (2×)"
+              title={t('inspector.downloadPng')}
               onClick={() => void downloadFrameExport(frame, 'png')}
             >
               PNG
@@ -167,7 +197,7 @@ export function Inspector({
             <Button
               variant="bare"
               className={fillBtn}
-              title="Download as JPG (2×)"
+              title={t('inspector.downloadJpg')}
               onClick={() => void downloadFrameExport(frame, 'jpg')}
             >
               JPG
@@ -175,15 +205,15 @@ export function Inspector({
             <Button
               variant="bare"
               className={cn(fillBtn, 'col-span-2')}
-              title="Copy the image (2×) to paste anywhere"
+              title={t('inspector.copyPngTitle')}
               onClick={() => void copyFramePng(frame)}
             >
-              Copy as PNG
+              {t('inspector.copyPng')}
             </Button>
             <Button
               variant="bare"
               className={cn(fillBtn, 'col-span-2')}
-              title="Public image URL — always renders the current design; paste it as og:image or a blog featured image"
+              title={t('inspector.copyImageUrlTitle')}
               onClick={() => {
                 navigator.clipboard.writeText(`${location.origin}/i/${frame.id}.png?scale=2`).then(() => {
                   setCopiedUrl(true)
@@ -191,18 +221,18 @@ export function Inspector({
                 }, console.error)
               }}
             >
-              {copiedUrl ? 'Copied' : 'Copy image URL'}
+              {copiedUrl ? t('common.copied') : t('inspector.copyImageUrl')}
             </Button>
           </div>
         </InspectorGroup>
-        <InspectorGroup title="Memory">
+        <InspectorGroup title={t('inspector.groupMemory')}>
           <Button
             variant="bare"
             className={cn(fillBtn, 'w-full')}
-            title="Add to design memory — will be used as reference"
+            title={t('inspector.pinReferenceTitle')}
             onClick={() => api.pinReference(frame.canvasId, frame.id).catch(console.error)}
           >
-            Pin as reference
+            {t('inspector.pinReference')}
           </Button>
         </InspectorGroup>
         <Collapsible className="flex min-h-0 flex-col" open={showHtml} onOpenChange={toggleHtml}>
@@ -211,36 +241,34 @@ export function Inspector({
             <button
               type="button"
               aria-expanded={showHtml}
-              title={showHtml ? 'Hide the HTML editor' : 'Edit the HTML'}
+              title={showHtml ? t('inspector.hideHtmlEditor') : t('inspector.editHtml')}
               onClick={() => toggleHtml(!showHtml)}
               className="mb-1.5 -ml-1 flex h-5 items-center gap-1 rounded-[5px] px-1 text-[12px] text-ink-soft hover:text-ink"
             >
-              Code
+              {t('inspector.code')}
             </button>
             <div className="grid grid-cols-2 gap-1.5">
               <Button
                 variant="bare"
                 className={cn(fillBtn, 'gap-1.5')}
-                title="Copy the frame's HTML"
+                title={t('inspector.copyHtmlTitle')}
                 onClick={copyHtml}
               >
                 <CopyIcon className="size-3.5" />
-                {htmlCopy === 'copied' ? 'Copied' : 'Copy'}
+                {htmlCopy === 'copied' ? t('common.copied') : t('common.copy')}
               </Button>
               <Button
                 variant="bare"
                 className={cn(fillBtn, 'gap-1.5')}
-                title="Save the frame's HTML as a file"
+                title={t('inspector.exportHtmlTitle')}
                 onClick={() => downloadFrameHtml(frame, draft)}
               >
                 <DownloadIcon className="size-3.5" />
-                Export
+                {t('inspector.export')}
               </Button>
             </div>
             {htmlCopy === 'failed' && (
-              <p className="pt-2 text-[11px] text-accent-ink">
-                Couldn’t copy the HTML. Select it in the editor and copy it by hand.
-              </p>
+              <p className="pt-2 text-[11px] text-accent-ink">{t('inspector.copyHtmlFailed')}</p>
             )}
           </div>
           <CollapsibleContent className="relative flex min-h-0 flex-col">
@@ -258,7 +286,11 @@ export function Inspector({
       </div>
       <footer className="flex flex-none items-center justify-between gap-2 border-t border-line-soft py-2 pr-2 pl-3">
         <span className="min-w-0 truncate text-[11px] text-ink-faint">
-          {saveState === 'dirty' ? 'saving…' : saveState === 'saved' ? 'saved' : `last edit by ${frame.updatedBy}`}
+          {saveState === 'dirty'
+            ? t('inspector.saving')
+            : saveState === 'saved'
+              ? t('inspector.saved')
+              : t('inspector.lastEditBy', { name: frame.updatedBy })}
         </span>
         <span className="flex flex-none items-center gap-0.5">
           <Button
@@ -267,17 +299,17 @@ export function Inspector({
             className="h-7 rounded-[7px] px-2 text-[12px] font-normal"
             onClick={() => setHistoryOpen(true)}
           >
-            History
+            {t('inspector.history')}
           </Button>
           <Button
             variant="bare-danger"
             size="sm"
             className="h-7 rounded-[7px] px-2 text-[12px] font-normal"
             disabled={!!frame.locked}
-            title={frame.locked ? 'Unlock the frame to delete it' : undefined}
+            title={frame.locked ? t('inspector.unlockToDelete') : undefined}
             onClick={() => deleteFrameTracked(frame)}
           >
-            Delete
+            {t('common.delete')}
           </Button>
         </span>
       </footer>
@@ -298,6 +330,7 @@ function InspectorGroup({ title, children }: { title: string; children: ReactNod
 
 /** The frame's name, edited in place in the panel header. */
 function NameInput({ value, onCommit }: { value: string; onCommit: (v: string) => void }) {
+  const t = useT()
   const [draft, setDraft] = useState(value)
   /* a committed or remote value replaces whatever was being typed */
   const [seen, setSeen] = useState(value)
@@ -309,7 +342,7 @@ function NameInput({ value, onCommit }: { value: string; onCommit: (v: string) =
     <Input
       variant="bare"
       inputSize="auto"
-      aria-label="Frame name"
+      aria-label={t('inspector.frameName')}
       className="h-7 min-w-0 flex-1 truncate rounded-[6px] px-1 text-[12.5px] font-medium hover:bg-sub focus:bg-surface focus:shadow-elevation-1-focus md:text-[12.5px] max-md:min-h-10"
       value={draft}
       onChange={(e) => setDraft(e.target.value)}
@@ -319,7 +352,16 @@ function NameInput({ value, onCommit }: { value: string; onCommit: (v: string) =
   )
 }
 
+const NUM_INPUT_LABELS: Record<string, PlainMessageKey> = {
+  X: 'inspector.xPosition',
+  Y: 'inspector.yPosition',
+  W: 'inspector.width',
+  H: 'inspector.height',
+}
+
 function NumInput({ label, value, onCommit }: { label: string; value: number; onCommit: (v: number) => void }) {
+  const t = useT()
+  const ariaKey = NUM_INPUT_LABELS[label]
   const [draft, setDraft] = useState(String(value))
   const [seen, setSeen] = useState(value)
   if (seen !== value) {
@@ -330,7 +372,7 @@ function NumInput({ label, value, onCommit }: { label: string; value: number; on
     <label className="flex h-7 min-w-0 items-center gap-[7px] rounded-[7px] bg-sub px-2 focus-within:bg-surface focus-within:shadow-elevation-1-focus max-md:h-10">
       <span className="flex-none text-[10.5px] text-ink-ghost">{label}</span>
       <input
-        aria-label={{ X: 'X position', Y: 'Y position', W: 'Width', H: 'Height' }[label] ?? label}
+        aria-label={ariaKey ? t(ariaKey) : label}
         className="w-full min-w-0 bg-transparent font-mono text-[11px] text-ink outline-none"
         inputMode="numeric"
         value={draft}

@@ -48,24 +48,51 @@ deploy suspends it. The `deploy` job then runs on the `cheese-c00-deploy` runner
 it, read back digest, SHA label and health within 15 minutes, and on failure roll back to the previous
 image. Setup and rules: [`deploy/cd/README.md`](../deploy/cd/README.md).
 
-## Desktop app (Tauri: macOS DMG + Windows NSIS installer)
+## Desktop app (Tauri: macOS DMG + Windows NSIS installer + Linux AppImage/.deb/.rpm)
 
 Driven by `.github/workflows/desktop-release.yml`; every desktop job shares the toolchain setup
 in `.github/actions/setup-desktop`:
 
 - Push a tag matching `desktop-v*` -> `dmg-macos` builds a universal (Apple Silicon + Intel) DMG
-  with `bunx tauri build --target universal-apple-darwin --bundles dmg`, `nsis-windows` builds
-  `doop_<version>_x64-setup.exe` with `bunx tauri build --bundles nsis`, and a final `release`
-  job (`needs` both) attaches the two to one GitHub Release - so a tag is never published with
-  only one installer.
+  with `bunx tauri build --target universal-apple-darwin --bundles app,dmg`, `nsis-windows` builds
+  `doop_<version>_x64-setup.exe` with `bunx tauri build --bundles nsis`, `linux` builds the
+  x64 AppImage, .deb and .rpm on `ubuntu-22.04` (the oldest runner, for a low glibc floor) with
+  `bunx tauri build --bundles deb,rpm,appimage`, and a final `release` job (`needs` all three)
+  attaches them to one GitHub Release - so a tag is never published with an installer missing.
+- The AppImage is repacked after the build by `desktop/scripts/appimage-drop-wayland.sh` (pinned
+  `appimagetool` and type2 runtime, both checksummed), which drops the bundled `libwayland-*`: copies from the 22.04 runner are older
+  than current distros' Mesa and make WebKitGTK abort with `EGL_BAD_PARAMETER`. Tauri passes
+  linuxdeploy no extra flags, so `--exclude-library` cannot do it. The script re-signs the
+  updater `.sig` when the key is set.
+- Self-update (`tauri-plugin-updater`, `desktop/src-tauri/src/updates.rs`): with the
+  `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` secrets set, every build also
+  emits signed updater packages, and the `release` job writes `latest.json`, attaches it and copies
+  it onto the fixed `desktop-updates` prerelease, which `doop.design/desktop/latest.json`
+  redirects to (served by the hosted deployment). A tag fails without the key. Installed official
+  shells check at launch and daily, download in the background and offer a restart. The key
+  pair lives in the signing backup; its public half is `plugins.updater.pubkey`.
 - `workflow_dispatch` or a PR touching the workflow file itself -> same builds, uploaded as
   workflow artifacts instead (keeps the pipeline validated without cutting a release).
 - macOS signing/notarization: automatic once the `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`,
   `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` repo secrets exist (see
   `desktop/README.md`). Without them the DMG is unsigned - it still works, but downloaders must
   approve it via System Settings -> Privacy & Security.
-- The Windows installer is unsigned (no Authenticode certificate configured): SmartScreen warns on
-  first run and users click "More info" -> "Run anyway".
+- Windows signing: Azure Artifact Signing (account `Doop`, East US, profile `doop-public`). The
+  `nsis-windows` job runs in the `desktop-release` environment, logs in through OIDC (app
+  registration `doop-desktop-signing`, federated on that environment; `AZURE_CLIENT_ID` /
+  `AZURE_TENANT_ID` repo variables, no secret) and passes a CI-only `signCommand` to Tauri
+  (`desktop/scripts/sign-windows.ps1`: signtool + the pinned `Microsoft.ArtifactSigning.Client`
+  dlib), so the app exe, installer and uninstaller are signed; `signtool verify` gates the job. PR
+  builds and repos without the variables stay unsigned. Setup: `desktop/README.md`.
+- Connecting an OAuth integration (Meta, Linear, Slack) from the app opens the
+  provider in the system browser and returns over a `doop://integration/<id>` link; the app
+  finishes it under its own session (`shared/desktopConnect.ts`). This is web-only: shells from
+  0.2.1 already deliver any `doop://` link, and older shells open Integrations in the browser.
+- The macOS View menu (`desktop/src-tauri/src/view_menu.rs`) holds the canvas toggles (Rulers,
+  Show/Hide UI, Layers and Agents panels) and zoom. Items reach the page as `view-command`
+  events; the page mirrors its state back through `view_menu_state` (`src/lib/viewMenu.ts`,
+  gated on `window.__DOOP_VIEW_MENU__`), so checkmarks follow it and canvas items are disabled
+  off a canvas. Only ⌘ shortcuts are bound in the menu; ⇧R / ⇧1 / ⇧2 stay with the page.
 - The shell tells the page its platform via `window.__DOOP_DESKTOP_PLATFORM__` (read in
   `src/lib/shell.ts`); only macOS gets the overlay title bar / traffic-light inset.
 - Desktop app version is tracked separately from the root `package.json` and bumped by
@@ -101,7 +128,7 @@ link; the app opens a review screen and writes only after the user clicks Add to
 The native capability marker gates older shells. Release the updated desktop binary
 and frontend together; no downloadable integration bundle is built. Codex still owns
 the separate OAuth approval. Config preservation, conflict handling and handoff checks
-are covered by Rust/frontend tests; desktop CI now runs the Rust tests on both platforms.
+are covered by Rust/frontend tests; desktop CI now runs the Rust tests on macOS, Windows and Linux.
 See [`desktop/README.md`](../desktop/README.md#add-to-codex) for release smoke checks.
 
 ## Cursor marketplace plugin

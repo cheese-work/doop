@@ -1,5 +1,5 @@
 {
-  "id": "78b0f45a-bb22-4da9-8971-ed7179b8f80c",
+  "id": "f4e46d71-8a95-4dbb-97d1-5ae3063ef59f",
   "prevId": "a2fb2423-7726-48d1-8d24-79dea77fe6c4",
   "version": "7",
   "dialect": "postgresql",
@@ -698,84 +698,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.comment_events": {
-      "name": "comment_events",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "bigserial",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "canvas_id": {
-          "name": "canvas_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "comment_id": {
-          "name": "comment_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "parent_id": {
-          "name": "parent_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "from_user_id": {
-          "name": "from_user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "at": {
-          "name": "at",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "acked_at": {
-          "name": "acked_at",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "comment_events_unacked_idx": {
-          "name": "comment_events_unacked_idx",
-          "columns": [
-            {
-              "expression": "canvas_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"comment_events\".\"acked_at\" is null",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.comments": {
       "name": "comments",
       "schema": "",
@@ -1325,6 +1247,12 @@
           "type": "boolean",
           "primaryKey": false,
           "notNull": false
+        },
+        "approval": {
+          "name": "approval",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -1635,6 +1563,12 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "refresh_token": {
+          "name": "refresh_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "expires_at": {
           "name": "expires_at",

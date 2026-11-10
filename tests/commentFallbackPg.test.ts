@@ -20,7 +20,7 @@ const FRAME: Frame = {
   id: 'pg-fallback-frame',
   canvasId: CANVAS_ID,
   name: 'Hero',
-  html: '<h1>Hi</h1>',
+  html: '<h1 data-doop-id="abc123">Hi</h1>',
   x: 0,
   y: 0,
   width: 640,
@@ -71,7 +71,12 @@ describe.skipIf(!PG_URL)('comments outside the memory window, on PostgreSQL', ()
   })
 
   const post = async (text: string) => {
-    const c = await actions.addElementComment(FRAME.id, { selector: 'h1', snippet: '<h1>Hi</h1>', text }, 'alice', 'u1')
+    const c = await actions.addElementComment(
+      FRAME.id,
+      { selector: 'h1', elementId: 'abc123', snippet: '<h1>Hi</h1>', text },
+      'alice',
+      'u1',
+    )
     if (!c) throw new Error('seed comment was refused')
     return c
   }

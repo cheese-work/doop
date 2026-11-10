@@ -9,8 +9,10 @@ import { getIdentity } from '../lib/identity'
 import type { ComposerPlacement } from '../lib/composerPlacement'
 import { posthog } from '../lib/posthog'
 import { isResidentLimit } from './TeamAllowance'
-import { CommentComposer, CommentPin, CommentThread } from './CommentPopovers'
+import { CommentComposer, CommentPin, CommentThread, PIN_SCALE } from './CommentPopovers'
 import { cn } from '@/lib/utils'
+import { CommentIcon } from './ui/icons'
+import { useT } from '../lib/i18n'
 
 /** Where the Comment tool was clicked on empty canvas: a world point on the
  *  active page. `at` makes a second click on the same spot a new request. */
@@ -46,6 +48,7 @@ export function CanvasComments({
   /** the composer posted or was cancelled */
   onComposeDone: () => void
 }) {
+  const t = useT()
   const canvasId = useStore((s) => s.canvas?.id)
   const pageId = useStore((s) => (s.canvas ? (s.activePageId ?? canvasPages(s.canvas)[0]!.id) : null))
   const all = useStore((s) => s.comments)
@@ -55,6 +58,10 @@ export function CanvasComments({
   )
   const [openThread, setOpenThread] = useState<string | null>(null)
   const rootRef = useRef<HTMLDivElement>(null)
+  /* a pin being dragged, from this layer or out of a frame: its ghost rides
+     the pointer here, above every frame, where no frame surface clips it */
+  const drag = useStore((s) => s.commentDrag)
+  const dragRoot = drag ? all.find((c) => c.id === drag.id) : undefined
 
   /* the Comments panel asked for one of these threads to open: the request
      is consumed once the thread is up, so a page switch back never reopens it */
@@ -157,6 +164,19 @@ export function CanvasComments({
         )
       })}
 
+      {drag && dragRoot && (
+        <div
+          data-comment-drag
+          className={cn(
+            'pointer-events-none absolute z-[8] grid h-[26px] w-[26px] place-items-center rounded-[50%_50%_50%_4px] border-2 border-white text-[13px] text-white shadow-pop',
+            PIN_SCALE,
+          )}
+          style={{ left: drag.x, top: drag.y, background: colorFor(dragRoot.from) }}
+        >
+          <CommentIcon size={14} />
+        </div>
+      )}
+
       {composeAt && canvasId && (
         <div
           className={cn('pointer-events-auto absolute z-[7]', ANCHOR_SCALE)}
@@ -168,13 +188,13 @@ export function CanvasComments({
             className="absolute grid h-[26px] w-[26px] -translate-x-1/2 -translate-y-1/2 place-items-center rounded-[50%_50%_50%_4px] border-2 border-white text-[13px] text-white shadow-card animate-[chip-in_0.25s_ease]"
             style={{ background: colorFor(getIdentity().name) }}
           >
-            💬
+            <CommentIcon size={14} />
           </div>
           <div
             className={cn('absolute -top-[13px]', composeAt.placement.side === 'left' ? 'right-[20px]' : 'left-[20px]')}
             style={composeAt.placement.shift ? { transform: `translateX(${composeAt.placement.shift}px)` } : undefined}
           >
-            <CommentComposer placeholder="Leave a comment here…" onSubmit={post} onCancel={close} />
+            <CommentComposer placeholder={t('stage.commentHere')} onSubmit={post} onCancel={close} />
           </div>
         </div>
       )}

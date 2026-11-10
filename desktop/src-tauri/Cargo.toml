@@ -1,6 +1,6 @@
 [package]
 name = "doop-desktop"
-version = "0.6.0"
+version = "0.11.0"
 description = "Desktop shell for doop — a thin webview over the hosted app"
 edition = "2021"
 
@@ -23,6 +23,10 @@ tempfile = "3"
 # main.rs); used directly rather than through tauri-plugin-dialog because the
 # download callback needs a synchronous answer on the UI thread.
 rfd = "0.16"
+# Self-update from the signed feed in tauri.conf.json (src/updates.rs); tokio
+# only for the timer between scheduled checks.
+tauri-plugin-updater = "2"
+tokio = { version = "1", features = ["time"] }
 
 # Repositioning the traffic lights over the web app's tab strip (main.rs);
 # AppKit resets them on window events, so the shell moves them itself.

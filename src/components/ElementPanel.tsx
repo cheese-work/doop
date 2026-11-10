@@ -36,9 +36,12 @@ import {
   PanelTabPanel,
   PanelTabs,
   PanelTabsRoot,
+  type PanelSurface,
 } from './ui/panel'
 import { Button } from './ui/button'
 import { Textarea } from './ui/textarea'
+import { ImageFill } from './ImageFill'
+import { InteractionsPanel } from './InteractionsPanel'
 import { Tooltip } from './ui/tooltip'
 import {
   AlignCenterIcon,
@@ -75,10 +78,11 @@ import {
   SelectField,
   StaticField,
 } from './ui/property-field'
+import { useT, type PlainMessageKey } from '../lib/i18n'
 
 const TAB_KEY = 'doop:element-panel-tab'
-/* the runtime answers in a frame or two; the wait lets a streaming agent's
-   chunks settle before every re-read */
+/* Only refreshes wait for streaming chunks to settle; a new selection is
+   inspected immediately. */
 const INSPECT_DELAY_MS = 120
 const HTML_SAVE_DELAY_MS = 700
 
@@ -98,47 +102,71 @@ function readTab(): Tab {
 export function ElementPanel({
   frame,
   selector,
+  surface = 'floating',
   className,
   style,
 }: {
   frame: Frame
   selector: string
+  surface?: Exclude<PanelSurface, 'inline'>
   className?: string
   /** carries `right`, so it opens beside the Agents panel at the edge */
   style?: CSSProperties
 }) {
   /* the tab sticks across elements and visits: walking the tree in HTML
      view must not snap back to Design on every row */
+  const t = useT()
   const [tab, setTab] = useState<Tab>(readTab)
-  /* the values carry the selector they were read from: switching elements
-     keeps the panel mounted (no blank flash), but the old element's values
-     are shown dimmed and locked until the new element's read lands, so a
-     quick edit can never write them onto the new selection */
+  const prototypeMode = useStore((s) => s.prototypeMode)
+  /* Values belong to their selector. A newly selected element shows loading
+     placeholders until its own read lands, so old values cannot be edited. */
   const [read, setRead] = useState<{ selector: string; info: ElementInfo } | null>(null)
   const info = read?.selector === selector ? read.info : null
-  const stale = read && !info ? read.info : null
+  const inspected = useRef<{ frameId: string; selector: string; ready: boolean } | null>(null)
 
   const tree = useMemo(() => buildLayerTree(frame.html), [frame.html])
   const node = useMemo(() => findLayer(tree, selector), [tree, selector])
   const parentNode = useMemo(() => ancestorsOf(tree, selector)?.at(-1) ?? null, [tree, selector])
+  const hasText = useMemo(() => {
+    if (info) return info.hasText
+    try {
+      const element = new DOMParser().parseFromString(frame.html, 'text/html').querySelector(selector)
+      return Array.from(element?.childNodes ?? []).some(
+        (child) => child.nodeType === Node.TEXT_NODE && /\S/.test(child.textContent ?? ''),
+      )
+    } catch {
+      return false
+    }
+  }, [frame.html, selector, info])
 
   /* re-read after every html change — remote edits and our own saves alike —
      and when the runtime finishes rendering or loading fonts */
   useEffect(() => {
     let live = true
     let timer: number | null = null
+    let request = 0
+    if (inspected.current?.frameId !== frame.id || inspected.current.selector !== selector) {
+      inspected.current = { frameId: frame.id, selector, ready: false }
+    }
     const read = () => {
       if (timer) window.clearTimeout(timer)
-      timer = window.setTimeout(() => {
-        inspectElement(frame.id, selector)
-          .then((next) => {
-            if (live && next) setRead({ selector, info: next })
-          })
-          .catch(console.error)
-      }, INSPECT_DELAY_MS)
+      const currentRequest = ++request
+      inspectElement(frame.id, selector)
+        .then((next) => {
+          if (!live || currentRequest !== request || !next) return
+          inspected.current = { frameId: frame.id, selector, ready: true }
+          setRead({ selector, info: next })
+        })
+        .catch(console.error)
     }
-    read()
-    const off = onFrameChange(frame.id, read)
+    /* a burst of render and font-load events shares one delayed read */
+    const refresh = () => {
+      if (timer) window.clearTimeout(timer)
+      timer = window.setTimeout(read, INSPECT_DELAY_MS)
+    }
+    if (inspected.current.ready) refresh()
+    else read()
+    const off = onFrameChange(frame.id, refresh)
     return () => {
       live = false
       off()
@@ -184,14 +212,28 @@ export function ElementPanel({
 
   return (
     <Panel
-      className={cn('top-2.5 max-h-[calc(100%-24px)] w-[244px] transition-[right] duration-150', className)}
+      surface={surface}
+      className={cn(
+        'w-[244px]',
+        surface === 'floating' ? 'top-2.5 max-h-[calc(100%-24px)] transition-[right] duration-150' : 'border-l',
+        className,
+      )}
       style={style}
     >
-      <PanelTabsRoot value={tab} onValueChange={(v) => selectTab(v === 'html' ? 'html' : 'design')}>
+      <PanelTabsRoot
+        value={prototypeMode ? 'prototype' : tab}
+        onValueChange={(v) => {
+          /* the Prototype tab is Prototype mode: picking it (or the tool
+             rail's mode switch) turns the canvas connectors on as well */
+          useStore.getState().setPrototypeMode(v === 'prototype')
+          if (v !== 'prototype') selectTab(v === 'html' ? 'html' : 'design')
+        }}
+      >
         <PanelHeader className="pl-2">
           <PanelTabs>
-            <PanelTab value="design">Design</PanelTab>
-            <PanelTab value="html">HTML</PanelTab>
+            <PanelTab value="design">{t('inspector.tabDesign')}</PanelTab>
+            <PanelTab value="html">{t('inspector.tabHtml')}</PanelTab>
+            <PanelTab value="prototype">{t('inspector.tabPrototype')}</PanelTab>
           </PanelTabs>
           <PanelClose onClick={close} />
         </PanelHeader>
@@ -201,15 +243,17 @@ export function ElementPanel({
           </span>
           <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-ink">
             {name}
-            <small className="ml-[5px] text-[11px] font-normal text-ink-faint">in {parentLabel}</small>
+            <small className="ml-[5px] text-[11px] font-normal text-ink-faint">
+              {t('inspector.inParent', { parent: parentLabel })}
+            </small>
           </span>
           {parentNode && (
-            <Tooltip label="Select parent" side="bottom" align="end">
+            <Tooltip label={t('inspector.selectParent')} side="bottom" align="end">
               <Button
                 variant="bare"
                 size="icon-sm"
                 className="size-[22px] text-ink-faint hover:bg-paper-deep hover:text-ink"
-                aria-label="Select parent"
+                aria-label={t('inspector.selectParent')}
                 onClick={() =>
                   useStore.getState().setSelectedElement({ frameId: frame.id, selector: parentNode.selector })
                 }
@@ -225,27 +269,67 @@ export function ElementPanel({
               <PropertyScrubContext.Provider
                 value={{ onStart: () => scrub('begin'), onEnd: (cancel) => scrub(cancel ? 'cancel' : 'commit') }}
               >
-                <DesignTab key={`${frame.id}:${selector}`} info={info} apply={apply} editGeometry={editGeometry} />
+                <DesignTab
+                  key={`${frame.id}:${selector}`}
+                  frame={frame}
+                  selector={selector}
+                  info={info}
+                  apply={apply}
+                  editGeometry={editGeometry}
+                />
               </PropertyScrubContext.Provider>
-            ) : stale ? (
-              <div aria-busy className="pointer-events-none opacity-50" title="Reading the element…">
-                <DesignTab info={stale} apply={apply} editGeometry={editGeometry} />
-              </div>
             ) : (
-              <Waiting />
+              <Waiting hasText={hasText} />
             )}
           </PanelBody>
         </PanelTabPanel>
         <PanelTabPanel value="html">
           <HtmlTab key={selector} frame={frame} selector={selector} />
         </PanelTabPanel>
+        <PanelTabPanel value="prototype">
+          <PanelBody>
+            <InteractionsPanel frame={frame} selector={selector} />
+          </PanelBody>
+        </PanelTabPanel>
       </PanelTabsRoot>
     </Panel>
   )
 }
 
-function Waiting() {
-  return <div className="px-3 py-6 text-center text-[12px] text-ink-faint">Reading the element…</div>
+const LOADING_SECTIONS: { title: PlainMessageKey; rows: PlainMessageKey[] }[] = [
+  { title: 'inspector.sectionPosition', rows: ['inspector.rowType', 'inspector.rowOrder'] },
+  { title: 'inspector.sectionLayout', rows: ['inspector.rowMinWidth', 'inspector.rowDisplay', 'inspector.rowGap'] },
+  { title: 'inspector.sectionAppearance', rows: ['inspector.rowOpacity', 'inspector.rowRadius'] },
+  { title: 'inspector.sectionFill', rows: ['inspector.rowColor'] },
+  { title: 'inspector.sectionStroke', rows: ['inspector.rowColor', 'inspector.rowWidth'] },
+  {
+    title: 'inspector.sectionText',
+    rows: ['inspector.rowFont', 'inspector.rowSize', 'inspector.rowColor', 'inspector.rowAlign'],
+  },
+]
+
+function Waiting({ hasText }: { hasText: boolean }) {
+  const t = useT()
+  return (
+    <div aria-busy="true">
+      <span role="status" className="sr-only">
+        {t('inspector.readingElement')}
+      </span>
+      <div aria-hidden="true">
+        {LOADING_SECTIONS.filter((section) => section.title !== 'inspector.sectionText' || hasText).map((section) => (
+          <PropertySection key={section.title} title={t(section.title)}>
+            {section.rows.map((label) => (
+              <PropertyRow key={label} label={t(label)}>
+                <StaticField>
+                  <span className="h-1.5 w-1/2 rounded-tag bg-ink/10" />
+                </StaticField>
+              </PropertyRow>
+            ))}
+          </PropertySection>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 /* ---- Design tab ---- */
@@ -262,19 +346,25 @@ const DISPLAYS: { value: string; label: string }[] = [
 const POSITIONS = ['static', 'relative', 'absolute', 'fixed', 'sticky']
 const WEIGHTS = ['100', '200', '300', '400', '500', '600', '700', '800', '900']
 const LAYER_ALIGNS = [
-  { axis: 'x', edge: 'start', label: 'Align layer left', Icon: AlignStartVerticalIcon },
-  { axis: 'x', edge: 'center', label: 'Center layer horizontally', Icon: AlignCenterVerticalIcon },
-  { axis: 'x', edge: 'end', label: 'Align layer right', Icon: AlignEndVerticalIcon },
-  { axis: 'y', edge: 'start', label: 'Align layer top', Icon: AlignStartHorizontalIcon },
-  { axis: 'y', edge: 'center', label: 'Center layer vertically', Icon: AlignCenterHorizontalIcon },
-  { axis: 'y', edge: 'end', label: 'Align layer bottom', Icon: AlignEndHorizontalIcon },
+  { axis: 'x', edge: 'start', label: 'inspector.alignLayerLeft', Icon: AlignStartVerticalIcon },
+  { axis: 'x', edge: 'center', label: 'inspector.centerLayerHorizontally', Icon: AlignCenterVerticalIcon },
+  { axis: 'x', edge: 'end', label: 'inspector.alignLayerRight', Icon: AlignEndVerticalIcon },
+  { axis: 'y', edge: 'start', label: 'inspector.alignLayerTop', Icon: AlignStartHorizontalIcon },
+  { axis: 'y', edge: 'center', label: 'inspector.centerLayerVertically', Icon: AlignCenterHorizontalIcon },
+  { axis: 'y', edge: 'end', label: 'inspector.alignLayerBottom', Icon: AlignEndHorizontalIcon },
 ] as const
-const ALIGNS = [
-  { value: 'left', label: 'Align left', Icon: AlignLeftIcon },
-  { value: 'center', label: 'Align center', Icon: AlignCenterIcon },
-  { value: 'right', label: 'Align right', Icon: AlignRightIcon },
-  { value: 'justify', label: 'Justify', Icon: AlignJustifyIcon },
+const ALIGNS: { value: string; label: PlainMessageKey; Icon: typeof AlignLeftIcon }[] = [
+  { value: 'left', label: 'inspector.alignLeft', Icon: AlignLeftIcon },
+  { value: 'center', label: 'inspector.alignCenter', Icon: AlignCenterIcon },
+  { value: 'right', label: 'inspector.alignRight', Icon: AlignRightIcon },
+  { value: 'justify', label: 'inspector.justify', Icon: AlignJustifyIcon },
 ]
+const BORDER_SIDES: Record<string, PlainMessageKey> = {
+  top: 'inspector.sideTop',
+  right: 'inspector.sideRight',
+  bottom: 'inspector.sideBottom',
+  left: 'inspector.sideLeft',
+}
 const SYSTEM_FONTS = [
   { value: 'system-ui, sans-serif', label: 'System UI' },
   { value: 'Arial, sans-serif', label: 'Arial' },
@@ -314,11 +404,11 @@ function fontOptions(info: ElementInfo) {
     return true
   })
 }
-const SIZE_MODES: { value: SizeMode; label: string }[] = [
-  { value: 'auto', label: 'Auto' },
-  { value: 'fixed', label: 'Fixed' },
-  { value: 'fill', label: 'Fill' },
-  { value: 'hug', label: 'Hug' },
+const SIZE_MODES: { value: SizeMode; label: PlainMessageKey }[] = [
+  { value: 'auto', label: 'inspector.sizeAuto' },
+  { value: 'fixed', label: 'inspector.sizeFixed' },
+  { value: 'fill', label: 'inspector.sizeFill' },
+  { value: 'hug', label: 'inspector.sizeHug' },
 ]
 
 function displayValue(info: ElementInfo): string {
@@ -334,14 +424,20 @@ function parentLayout(info: ElementInfo): string {
 }
 
 function DesignTab({
+  frame,
+  selector,
   info,
   apply,
   editGeometry,
 }: {
+  frame: Frame
+  selector: string
   info: ElementInfo
   apply: (styles: StylePatch) => void
   editGeometry: (edit: GeometryEdit) => void
 }) {
+  const t = useT()
+  const sizeModes = SIZE_MODES.map(({ value, label }) => ({ value, label: t(label) }))
   const ratio = aspectRatio(info.aspectRatio, info.naturalAspectRatio)
   const canLink = (info.width ?? 0) > 0 && (info.height ?? 0) > 0
   const visible = info.visibility !== 'hidden'
@@ -422,16 +518,16 @@ function DesignTab({
   }
   return (
     <>
-      <PropertySection title="Alignment">
-        <div className="flex gap-1" role="group" aria-label="Layer alignment within parent">
+      <PropertySection title={t('inspector.sectionAlignment')}>
+        <div className="flex gap-1" role="group" aria-label={t('inspector.layerAlignment')}>
           {LAYER_ALIGNS.map(({ axis, edge, label, Icon }) => (
             <Button
-              key={label}
+              key={`${axis}-${edge}`}
               variant="bare"
               size="icon-sm"
               className="h-[26px] min-w-0 flex-1 rounded-[7px] bg-sub text-ink-soft hover:bg-paper-deep"
-              aria-label={label}
-              title={`${label} within parent`}
+              aria-label={t(label)}
+              title={t('inspector.withinParent', { label: t(label) })}
               disabled={!info.geometry.canAlign}
               onClick={() => editGeometry({ kind: 'align', axis, edge })}
             >
@@ -440,10 +536,10 @@ function DesignTab({
           ))}
         </div>
       </PropertySection>
-      <PropertySection title="Position">
-        <div className="grid grid-cols-2 gap-1.5" title="Rendered position relative to parent, in frame pixels">
+      <PropertySection title={t('inspector.sectionPosition')}>
+        <div className="grid grid-cols-2 gap-1.5" title={t('inspector.positionTitle')}>
           <NumberField
-            label="X position"
+            label={t('inspector.xPosition')}
             min={-Infinity}
             prefix="X"
             value={info.geometry.x}
@@ -452,7 +548,7 @@ function DesignTab({
             onCommit={(value) => editGeometry({ kind: 'position', axis: 'x', value })}
           />
           <NumberField
-            label="Y position"
+            label={t('inspector.yPosition')}
             min={-Infinity}
             prefix="Y"
             value={info.geometry.y}
@@ -463,7 +559,7 @@ function DesignTab({
         </div>
         <div className="mt-1.5 grid grid-cols-2 gap-1.5">
           <NumberField
-            label="Rotation"
+            label={t('inspector.rotation')}
             min={-Infinity}
             prefix={<CircleDashedIcon size="rail" />}
             value={info.geometry.rotation}
@@ -474,7 +570,7 @@ function DesignTab({
           <div className="grid grid-cols-2 gap-1.5">
             {(['x', 'y'] as const).map((axis) => {
               const Icon = axis === 'x' ? FlipHorizontal2Icon : FlipVertical2Icon
-              const label = axis === 'x' ? 'Flip horizontally' : 'Flip vertically'
+              const label = axis === 'x' ? t('inspector.flipHorizontally') : t('inspector.flipVertically')
               const pressed = (axis === 'x' ? info.geometry.scaleX : info.geometry.scaleY) < 0
               return (
                 <Button
@@ -497,34 +593,34 @@ function DesignTab({
             })}
           </div>
         </div>
-        <PropertyRow label="Type">
+        <PropertyRow label={t('inspector.rowType')}>
           <SelectField
-            label="Position type"
+            label={t('inspector.positionType')}
             value={info.position}
             options={POSITIONS.map((p) => ({ value: p, label: p }))}
             onChange={(v) => apply({ position: v })}
           />
         </PropertyRow>
-        <PropertyRow label="Order">
+        <PropertyRow label={t('inspector.rowOrder')}>
           <StaticField>
             {info.index}
             <FieldUnit>
-              of {info.count}
+              {t('inspector.orderOf', { count: info.count })}
               {parentLayout(info) && ` · ${parentLayout(info)}`}
             </FieldUnit>
           </StaticField>
         </PropertyRow>
       </PropertySection>
       <PropertySection
-        title="Layout"
+        title={t('inspector.sectionLayout')}
         action={
           <Tooltip
             label={
               ratio !== null
-                ? 'Unlink width and height'
+                ? t('inspector.unlinkSize')
                 : canLink
-                  ? 'Link width and height'
-                  : 'Set a positive width and height to link them'
+                  ? t('inspector.linkSize')
+                  : t('inspector.linkSizeDisabled')
             }
           >
             <span>
@@ -535,7 +631,7 @@ function DesignTab({
                   'size-5 rounded-tag',
                   ratio !== null ? 'bg-ink text-paper hover:bg-ink/85 hover:text-paper' : 'text-ink-faint',
                 )}
-                aria-label="Link width and height"
+                aria-label={t('inspector.linkSize')}
                 aria-pressed={ratio !== null}
                 disabled={ratio === null && !canLink}
                 onClick={toggleRatio}
@@ -550,32 +646,32 @@ function DesignTab({
           {(['width', 'height'] as const).map((axis) => (
             <div key={axis} className="flex min-w-0 flex-col gap-1">
               <NumberField
-                label={axis === 'width' ? 'Width' : 'Height'}
+                label={axis === 'width' ? t('inspector.width') : t('inspector.height')}
                 prefix={axis === 'width' ? 'W' : 'H'}
                 value={info[axis]}
                 unit="px"
                 onCommit={(v) => setSize(axis, 'fixed', v)}
               />
               <SelectField
-                label={`${axis === 'width' ? 'Width' : 'Height'} sizing`}
+                label={axis === 'width' ? t('inspector.widthSizing') : t('inspector.heightSizing')}
                 value={modeFor(axis)}
-                options={SIZE_MODES}
+                options={sizeModes}
                 onChange={(v) => setSize(axis, v)}
               />
             </div>
           ))}
         </div>
-        <PropertyRow label="Min width">
+        <PropertyRow label={t('inspector.rowMinWidth')}>
           <LengthField
-            label="Minimum width"
+            label={t('inspector.minimumWidth')}
             value={info.inline['min-width'] ?? (info.minWidth === '0px' ? '' : info.minWidth)}
             placeholder="auto"
             onCommit={(v) => apply({ 'min-width': lengthValue(v) })}
           />
         </PropertyRow>
-        <PropertyRow label="Display">
+        <PropertyRow label={t('inspector.rowDisplay')}>
           <SelectField
-            label="Display"
+            label={t('inspector.display')}
             value={displayValue(info)}
             options={DISPLAYS}
             onChange={(v) => apply({ display: v })}
@@ -584,15 +680,15 @@ function DesignTab({
         {!isFlex && (
           <>
             {info.display.includes('grid') && (
-              <PropertyRow label="Gap">
+              <PropertyRow label={t('inspector.rowGap')}>
                 <NumberField
-                  label="Row gap"
+                  label={t('inspector.rowGapLabel')}
                   value={info.rowGap ?? 0}
                   unit="px"
                   onCommit={(v) => apply({ 'row-gap': `${Math.max(0, v)}px` })}
                 />
                 <NumberField
-                  label="Column gap"
+                  label={t('inspector.columnGap')}
                   value={info.columnGap ?? 0}
                   unit="px"
                   onCommit={(v) => apply({ 'column-gap': `${Math.max(0, v)}px` })}
@@ -605,14 +701,14 @@ function DesignTab({
       </PropertySection>
       {isFlex && <FlexLayoutControls info={info} apply={apply} />}
       <PropertySection
-        title="Appearance"
+        title={t('inspector.sectionAppearance')}
         action={
           <Button
             variant="bare"
             size="icon-sm"
             className="size-5 rounded-tag text-ink-faint"
-            aria-label={visible ? 'Hide element' : 'Show element'}
-            title={visible ? 'Hide element' : 'Show element'}
+            aria-label={visible ? t('inspector.hideElement') : t('inspector.showElement')}
+            title={visible ? t('inspector.hideElement') : t('inspector.showElement')}
             aria-pressed={!visible}
             onClick={() => apply({ visibility: visible ? 'hidden' : 'visible' })}
           >
@@ -622,7 +718,7 @@ function DesignTab({
       >
         <div className="grid grid-cols-2 gap-1.5">
           <NumberField
-            label="Element opacity"
+            label={t('inspector.elementOpacity')}
             max={100}
             prefix={<DropletIcon size="rail" />}
             value={info.opacity === null ? null : Math.round(info.opacity * 100)}
@@ -630,7 +726,7 @@ function DesignTab({
             onCommit={(v) => apply({ opacity: String(Math.min(100, Math.max(0, v)) / 100) })}
           />
           <NumberField
-            label="Corner radius"
+            label={t('inspector.cornerRadius')}
             prefix={<RadiusIcon size="rail" />}
             value={info.borderRadius}
             unit="px"
@@ -638,20 +734,29 @@ function DesignTab({
           />
         </div>
         <label className="mt-2 flex h-5 cursor-pointer items-center justify-between text-[11.5px] text-ink-soft">
-          Clip content
+          {t('inspector.clipContent')}
           <Switch
             size="sm"
-            aria-label="Clip content"
+            aria-label={t('inspector.clipContent')}
             className="data-[state=checked]:bg-ink"
             checked={info.clipsContent}
             onCheckedChange={(on) => apply({ overflow: on ? 'hidden' : 'visible' })}
           />
         </label>
       </PropertySection>
-      <PropertySection title="Fill">
+      <PropertySection title={t('inspector.sectionFill')}>
+        {info.image && (
+          <ImageFill
+            key={`${frame.id}:${selector}`}
+            frame={frame}
+            selector={selector}
+            image={info.image}
+            apply={apply}
+          />
+        )}
         <div className="grid grid-cols-[minmax(0,1fr)_64px] gap-1.5">
           <ColorField
-            label="Fill color"
+            label={t('inspector.fillColor')}
             value={fillAlpha === 0 && fill === '#000000' ? null : fill}
             onCommit={(v) =>
               apply({
@@ -662,7 +767,7 @@ function DesignTab({
             }
           />
           <NumberField
-            label="Fill opacity"
+            label={t('inspector.fillOpacity')}
             max={100}
             value={Math.round(fillAlpha * 100)}
             unit="%"
@@ -670,17 +775,17 @@ function DesignTab({
           />
         </div>
       </PropertySection>
-      <PropertySection title="Stroke">
+      <PropertySection title={t('inspector.sectionStroke')}>
         <div className="grid grid-cols-[minmax(0,1fr)_64px] gap-1.5">
           <ColorField
-            label="Border color"
+            label={t('inspector.borderColor')}
             value={borderColor}
             onCommit={(v) =>
               apply({ 'border-color': v, ...(v && info.borderStyle === 'none' ? { 'border-style': 'solid' } : {}) })
             }
           />
           <NumberField
-            label="Border width"
+            label={t('inspector.borderWidth')}
             value={border.width}
             unit="px"
             onCommit={(v) =>
@@ -691,28 +796,40 @@ function DesignTab({
             }
           />
         </div>
-        {border.sides && <p className="mt-1 text-[10.5px] text-ink-faint">Sides: {border.sides}</p>}
+        {border.sides && (
+          <p className="mt-1 text-[10.5px] text-ink-faint">
+            {t('inspector.sides', {
+              sides: border.sides
+                .split(' ')
+                .map((side) => {
+                  const key = BORDER_SIDES[side]
+                  return key ? t(key) : side
+                })
+                .join(' '),
+            })}
+          </p>
+        )}
       </PropertySection>
       {info.hasText && (
-        <PropertySection title="Text">
-          <PropertyRow label="Font">
+        <PropertySection title={t('inspector.sectionText')}>
+          <PropertyRow label={t('inspector.rowFont')}>
             <SelectField
-              label="Font family"
+              label={t('inspector.fontFamily')}
               value={info.fontFamily}
               options={fontOptions(info)}
               onChange={(v) => apply({ 'font-family': v })}
             />
           </PropertyRow>
-          <PropertyRow label="Size">
+          <PropertyRow label={t('inspector.rowSize')}>
             <NumberField
-              label="Font size"
+              label={t('inspector.fontSize')}
               value={info.fontSize}
               unit="px"
               onCommit={(v) => apply({ 'font-size': `${v}px` })}
             />
             <SelectField
               className="flex-[0_0_66px]"
-              label="Font weight"
+              label={t('inspector.fontWeight')}
               value={info.fontWeight}
               options={[...new Set([...WEIGHTS, info.fontWeight])]
                 .sort((a, b) => Number(a) - Number(b))
@@ -720,12 +837,12 @@ function DesignTab({
               onChange={(v) => apply({ 'font-weight': v })}
             />
           </PropertyRow>
-          <PropertyRow label="Color">
+          <PropertyRow label={t('inspector.rowColor')}>
             <ColorField value={rgbToHex(info.color)} onCommit={(v) => apply({ color: v })} />
           </PropertyRow>
-          <PropertyRow label="Align">
+          <PropertyRow label={t('inspector.rowAlign')}>
             <Segmented
-              aria-label="Text alignment"
+              aria-label={t('inspector.textAlignment')}
               className="w-full gap-1 rounded-none bg-transparent p-0"
               value={textAlign}
               onValueChange={(v) => apply({ 'text-align': v })}
@@ -734,8 +851,8 @@ function DesignTab({
                 <SegmentedItem
                   key={value}
                   value={value}
-                  aria-label={label}
-                  title={label}
+                  aria-label={t(label)}
+                  title={t(label)}
                   className="grid h-[26px] min-h-0 flex-1 place-items-center rounded-[7px] bg-sub p-0 hover:bg-paper-deep sm:flex-1"
                 >
                   <Icon size="rail" />
