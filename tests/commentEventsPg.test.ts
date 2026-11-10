@@ -25,7 +25,7 @@ const FRAME: Frame = {
   id: 'pg-frame',
   canvasId: CANVAS.id,
   name: 'Hero',
-  html: '<h1>Hi</h1>',
+  html: '<h1 data-doop-id="abc123">Hi</h1>',
   x: 0,
   y: 0,
   width: 640,
@@ -80,7 +80,12 @@ describe.skipIf(!PG_URL)('comment events on PostgreSQL', () => {
   })
 
   const post = (text: string, from = 'alice') =>
-    actions.addElementComment(FRAME.id, { selector: 'h1', snippet: '<h1>Hi</h1>', text }, from, 'user-1')
+    actions.addElementComment(
+      FRAME.id,
+      { selector: 'h1', elementId: 'abc123', snippet: '<h1>Hi</h1>', text },
+      from,
+      'user-1',
+    )
 
   async function connect() {
     const server = buildMcpServer('Owner', CANVAS.ownerId)

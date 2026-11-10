@@ -1,4 +1,5 @@
 import { useStore } from './store'
+import { beginFrameSave } from './frameSaves'
 import type { LocalAgentPreference, LocalAgentJob, LocalAgentResult } from '../../shared/localAgent'
 import type { NotificationPrefs, NotificationSettings } from '../../shared/notifications'
 import type { WebhookDeliveryResult, WebhookEventType, WebhookInfo } from '../../shared/webhooks'
@@ -9,6 +10,7 @@ import type {
   CardScope,
   CommunityCategory,
   CommunityItem,
+  ElementComment,
   Frame,
   FrameVersion,
   FrameVersionInfo,
@@ -18,8 +20,10 @@ import type {
   WorkspaceRole,
   WorkspaceSummary,
 } from '../../shared/types'
-import type { Automation, AutomationRun, Schedule, Step } from '../../shared/automations'
+import type { Automation, AutomationRun, AutomationTrigger, Schedule, Step } from '../../shared/automations'
 import type { BillingInterval, Plan } from '../../shared/billing'
+import type { LinkAccess } from '../../shared/canvasRole'
+import type { CommentAnchorInput } from '../../shared/comments'
 import type { BridgeInfo } from '../../shared/bridge'
 
 export type HomeActivity = ActivityItem & { canvasId: string; canvasName: string }
@@ -156,6 +160,16 @@ export interface AgentModelOption {
   blurb: string
   /** false = the model cannot see screenshots; runs skip visual review */
   vision?: boolean
+  /** true on a curated entry the provider's live catalog confirmed */
+  recommended?: boolean
+}
+
+/** The connected provider's live model list, or the curated menu when the
+ *  provider could not be asked (`live: false`, with the reason in `error`). */
+export interface AgentModelCatalog {
+  models: AgentModelOption[]
+  live: boolean
+  error?: string
 }
 
 export interface ModelAccountStatus {
@@ -165,6 +179,8 @@ export interface ModelAccountStatus {
   plan?: string
   /** the model tier this account runs on right now */
   model?: string
+  /** the reasoning effort in effect; only the OpenAI kinds have one */
+  effort?: string
   connectedAt?: number
   /** false when the server has switched the ChatGPT flow off */
   chatgptEnabled?: boolean
@@ -190,6 +206,7 @@ export interface AutomationInput {
   enabled?: boolean
   schedule?: Schedule
   steps?: Step[]
+  trigger?: AutomationTrigger
 }
 
 /** The Integrations page: per-provider connection state. A provider the
@@ -303,7 +320,7 @@ export const api = {
   renameCanvas: (id: string, name: string) =>
     req('/api/canvases/' + id, { method: 'PATCH', body: JSON.stringify({ name, actor: actor() }) }),
   /* owner-only: what the share link grants people who aren't invited */
-  setLinkAccess: (id: string, linkAccess: 'edit' | 'none') =>
+  setLinkAccess: (id: string, linkAccess: LinkAccess) =>
     req('/api/canvases/' + id, { method: 'PATCH', body: JSON.stringify({ linkAccess }) }),
   /* community gallery: owner-only listing, open browsing and copying */
   publishCanvas: (id: string, listing: { description: string; category: CommunityCategory }) =>
@@ -396,6 +413,18 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ pages, expectedPages }),
     }),
+  setFlowStart: (canvasId: string, pageId: string, frameId: string | null) =>
+    req<import('../../shared/types').CanvasPageInfo[]>(
+      `/api/canvases/${canvasId}/pages/${encodeURIComponent(pageId)}/flow-start`,
+      { method: 'PUT', body: JSON.stringify({ frameId }) },
+    ),
+  putGuide: (canvasId: string, guide: import('../../shared/types').CanvasGuide) =>
+    req<import('../../shared/types').CanvasGuide>(`/api/canvases/${canvasId}/guides/${guide.id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ pageId: guide.pageId, axis: guide.axis, at: guide.at }),
+    }),
+  deleteGuide: (canvasId: string, guideId: string) =>
+    req<{ ok: true }>(`/api/canvases/${canvasId}/guides/${guideId}`, { method: 'DELETE' }),
   duplicatePage: (canvasId: string, pageId: string) =>
     req<{
       page: import('../../shared/types').CanvasPageInfo
@@ -412,13 +441,24 @@ export const api = {
         actor: actor(),
       }),
     }),
-  updateFrame: (frameId: string, patch: Partial<Frame>, expectedUpdatedAt?: number) =>
-    req<Frame>('/api/frames/' + frameId, {
-      method: 'PATCH',
-      body: JSON.stringify({ ...patch, expectedUpdatedAt, actor: actor() }),
-    }),
+  updateFrame: async (frameId: string, patch: Partial<Frame>, expectedUpdatedAt?: number) => {
+    const finish = ['html', 'width', 'height'].some((key) => key in patch) ? beginFrameSave(frameId) : () => {}
+    try {
+      return await req<Frame>('/api/frames/' + frameId, {
+        method: 'PATCH',
+        body: JSON.stringify({ ...patch, expectedUpdatedAt, actor: actor() }),
+      })
+    } finally {
+      finish()
+    }
+  },
   deleteFrame: (frameId: string, expectedUpdatedAt?: number) =>
     req('/api/frames/' + frameId, { method: 'DELETE', body: JSON.stringify({ expectedUpdatedAt, actor: actor() }) }),
+  setFrameApproval: (frameId: string, status: 'ready_for_dev' | 'draft', expectedUpdatedAt: number) =>
+    req<Frame>(`/api/frames/${frameId}/approval`, {
+      method: 'PUT',
+      body: JSON.stringify({ status, expectedUpdatedAt }),
+    }),
   /* design history: the states earlier edits replaced, newest first (no HTML) */
   frameVersions: (frameId: string) => req<FrameVersionInfo[]>(`/api/frames/${frameId}/versions`),
   frameVersion: (frameId: string, versionId: string) =>
@@ -448,6 +488,7 @@ export const api = {
     }),
   agentAllowance: () => req<Allowance>('/api/agent-allowance'),
   modelAccount: () => req<ModelAccountStatus>('/api/model-account'),
+  agentModels: () => req<AgentModelCatalog>('/api/model-account/models'),
   chatgptAuthorize: () =>
     req<{ url: string; state: string; catching: boolean }>('/api/model-account/chatgpt/authorize', { method: 'POST' }),
   startDeviceAuth: () => req<DeviceFlow>('/api/model-account/chatgpt/device', { method: 'POST' }),
@@ -466,6 +507,8 @@ export const api = {
   disconnectModelAccount: () => req<ModelAccountStatus>('/api/model-account', { method: 'DELETE' }),
   setAgentModel: (model: string) =>
     req<ModelAccountStatus>('/api/model-account', { method: 'PATCH', body: JSON.stringify({ model }) }),
+  setAgentEffort: (effort: string) =>
+    req<ModelAccountStatus>('/api/model-account', { method: 'PATCH', body: JSON.stringify({ effort }) }),
   imageModels: () => req<{ models: ImageModelStatus[] }>('/api/image-model'),
   setImageModel: (model: string) =>
     req<{ models: ImageModelStatus[] }>('/api/image-model', { method: 'PUT', body: JSON.stringify({ model }) }),
@@ -478,8 +521,21 @@ export const api = {
     req(`/api/canvases/${canvasId}/cards/${cardId}/done`, { method: 'POST' }),
   retryCard: (canvasId: string, cardId: string) =>
     req(`/api/canvases/${canvasId}/cards/${cardId}/retry`, { method: 'POST' }),
-  addComment: (frameId: string, input: { selector: string; snippet: string; text: string }) =>
-    req(`/api/frames/${frameId}/comments`, { method: 'POST', body: JSON.stringify(input) }),
+  stopCard: (canvasId: string, cardId: string) =>
+    req(`/api/canvases/${canvasId}/cards/${cardId}/stop`, { method: 'POST' }),
+  /** x/y: where a comment on the frame as a whole was left, in design px */
+  /** a comment on an element (its positional selector, which the server turns into a stamped
+   *  data-doop-id, or the id it already carries) or, with neither, on the frame at the point */
+  addComment: (
+    frameId: string,
+    input: { selector?: string; elementId?: string; snippet: string; text: string; x: number; y: number },
+  ) => req<ElementComment>(`/api/frames/${frameId}/comments`, { method: 'POST', body: JSON.stringify(input) }),
+  /** the stable id of the element a positional selector names, stamped into the frame if needed */
+  ensureElementId: (frameId: string, selector: string, snippet?: string) =>
+    req<{ elementId: string }>(`/api/frames/${frameId}/element-id`, {
+      method: 'POST',
+      body: JSON.stringify({ selector, ...(snippet ? { snippet } : {}) }),
+    }),
   /** a comment pinned to a point on the canvas (world coordinates on a page) rather than to an element */
   addCanvasComment: (canvasId: string, input: { pageId: string; x: number; y: number; text: string }) =>
     req(`/api/canvases/${canvasId}/comments`, { method: 'POST', body: JSON.stringify(input) }),
@@ -491,6 +547,9 @@ export const api = {
   replyComment: (commentId: string, text: string) =>
     req(`/api/comments/${commentId}/replies`, { method: 'POST', body: JSON.stringify({ text }) }),
   resolveComment: (commentId: string) => req(`/api/comments/${commentId}/resolve`, { method: 'POST' }),
+  /** re-pin a thread (its root or any reply names it) where its pin was dropped */
+  moveComment: (commentId: string, anchor: CommentAnchorInput) =>
+    req<ElementComment>(`/api/comments/${commentId}/anchor`, { method: 'PATCH', body: JSON.stringify(anchor) }),
   retryComment: (commentId: string) => req(`/api/comments/${commentId}/retry`, { method: 'POST' }),
   retryTaskFeedback: (feedbackId: string) => req(`/api/feedback/${feedbackId}/retry`, { method: 'POST' }),
   /* automations: scheduled pulls and agent tasks */
@@ -538,12 +597,12 @@ export const api = {
     }),
   /* integrations: per-user connections to outside services */
   integrations: () => req<IntegrationsStatus>('/api/integrations'),
-  startMetaConnect: () => req<{ url: string }>('/api/integrations/meta/start', { method: 'POST' }),
+  automationLinearTeams: () => req<{ id: string; name: string; key: string }[]>('/api/integrations/linear/teams'),
   disconnectMeta: () => req<IntegrationsStatus>('/api/integrations/meta', { method: 'DELETE' }),
 }
 
 export interface AdminCanvas extends CanvasMeta {
-  linkAccess: 'edit' | 'none'
+  linkAccess: LinkAccess
   memberCount: number
   owner?: { id: string; name: string; email: string }
 }

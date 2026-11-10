@@ -1,16 +1,29 @@
 import * as React from 'react'
 
 import { cn } from '@/lib/utils'
+import { Tooltip } from './tooltip'
 
 /* The floating island of quiet controls over the canvas — the tool rail, the
    zoom pill. Its buttons grow to a 40px touch target on phones — small
    enough to read as a toolbar, big enough to hit. */
-function Toolbar({ className, ...props }: React.ComponentProps<'div'>) {
+function Toolbar({
+  orientation = 'horizontal',
+  className,
+  ...props
+}: React.ComponentProps<'div'> & {
+  /** vertical: the 40px column the canvas editor pins to its sides */
+  orientation?: 'horizontal' | 'vertical'
+}) {
   return (
     <div
       data-slot="toolbar"
       role="toolbar"
-      className={cn('relative flex items-center gap-0.5 rounded-[12px] bg-surface p-[5px] shadow-float', className)}
+      aria-orientation={orientation}
+      className={cn(
+        'relative flex items-center gap-0.5 rounded-[12px] bg-surface p-[5px] shadow-float',
+        orientation === 'vertical' && 'w-10 flex-col',
+        className,
+      )}
       {...props}
     />
   )
@@ -35,6 +48,39 @@ const ToolbarButton = React.forwardRef<HTMLButtonElement, React.ComponentProps<'
     />
   )
 })
+
+/** An icon-only toolbar button named by its tooltip: `label` is both the
+ *  tooltip and the accessible name. Children may include a `ToolbarDot`. */
+function ToolbarControl({
+  label,
+  side = 'left',
+  className,
+  ...props
+}: Omit<React.ComponentProps<typeof ToolbarButton>, 'aria-label'> & {
+  label: string
+  side?: 'left' | 'right' | 'top' | 'bottom'
+}) {
+  return (
+    <Tooltip label={label} side={side}>
+      {/* a disabled button swallows pointer events — the span keeps the tooltip */}
+      <span className="inline-flex">
+        {/* relative: the corner for a ToolbarDot */}
+        <ToolbarButton aria-label={label} className={cn('relative', className)} {...props} />
+      </span>
+    </Tooltip>
+  )
+}
+
+/** The small live dot on a toolbar button's corner: an agent at work, a
+ *  message waiting, a failed run. The colour comes in through `className`. */
+function ToolbarDot({ className }: { className: string }) {
+  return (
+    <span
+      data-slot="toolbar-dot"
+      className={cn('absolute -top-px -right-px size-2 rounded-full border-[1.5px] border-surface', className)}
+    />
+  )
+}
 
 /** The fill behind the pressed button, as one element that slides and
  *  resizes to the next press instead of each button lighting up on its own.
@@ -92,19 +138,4 @@ function ToolbarDivider({ className, ...props }: React.ComponentProps<'div'>) {
   return <div data-slot="toolbar-divider" className={cn('mx-0.5 h-[18px] w-px bg-line-soft', className)} {...props} />
 }
 
-/** A read-only readout between controls (the zoom percentage). */
-const ToolbarValue = React.forwardRef<HTMLSpanElement, React.ComponentProps<'span'>>(function ToolbarValue(
-  { className, ...props },
-  ref,
-) {
-  return (
-    <span
-      ref={ref}
-      data-slot="toolbar-value"
-      className={cn('min-w-[44px] px-1 text-center font-mono text-[12px] text-ink sm:min-w-[48px]', className)}
-      {...props}
-    />
-  )
-})
-
-export { Toolbar, ToolbarButton, ToolbarDivider, ToolbarHighlight, ToolbarValue }
+export { Toolbar, ToolbarButton, ToolbarControl, ToolbarDivider, ToolbarDot, ToolbarHighlight }

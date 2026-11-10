@@ -26,13 +26,17 @@
             cursors: { peer: cursor },
           }),
         page: (id) => useStore.getState().setActivePage(id),
+        selectFrames: (ids) => useStore.getState().selectMany(ids),
         state: () => ({
           frames: useStore.getState().canvas?.frames,
           tool: useStore.getState().tool,
+          selectedIds: useStore.getState().selectedIds,
           selectedElement: useStore.getState().selectedElement,
         }),
         undo,
         redo,
+        /* a Layers row pick */
+        pick: (el) => useStore.getState().pickElement(el),
       }
       createRoot(document.getElementById('root')).render(
         React.createElement(

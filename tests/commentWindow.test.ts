@@ -9,7 +9,6 @@ const canvas = { id: 'c1', pages: [{ id: 'p1', name: 'Page 1' }], frames: [] }
 const comment = (id: string, at: number, parentId?: string): ElementComment => ({
   id,
   canvasId: 'c1',
-  selector: '',
   snippet: '',
   pageId: 'p1',
   x: 0,

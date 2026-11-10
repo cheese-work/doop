@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import type { AgentTask } from '../../shared/types'
-import { useStore } from '../lib/store'
+import { canEditOpenCanvas, useStore } from '../lib/store'
 import { api } from '../lib/api'
 import { timeAgo } from '../lib/time'
 import { cn } from '@/lib/utils'
@@ -8,6 +8,8 @@ import { AgentIcon } from './AgentIcon'
 import { MemoryPanel } from './MemoryPanel'
 import {
   Panel,
+  type PanelResize,
+  type PanelSurface,
   PanelBody,
   PanelClose,
   PanelHeader,
@@ -26,6 +28,7 @@ import { BridgeChat } from './BridgeChat'
 import { PromptBar } from './PromptBar'
 import { taskFrameId } from '../lib/taskFrame'
 import { useOpenThreadCount } from '../lib/comments'
+import { useT } from '@/lib/i18n'
 
 const emptyNote = 'px-4 py-6 text-center text-[12px] text-ink-faint'
 
@@ -55,47 +58,57 @@ export function ActivityPanel({
   surface = 'floating',
   className,
   style,
+  resize,
 }: {
   canvasId: string
   onClose: () => void
   /* 'inline' when the panel is filling a mobile Sheet rather than floating */
-  surface?: 'floating' | 'inline'
+  surface?: PanelSurface
   className?: string
   /** carries `right` while floating — the panel always hugs the right edge */
   style?: CSSProperties
+  resize?: PanelResize
 }) {
   const tab = useStore((s) => s.panelTab)
   const setTab = useStore((s) => s.setPanelTab)
+  const canEdit = useStore(canEditOpenCanvas)
   const [, tick] = useState(0)
   const openThreads = useOpenThreadCount()
   const working = useStore((s) => s.tasks.filter((t) => t.agentName && !t.endedAt && !t.failedAt).length)
+  const t = useT()
 
   /* refresh relative timestamps and running durations */
   useEffect(() => {
-    const t = window.setInterval(() => tick((n) => n + 1), 5000)
-    return () => window.clearInterval(t)
+    const timer = window.setInterval(() => tick((n) => n + 1), 5000)
+    return () => window.clearInterval(timer)
   }, [])
 
   return (
     <Panel
       surface={surface}
+      resize={resize}
       className={cn(
         surface === 'floating' && 'top-2.5 bottom-3.5 w-[280px] transition-[right] duration-150',
+        surface === 'docked' && 'w-[280px] border-l',
         className,
       )}
       style={style}
     >
       <PanelTabsRoot value={tab} onValueChange={(next) => setTab(next as typeof tab)}>
         <PanelHeader className="pl-2">
-          <PanelTabs aria-label="Agents panel">
-            <PanelIconTab value="tasks" icon={<SparkIcon />} title="Agents">
-              Agents
+          <PanelTabs aria-label={t('panels.activityPanelAria')}>
+            <PanelIconTab value="tasks" icon={<SparkIcon />} title={t('panels.activityAgents')}>
+              {t('panels.activityAgents')}
               {working > 0 && <em className="ml-[7px] text-[11px] font-normal not-italic text-ink-faint">{working}</em>}
             </PanelIconTab>
             <PanelIconTab
               value="comments"
               icon={<CommentIcon />}
-              title={openThreads ? `Comments · ${openThreads} open` : 'Comments — every thread pinned on this page'}
+              title={
+                openThreads
+                  ? t('panels.activityCommentsOpen', { count: openThreads })
+                  : t('panels.activityCommentsTitle')
+              }
               /* open threads on this page: a count on the tab itself */
               badge={
                 openThreads > 0 && (
@@ -105,20 +118,16 @@ export function ActivityPanel({
                 )
               }
             >
-              Comments
+              {t('panels.activityComments')}
             </PanelIconTab>
-            <PanelIconTab value="activity" icon={<PulseIcon />} title="Activity">
-              Activity
+            <PanelIconTab value="activity" icon={<PulseIcon />} title={t('panels.activityActivity')}>
+              {t('panels.activityActivity')}
             </PanelIconTab>
-            <PanelIconTab
-              value="memory"
-              icon={<BookOpenIcon />}
-              title="Design memory — references, rules and decisions every agent on this canvas designs with"
-            >
-              Memory
+            <PanelIconTab value="memory" icon={<BookOpenIcon />} title={t('panels.activityMemoryTitle')}>
+              {t('panels.activityMemory')}
             </PanelIconTab>
           </PanelTabs>
-          <PanelClose label="Close panel" onClick={onClose} />
+          <PanelClose label={t('panels.activityClosePanel')} onClick={onClose} />
         </PanelHeader>
         {/* the Agents tab is a column: what the agents are doing scrolls above,
             the prompt composer is docked underneath */}
@@ -127,7 +136,8 @@ export function ActivityPanel({
             <RecentTasks />
             <BridgeChat canvasId={canvasId} />
           </div>
-          <PromptBar canvasId={canvasId} />
+          {/* the composer briefs agents to change frames: editors only */}
+          {canEdit && <PromptBar canvasId={canvasId} />}
         </PanelTabPanel>
         <PanelTabPanel value="comments" className={tabEnter}>
           <CommentsPanel />
@@ -152,25 +162,26 @@ const RECENT_SHOWN = 3
 function RecentTasks() {
   const tasks = useStore((s) => s.tasks)
   const [all, setAll] = useState(false)
-  /* unclaimed board cards have no agent yet — they belong to the Board */
+  /* unclaimed board cards have no agent yet, so they are not activity */
   const claimed = useMemo(() => tasks.filter((t) => t.agentName), [tasks])
   const working = useMemo(() => claimed.filter((t) => !t.endedAt && !t.failedAt), [claimed])
   const finished = useMemo(() => claimed.filter((t) => t.endedAt || t.failedAt), [claimed])
+  const t = useT()
 
   return (
-    <section aria-label="Recent tasks" className="flex flex-none flex-col pt-1.5 pb-1">
-      <h3 className="flex h-7 flex-none items-center px-3 text-[11.5px] font-normal text-ink-faint">Recent tasks</h3>
+    <section aria-label={t('panels.activityRecentTasks')} className="flex flex-none flex-col pt-1.5 pb-1">
+      <h3 className="flex h-7 flex-none items-center px-3 text-[11.5px] font-normal text-ink-faint">
+        {t('panels.activityRecentTasks')}
+      </h3>
       {claimed.length === 0 ? (
-        <p className="px-3 pb-2 text-[12px] leading-[1.45] text-ink-faint">
-          No tasks yet. Ask the Doop Agent below, or connect your own — what agents work on shows up here.
-        </p>
+        <p className="px-3 pb-2 text-[12px] leading-[1.45] text-ink-faint">{t('panels.activityNoTasks')}</p>
       ) : all ? (
         <>
-          {working.length > 0 && <TaskGroup label="Working on" tasks={working} />}
-          {finished.length > 0 && <TaskGroup label="Worked on" tasks={finished} />}
+          {working.length > 0 && <TaskGroup label={t('panels.activityWorkingOn')} tasks={working} />}
+          {finished.length > 0 && <TaskGroup label={t('panels.activityWorkedOn')} tasks={finished} />}
         </>
       ) : (
-        claimed.slice(0, RECENT_SHOWN).map((t) => <RecentTaskRow key={t.id} task={t} />)
+        claimed.slice(0, RECENT_SHOWN).map((task) => <RecentTaskRow key={task.id} task={task} />)
       )}
       {claimed.length > RECENT_SHOWN && (
         <Button
@@ -179,7 +190,7 @@ function RecentTasks() {
           aria-expanded={all}
           onClick={() => setAll((v) => !v)}
         >
-          {all ? 'Show less' : 'Show all'}
+          {all ? t('panels.activityShowLess') : t('panels.activityShowAll')}
           <ChevronDownIcon className={cn('size-3 text-ink-faint transition-transform', all && 'rotate-180')} />
         </Button>
       )}
@@ -208,19 +219,30 @@ function taskTime(task: AgentTask): string {
 }
 
 /** One task: who, for whom, one time figure; then its mark and what it is doing.
- *  Clicking it flies the camera to where the agent is (or was) working. */
+ *  Clicking it selects the frame where the agent is (or was) working and flies
+ *  the camera there, so the click shows even when the frame is already in view. */
 function RecentTaskRow({ task }: { task: AgentTask }) {
   const canvasId = useStore((s) => s.canvas?.id)
+  const canEdit = useStore(canEditOpenCanvas)
   const frameId = useStore((s) => taskFrameId(task, s))
   const frameName = useStore((s) => s.canvas?.frames.find((f) => f.id === frameId)?.name)
   const goToFrame = () => {
-    if (frameId) useStore.getState().requestFlyTo(frameId)
+    if (!frameId) return
+    const s = useStore.getState()
+    s.select(frameId)
+    s.requestFlyTo(frameId)
   }
+  const t = useT()
+  const running = !task.endedAt && !task.failedAt
+  const failed = !!task.failedAt
+  const reason = task.failureReason ?? t('panels.activityTaskUnfinished')
+  /* a job's status already is its reason; a card's status is its brief */
+  const separateReason = failed && reason !== task.status
   return (
     <div
       role={frameId ? 'button' : undefined}
       tabIndex={frameId ? 0 : undefined}
-      title={frameName ? `Go to “${frameName}”` : undefined}
+      title={frameName ? t('panels.activityGoTo', { name: frameName }) : undefined}
       onClick={goToFrame}
       onKeyDown={(e) => {
         if (e.target !== e.currentTarget) return
@@ -239,37 +261,58 @@ function RecentTaskRow({ task }: { task: AgentTask }) {
           <AgentIcon name={task.agentName} size={14} />
         </span>
         <b className="truncate font-medium text-ink">{task.agentName}</b>
-        {task.owner && <em className="truncate not-italic text-ink-faint">for {task.owner}</em>}
+        {task.owner && (
+          <em className="truncate not-italic text-ink-faint">{t('panels.activityFor', { name: task.owner })}</em>
+        )}
       </span>
       <span className="text-[11px] text-ink-faint tabular-nums">{taskTime(task)}</span>
       <span className="col-span-2 flex min-w-0 items-center gap-[7px] pl-[22px] text-ink-soft">
         <TaskMark task={task} />
-        {/* one line, with the whole text on hover; a failure wraps, since
-            its reason is the point */}
+        {/* one line, with the whole text on hover: a card's status is its
+            whole brief, which must never crowd out why it failed */}
         <span
           title={task.status}
-          className={cn(
-            'min-w-0',
-            task.failedAt ? 'whitespace-normal break-words text-accent-ink' : 'truncate',
-            task.auto && 'italic',
-          )}
+          className={cn('min-w-0 truncate', failed && !separateReason && 'text-accent-ink', task.auto && 'italic')}
         >
           {task.status}
         </span>
-        {task.failedAt && task.queuedBy && canvasId && (
+        {running && task.queuedBy && canvasId && canEdit && (
           <Button
-            variant="danger-solid"
+            variant="ghost"
             size="pill"
-            className="ml-auto"
+            className="ml-auto flex-none"
+            title={t('panels.activityStopTitle')}
             onClick={(e) => {
               e.stopPropagation()
-              api.retryCard(canvasId, task.id).catch(reportLimit)
+              api.stopCard(canvasId, task.id).catch(console.error)
             }}
           >
-            Retry
+            {t('panels.activityStop')}
           </Button>
         )}
       </span>
+      {failed && (
+        <span className="col-span-2 flex min-w-0 items-start gap-2 pl-[22px]">
+          {separateReason && (
+            <span title={reason} className="line-clamp-3 min-w-0 break-words text-accent-ink">
+              {reason}
+            </span>
+          )}
+          {task.queuedBy && canvasId && canEdit && (
+            <Button
+              variant="danger-solid"
+              size="pill"
+              className="ml-auto flex-none"
+              onClick={(e) => {
+                e.stopPropagation()
+                api.retryCard(canvasId, task.id).catch(reportLimit)
+              }}
+            >
+              {t('panels.activityRetry')}
+            </Button>
+          )}
+        </span>
+      )}
     </div>
   )
 }
@@ -279,8 +322,10 @@ function RecentTaskRow({ task }: { task: AgentTask }) {
 function TaskMark({ task }: { task: AgentTask }) {
   if (task.failedAt)
     return (
-      <span className="grid size-3 flex-none place-items-center rounded-full bg-accent-ink text-[8px] font-bold text-white">
-        !
+      <span className="flex size-3 flex-none flex-col items-center justify-center gap-[1px] rounded-full bg-accent-ink">
+        {/* drawn, not typed: a text "!" sits on the font's baseline, off centre */}
+        <span className="h-[4px] w-[1.5px] rounded-full bg-white" />
+        <span className="size-[1.5px] rounded-full bg-white" />
       </span>
     )
   if (task.endedAt)
@@ -294,9 +339,10 @@ function TaskMark({ task }: { task: AgentTask }) {
 
 function ActivityList() {
   const activity = useStore((s) => s.activity)
+  const t = useT()
   return (
     <PanelBody className="py-2">
-      {activity.length === 0 && <div className={emptyNote}>No activity yet. Add a frame, or connect an agent.</div>}
+      {activity.length === 0 && <div className={emptyNote}>{t('panels.activityEmpty')}</div>}
       {activity.map((a) => (
         <div key={a.id} className="flex animate-[chip-in_0.25s_ease] gap-2.5 px-3.5 py-2 text-[12px] leading-[1.45]">
           <Dot className="mt-[5px]" style={{ background: a.actorColor }} />

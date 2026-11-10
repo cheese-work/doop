@@ -31,7 +31,7 @@ function bridge(status: BridgeStatus, over: Partial<BridgeInfo> = {}): BridgeInf
 }
 
 function comment(over: Partial<ElementComment> & Pick<ElementComment, 'id' | 'text' | 'at'>): ElementComment {
-  return { canvasId: 'c', selector: '', snippet: '', pageId: 'p', x: 0, y: 0, from: 'Ada', ...over }
+  return { canvasId: 'c', snippet: '', pageId: 'p', x: 0, y: 0, from: 'Ada', ...over }
 }
 
 /* the watcher's own reply when the canvas has no linked issue (intake.py / bridge.py answer_unlinked) */

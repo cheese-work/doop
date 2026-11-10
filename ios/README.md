@@ -11,10 +11,15 @@ HTML/CSS engine (Stylo + Taffy + Parley), compiled into the app as a static libr
   Sign in with Apple (whichever the server advertises on `/api/oidc-config`), canvas library, search,
   workspace filtering, canvas creation/rename/duplicate/delete, navigation,
   account/server settings, frame list and properties, HTML editing, frame and
-  element comments, agent tasks, sharing, and HTML export.
+  element comments, agent tasks, sharing, and PNG/HTML export.
 - **Swift networking**: `DoopClient` talks to the existing REST API using session
   cookies. `CanvasModel` owns the canvas state and its authenticated WebSocket room,
   including reconnection, frame updates, agent tasks, comments and presence.
+  The page picker keeps each page's frames, comments, and collaborator cursors
+  separate. New frames are placed on the selected page; Undo reveals the page of
+  the frame it restores or edits. Reconnecting preserves the current page, and
+  deleting that page falls back to the first remaining page. Legacy canvases
+  without page metadata still open as Page 1.
   The initial WebSocket message supplies the canvas without a second REST download.
   Messages may be up to 64 MiB; larger messages and invalid payloads report a specific
   error instead of retrying forever. Backgrounding cancels the current connection,
@@ -48,6 +53,25 @@ HTML/CSS engine (Stylo + Taffy + Parley), compiled into the app as a static libr
   controls what it links; its `svg` feature must stay on, or neither inline `<svg>`
   elements nor SVG images (`<img src="….svg">`, backgrounds) are painted at all.
   SVG images are parsed by usvg, which accepts `em`-sized roots such as iconify's.
+  An inline `<svg>` reaches usvg as standalone markup, so the forked `blitz-dom`
+  writes the cascade into it: computed fill/stroke (with their widths, caps, dashes
+  and opacities) and `opacity` replace the authored attributes, so class rules,
+  `var()` and `currentColor` apply. `<use>` references are expanded into clones that
+  inherit from the `<use>` site (icon sprites, per-tile colours), and gradients or
+  filters defined in another `<svg>` are copied in. Inline SVG with filters or masks
+  is rasterized by resvg, since anyrender_svg drops both. `tests/svg_inline.rs`
+  covers each case. SVG text gets the page's `@font-face` fonts: each document keeps a
+  usvg font database with them under their CSS family names (only subsets whose
+  `unicode-range` covers Latin, since usvg picks one face per family), and the computed
+  font and `letter-spacing` are written into the markup like the paint.
+- **Fonts and inputs**: variable fonts take their weight through the forked
+  `anyrender_skia`, which maps parley's normalized coordinates back to design space
+  through the font's `avar` table (upstream interpolated below-default weights from the
+  wrong end, so Fraunces 300 drew heavy and 700 hairline); `opsz` follows the font size
+  as browsers' `font-optical-sizing: auto` does. Empty inputs paint their `placeholder`
+  in the `::placeholder` style. `doopblitz_doc_loading` stays true while a fetched
+  resource waits to be applied, since applying a stylesheet starts its font and image
+  fetches. `tests/fonts_and_inputs.rs` covers these with macOS's own variable fonts.
 - **Device-pixel layout**: Taffy rounds every box to whole CSS pixels after layout,
   which at a paint scale above 1 puts a different number of device pixels on each
   side of a box sitting on a half pixel (a 1.5px outline, a handle centred on it),
@@ -66,13 +90,35 @@ HTML/CSS engine (Stylo + Taffy + Parley), compiled into the app as a static libr
   most two frames play at once, and when an animation ends the tile is repainted
   at the density the camera wants. Base bitmaps keep the last animation pose.
 - **Element inspection**: tapping inside any frame selects it and hit tests the
-  Blitz DOM automatically, without a separate mode. The chip shows `tag#id.class` and the element's text, the
-  outline shows its box, and Comment posts an element-anchored comment with the
-  same `tag:nth-of-type(n)` selector path the web editor and agents use.
+  Blitz DOM automatically, without a separate mode. A compact, icon-only glass action bar
+  above the prompt offers Copy, Paste, Duplicate, Delete, Comment and Export for
+  the current element or frame. Copies use the system clipboard; element markup
+  is also available as HTML/text in other apps. Paste accepts Doop copies and can
+  place a frame on another canvas/page or an element after the selected element
+  (inside the body when only a frame is selected). Saved edits participate in Undo.
+  Element edits use an isolated WebKit DOMParser with network requests blocked;
+  frame scripts never execute there, and rendering remains in Blitz. Locked
+  elements and stale selections reject edits. Comment retains the element anchor.
+  Export renders a clean PNG in Blitz (up to 2×, 4096 px per side / 8 MP), opens
+  the native share sheet for compatible installed apps, exports HTML, or copies
+  a link with the frame ID and element selector. Sharing a link does not change
+  canvas access. Buttons retain accessible labels and 44-point touch targets.
 - **Scoped prompts**: as on the web, the selection is the prompt bar's scope. A
   chip names the selected frame, or the picked element inside it, and the task is
   queued with that `scope` so the agent edits it in place; the chip's × asks about
   the whole canvas instead until something else is selected.
+- **Task composer**: a rounded glass panel puts removable context chips above
+  the prompt. The @ button opens an Agents section with Doop brand marks, plus
+  people currently on the canvas and frames. Typing a trailing `@` query filters
+  the same picker. A specialist becomes a removable assignment chip; the default
+  is Doop. People/frame references are appended to the task text with names and
+  IDs; people are not notified. Frame/element selection remains the edit scope.
+  The separate model control beside Send uses the ChatGPT mark (Claude for a
+  Claude account), reads the provider menu from `GET /api/model-account`, and
+  saves choices with `PATCH /api/model-account`, just like desktop. With no
+  connected account it reads Auto and offers a link to connect one. Model choices
+  persist across tasks; a successful send clears references and specialist
+  assignment, while failures retain the draft.
 - **Canvas paper**: the board behind the frames is the `CanvasPaper` colour set in
   `Assets.xcassets`, warm paper in light mode and a charcoal (not black) in dark
   mode so frame edges, labels and cursors stay readable.
@@ -127,33 +173,48 @@ shot -- <html> <w> <h> <scale> [out.ppm]` paints one frame the way the app does,
 `cargo run --release --example memory -- <dir> <copies> <scale>` reports resident
 memory for a board of documents.
 
-`BlitzKit/vendor/blitz-paint` is the upstream `blitz-paint` crate at the pinned commit
-with one fix, wired in through `[patch]` in `rust/Cargo.toml`: CSS filter lengths
+Blitz comes from the `doop` branch of [kgoedecke/blitz](https://github.com/kgoedecke/blitz/tree/doop):
+the upstream commit we pin, plus our rendering fixes as commits on top, each also sent
+upstream as its own PR. anyrender (the paint backends) comes the same way from the
+`doop` branch of [kgoedecke/anyrender](https://github.com/kgoedecke/anyrender/tree/doop),
+through `[patch.crates-io]`. To change the engine, commit to the fork branch and bump the
+rev in `rust/Cargo.toml`; to follow upstream, rebase the branch and drop commits that have
+landed. The fixes, in `blitz-paint` first: CSS filter lengths
 (blur radii, drop-shadow offsets) are scaled with the paint scale. Upstream applies
 them in device pixels, so a `blur(22px)` hero looked like fog zoomed out and barely
-blurred on a 3× screen. Remove the vendored copy once the fix lands upstream.
+blurred on a 3× screen.
 
-The vendored copy also adds `paint_scene_region`, a signed-offset entry point for
+The fork also adds `paint_scene_region`, a signed-offset entry point for
 painting a window of a document (the upstream offset is an unsigned shift), and fixes
 the painter's culling window to follow that offset; without it a tile only showed
 elements that happened to fall within the tile's own size measured from the frame
 origin. `cargo run --release --example tile -- <html> <w> <h> <scale> <x> <y> <rw>
 <rh> <out>` checks a tile against the same window of a full render.
 
-The vendored copy carries a second fix: an element with `opacity` or `filter` and
+It carries a second fix: an element with `opacity` or `filter` and
 `overflow: visible` had its layer clipped to its own border box, cutting off
 absolutely positioned children such as cursor labels; the clip now covers the
 element's scrollable overflow.
 
-A third engine gap is worked around in the bridge rather than vendored: Blitz rebuilds
+SVG backgrounds also honor `background-repeat`, position, size, and origin/clip
+boxes, including when painting a deep-zoom tile. Their tiles are rasterized with
+resvg so SVG filters such as `feTurbulence` render as noise instead of a solid
+rectangle. Repeating tiles use an image brush; a weak-keyed, 16 MiB cache per paint
+thread reuses them across paints without retaining documents. Individual textures
+are capped at 4 megapixels / 4096 px per side. `rust/tests/svg_background.rs`
+checks repetition, filtered noise, and full-frame versus region rendering.
+As with gradients, spaced backgrounds requiring more than 500 explicit tile
+draws are skipped to keep painting bounded; repeat/round use a single brush fill.
+
+A third engine gap is worked around in the bridge rather than in the fork: Blitz rebuilds
 its style device when the scale changes but does not recascade, and Stylo snaps border
 and outline widths to whole device pixels at cascade time. A frame first styled at a
 fitted board's tiny scale therefore kept hairlines that had snapped up to one device
 pixel (about 11 CSS px) and showed thick borders once zoomed in. `doopblitz_doc_set_viewport`
 now requests a recascade on every scale change; `rescaling_restyles_device_pixel_snapped_borders`
 in `rust/tests/abi.rs` guards it. Both engine issues are worth sending upstream. Known engine gaps on both backends: `text-shadow`, 3D transforms,
-`mix-blend-mode`, CSS counters, `writing-mode`, multi-column, form placeholders and
-`<select>`, emoji fallback, SVG styled through CSS and SVG `<pattern>` fills.
+`mix-blend-mode`, CSS counters, `writing-mode`, multi-column, `<select>`, emoji
+fallback and inline SVG `<pattern>` fills.
 
 ## Run
 

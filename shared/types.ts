@@ -1,4 +1,5 @@
 import type { BillingInterval, WorkspaceStatus } from './billing.ts'
+import type { CanvasRole, LinkAccess } from './canvasRole.ts'
 
 export interface Frame {
   id: string
@@ -24,6 +25,18 @@ export interface Frame {
    *  deleted from the stage until it is unlocked (Layers panel, Inspector,
    *  ⌘⇧L, or an agent via update_frame) */
   locked?: boolean
+  /** Human sign-off for implementation. Missing/null means draft. Design
+   * edits retain the attribution but change the status to needs_review. */
+  approval?: FrameApproval | null
+}
+
+export interface FrameApproval {
+  status: 'ready_for_dev' | 'needs_review'
+  approvedBy: string
+  approvedByUserId: string
+  approvedAt: number
+  /** The frame revision the person reviewed before approving. */
+  approvedFrameUpdatedAt: number
 }
 
 /** One entry of a frame's design history: the HTML (and size) the frame had
@@ -107,6 +120,20 @@ export interface CommunityItem {
 export interface CanvasPageInfo {
   id: string
   name: string
+  /** the frame this page's prototype flow starts on (shared/prototype.ts).
+   *  Set only through the flow-start route or MCP tool; page-list saves keep
+   *  whatever the server already has. */
+  startFrameId?: string
+}
+
+/** A ruler guide: an infinite line on one page of a canvas, in world px.
+ *  'v' is a vertical line at x = `at`, 'h' a horizontal one at y = `at`
+ *  (the same convention as the alignment snap guides). */
+export interface CanvasGuide {
+  id: string
+  pageId: string
+  axis: 'v' | 'h'
+  at: number
 }
 
 export interface Canvas {
@@ -114,9 +141,12 @@ export interface Canvas {
   name: string
   ownerId?: string
   /** what the share link grants people who are not the owner or invited:
-   *  'edit' (anyone with the link collaborates) or 'none' (private — the
-   *  default; unset means 'none'). */
-  linkAccess?: 'edit' | 'none'
+   *  'view', 'comment' or 'edit', or 'none' (private — the default; unset
+   *  means 'none'). See shared/canvasRole.ts. */
+  linkAccess?: LinkAccess
+  /** the caller's own role, set on the copy a canvas GET or a room `init`
+   *  hands one person; never stored */
+  role?: CanvasRole
   /** user ids invited to collaborate (the owner is not listed) */
   memberIds?: string[]
   /** the shared workspace this canvas belongs to — every workspace member
@@ -137,6 +167,8 @@ export interface Canvas {
   updatedAt: number
   frames: Frame[]
   pages?: CanvasPageInfo[]
+  /** ruler guides of every page, each tagged with its page */
+  guides?: CanvasGuide[]
   /** named design docs (brand rules, style recipes) every actor on the canvas follows */
   guidelines?: GuidelineDoc[]
   /** frames pinned to Memory as style exemplars — HTML snapshotted at pin time */
@@ -295,6 +327,8 @@ export interface Actor {
 
 export interface Presence {
   clientId: string
+  /** Authenticated identity for people, shared across their connections. */
+  userId?: string
   name: string
   color: string
   kind: ActorKind
@@ -410,22 +444,24 @@ export interface TaskFeedback {
   failureReason?: string
 }
 
-/** A comment pinned to a specific element inside a frame, or to a point on
- *  the canvas itself. Comments that mention @Doop are routed to the resident
- *  agent; others are notes for the humans in the room.
+/** A comment pinned to a specific element inside a frame, to a frame as a
+ *  whole, or to a point on the canvas itself. Comments that mention @Doop are
+ *  routed to the resident agent; others are notes for the humans in the room.
  *
- *  Two anchors: an element comment carries `frameId` + `selector` + `snippet`;
- *  a canvas comment carries `pageId` + `x` + `y` (world coordinates) and no
- *  `frameId`, with `selector` and `snippet` empty. `isCanvasComment` in
- *  shared/comments.ts tells them apart. */
+ *  Three anchors (`shared/comments.ts` tells them apart): an element comment
+ *  carries `frameId` + `elementId` (the element's `data-doop-id` in the frame
+ *  HTML) + `snippet`; a frame comment carries `frameId` + `x` + `y` (design
+ *  px) and no `elementId`; a canvas comment carries `pageId` + `x` + `y`
+ *  (world coordinates) and no `frameId`. An element comment whose element
+ *  could not be found again has `frameId` and `snippet` only. */
 export interface ElementComment {
   id: string
   canvasId: string
   /** the frame the element lives in; absent on a canvas comment */
   frameId?: string
-  /** CSS selector of the anchored element, resolved at comment time ('' on a canvas comment) */
-  selector: string
-  /** outerHTML excerpt of the element, for agent context and dead-anchor display ('' on a canvas comment) */
+  /** the anchored element's `data-doop-id`; absent on frame and canvas comments */
+  elementId?: string
+  /** outerHTML excerpt of the element, for agent context and dead-anchor display ('' off an element) */
   snippet: string
   /** canvas comment: the page it sits on … */
   pageId?: string
@@ -497,6 +533,8 @@ export type ServerMessage =
       /** id of the client bundle the server is serving; 'dev' outside production */
       serverBuild: string
     }
+  /** the share link changed: the receiver's role on this canvas now */
+  | { type: 'role'; role: CanvasRole }
   | { type: 'presence:join'; presence: Presence }
   | { type: 'presence:leave'; clientId: string }
   | { type: 'cursor'; clientId: string; x: number; y: number }
@@ -513,6 +551,8 @@ export type ServerMessage =
   | { type: 'frame:streaming'; frameId: string; active: boolean; actor: Actor }
   | { type: 'canvas:renamed'; name: string; actor: Actor }
   | { type: 'canvas:pages'; pages: CanvasPageInfo[]; actor: Actor }
+  /** a ruler guide was added or moved (guide set) or removed (null) */
+  | { type: 'guide'; id: string; guide: CanvasGuide | null; actor: Actor }
   /** a style-guide doc was written, moved (doc set) or deleted (doc null) */
   | { type: 'guidelines'; name: string; doc: GuidelineDoc | null; actor: Actor }
   /** a frame was pinned to (reference set) or unpinned from (null) Memory */

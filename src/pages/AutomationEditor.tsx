@@ -1,3 +1,4 @@
+import { clientIntegrations } from '../integrations'
 import { useEffect, useRef, useState } from 'react'
 import type { CanvasMeta } from '../../shared/types'
 import { AGENT_ROLES, roleById, roleName } from '../../shared/agents'
@@ -6,10 +7,11 @@ import {
   MAX_NAME,
   MAX_PROMPT,
   MAX_STEPS,
-  WEEKDAYS,
-  WEEKDAYS_SHORT,
   incompleteReason,
   type AgentStep,
+  type AutomationTrigger,
+  type SlackStep,
+  type LinearStep,
   type Automation,
   type AutomationExample,
   type AutomationRun,
@@ -22,7 +24,20 @@ import { navigate } from '../App'
 import { posthog } from '../lib/posthog'
 import { FrameThumb } from '../components/FramePreview'
 import { BarDivider, TopBar, TopBarHome, TopBarTitle, barGhostBtn, barPrimaryBtn } from '../components/TopBar'
-import { ClockTile, MetaTile, RunDot, StepChain, formatRunTime } from '../components/AutomateShell'
+import {
+  ApprovalTile,
+  PullMark,
+  ClockTile,
+  MetaTile,
+  RunDot,
+  StepChain,
+  exampleBlurb,
+  exampleName,
+  formatRunTime,
+  clockText,
+  incompleteText,
+  weekdayShort,
+} from '../components/AutomateShell'
 import { RoleMark } from '../components/RoleMark'
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
@@ -31,7 +46,7 @@ import {
   Panel,
   PanelBody,
   PanelHeader,
-  PanelTab,
+  PanelIconTab,
   PanelTabPanel,
   PanelTabs,
   PanelTabsRoot,
@@ -43,6 +58,7 @@ import { Switch } from '../components/ui/switch'
 import { StatusLabel } from '../components/ui/status-label'
 import { Toast } from '../components/ui/toast'
 import { Tooltip } from '../components/ui/tooltip'
+import { Toolbar, ToolbarControl, ToolbarDot } from '../components/ui/toolbar'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -51,20 +67,21 @@ import {
   DropdownMenuTrigger,
 } from '../components/ui/dropdown-menu'
 import {
+  ArrowRightIcon,
   ChevronDownIcon,
   PanelCollapseRightIcon,
-  PanelExpandRightIcon,
   PlayIcon,
   PulseIcon,
   XIcon,
 } from '../components/ui/icons'
 import { cn } from '@/lib/utils'
+import { useT, type PlainMessageKey, type Translate } from '@/lib/i18n'
 
 /** A draft is the automation minus what the server owns. */
-type Draft = Pick<Automation, 'name' | 'schedule' | 'steps'>
+type Draft = Pick<Automation, 'name' | 'schedule' | 'steps' | 'trigger'>
 
 function draftOf(a: Automation): Draft {
-  return { name: a.name, schedule: a.schedule, steps: a.steps }
+  return { name: a.name, trigger: a.trigger, schedule: a.schedule, steps: a.steps }
 }
 
 function sameDraft(a: Draft, b: Draft): boolean {
@@ -77,9 +94,10 @@ function newStepId(steps: Step[]): string {
   return `s${n}`
 }
 
-/** Drag the empty ground (or scroll) to move the chain around, the way the
- *  canvas pans. The offset lives on the DOM, not in state — a pan should
- *  never re-render the nodes. Interactive children keep their own gestures. */
+/** Drag the empty ground (or scroll over it) to move the chain around, the way
+ *  the canvas pans. The offset lives on the DOM, not in state — a pan should
+ *  never re-render the nodes. Nodes (`data-pan-node`) and controls keep their
+ *  own gestures. */
 function usePan() {
   const ground = useRef<HTMLDivElement>(null)
   const layer = useRef<HTMLDivElement>(null)
@@ -98,9 +116,12 @@ function usePan() {
     }
     /* the runs panel scrolls itself; text fields keep selection and caret */
     const inPanel = (t: EventTarget | null) => t instanceof Element && !!t.closest('[data-pan-stop]')
-    const textField = (t: EventTarget | null) => t instanceof Element && !!t.closest('input, textarea, select')
+    /* nodes and controls keep their own gestures: a press on a dropdown opens
+       it, a two-finger scroll over a node leaves the chain where it is */
+    const onNode = (t: EventTarget | null) =>
+      t instanceof Element && !!t.closest('[data-pan-node], button, a, input, textarea, select, [role="combobox"]')
     const onDown = (e: PointerEvent) => {
-      if (e.button !== 0 || inPanel(e.target) || textField(e.target)) return
+      if (e.button !== 0 || inPanel(e.target) || onNode(e.target)) return
       press.current = {
         id: e.pointerId,
         startX: e.clientX,
@@ -148,7 +169,9 @@ function usePan() {
         const atBottom = field.scrollTop + field.clientHeight >= field.scrollHeight - 1 && e.deltaY > 0
         if (!atTop && !atBottom) return
       }
+      /* still claimed over a node, so a sideways swipe never turns into browser back */
       e.preventDefault()
+      if (onNode(e.target)) return
       if (e.shiftKey && e.deltaX === 0) {
         offset.current = { x: offset.current.x - e.deltaY, y: offset.current.y }
       } else {
@@ -183,6 +206,7 @@ function usePan() {
  * canvas — the canvas is where the work lands, not a step of its own.
  */
 export function AutomationEditor({ automationId }: { automationId: string }) {
+  const t = useT()
   const [automation, setAutomation] = useState<Automation | null>(null)
   const [missing, setMissing] = useState(false)
   const [draft, setDraft] = useState<Draft | null>(null)
@@ -243,7 +267,9 @@ export function AutomationEditor({ automationId }: { automationId: string }) {
       posthog.capture('automation_saved', { steps: saved.steps.length })
       return saved
     } catch (err) {
-      showToast(err instanceof ApiError && typeof err.body.error === 'string' ? err.body.error : 'Couldn’t save')
+      showToast(
+        err instanceof ApiError && typeof err.body.error === 'string' ? err.body.error : t('automations.saveFailed'),
+      )
       return undefined
     } finally {
       setSaving(false)
@@ -272,7 +298,7 @@ export function AutomationEditor({ automationId }: { automationId: string }) {
       setAutomation((cur) => (cur ? { ...cur, name: saved.name, updatedAt: saved.updatedAt } : cur))
     } catch (err) {
       console.error(err)
-      showToast('Couldn’t rename')
+      showToast(t('automations.renameFailed'))
     }
   }
 
@@ -284,7 +310,7 @@ export function AutomationEditor({ automationId }: { automationId: string }) {
     } catch (err) {
       console.error(err)
       setAutomation(automation)
-      showToast('Couldn’t save')
+      showToast(t('automations.saveFailed'))
     }
   }
 
@@ -298,7 +324,9 @@ export function AutomationEditor({ automationId }: { automationId: string }) {
       posthog.capture('automation_run_now', { status: run.status })
       setAutomation({ ...saved, lastRun: run })
     } catch (err) {
-      showToast(err instanceof ApiError && typeof err.body.error === 'string' ? err.body.error : 'Couldn’t run')
+      showToast(
+        err instanceof ApiError && typeof err.body.error === 'string' ? err.body.error : t('automations.runFailed'),
+      )
     } finally {
       setRunningNow(false)
     }
@@ -309,24 +337,38 @@ export function AutomationEditor({ automationId }: { automationId: string }) {
     setDraft({
       name: draft.name === 'Untitled automation' ? example.name : draft.name,
       schedule: { ...example.schedule, tz: draft.schedule.tz },
+      trigger: example.trigger === 'approval' ? { type: 'approval', canvasId: '' } : { type: 'schedule' },
       steps: example.steps.map((s, i) => ({ ...s, id: `s${i + 1}`, canvasId: '' }) as Step),
     })
   }
 
-  function addStep(type: Step['type']) {
+  function addStep(kind: string) {
     if (!draft || draft.steps.length >= MAX_STEPS) return
     const id = newStepId(draft.steps)
     /* a new step lands on the canvas the previous one worked on */
-    const canvasId = draft.steps[draft.steps.length - 1]?.canvasId ?? ''
-    const step: Step =
-      type === 'pull'
-        ? { id, type: 'pull', provider: 'meta', accountId: '', filter: 'active', canvasId }
-        : { id, type: 'agent', title: '', prompt: '', roles: ['doop'], canvasId }
+    const canvasId =
+      draft.trigger.type === 'approval' ? draft.trigger.canvasId : (draft.steps[draft.steps.length - 1]?.canvasId ?? '')
+    const preset = AUTOMATION_EXAMPLES.find((e) => e.id === kind)?.steps[0]
+    const step: Step = preset
+      ? ({ ...preset, id, canvasId } as Step)
+      : kind === 'slack'
+        ? {
+            id,
+            type: 'slack',
+            canvasId,
+            channelId: '',
+            message: 'Approved designs are ready. Here are the designs and workflow results.',
+          }
+        : kind === 'linear'
+          ? { id, type: 'linear', canvasId, teamId: '', title: 'Follow up on approved designs', description: '' }
+          : kind === 'pull'
+            ? { id, type: 'pull', provider: 'meta', accountId: '', filter: 'active', canvasId }
+            : { id, type: 'agent', title: '', prompt: '', roles: ['doop'], canvasId }
     setDraft({ ...draft, steps: [...draft.steps, step] })
     setAdding(false)
   }
 
-  function patchStep(id: string, patch: Partial<PullStep> | Partial<AgentStep>) {
+  function patchStep(id: string, patch: Partial<Step>) {
     if (!draft) return
     setDraft({ ...draft, steps: draft.steps.map((s) => (s.id === id ? ({ ...s, ...patch } as Step) : s)) })
   }
@@ -336,39 +378,48 @@ export function AutomationEditor({ automationId }: { automationId: string }) {
     setDraft({ ...draft, steps: draft.steps.filter((s) => s.id !== id) })
   }
 
-  const incomplete = draft ? incompleteReason(draft.steps) : undefined
+  const approvalCanvasId = draft?.trigger.type === 'approval' ? draft.trigger.canvasId : undefined
+  const stepCanvases = approvalCanvasId === undefined ? canvases : canvases.filter((c) => c.id === approvalCanvasId)
+  const incompleteRaw = draft ? incompleteReason(draft.steps, draft.trigger) : undefined
+  const incomplete = incompleteRaw && incompleteText(t, incompleteRaw)
 
   return (
     <div className="fixed inset-x-0 bottom-0 top-[var(--app-inset,0px)] flex flex-col">
       <TopBar>
         <div className="flex min-w-0 items-center gap-1.5 max-xs:basis-full">
-          <TopBarHome label="Automations" to="/automations" />
+          <TopBarHome label={t('rail.automations')} to="/automations" />
           <TopBarTitle
             loading={!draft}
             value={draft?.name ?? ''}
-            placeholder="Untitled automation"
+            placeholder={t('automations.untitledAutomation')}
             onCommit={(name) => void rename(name)}
           />
         </div>
         {automation && (
           <div className="ml-auto flex items-center gap-2.5">
             <span className="inline-flex items-center gap-2">
-              <span className="text-caption text-ink-soft">{automation.enabled ? 'On' : 'Off'}</span>
-              <Switch checked={automation.enabled} onCheckedChange={setEnabled} aria-label="Automation on or off" />
+              <span className="text-caption text-ink-soft">
+                {automation.enabled ? t('automations.on') : t('automations.off')}
+              </span>
+              <Switch
+                checked={automation.enabled}
+                onCheckedChange={setEnabled}
+                aria-label={t('automations.automationToggle')}
+              />
             </span>
             <BarDivider />
             <Button
               variant="ghost"
               className={barGhostBtn}
-              disabled={runningNow || !!incomplete}
+              disabled={runningNow || !!incomplete || !automation.enabled}
               onClick={runNow}
-              title={incomplete ? `${incomplete} first` : 'Run the automation now'}
+              title={incomplete ? t('automations.reasonFirst', { reason: incomplete }) : t('automations.runNowTitle')}
             >
               <PlayIcon className="size-3.5" />
-              {runningNow ? 'Running…' : 'Run now'}
+              {runningNow ? t('automations.runningEllipsis') : t('automations.runNow')}
             </Button>
             <Button variant="primary" className={barPrimaryBtn} disabled={!dirty || saving} onClick={() => void save()}>
-              {saving ? 'Saving…' : 'Save'}
+              {saving ? t('automations.saving') : t('common.save')}
             </Button>
           </div>
         )}
@@ -380,9 +431,9 @@ export function AutomationEditor({ automationId }: { automationId: string }) {
       >
         {missing ? (
           <div className="mx-auto max-w-[360px] pt-14 text-center">
-            <p className="text-copy text-ink-soft">That automation doesn’t exist any more.</p>
+            <p className="text-copy text-ink-soft">{t('automations.missing')}</p>
             <Button variant="ghost" className="mt-3" onClick={() => navigate('/automations')}>
-              Back to automations
+              {t('automations.backToAutomations')}
             </Button>
           </div>
         ) : !draft || !automation ? (
@@ -394,14 +445,37 @@ export function AutomationEditor({ automationId }: { automationId: string }) {
           <>
             <div ref={panLayer} className="relative h-full will-change-transform">
               <div className="relative mx-auto flex w-[360px] flex-col pb-24 pt-14">
-                <WhenNode schedule={draft.schedule} onChange={(schedule) => setDraft({ ...draft, schedule })} />
+                <WhenNode
+                  schedule={draft.schedule}
+                  onChange={(schedule) => setDraft({ ...draft, schedule })}
+                  trigger={draft.trigger}
+                  canvases={canvases}
+                  onTriggerChange={(trigger) =>
+                    setDraft({
+                      ...draft,
+                      trigger,
+                      steps:
+                        trigger.type === 'approval'
+                          ? draft.steps.map((s) => ({ ...s, canvasId: trigger.canvasId }))
+                          : draft.steps,
+                    })
+                  }
+                />
                 {draft.steps.map((step) => (
                   <div key={step.id} className="flex flex-col">
                     <Edge />
                     {step.type === 'pull' ? (
                       <PullNode
                         step={step}
-                        canvases={canvases}
+                        canvases={stepCanvases}
+                        integrations={integrations}
+                        onChange={(patch) => patchStep(step.id, patch)}
+                        onRemove={() => removeStep(step.id)}
+                      />
+                    ) : step.type === 'slack' || step.type === 'linear' ? (
+                      <DeliveryNode
+                        step={step}
+                        canvases={stepCanvases}
                         integrations={integrations}
                         onChange={(patch) => patchStep(step.id, patch)}
                         onRemove={() => removeStep(step.id)}
@@ -409,7 +483,7 @@ export function AutomationEditor({ automationId }: { automationId: string }) {
                     ) : (
                       <AgentNode
                         step={step}
-                        canvases={canvases}
+                        canvases={stepCanvases}
                         onChange={(patch) => patchStep(step.id, patch)}
                         onRemove={() => removeStep(step.id)}
                       />
@@ -431,16 +505,18 @@ export function AutomationEditor({ automationId }: { automationId: string }) {
                     className="mt-5 justify-center text-body font-semibold text-ink-faint hover:bg-transparent hover:text-ink"
                     onClick={() => setAdding(true)}
                   >
-                    + Add step
+                    {t('automations.addStep')}
                   </Button>
                 )}
                 {incomplete && draft.steps.length > 0 && (
-                  <p className="mt-3 text-center text-label text-ink-faint">{incomplete} to turn it on.</p>
+                  <p className="mt-3 text-center text-label text-ink-faint">
+                    {t('automations.reasonToTurnOn', { reason: incomplete })}
+                  </p>
                 )}
               </div>
               {draft.steps.length === 0 && (
-                <aside className="absolute left-[calc(50%+240px)] top-14 hidden w-[260px] lg:block">
-                  <div className="mb-2 text-caption text-ink-faint">Or start from an example</div>
+                <aside data-pan-node className="absolute left-[calc(50%+240px)] top-14 hidden w-[260px] lg:block">
+                  <div className="mb-2 text-caption text-ink-faint">{t('automations.orStartFromExample')}</div>
                   {AUTOMATION_EXAMPLES.map((e) => (
                     <button
                       key={e.id}
@@ -448,14 +524,16 @@ export function AutomationEditor({ automationId }: { automationId: string }) {
                       className="mb-1.5 flex w-full items-center gap-2 rounded-[9px] border border-line bg-surface px-2.5 py-2 text-left text-body font-semibold tracking-[-0.01em] transition-colors hover:border-ink-faint"
                       onClick={() => applyExample(e)}
                     >
-                      <StepChain steps={e.steps} size={18} joined={false} />
-                      <span className="min-w-0 truncate">{e.name}</span>
+                      <StepChain steps={e.steps} size={18} joined={false} approval={e.trigger === 'approval'} />
+                      <span className="min-w-0 truncate">{exampleName(t, e)}</span>
                       <small className="ml-auto text-micro font-normal text-ink-faint">
-                        {e.schedule.kind === 'daily'
-                          ? 'daily'
-                          : e.schedule.kind === 'weekdays'
-                            ? 'weekdays'
-                            : WEEKDAYS_SHORT[e.schedule.weekday]}
+                        {e.trigger === 'approval'
+                          ? t('automations.onApproval')
+                          : e.schedule.kind === 'daily'
+                            ? t('automations.daily')
+                            : e.schedule.kind === 'weekdays'
+                              ? t('automations.weekdays')
+                              : weekdayShort(e.schedule.weekday)}
                       </small>
                     </button>
                   ))}
@@ -473,40 +551,23 @@ export function AutomationEditor({ automationId }: { automationId: string }) {
                     onClose={() => toggleRuns(false)}
                   />
                 ) : (
-                  <nav
-                    aria-label="Runs"
-                    className="absolute right-3 top-3 z-[38] flex w-12 flex-col items-center gap-1.5 rounded-panel border border-line bg-surface p-1.5 shadow-card max-lg:hidden"
+                  <Toolbar
+                    aria-label={t('automations.runs')}
+                    orientation="vertical"
+                    className="absolute right-3 top-3 z-[38] max-lg:hidden"
                   >
-                    <Tooltip label="Expand panel" side="left">
-                      <Button
-                        variant="bare"
-                        size="icon"
-                        aria-label="Expand panel"
-                        className="relative size-[34px] rounded-lg text-ink-soft hover:bg-paper-deep hover:text-ink"
-                        onClick={() => toggleRuns(true)}
-                      >
-                        <PanelExpandRightIcon />
-                      </Button>
-                    </Tooltip>
-                    <span aria-hidden className="my-0.5 h-px w-6 bg-line-soft" />
-                    <Tooltip
-                      label={automation.lastRun ? `Runs · last ${formatRunTime(automation.lastRun.startedAt)}` : 'Runs'}
-                      side="left"
+                    <ToolbarControl
+                      label={
+                        automation.lastRun
+                          ? t('automations.runsLast', { time: formatRunTime(automation.lastRun.startedAt) })
+                          : t('automations.runs')
+                      }
+                      onClick={() => toggleRuns(true)}
                     >
-                      <Button
-                        variant="bare"
-                        size="icon"
-                        aria-label="Runs"
-                        className="relative size-[34px] rounded-lg text-ink-soft hover:bg-paper-deep hover:text-ink"
-                        onClick={() => toggleRuns(true)}
-                      >
-                        <PulseIcon />
-                        {automation.lastRun?.status === 'failed' && (
-                          <span className="absolute right-[5px] top-[5px] size-1.5 rounded-full bg-accent-ink shadow-[0_0_0_2px_var(--surface)]" />
-                        )}
-                      </Button>
-                    </Tooltip>
-                  </nav>
+                      <PulseIcon />
+                      {automation.lastRun?.status === 'failed' && <ToolbarDot className="bg-accent-ink" />}
+                    </ToolbarControl>
+                  </Toolbar>
                 )}
               </div>
             )}
@@ -550,11 +611,35 @@ function pad(n: number) {
 /** "09:00" → the viewer's own clock format ("9:00 AM" or "09:00"). */
 function clockLabel(hhmm: string): string {
   const [h, m] = hhmm.split(':').map(Number)
-  return new Date(2000, 0, 1, h ?? 0, m ?? 0).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+  return clockText(h ?? 0, m ?? 0)
 }
 
+/* the day picker's options, Sunday first like Date.getDay() */
+const DAY_OPTIONS = [
+  'automations.dayOption0',
+  'automations.dayOption1',
+  'automations.dayOption2',
+  'automations.dayOption3',
+  'automations.dayOption4',
+  'automations.dayOption5',
+  'automations.dayOption6',
+] as const satisfies readonly PlainMessageKey[]
+
 /** "Every [Monday ▾] at [09:00 ▾]" */
-function WhenNode({ schedule, onChange }: { schedule: Schedule; onChange: (s: Schedule) => void }) {
+function WhenNode({
+  schedule,
+  onChange,
+  trigger,
+  onTriggerChange,
+  canvases,
+}: {
+  schedule: Schedule
+  onChange: (s: Schedule) => void
+  trigger: AutomationTrigger
+  onTriggerChange: (trigger: AutomationTrigger) => void
+  canvases: CanvasMeta[]
+}) {
+  const t = useT()
   const dayValue =
     schedule.kind === 'daily' ? 'daily' : schedule.kind === 'weekdays' ? 'weekdays' : String(schedule.weekday)
   const time = `${pad(schedule.hour)}:${pad(schedule.minute)}`
@@ -563,55 +648,78 @@ function WhenNode({ schedule, onChange }: { schedule: Schedule; onChange: (s: Sc
   if (!times.includes(time)) times.push(time)
   times.sort()
   return (
-    <div className={cn(nodeCls, 'border-ink')}>
+    <div data-pan-node className={cn(nodeCls, 'border-ink')}>
       <Port side="out" />
       <div className="flex items-center gap-[9px]">
-        <ClockTile size={24} />
-        <span className={kCls}>When</span>
-        <span className="ml-auto text-micro text-ink-faint">{schedule.tz.replace(/_/g, ' ')}</span>
-      </div>
-      <div className="mt-2.5 flex items-center gap-2 text-copy">
-        <span className="text-ink-soft">Every</span>
+        {trigger.type === 'approval' ? <ApprovalTile /> : <ClockTile size={24} />}
+        <span className={kCls}>{t('automations.when')}</span>
         <Select
-          value={dayValue}
-          onValueChange={(v) => {
-            if (v === 'daily' || v === 'weekdays') onChange({ ...schedule, kind: v })
-            else onChange({ ...schedule, kind: 'weekly', weekday: Number(v) })
-          }}
+          value={trigger.type}
+          onValueChange={(type) => onTriggerChange(type === 'approval' ? { type, canvasId: '' } : { type: 'schedule' })}
         >
-          <SelectTrigger size="sm" aria-label="Which days">
+          <SelectTrigger size="sm" aria-label={t('automations.triggerLabel')}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {WEEKDAYS.map((d, i) => (
-              <SelectItem key={d} value={String(i)}>
-                {d}
-              </SelectItem>
-            ))}
-            <SelectItem value="weekdays">weekday</SelectItem>
-            <SelectItem value="daily">day</SelectItem>
-          </SelectContent>
-        </Select>
-        <span className="text-ink-soft">at</span>
-        <Select
-          value={time}
-          onValueChange={(v) => {
-            const [h, m] = v.split(':').map(Number)
-            onChange({ ...schedule, hour: h ?? 9, minute: m ?? 0 })
-          }}
-        >
-          <SelectTrigger size="sm" aria-label="Time">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {times.map((t) => (
-              <SelectItem key={t} value={t}>
-                {clockLabel(t)}
-              </SelectItem>
-            ))}
+            <SelectItem value="schedule">{t('automations.triggerSchedule')}</SelectItem>
+            <SelectItem value="approval">{t('automations.triggerApproval')}</SelectItem>
           </SelectContent>
         </Select>
       </div>
+      {trigger.type === 'approval' ? (
+        <>
+          <CanvasPicker
+            word={t('automations.canvasOn')}
+            value={trigger.canvasId}
+            canvases={canvases}
+            onChange={(canvasId) => onTriggerChange({ ...trigger, canvasId })}
+          />
+          <p className="mt-2 text-caption text-ink-faint">{t('automations.approvalHint')}</p>
+        </>
+      ) : (
+        <div className="mt-2.5 flex items-center gap-2 text-copy">
+          <span className="text-ink-soft">{t('automations.every')}</span>
+          <Select
+            value={dayValue}
+            onValueChange={(v) => {
+              if (v === 'daily' || v === 'weekdays') onChange({ ...schedule, kind: v })
+              else onChange({ ...schedule, kind: 'weekly', weekday: Number(v) })
+            }}
+          >
+            <SelectTrigger size="sm" aria-label={t('automations.whichDays')}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {DAY_OPTIONS.map((label, i) => (
+                <SelectItem key={label} value={String(i)}>
+                  {t(label)}
+                </SelectItem>
+              ))}
+              <SelectItem value="weekdays">{t('automations.dayOptionWeekdays')}</SelectItem>
+              <SelectItem value="daily">{t('automations.dayOptionDaily')}</SelectItem>
+            </SelectContent>
+          </Select>
+          <span className="text-ink-soft">{t('automations.at')}</span>
+          <Select
+            value={time}
+            onValueChange={(v) => {
+              const [h, m] = v.split(':').map(Number)
+              onChange({ ...schedule, hour: h ?? 9, minute: m ?? 0 })
+            }}
+          >
+            <SelectTrigger size="sm" aria-label={t('automations.time')}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {times.map((hhmm) => (
+                <SelectItem key={hhmm} value={hhmm}>
+                  {clockLabel(hhmm)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
     </div>
   )
 }
@@ -629,6 +737,7 @@ function CanvasPicker({
   canvases: CanvasMeta[]
   onChange: (id: string) => void
 }) {
+  const t = useT()
   const current = canvases.find((c) => c.id === value)
   return (
     <div className="mt-2.5 flex items-center gap-2 text-body text-ink-soft">
@@ -643,13 +752,15 @@ function CanvasPicker({
             )}
           >
             {current && <FrameThumb size="xs" frameId={current.previewFrameId} />}
-            <span className="min-w-0 flex-1 truncate">{current?.name ?? 'Choose a canvas'}</span>
+            <span className="min-w-0 flex-1 truncate">{current?.name ?? t('automations.chooseCanvas')}</span>
             <ChevronDownIcon width={12} height={12} className="flex-none text-ink-faint" />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" width="lg" className="max-h-[320px] overflow-y-auto">
           {canvases.length === 0 && (
-            <DropdownMenuLabel className="text-label font-normal text-ink-faint">No canvases yet</DropdownMenuLabel>
+            <DropdownMenuLabel className="text-label font-normal text-ink-faint">
+              {t('automations.noCanvases')}
+            </DropdownMenuLabel>
           )}
           {canvases.map((c) => (
             <DropdownMenuItem
@@ -667,14 +778,133 @@ function CanvasPicker({
   )
 }
 
-function RemoveStep({ onRemove }: { onRemove: () => void }) {
+function DeliveryNode({
+  step,
+  canvases,
+  integrations,
+  onChange,
+  onRemove,
+}: {
+  step: SlackStep | LinearStep
+  canvases: CanvasMeta[]
+  integrations: IntegrationsStatus | null
+  onChange: (patch: Partial<Step>) => void
+  onRemove: () => void
+}) {
+  const t = useT()
+  const integration = clientIntegrations.find((i) => i.id === step.type)
+  const connected = !!integrations && !!integration?.isConnected(integrations)
+  const [teams, setTeams] = useState<{ id: string; name: string; key: string }[]>([])
+  const [teamsFailed, setTeamsFailed] = useState(false)
+  useEffect(() => {
+    if (step.type !== 'linear' || !connected) return
+    let canceled = false
+    api
+      .automationLinearTeams()
+      .then((list) => {
+        if (!canceled) {
+          setTeams(list)
+          setTeamsFailed(false)
+        }
+      })
+      .catch(() => {
+        if (!canceled) setTeamsFailed(true)
+      })
+    return () => {
+      canceled = true
+    }
+  }, [step.type, connected])
   return (
-    <Tooltip label="Remove step" side="left">
+    <div data-pan-node className={nodeCls}>
+      <Port side="in" />
+      <Port side="out" />
+      <div className="flex items-center gap-2">
+        <PullMark provider={step.type} />
+        <span className="text-copy font-semibold">
+          {step.type === 'slack' ? t('automations.postToSlack') : t('automations.createLinearTicket')}
+        </span>
+        <RemoveStep onRemove={onRemove} />
+      </div>
+      {integrations && !connected && (
+        <Button className="mt-2" variant="solid" size="sm" onClick={() => navigate('/integrations')}>
+          {t('automations.connectProvider', { name: integration?.name ?? step.type })}
+        </Button>
+      )}
+      {step.type === 'slack' ? (
+        <>
+          <Input
+            className="mt-2"
+            aria-label={t('automations.slackChannelLabel')}
+            placeholder={t('automations.slackChannelPlaceholder')}
+            value={step.channelId}
+            onChange={(e) => onChange({ channelId: e.target.value.trim() })}
+          />
+          <p className="mt-1 text-caption text-ink-faint">{t('automations.slackChannelHint')}</p>
+          <Textarea
+            className="mt-2"
+            aria-label={t('automations.slackMessageLabel')}
+            value={step.message}
+            maxLength={MAX_PROMPT}
+            onChange={(e) => onChange({ message: e.target.value })}
+          />
+        </>
+      ) : (
+        <>
+          <Select value={step.teamId} onValueChange={(teamId) => onChange({ teamId })}>
+            <SelectTrigger className="mt-2 w-full" size="sm" aria-label={t('automations.linearTeamLabel')}>
+              <SelectValue placeholder={t('automations.chooseTeam')} />
+            </SelectTrigger>
+            <SelectContent>
+              {teams.map((team) => (
+                <SelectItem key={team.id} value={team.id}>
+                  {team.name} · {team.key}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {teamsFailed && (
+            <p role="alert" className="mt-1 text-caption text-accent-ink">
+              {t('automations.loadTeamsFailed')}
+            </p>
+          )}
+          <Input
+            className="mt-2"
+            aria-label={t('automations.ticketTitleLabel')}
+            placeholder={t('automations.ticketTitlePlaceholder')}
+            value={step.title}
+            maxLength={200}
+            onChange={(e) => onChange({ title: e.target.value })}
+          />
+          <Textarea
+            className="mt-2"
+            aria-label={t('automations.ticketDescriptionLabel')}
+            placeholder={t('automations.ticketDescriptionPlaceholder')}
+            value={step.description}
+            maxLength={MAX_PROMPT}
+            onChange={(e) => onChange({ description: e.target.value })}
+          />
+        </>
+      )}
+      <p className="mt-2 text-caption text-ink-faint">{t('automations.deliveryHint')}</p>
+      <CanvasPicker
+        word={t('automations.canvasFor')}
+        value={step.canvasId}
+        canvases={canvases}
+        onChange={(canvasId) => onChange({ canvasId })}
+      />
+    </div>
+  )
+}
+
+function RemoveStep({ onRemove }: { onRemove: () => void }) {
+  const t = useT()
+  return (
+    <Tooltip label={t('automations.removeStep')} side="left">
       <Button
         variant="bare"
         size="icon-sm"
         className="ml-auto size-6 text-ink-faint hover:text-accent-ink"
-        aria-label="Remove step"
+        aria-label={t('automations.removeStep')}
         onClick={onRemove}
       >
         <XIcon className="size-3.5" />
@@ -696,21 +926,22 @@ function PullNode({
   onChange: (patch: Partial<PullStep>) => void
   onRemove: () => void
 }) {
+  const t = useT()
   const meta = integrations?.meta
   const accounts = meta?.accounts ?? []
   return (
-    <div className={nodeCls}>
+    <div data-pan-node className={nodeCls}>
       <Port side="in" />
       <Port side="out" />
       <div className="flex items-center gap-[9px]">
         <MetaTile size={24} />
         <div className="min-w-0">
-          <div className={kCls}>Pull · Meta Ads</div>
-          <div className="text-copy font-semibold tracking-[-0.012em]">Ad creatives</div>
+          <div className={kCls}>{t('automations.pullMeta')}</div>
+          <div className="text-copy font-semibold tracking-[-0.012em]">{t('automations.adCreatives')}</div>
         </div>
         {meta && (
           <StatusLabel tone={meta.connected ? 'done' : 'muted'} className="ml-auto">
-            {meta.connected ? 'connected' : 'not connected'}
+            {meta.connected ? t('automations.connected') : t('automations.notConnected')}
           </StatusLabel>
         )}
         <RemoveStep onRemove={onRemove} />
@@ -719,17 +950,17 @@ function PullNode({
         <div className="mt-2.5 text-body text-ink-faint">…</div>
       ) : !meta.connected ? (
         <div className="mt-2.5 flex items-center gap-3">
-          <span className="text-body text-ink-soft">Not connected yet</span>
+          <span className="text-body text-ink-soft">{t('automations.notConnectedYet')}</span>
           <Button variant="solid" size="sm" className="ml-auto h-8" onClick={() => navigate('/integrations')}>
-            Connect Meta
+            {t('automations.connectMeta')}
           </Button>
         </div>
       ) : (
         <div className="mt-2.5 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-2.5">
           {/* an unset account is '' — Radix shows the placeholder for it */}
           <Select value={step.accountId} onValueChange={(accountId) => onChange({ accountId })}>
-            <SelectTrigger size="sm" className="w-full" aria-label="Ad account">
-              <SelectValue placeholder="Ad account" />
+            <SelectTrigger size="sm" className="w-full" aria-label={t('automations.adAccount')}>
+              <SelectValue placeholder={t('automations.adAccount')} />
             </SelectTrigger>
             <SelectContent>
               {accounts.map((a) => (
@@ -740,18 +971,18 @@ function PullNode({
             </SelectContent>
           </Select>
           <Select value={step.filter} onValueChange={(filter) => onChange({ filter: filter as PullStep['filter'] })}>
-            <SelectTrigger size="sm" className="w-full" aria-label="Which ads">
+            <SelectTrigger size="sm" className="w-full" aria-label={t('automations.whichAds')}>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="active">Active ads</SelectItem>
-              <SelectItem value="all">All ads</SelectItem>
+              <SelectItem value="active">{t('automations.activeAds')}</SelectItem>
+              <SelectItem value="all">{t('automations.allAds')}</SelectItem>
             </SelectContent>
           </Select>
         </div>
       )}
       <CanvasPicker
-        word="into"
+        word={t('automations.canvasInto')}
         value={step.canvasId}
         canvases={canvases}
         onChange={(canvasId) => onChange({ canvasId })}
@@ -771,23 +1002,24 @@ function AgentNode({
   onChange: (patch: Partial<AgentStep>) => void
   onRemove: () => void
 }) {
+  const t = useT()
   /* one agent per task: a pill picks that role, nothing to un-pick */
   const roles = step.roles
   return (
-    <div className={nodeCls}>
+    <div data-pan-node className={nodeCls}>
       <Port side="in" />
       <Port side="out" />
       <div className="flex items-center gap-[9px]">
         <RoleMark role={roleById(roles[0])} size={24} />
         <div className="min-w-0 flex-1">
-          <div className={kCls}>Agent task</div>
+          <div className={kCls}>{t('automations.agentTask')}</div>
           <Input
             value={step.title}
             maxLength={MAX_NAME}
-            aria-label="Task title"
+            aria-label={t('automations.taskTitle')}
             variant="bare"
             inputSize="auto"
-            placeholder="Untitled task"
+            placeholder={t('automations.untitledTask')}
             className="w-full text-copy font-semibold tracking-[-0.012em] md:text-copy"
             onChange={(e) => onChange({ title: e.target.value })}
           />
@@ -798,7 +1030,7 @@ function AgentNode({
         className="mt-2.5 min-h-[74px] w-full rounded-lg px-[11px] py-2.5 text-copy leading-[1.5] md:text-copy"
         value={step.prompt}
         maxLength={MAX_PROMPT}
-        placeholder="What should the agent do on this canvas?"
+        placeholder={t('automations.agentPromptPlaceholder')}
         onChange={(e) => onChange({ prompt: e.target.value })}
       />
       <div className="mt-2.5 flex flex-wrap gap-1">
@@ -815,7 +1047,7 @@ function AgentNode({
                 'gap-1 rounded-full px-2 py-1 text-caption text-ink-soft hover:border-ink-soft hover:bg-transparent',
                 on && 'border-ink bg-ink text-paper hover:border-ink hover:bg-ink hover:text-paper',
               )}
-              title={role.blurb}
+              title={roleBlurb(t, role.id, role.blurb)}
               onClick={() => onChange({ roles: [role.id] })}
             >
               <RoleMark role={role} size={13} />
@@ -824,9 +1056,9 @@ function AgentNode({
           )
         })}
       </div>
-      <p className="mt-2 text-caption text-ink-faint">{roleName(roles[0])} picks it up right away</p>
+      <p className="mt-2 text-caption text-ink-faint">{t('automations.picksUp', { role: roleName(roles[0]) })}</p>
       <CanvasPicker
-        word="on"
+        word={t('automations.canvasOn')}
         value={step.canvasId}
         canvases={canvases}
         onChange={(canvasId) => onChange({ canvasId })}
@@ -837,23 +1069,27 @@ function AgentNode({
 
 /** The step slot: the two things a step can be, as tiles. It is the empty
  *  automation's first slot and, later, what "+ Add step" opens in place. */
-function StepPicker({ onPick, onCancel }: { onPick: (type: Step['type']) => void; onCancel?: () => void }) {
+function StepPicker({ onPick, onCancel }: { onPick: (kind: string) => void; onCancel?: () => void }) {
+  const t = useT()
   const tile =
     'flex flex-col items-start gap-2 rounded-[9px] border border-line bg-surface px-3 pb-[11px] pt-3 text-left shadow-card transition-colors hover:border-ink-faint focus-visible:outline-2 focus-visible:outline-brand'
   return (
     <div
+      data-pan-node
       className="relative rounded-pill border-[1.5px] border-dashed border-line bg-paper-deep/60 p-3.5"
       onKeyDown={(e) => e.key === 'Escape' && onCancel?.()}
     >
       <Port side="in" dashed />
       <div className="flex items-center">
-        <span className="flex-1 text-center text-copy font-semibold tracking-[-0.012em]">What should run?</span>
+        <span className="flex-1 text-center text-copy font-semibold tracking-[-0.012em]">
+          {t('automations.whatShouldRun')}
+        </span>
         {onCancel && (
           <Button
             variant="bare"
             size="icon-sm"
             className="absolute right-2 top-2 size-6 text-ink-faint hover:text-ink"
-            aria-label="Cancel"
+            aria-label={t('common.cancel')}
             onClick={onCancel}
           >
             <XIcon className="size-3.5" />
@@ -861,10 +1097,26 @@ function StepPicker({ onPick, onCancel }: { onPick: (type: Step['type']) => void
         )}
       </div>
       <div className="mt-3 grid grid-cols-2 gap-2">
+        {AUTOMATION_EXAMPLES.filter((e) => e.trigger === 'approval').map((e) => (
+          <button type="button" key={e.id} className={tile} onClick={() => onPick(e.id)}>
+            <RoleMark role={roleById('doop')} size={22} />
+            <b className="text-body font-medium">{exampleName(t, e)}</b>
+            <span className="text-caption text-ink-soft">{exampleBlurb(t, e)}</span>
+          </button>
+        ))}
+        {(['linear', 'slack'] as const).map((provider) => (
+          <button type="button" key={provider} className={tile} onClick={() => onPick(provider)}>
+            <PullMark provider={provider} size={22} />
+            <b className="text-body font-medium">
+              {provider === 'linear' ? t('automations.createLinearTicket') : t('automations.postToSlack')}
+            </b>
+            <span className="text-caption text-ink-soft">{t('automations.shareResults')}</span>
+          </button>
+        ))}
         <button type="button" className={tile} autoFocus={!!onCancel} onClick={() => onPick('pull')}>
           <MetaTile size={22} />
           <b className="text-body font-semibold tracking-[-0.012em]">Meta Ads</b>
-          <span className="text-caption leading-[1.45] text-ink-soft">Pull Meta ad creatives onto a canvas.</span>
+          <span className="text-caption leading-[1.45] text-ink-soft">{t('automations.metaPullBlurb')}</span>
         </button>
         <button type="button" className={tile} onClick={() => onPick('agent')}>
           <span className="flex">
@@ -872,10 +1124,8 @@ function StepPicker({ onPick, onCancel }: { onPick: (type: Step['type']) => void
               <RoleMark key={r.id} role={r} size={22} className={cn(i > 0 && '-ml-1.5 ring-[1.5px] ring-surface')} />
             ))}
           </span>
-          <b className="text-body font-semibold tracking-[-0.012em]">Agent task</b>
-          <span className="text-caption leading-[1.45] text-ink-soft">
-            Give Doop, UX Lead or another role a brief on a canvas.
-          </span>
+          <b className="text-body font-semibold tracking-[-0.012em]">{t('automations.agentTask')}</b>
+          <span className="text-caption leading-[1.45] text-ink-soft">{t('automations.agentTaskBlurb')}</span>
         </button>
       </div>
     </div>
@@ -900,6 +1150,7 @@ function RunsPanel({
   onRunNow: () => void
   onClose: () => void
 }) {
+  const t = useT()
   const [runs, setRuns] = useState<AutomationRun[] | null>(null)
   const [more, setMore] = useState(false)
   const lastRunId = automation.lastRun?.id
@@ -912,6 +1163,19 @@ function RunsPanel({
         setMore(list.length >= 20)
       })
       .catch(console.error)
+    const timer = window.setInterval(() => {
+      api
+        .listRuns(automation.id)
+        .then((list) => {
+          setRuns((current) => {
+            if (!current || current.length <= 20) return list
+            const fresh = new Set(list.map((run) => run.id))
+            return [...list, ...current.filter((run) => !fresh.has(run.id))]
+          })
+        })
+        .catch(console.error)
+    }, 5_000)
+    return () => window.clearInterval(timer)
   }, [automation.id, lastRunId])
 
   async function older() {
@@ -923,20 +1187,24 @@ function RunsPanel({
   }
 
   const canvasName = (id: string | null) => (id ? canvases.find((c) => c.id === id)?.name : undefined)
+  const savedIncompleteRaw = incompleteReason(automation.steps, automation.trigger)
+  const savedIncomplete = savedIncompleteRaw && incompleteText(t, savedIncompleteRaw)
 
   return (
     <Panel className="inset-y-3 right-3 w-[300px] max-lg:hidden">
       <PanelTabsRoot value="runs">
         <PanelHeader>
           <PanelTabs>
-            <PanelTab value="runs">Runs</PanelTab>
+            <PanelIconTab value="runs" icon={<PulseIcon />} title={t('automations.runs')}>
+              {t('automations.runs')}
+            </PanelIconTab>
           </PanelTabs>
-          <Tooltip label="Collapse panel" side="bottom" align="end">
+          <Tooltip label={t('automations.collapsePanel')} side="bottom" align="end">
             <Button
               variant="bare"
               size="icon-sm"
               className="shrink-0 text-ink-faint hover:bg-paper-deep hover:text-ink"
-              aria-label="Collapse panel"
+              aria-label={t('automations.collapsePanel')}
               onClick={onClose}
             >
               <PanelCollapseRightIcon width={13} height={13} />
@@ -947,9 +1215,17 @@ function RunsPanel({
           <PanelBody className="py-2">
             <ListItem className="bg-paper/60">
               <span className="flex items-center gap-2">
-                <ClockTile size={14} className={cn(!automation.nextRunAt && 'opacity-40')} />
+                {automation.trigger.type === 'approval' ? (
+                  <ApprovalTile size={14} />
+                ) : (
+                  <ClockTile size={14} className={cn(!automation.nextRunAt && 'opacity-40')} />
+                )}
                 <ListTitle className="text-ink-soft">
-                  {automation.nextRunAt && !dirty ? 'Next run' : automation.enabled ? 'Next run' : 'Paused'}
+                  {automation.nextRunAt && !dirty
+                    ? t('automations.nextRun')
+                    : automation.enabled
+                      ? t('automations.nextRun')
+                      : t('automations.pausedTitle')}
                 </ListTitle>
                 <ListMeta className="ml-auto">
                   {automation.nextRunAt && !dirty ? formatRunTime(automation.nextRunAt) : ''}
@@ -957,7 +1233,12 @@ function RunsPanel({
               </span>
               {!automation.nextRunAt && automation.enabled && (
                 <ListSummary className="whitespace-normal">
-                  {dirty ? 'Save to see when it runs next.' : (incompleteReason(automation.steps) ?? 'Not scheduled.')}
+                  {dirty
+                    ? t('automations.saveToSee')
+                    : (savedIncomplete ??
+                      (automation.trigger.type === 'approval'
+                        ? t('automations.waitingApprovals')
+                        : t('automations.notScheduled')))}
                 </ListSummary>
               )}
             </ListItem>
@@ -967,33 +1248,36 @@ function RunsPanel({
               </div>
             ) : runs.length === 0 ? (
               <div className="px-4 py-3 text-xs leading-[1.5] text-ink-faint">
-                No runs yet.{' '}
-                {automation.nextRunAt
-                  ? 'The first one is on the schedule.'
-                  : 'Finish the setup and turn it on, or run it now.'}
-                {!incompleteReason(automation.steps) && (
+                {t('automations.noRunsYet')}{' '}
+                {automation.trigger.type === 'approval'
+                  ? t('automations.noRunsApproval')
+                  : automation.nextRunAt
+                    ? t('automations.noRunsScheduled')
+                    : t('automations.noRunsFinish')}
+                {!savedIncompleteRaw && (
                   <Button variant="ghost" size="sm" className="mt-2.5 block" onClick={onRunNow}>
-                    Run now
+                    {t('automations.runNow')}
                   </Button>
                 )}
               </div>
             ) : (
               runs.map((r) => (
-                <ListItem key={r.id}>
+                /* slides in as it arrives, like the Agents panel's rows */
+                <ListItem key={r.id} className="animate-[chip-in_0.25s_ease]">
                   <span className="flex items-center gap-2">
                     <RunDot status={r.status} />
                     <ListTitle>{formatRunTime(r.startedAt)}</ListTitle>
-                    <ListMeta className="ml-auto">{r.endedAt ? duration(r.endedAt - r.startedAt) : ''}</ListMeta>
+                    <ListMeta className="ml-auto">{r.endedAt ? duration(t, r.endedAt - r.startedAt) : ''}</ListMeta>
                   </span>
                   <ListSummary
                     className={cn('whitespace-normal', r.status === 'failed' && 'text-accent-ink')}
                     title={r.error ?? r.summary ?? undefined}
                   >
                     {r.status === 'running'
-                      ? 'Running…'
+                      ? t('automations.runningEllipsis')
                       : r.status === 'failed'
-                        ? (r.error ?? 'Failed')
-                        : (r.summary ?? 'Nothing new')}
+                        ? (r.error ?? t('automations.failed'))
+                        : (r.summary ?? t('automations.nothingNew'))}
                   </ListSummary>
                   {r.failure === 'reconnect' ? (
                     <button
@@ -1001,15 +1285,16 @@ function RunsPanel({
                       className="self-start text-xs font-semibold text-accent-ink hover:underline"
                       onClick={() => navigate('/integrations')}
                     >
-                      Reconnect Meta
+                      {t('automations.reconnectMeta')}
                     </button>
                   ) : r.canvasId && r.status === 'ok' ? (
                     <button
                       type="button"
-                      className="self-start text-xs font-semibold text-accent-ink hover:underline"
+                      className="inline-flex items-center gap-1 self-start text-xs font-semibold text-accent-ink hover:underline"
                       onClick={() => navigate(`/c/${r.canvasId}`)}
                     >
-                      Open {canvasName(r.canvasId) ?? 'canvas'} →
+                      {t('automations.openCanvas', { name: canvasName(r.canvasId) ?? t('automations.canvasLower') })}
+                      <ArrowRightIcon size={12} />
                     </button>
                   ) : null}
                 </ListItem>
@@ -1021,7 +1306,7 @@ function RunsPanel({
                 className="w-full px-4 py-2.5 text-left text-xs text-ink-soft transition-colors hover:bg-paper hover:text-ink"
                 onClick={older}
               >
-                Show older
+                {t('automations.showOlder')}
               </button>
             )}
           </PanelBody>
@@ -1031,9 +1316,24 @@ function RunsPanel({
   )
 }
 
-function duration(ms: number): string {
+function duration(t: Translate, ms: number): string {
   const s = Math.max(1, Math.round(ms / 1000))
-  if (s < 60) return `${s}s`
+  if (s < 60) return t('automations.durationSeconds', { s })
   const m = Math.floor(s / 60)
-  return `${m}m ${s % 60}s`
+  return t('automations.durationMinutes', { m, s: s % 60 })
+}
+
+/* a role's one-liner in the app's language; the role's name is its identity */
+const ROLE_BLURB: Record<string, PlainMessageKey> = {
+  doop: 'automations.roleBlurbDoop',
+  ux: 'automations.roleBlurbUx',
+  copy: 'automations.roleBlurbCopy',
+  brand: 'automations.roleBlurbBrand',
+  a11y: 'automations.roleBlurbA11y',
+  polish: 'automations.roleBlurbPolish',
+}
+
+function roleBlurb(t: Translate, id: string, fallback: string): string {
+  const key = ROLE_BLURB[id]
+  return key ? t(key) : fallback
 }

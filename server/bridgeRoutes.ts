@@ -1,10 +1,11 @@
 import { Router, type Request, type RequestHandler, type Response } from 'express'
 import * as chatBridge from './bridge.ts'
 import { MAX_BRIDGE_TEXT } from '../shared/bridge.ts'
+import type { CanvasRole } from '../shared/canvasRole.ts'
 import type { Canvas } from '../shared/types.ts'
 
 /** Resolves the canvas the caller may use, or answers the 404/403 itself and returns null. */
-type RequireCanvas = (req: Request, res: Response, canvasId: string) => Canvas | null
+type RequireCanvas = (req: Request, res: Response, canvasId: string, need: CanvasRole) => Canvas | null
 
 /* chat bridge: which Multica agent a canvas chats with, plus the list and
    liveness the watcher publishes. Same access gate as comments. */
@@ -27,7 +28,7 @@ export function bridgeRouter(requireCanvas: RequireCanvas): Router {
   router.get(
     '/api/canvases/:id/bridge',
     guarded(async (req, res) => {
-      const canvas = requireCanvas(req, res, req.params.id)
+      const canvas = requireCanvas(req, res, req.params.id, 'view')
       if (!canvas) return
       res.json(await chatBridge.getBridge(canvas.id))
     }),
@@ -36,7 +37,7 @@ export function bridgeRouter(requireCanvas: RequireCanvas): Router {
   router.put(
     '/api/canvases/:id/bridge',
     guarded(async (req, res) => {
-      const canvas = requireCanvas(req, res, req.params.id)
+      const canvas = requireCanvas(req, res, req.params.id, 'comment')
       if (!canvas) return
       const { agentRef } = req.body ?? {}
       if (

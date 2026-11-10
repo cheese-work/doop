@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { useStore, type Viewport } from '../lib/store'
+import { roleOf, toolAllowed, useStore, type Viewport } from '../lib/store'
+import { roleAllows } from '../../shared/canvasRole'
+import { onViewCommand } from '../lib/viewMenu'
 import type { Frame } from '../../shared/types'
 import { usePageCanvas, currentPageCanvas } from '../lib/pages'
 import { sendWs } from '../lib/ws'
@@ -8,27 +10,44 @@ import { FrameView, HiddenFrameView } from './FrameView'
 import { CanvasComments, type CanvasComposeAt } from './CanvasComments'
 import { placeComposer } from '../lib/composerPlacement'
 import { isCanvasComment, type CanvasComment } from '../../shared/comments'
+import { elementIdSelector, isElementId } from '../../shared/elementId'
 import { canvasPages } from '../../shared/pages'
 import { FlowOverlay } from './FlowOverlay'
+import { PrototypeOverlay } from './PrototypeOverlay'
 import { GhostFrames } from './GhostFrames'
 import { Cursors } from './Cursors'
 import { FollowFrame } from './FollowFrame'
 import { cameraOnCursor, cameraToFollow } from '../lib/follow'
 import { SnapGuides } from './SnapGuides'
+import { GuideLines, Rulers } from './Rulers'
+import { useIsMobile } from '../hooks/use-mobile'
 import { isTypingTarget, MOD_KEY } from '../lib/keys'
 import { cn } from '../lib/utils'
 import { gesture } from '../lib/gesture'
 import { hasFrameClip, pasteFrameAtScreen } from '../lib/frameClipboard'
 import { MenuHint } from './ui/menu'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from './ui/context-menu'
-import { Toolbar, ToolbarButton, ToolbarHighlight } from './ui/toolbar'
+import { Toolbar, ToolbarButton, ToolbarDivider, ToolbarHighlight } from './ui/toolbar'
 import { ZoomControls } from './ZoomControls'
 import { Tooltip } from './ui/tooltip'
-import { BoxIcon, CircleIcon, CommentIcon, CursorIcon, FrameIcon, HandIcon, TextIcon, VectorIcon } from './ui/icons'
+import {
+  BoxIcon,
+  CircleIcon,
+  CommentIcon,
+  CursorIcon,
+  EditModeIcon,
+  FrameIcon,
+  HandIcon,
+  PrototypeModeIcon,
+  TextIcon,
+  VectorIcon,
+} from './ui/icons'
 import { TOOLS, isDrawingTool, resolvePointerAction, toolForKey, type Tool } from '../lib/tools'
 import { useCanvasDrawing } from './CanvasDrawing'
 import { FrameLabelLayer } from './FrameLabelLayer'
 import { layoutZoomFor } from '../lib/layoutZoom'
+import { useT, type PlainMessageKey } from '../lib/i18n'
+import { NO_INSETS, fitBox, type StageInsets } from '../lib/viewFit'
 
 const MIN_ZOOM = 0.08
 /* The settled world is laid out at up to this zoom too (layoutZoomFor), so
@@ -113,14 +132,51 @@ const sendViewport = throttle(
 
 export function Stage({
   onAddFrame,
-  rightInset,
+  insets = NO_INSETS,
+  bounds,
+  docked = false,
 }: {
   onAddFrame: () => void
-  /** px the floating panels and islands cover at the stage's right edge —
-   *  no room there for a comment composer */
-  rightInset: number
+  /** px the top bar, floating panels and islands cover at each of the
+   *  stage's edges — fits centre in what is left, and there is no room
+   *  under them for a comment composer */
+  insets?: StageInsets
+  /** where the stage sits inside the page when it is not the whole of it:
+   *  docked panels leave it the gap between their columns */
+  bounds?: StageInsets
+  /** the panels are docked, so the tool rail is a full-height column too */
+  docked?: boolean
 }) {
   const ref = useRef<HTMLDivElement>(null)
+  /* read by the fit callbacks, which outlive a render */
+  const insetsRef = useRef(insets)
+  /* a fit that opens a panel (a frame link opens the Inspector) runs once
+     more when that panel arrives, so the panel can't cover it: floating, it
+     changes the insets; docked, it narrows the stage itself */
+  const refitRef = useRef<(() => void) | null>(null)
+  const stageSizeRef = useRef({ width: 0, height: 0 })
+  useLayoutEffect(() => {
+    const el = ref.current
+    const size = { width: el?.clientWidth ?? 0, height: el?.clientHeight ?? 0 }
+    const changed =
+      (Object.keys(insets) as (keyof StageInsets)[]).some((k) => insets[k] !== insetsRef.current[k]) ||
+      size.width !== stageSizeRef.current.width ||
+      size.height !== stageSizeRef.current.height
+    insetsRef.current = insets
+    stageSizeRef.current = size
+    const refit = refitRef.current
+    refitRef.current = null
+    if (refit && changed) refit()
+  })
+  /* the camera that fits a world box into the open part of the stage */
+  const fitView = useCallback(
+    (el: HTMLElement, box: { x: number; y: number; width: number; height: number }, maxZoom: number) =>
+      fitBox(box, { width: el.clientWidth, height: el.clientHeight }, insetsRef.current, {
+        min: MIN_ZOOM,
+        max: Math.min(MAX_ZOOM, maxZoom),
+      }),
+    [],
+  )
   const drawing = useCanvasDrawing(ref)
   const worldRef = useRef<HTMLDivElement>(null)
   const gridRef = useRef<HTMLDivElement>(null)
@@ -134,7 +190,14 @@ export function Stage({
   const panMode = useStore((s) => s.panMode)
   /* ⌘. — the tool pill and the zoom pill go with the rest of the chrome */
   const uiHidden = useStore((s) => s.uiHidden)
+  /* ⇧R — phones have no room for rulers (nor a keyboard to ask for them) */
+  const isMobile = useIsMobile()
+  const showRulers = useStore((s) => s.rulers) && !uiHidden && !isMobile
   const tool = useStore((s) => s.tool)
+  /* view links get Select and Hand, comment links add the Comment tool */
+  const role = useStore(roleOf)
+  const readOnly = !roleAllows(role, 'edit')
+  const t = useT()
   const setTool = useStore((s) => s.setTool)
   const [panning, setPanning] = useState(false)
   /* the selection rectangle being dragged out, in world coordinates */
@@ -266,14 +329,14 @@ export function Stage({
       const el = ref.current
       const s = useStore.getState()
       if (!el || !s.following) return
-      const leader = s.presences[s.following]
+      const leaderViewport = s.peerViewports[s.following]
       const cursor = s.cursors[s.following]
       const stage = { width: el.clientWidth, height: el.clientHeight }
-      if (leader?.viewport?.pageId && leader.viewport.pageId !== s.activePageId) {
-        s.setActivePage(leader.viewport.pageId)
+      if (leaderViewport?.pageId && leaderViewport.pageId !== s.activePageId) {
+        s.setActivePage(leaderViewport.pageId)
         useStore.setState({ following: s.following })
       }
-      if (leader?.viewport) target = cameraToFollow(leader.viewport, stage)
+      if (leaderViewport) target = cameraToFollow(leaderViewport, stage)
       else if (cursor) target = cameraOnCursor(cursor, stage, s.viewport.zoom)
       else return
       if (!raf) raf = requestAnimationFrame(step)
@@ -285,7 +348,8 @@ export function Stage({
       }
       const started = s.following !== prev.following
       const moved =
-        s.presences[s.following] !== prev.presences[s.following] || s.cursors[s.following] !== prev.cursors[s.following]
+        s.peerViewports[s.following] !== prev.peerViewports[s.following] ||
+        s.cursors[s.following] !== prev.cursors[s.following]
       if (started || moved) retarget()
     })
     /* the stage growing or shrinking changes what we can see: followers of
@@ -321,16 +385,7 @@ export function Stage({
     }
     const f = currentPageCanvas()?.frames.find((x) => x.id === req.frameId)
     if (!f) return undefined
-    const pad = 80
-    const zoom = Math.min(
-      MAX_ZOOM,
-      Math.max(MIN_ZOOM, Math.min((el.clientWidth - pad * 2) / f.width, (el.clientHeight - pad * 2) / f.height, 1)),
-    )
-    return {
-      x: (el.clientWidth - f.width * zoom) / 2 - f.x * zoom,
-      y: (el.clientHeight - f.height * zoom) / 2 - f.y * zoom,
-      zoom,
-    }
+    return fitView(el, f, 1)
   }
 
   /* a fly-to request (prompt bar): glide the camera to the frame instead of
@@ -366,16 +421,9 @@ export function Stage({
       if (!el) return
       select(f.id)
       focusedPage.current = useStore.getState().activePageId
-      const pad = 80
-      const zoom = Math.min(
-        MAX_ZOOM,
-        Math.max(MIN_ZOOM, Math.min((el.clientWidth - pad * 2) / f.width, (el.clientHeight - pad * 2) / f.height, 1)),
-      )
-      setViewport({
-        x: (el.clientWidth - f.width * zoom) / 2 - f.x * zoom,
-        y: (el.clientHeight - f.height * zoom) / 2 - f.y * zoom,
-        zoom,
-      })
+      const fit = () => setViewport(fitView(el, f, 1))
+      fit()
+      refitRef.current = fit
       const s = useStore.getState()
       s.pickElement(null)
       if (selector) {
@@ -388,7 +436,7 @@ export function Stage({
         s.setInspectorOpen(true)
       }
     },
-    [setViewport, select],
+    [setViewport, select, fitView],
   )
 
   /* centre a canvas comment's pin at 100% on its page and open its thread
@@ -406,35 +454,24 @@ export function Stage({
     [setViewport],
   )
 
-  /* fit a set of frames (with their name labels above) into the view; an
-     empty set resets to the origin at 100% */
+  /* fit a set of frames (with their name labels above) into the open part
+     of the view; an empty set resets to the origin at 100% */
   const fitFrames = useCallback(
     (frames: { x: number; y: number; width: number; height: number }[]) => {
       const el = ref.current
       if (!el) return
-      const boxes = frames.map((f) => ({ x: f.x, y: f.y - 30, w: f.width, h: f.height + 30 }))
-      if (!boxes.length) {
-        setViewport({ x: 80, y: 80, zoom: 1 })
+      if (!frames.length) {
+        const { left, top } = insetsRef.current
+        setViewport({ x: left + 80, y: top + 80, zoom: 1 })
         return
       }
-      const minX = Math.min(...boxes.map((b) => b.x))
-      const minY = Math.min(...boxes.map((b) => b.y))
-      const maxX = Math.max(...boxes.map((b) => b.x + b.w))
-      const maxY = Math.max(...boxes.map((b) => b.y + b.h))
-      const pad = 80
-      const w = el.clientWidth
-      const h = el.clientHeight
-      const zoom = Math.min(
-        MAX_ZOOM,
-        Math.max(MIN_ZOOM, Math.min((w - pad * 2) / (maxX - minX), (h - pad * 2) / (maxY - minY), 1.25)),
-      )
-      setViewport({
-        x: (w - (maxX - minX) * zoom) / 2 - minX * zoom,
-        y: (h - (maxY - minY) * zoom) / 2 - minY * zoom,
-        zoom,
-      })
+      const minX = Math.min(...frames.map((f) => f.x))
+      const minY = Math.min(...frames.map((f) => f.y - 30))
+      const maxX = Math.max(...frames.map((f) => f.x + f.width))
+      const maxY = Math.max(...frames.map((f) => f.y + f.height))
+      setViewport(fitView(el, { x: minX, y: minY, width: maxX - minX, height: maxY - minY }, 1.25))
     },
-    [setViewport],
+    [setViewport, fitView],
   )
 
   const fit = useCallback(() => {
@@ -466,7 +503,8 @@ export function Stage({
     const target = focusId ? useStore.getState().canvas?.frames.find((f) => f.id === focusId) : null
     if (target) {
       deepLinkHandled.current = true
-      focusFrame(target, params?.get('selector') ?? null)
+      const element = params?.get('element')
+      focusFrame(target, isElementId(element) ? elementIdSelector(element) : null)
       return
     }
     const pinned = params ? linkedCanvasComment(params.get('comment')) : null
@@ -614,12 +652,17 @@ export function Stage({
 
   /* ⌘0 → 100%, ⌘+ / ⌘− → step zoom, all pivoting on the view center —
      preventDefault keeps the browser's own page zoom out of it. ⇧1 / ⇧2 fit
-     everything / the selection, as in Figma. */
+     everything / the selection and ⇧R shows or hides the rulers, as in Figma. */
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const t = e.target as HTMLElement
       if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable) return
       if (e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (e.key.toLowerCase() === 'r') {
+          e.preventDefault()
+          if (!e.repeat) useStore.getState().toggleRulers()
+          return
+        }
         /* by code: ⇧1 types '!' on most layouts, so the key name is no use */
         if (e.code !== 'Digit1' && e.code !== 'Digit2') return
         e.preventDefault()
@@ -642,6 +685,22 @@ export function Stage({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [fit, fitSelection])
+
+  /* the same zooms from the desktop shell's View menu */
+  useEffect(
+    () =>
+      onViewCommand((command) => {
+        const el = ref.current
+        if (!el) return
+        const zoom = useStore.getState().viewport.zoom
+        if (command === 'zoom-in') zoomCentered(el, zoom * 1.25)
+        else if (command === 'zoom-out') zoomCentered(el, zoom / 1.25)
+        else if (command === 'zoom-reset') zoomCentered(el, 1)
+        else if (command === 'zoom-fit') fit()
+        else if (command === 'zoom-selection') fitSelection()
+      }),
+    [fit, fitSelection],
+  )
 
   function toWorld(clientX: number, clientY: number) {
     const rect = ref.current!.getBoundingClientRect()
@@ -738,7 +797,7 @@ export function Stage({
     /* the composer hangs beside the pin on whichever side keeps it on the
        visible stage (the side panel overlays the stage's right edge) */
     const rect = e.currentTarget.getBoundingClientRect()
-    const placement = placeComposer(e.clientX, rect.left, rect.right - rightInset)
+    const placement = placeComposer(e.clientX, rect.left, rect.right - insets.right)
     function onUp(ev: PointerEvent) {
       window.removeEventListener('pointerup', onUp)
       if (Math.abs(ev.clientX - origin.x) + Math.abs(ev.clientY - origin.y) > 3) return
@@ -851,6 +910,7 @@ export function Stage({
                         : 'cursor-crosshair! [&_:not([data-comment-ui]_*)]:cursor-crosshair!'
                       : 'cursor-default',
             )}
+            style={bounds}
             onPointerDownCapture={drawing.onPointerDown}
             onDoubleClickCapture={drawing.onDoubleClick}
             onTouchStartCapture={drawing.onTouchStart}
@@ -861,7 +921,8 @@ export function Stage({
                  here is the empty canvas — except a right-click on a frame's
                  chrome overlay, which is not a menu target at all */
               const isBackground = e.target === e.currentTarget || (e.target as HTMLElement).classList.contains('world')
-              if (!isBackground) return e.preventDefault()
+              /* Paste and New frame are both edits */
+              if (!isBackground || readOnly) return e.preventDefault()
               /* Paste drops the frame where the click landed. The menu's own
                  box is not that point: Radix positions it after mount, and
                  flips it away from a viewport edge. */
@@ -874,8 +935,7 @@ export function Stage({
               className="pointer-events-none absolute left-0 top-0 origin-top-left will-change-transform [background-image:radial-gradient(circle,var(--dot)_1.2px,transparent_1.2px)]"
               ref={gridRef}
             />
-            {/* frame names, in screen px (FrameLabelLayer): under the world,
-                so a frame dragged over another's name covers it as before */}
+            {/* the selected frame's size badge, in screen px (FrameLabelLayer) */}
             <div className="pointer-events-none absolute inset-0" ref={setLabelLayer} />
             {/* `world` is likewise a behaviour hook: pan hit-testing checks
             classList.contains('world') to tell background from frame */}
@@ -894,6 +954,8 @@ export function Stage({
               </FrameLabelLayer.Provider>
               <GhostFrames />
               <FlowOverlay />
+              <GuideLines stage={ref} />
+              <PrototypeOverlay />
               <SnapGuides />
               <CanvasComments composeAt={composeAt} onComposeDone={dismissCompose} />
               <Cursors />
@@ -912,6 +974,7 @@ export function Stage({
               className="pointer-events-none absolute left-0 top-0 h-[calc(100%+16px)] w-[calc(100%+16px)] origin-top-left will-change-transform [--pixel-line:rgb(128_128_128/0.16)] [background-image:linear-gradient(to_right,var(--pixel-line)_1px,transparent_1px),linear-gradient(to_bottom,var(--pixel-line)_1px,transparent_1px)]"
               ref={pixelGridRef}
             />
+            {showRulers && <Rulers stage={ref} />}
           </div>
         </ContextMenuTrigger>
         <FollowFrame />
@@ -923,6 +986,7 @@ export function Stage({
           className={cn(
             'absolute bottom-[calc(8px+env(safe-area-inset-bottom))] left-1/2 z-[35] -translate-x-1/2 sm:bottom-4',
             'md:top-[calc(var(--chrome-top,0px)+10px)] md:bottom-auto md:left-[var(--rail-left,14px)] md:translate-x-0 md:transition-[left] md:duration-150',
+            docked && 'md:top-[var(--chrome-top,0px)] md:bottom-0',
             uiHidden && 'hidden',
           )}
         >
@@ -933,12 +997,12 @@ export function Stage({
             >
               <span>
                 {tool === 'path'
-                  ? 'Click for corners · Drag for curves · Snap to points · Enter to finish'
+                  ? t('stage.hintPath')
                   : tool === 'text'
-                    ? `Click or drag, then type · ${MOD_KEY}Enter to save`
+                    ? t('stage.hintText', { mod: MOD_KEY })
                     : tool === 'circle'
-                      ? 'Drag to draw a circle · Esc to cancel'
-                      : 'Drag to draw · Shift for a square · Esc to cancel'}
+                      ? t('stage.hintCircle')
+                      : t('stage.hintShape')}
               </span>
               {drawing.pathActive && (
                 <>
@@ -948,31 +1012,43 @@ export function Stage({
                     disabled={!drawing.canFinishPath}
                     onClick={drawing.finish}
                   >
-                    Finish path
+                    {t('stage.finishPath')}
                   </button>
                   <button type="button" onClick={drawing.cancel}>
-                    Cancel
+                    {t('common.cancel')}
                   </button>
                 </>
               )}
             </div>
           )}
-          <Toolbar aria-label="Canvas tools" className="md:w-10 md:flex-col">
+          <Toolbar
+            aria-label={t('stage.canvasTools')}
+            className={cn(
+              'md:w-10 md:flex-col',
+              docked && 'md:h-full md:rounded-none md:border-r md:border-line-soft md:shadow-none',
+            )}
+          >
             {/* one fill slides between tools; the buttons themselves stay
                 transparent so the pill is the only thing that moves */}
             <ToolbarHighlight activeKey={tool} />
-            {TOOLS.map((t) => (
-              <Tooltip key={t.id} label={`${t.label} (${t.key})`} side="right">
+            {TOOLS.filter((entry) => entry.id !== 'comment' && toolAllowed(entry.id, role)).map((entry) => (
+              <Tooltip
+                key={entry.id}
+                label={t('stage.toolTooltip', { label: t(entry.label), key: entry.key })}
+                side="right"
+              >
                 <ToolbarButton
-                  aria-label={t.label}
-                  aria-pressed={tool === t.id}
+                  aria-label={t(entry.label)}
+                  aria-pressed={tool === entry.id}
                   className="relative z-[1] hover:bg-transparent aria-pressed:text-ink"
-                  onClick={() => setTool(t.id)}
+                  onClick={() => setTool(entry.id)}
                 >
-                  {TOOL_ICONS[t.id]}
+                  {TOOL_ICONS[entry.id]}
                 </ToolbarButton>
               </Tooltip>
             ))}
+            <ToolbarDivider className="md:mx-0 md:my-1 md:h-px md:w-[18px]" />
+            <ModeSwitch canComment={toolAllowed('comment', role)} />
           </Toolbar>
         </div>
 
@@ -992,13 +1068,79 @@ export function Stage({
               disabled={!hasFrameClip()}
               onSelect={() => pasteFrameAtScreen(canvas.id, bgAt.current.x, bgAt.current.y)}
             >
-              Paste
+              {t('stage.paste')}
               <MenuHint>{MOD_KEY}V</MenuHint>
             </ContextMenuItem>
-            <ContextMenuItem onSelect={onAddFrame}>New frame</ContextMenuItem>
+            <ContextMenuItem onSelect={onAddFrame}>{t('stage.newFrame')}</ContextMenuItem>
           </ContextMenuContent>
         )}
       </ContextMenu>
     </>
+  )
+}
+
+type Mode = 'edit' | 'prototype' | 'comment'
+
+const MODES: { id: Mode; label: PlainMessageKey; icon: React.ReactNode }[] = [
+  { id: 'edit', label: 'stage.modeEdit', icon: <EditModeIcon /> },
+  { id: 'prototype', label: 'stage.modePrototype', icon: <PrototypeModeIcon /> },
+  { id: 'comment', label: 'stage.modeComment', icon: <CommentIcon /> },
+]
+
+/** The rail's foot: Edit, Prototype or Comment mode. Comment mode is the
+ *  Comment tool (C picks it, Esc drops it back to Select); the other two are
+ *  `prototypeMode` with any other tool. Radios, not pressed buttons, so the
+ *  tool highlight (which follows `aria-pressed`) never lands on them; the
+ *  chosen mode wears a ring instead of the sliding fill. Like any radio
+ *  group it is one tab stop, and the arrow keys move and pick. The phone
+ *  strip has no room for all three at touch size, so it keeps Comment only
+ *  (any tool leaves it; Prototype mode moves to the canvas actions sheet). */
+function ModeSwitch({ canComment }: { canComment: boolean }) {
+  const t = useT()
+  const mode = useStore((s): Mode => (s.tool === 'comment' ? 'comment' : s.prototypeMode ? 'prototype' : 'edit'))
+  const pick = (next: Mode) => {
+    const s = useStore.getState()
+    if (next === 'comment') return s.setTool('comment')
+    s.setPrototypeMode(next === 'prototype')
+    if (s.tool === 'comment') s.setTool('select')
+  }
+  const modes = MODES.filter((m) => m.id !== 'comment' || canComment)
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const step =
+      e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1 : e.key === 'ArrowUp' || e.key === 'ArrowLeft' ? -1 : 0
+    if (!step) return
+    e.preventDefault()
+    /* only the visible radios: the phone strip hides Edit and Prototype */
+    const radios = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="radio"]')].filter((r) => r.offsetParent)
+    const at = radios.indexOf(document.activeElement as HTMLElement)
+    const next = radios[(at + step + radios.length) % radios.length]
+    next?.focus()
+    next?.click()
+  }
+  return (
+    <div
+      role="radiogroup"
+      aria-label={t('stage.canvasMode')}
+      className="flex items-center gap-0.5 md:flex-col"
+      onKeyDown={onKeyDown}
+    >
+      {modes.map((m) => (
+        <Tooltip key={m.id} label={t(m.label)} side="right">
+          <ToolbarButton
+            role="radio"
+            aria-label={t(m.label)}
+            aria-checked={mode === m.id}
+            tabIndex={mode === m.id ? 0 : -1}
+            className={cn(
+              'aria-checked:bg-surface aria-checked:text-ink aria-checked:shadow-ring',
+              m.id !== 'comment' && 'max-sm:hidden',
+            )}
+            onClick={() => pick(m.id)}
+          >
+            {m.icon}
+          </ToolbarButton>
+        </Tooltip>
+      ))}
+    </div>
   )
 }

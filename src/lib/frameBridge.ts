@@ -4,6 +4,20 @@
  * page (the element properties panel) reaches the live document through
  * these calls instead of holding an iframe ref of its own.
  */
+import type { DropTarget, FlowPlacement } from './layers'
+import type { Interaction } from '../../shared/prototype'
+
+export interface LayoutDrop {
+  target: DropTarget
+  styles: FlowPlacement
+  container: ElementInfo['rect']
+  line: ElementInfo['rect']
+}
+
+export async function elementMoveTarget(frameId: string, selector: string, x: number, y: number) {
+  const reply = await requestFrame(frameId, 'doop:move-target', { selector, x, y })
+  return reply?.result as { free: boolean; drop: LayoutDrop | null } | undefined
+}
 
 /** The runtime's summary of one element: computed styles resolved to what
  *  the Design panel shows, plus the inline styles the element already carries.
@@ -65,6 +79,7 @@ export interface ElementInfo {
   visibility: string
   clipsContent: boolean
   backgroundColor: string
+  image: { kind: 'img' | 'background'; src: string; size: string; repeat: string } | null
   /** top, right, bottom, left */
   borderWidths: [number | null, number | null, number | null, number | null]
   /** style and colour of the first side that draws */
@@ -86,9 +101,20 @@ export type StylePatch = Record<string, string | null>
 
 export type GeometryEdit =
   | { kind: 'position'; axis: 'x' | 'y'; value: number }
+  /** Move both axes together to a rendered position in frame pixels. */
+  | { kind: 'move'; x: number; y: number }
   | { kind: 'align'; axis: 'x' | 'y'; edge: 'start' | 'center' | 'end' }
   | { kind: 'rotate'; value: number }
   | { kind: 'flip'; axis: 'x' | 'y' }
+  | { kind: 'nudge'; dx: number; dy: number }
+
+export function nudgeElements(frameId: string, selectors: string[], dx: number, dy: number) {
+  return requestFrame(frameId, 'doop:nudge', { selectors, dx, dy })
+}
+
+export function settleFrames() {
+  return Promise.all([...windows.keys()].map((frameId) => requestFrame(frameId, 'doop:settle', {})))
+}
 
 export async function editElementGeometry(
   frameId: string,
@@ -141,7 +167,45 @@ export function registerFrameWindow(frameId: string, win: Window) {
 }
 
 export function unregisterFrameWindow(frameId: string, win: Window) {
-  if (windows.get(frameId) === win) windows.delete(frameId)
+  if (windows.get(frameId) !== win) return
+  windows.delete(frameId)
+  shownDocuments.delete(frameId)
+}
+
+/* The HTML each frame's runtime has acknowledged showing; absent while a
+   newer document is still on its way there. */
+const shownDocuments = new Map<string, string>()
+const documentListeners = new Map<string, Set<() => void>>()
+
+/** Record what the frame's runtime shows: the acknowledged HTML, or null
+ *  once a newer document has been posted and not yet acknowledged. */
+export function noteFrameDocument(frameId: string, html: string | null) {
+  if (html === null) shownDocuments.delete(frameId)
+  else shownDocuments.set(frameId, html)
+  documentListeners.get(frameId)?.forEach((cb) => cb())
+}
+
+/** Resolve true once the frame's runtime shows `html`, false if it does not
+ *  within the reply timeout. The store can run ahead of the frame's
+ *  throttled render, and a hit test on the older document would name its
+ *  elements, not the ones `html` has in those places. */
+export function frameShows(frameId: string, html: string): Promise<boolean> {
+  if (shownDocuments.get(frameId) === html) return Promise.resolve(true)
+  return new Promise((resolve) => {
+    const set = documentListeners.get(frameId) ?? new Set()
+    documentListeners.set(frameId, set)
+    const done = (shown: boolean) => {
+      window.clearTimeout(timer)
+      set.delete(check)
+      if (set.size === 0 && documentListeners.get(frameId) === set) documentListeners.delete(frameId)
+      resolve(shown)
+    }
+    const check = () => {
+      if (shownDocuments.get(frameId) === html) done(true)
+    }
+    const timer = window.setTimeout(() => done(false), REPLY_TIMEOUT_MS)
+    set.add(check)
+  })
 }
 
 /** Re-read after the runtime registers, renders HTML, or loads font faces.
@@ -194,6 +258,30 @@ export async function inspectElement(frameId: string, selector: string): Promise
  *  element's fresh properties. */
 export async function styleElement(frameId: string, selector: string, styles: StylePatch): Promise<ElementInfo | null> {
   return infoOf(await requestFrame(frameId, 'doop:style', { selector, styles }))
+}
+
+/** Replace image content through the same live edit/undo path as styles. */
+export async function replaceElementImage(
+  frameId: string,
+  selector: string,
+  image: NonNullable<ElementInfo['image']>,
+  url: string,
+): Promise<ElementInfo | null> {
+  return infoOf(await requestFrame(frameId, 'doop:replace-image', { selector, image, url }))
+}
+
+/** One element with interactions, as the frame runtime reports it. */
+export interface ScannedHotspot {
+  selector: string
+  rect: ElementInfo['rect']
+  interactions: Interaction[]
+}
+
+/** Every element of the live document that carries prototype interactions,
+ *  including ones a script created; empty when the frame is not mounted. */
+export async function scanHotspots(frameId: string): Promise<ScannedHotspot[]> {
+  const reply = await requestFrame(frameId, 'doop:proto-scan', {})
+  return Array.isArray(reply?.items) ? (reply.items as ScannedHotspot[]) : []
 }
 
 /** Preview a whole scrub locally, then save once or restore its original CSS. */
