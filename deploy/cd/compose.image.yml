@@ -1,0 +1,7 @@
+# Overlay for the C00 compose project (CHE-4585): run an image that already exists
+# instead of building one. DOOP_IMAGE is always a digest ref or the rollback tag;
+# `deploy/cd/c00.sh` sets it and refuses to start without it.
+services:
+  app:
+    image: ${DOOP_IMAGE:?set by deploy/cd/c00.sh}
+    pull_policy: never

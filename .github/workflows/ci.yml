@@ -5,6 +5,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # image.yml gates the image build on this exact suite rather than copying it
+  workflow_call:
 
 # A new push to the same PR supersedes the run in flight; main is never cancelled.
 concurrency:

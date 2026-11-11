@@ -23,14 +23,30 @@ Both packages are 0.x, so breaking changes bump the minor, not the major. With t
 
 ## Self-hosted server (Docker)
 
-No container release pipeline for the server app. Self-hosting is
-`docker compose up` (`docker-compose.yml` + `Dockerfile`) - builds the app image locally, runs it
+Self-hosting is `docker compose up` (`docker-compose.yml` + `Dockerfile`) - builds the app image locally, runs it
 on port 4400 alongside a `postgres:16-alpine` container, and applies DB migrations at boot
 (`server/db/index.ts`). CI (`ci.yml`) validates every push/PR to `main` (typecheck, lint,
 format:check, build, test) but does not build or push a container image.
 The CI build uses `bun run --bun build` to match the `oven/bun` Docker build stage,
 where `node` commands run with Bun. Extension tests also build with both runtimes
 and run the Bun-built archive under Node, including its nested runtime dependencies.
+
+### Image publish (`image.yml`, CD slice A)
+
+A push to `cheese/main` (or a manual dispatch) runs `ci.yml` as a reusable workflow, then builds the
+`Dockerfile` on a GitHub runner and pushes `ghcr.io/<repo>:<sha>`. The image's identity is its digest:
+`scripts/image-evidence.mjs` writes `image-evidence.json` (`image`, `digest`, `ref` =
+`image@digest`, `sha`, `run_url`) and the run uploads it as the `image-evidence` artifact. The script
+exits non-zero on an empty or non-sha256 digest, so a failed push leaves no evidence. Nothing builds
+on a deploy host. Fork runs skip the push.
+
+### C00 deploy (`image.yml`, CD slice B)
+
+After `image`, the `gate` job lets the merger of `cheese/main` (`congvc-dev` or a login in
+`C00_DEPLOY_AUTHORIZERS`) through; anyone else builds and stops. `MAIN_RED_PAUSED` pauses it and a failed
+deploy suspends it. The `deploy` job then runs on the `cheese-c00-deploy` runner: pull the digest, start
+it, read back digest, SHA label and health within 15 minutes, and on failure roll back to the previous
+image. Setup and rules: [`deploy/cd/README.md`](../deploy/cd/README.md).
 
 ## Desktop app (Tauri: macOS DMG + Windows NSIS installer + Linux AppImage/.deb/.rpm)
 

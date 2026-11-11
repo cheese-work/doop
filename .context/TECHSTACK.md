@@ -292,6 +292,8 @@
     and `test` (four vitest shards) as parallel jobs on push to `main` and on PRs, cancelling
     superseded PR runs; a separate job lints the PR title with commitlint (PRs land on
     `main` as a squash, so the PR title becomes the commit subject).
+  - `.github/workflows/image.yml` - on push to `cheese/main`: reuses `ci.yml`, builds the `Dockerfile`
+    on a GitHub runner, pushes to GHCR and uploads the digest + source SHA as `image-evidence`.
   - `.github/workflows/cla.yml` - CLA check (this is an AGPL-3.0 project with CLA-based
     contribution).
   - `.github/workflows/desktop.yml` / `desktop-release.yml` - Tauri desktop app CI and installer
