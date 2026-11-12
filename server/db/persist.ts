@@ -374,7 +374,24 @@ async function writeFrame(f: Frame) {
     deletedAt: f.deletedAt ?? null,
   }
   const { id, createdAt, ...set } = row
-  await db.insert(t.frames).values(row).onConflictDoUpdate({ target: t.frames.id, set })
+  /* Second line of the frame lock (the first is `store.updateFrame`): when the
+     stored row and this frame are both locked, html, width and height keep their
+     stored values, decided inside the one upsert statement. An unlock saved with
+     its next edit carries `locked: false` and lands whole. */
+  const keepWhileLocked = (column: typeof t.frames.html | typeof t.frames.width | typeof t.frames.height) =>
+    sql`CASE WHEN ${t.frames.locked} IS TRUE AND excluded.locked IS TRUE THEN ${column} ELSE excluded.${sql.identifier(column.name)} END`
+  await db
+    .insert(t.frames)
+    .values(row)
+    .onConflictDoUpdate({
+      target: t.frames.id,
+      set: {
+        ...set,
+        html: keepWhileLocked(t.frames.html),
+        width: keepWhileLocked(t.frames.width),
+        height: keepWhileLocked(t.frames.height),
+      },
+    })
   await syncAssetRefs(f.id, f.html)
 }
 

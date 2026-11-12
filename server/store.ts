@@ -37,6 +37,27 @@ export class GuideLimitError extends Error {
   }
 }
 
+/** Frame columns a lock protects. `store.updateFrame` and `persist.writeFrame` share this list. */
+export const DESIGN_KEYS = ['html', 'width', 'height'] as const
+
+/** A write to a locked frame's html or size. Unlock first (a separate, logged action). */
+export class FrameLockedError extends Error {
+  override readonly name = 'FrameLockedError'
+  constructor(frame: Pick<Frame, 'id' | 'name'>) {
+    super(`Frame "${frame.name}" (${frame.id}) is locked: its HTML and size cannot be changed until it is unlocked.`)
+  }
+}
+
+/** A conditional write whose `expectedUpdatedAt` no longer matches the frame. Carries the current frame. */
+export class FrameStaleError extends Error {
+  override readonly name = 'FrameStaleError'
+  constructor(readonly frame: Frame) {
+    super(
+      `Frame "${frame.name}" (${frame.id}) changed since you read it (updatedAt is ${frame.updatedAt}). Re-read it and retry.`,
+    )
+  }
+}
+
 /** A write reached a frame that sits in the trash (CHE-5306). The message
  *  names the frame so a person or an agent knows what to restore. */
 export class FrameDeletedError extends Error {
@@ -742,18 +763,27 @@ class Store {
       /** the html change only marks elements up (a `data-doop-id` stamp):
        *  nothing a reviewer signed off on moved, so sign-off stands */
       annotation?: boolean
+      /** conditional write: refused with `FrameStaleError` unless the frame's
+       *  `updatedAt` is still this value, so a writer that read an old version
+       *  cannot overwrite a newer one */
+      expectedUpdatedAt?: number
     } = {},
   ): Frame | undefined {
     const frame = this.writableFrame(frameId)
     if (!frame) return undefined
+    // The one guard for frame html, width and height (every actor, every path).
+    // Synchronous: the check and the write below share one tick, so a lock
+    // cannot land between them. Name, position and the lock itself stay open.
+    if (frame.locked && DESIGN_KEYS.some((key) => patch[key] !== undefined)) throw new FrameLockedError(frame)
+    if (opts.expectedUpdatedAt !== undefined && opts.expectedUpdatedAt !== frame.updatedAt)
+      throw new FrameStaleError(frame)
     if (
       patch.pageId !== undefined &&
       !canvasPages(this.canvases.get(frame.canvasId)!).some((p) => p.id === patch.pageId)
     )
       return undefined
     const designChanged =
-      !opts.annotation &&
-      (['html', 'width', 'height'] as const).some((key) => patch[key] !== undefined && patch[key] !== frame[key])
+      !opts.annotation && DESIGN_KEYS.some((key) => patch[key] !== undefined && patch[key] !== frame[key])
     Object.assign(frame, patch)
     // All writers (including streams, sync and restores) invalidate sign-off.
     if (designChanged && frame.approval?.status === 'ready_for_dev') {

@@ -567,6 +567,8 @@ export async function ensureElementId(
   if (!frame || isFrameStreaming(frameId)) return undefined
   const stamped = stampElementId(frame.html, selector.slice(0, MAX_ELEMENT_SELECTOR_CHARS), { like })
   if (!stamped) return undefined
+  /* a lock freezes the HTML, stamps included: the comment falls back to the frame */
+  if (frame.locked && stamped.html !== frame.html) return undefined
   if (stamped.html === frame.html) {
     if (!(await stampSaved(frameId, stamped.id))) return undefined
     /* the frame may have been deleted while the write was awaited */
@@ -667,8 +669,10 @@ export async function backfillElementIds(
   for (const [frameId, rows] of byFrame) {
     const found: Array<{ comment: ElementComment; id: string }> = []
     const lost: ElementComment[] = []
-    let html = store.getFrame(frameId)?.html
-    if (html === undefined) continue
+    const current = store.getFrame(frameId)
+    /* a locked frame cannot take stamps: its rows stay legacy until it is unlocked */
+    if (!current || current.locked) continue
+    let html = current.html
     for (const { comment, selector } of rows) {
       try {
         const result = stampElementId(html, selector)
@@ -1540,13 +1544,14 @@ export async function restoreFrameVersion(
   const replaced = { html: before.html, width: before.width, height: before.height }
   if (before.html === version.html && before.width === version.width && before.height === version.height)
     return { frame: before, replaced }
+  const prior = priorState(before)
+  const patch = { html: version.html, width: version.width, height: version.height }
+  /* throws FrameLockedError before anything below runs: a locked frame keeps its stream and playback */
+  const frame = store.updateFrame(frameId, patch, actor.name)
+  if (!frame) return undefined
   /* whoever restores takes over: any live stream or playback ends */
   finishStream(frameId, false)
   finishReveal(frameId)
-  const prior = priorState(before)
-  const patch = { html: version.html, width: version.width, height: version.height }
-  const frame = store.updateFrame(frameId, patch, actor.name)
-  if (!frame) return undefined
   noteHtmlChange(prior, actor, false)
   broadcast(frame.canvasId, { type: 'frame:updated', frame, actor })
   logActivity(frame.canvasId, actor, `restored “${frame.name}” to an earlier version by ${version.savedBy}`, frame.id)
@@ -1690,7 +1695,7 @@ export function appendFrameHtml(
   frameId: string,
   chunk: string,
   actor: Actor,
-  opts: { start?: boolean; done?: boolean } = {},
+  opts: { start?: boolean; done?: boolean; expectedUpdatedAt?: number } = {},
 ): Frame | undefined {
   const before = store.writableFrame(frameId)
   if (!before) return undefined
@@ -1703,7 +1708,7 @@ export function appendFrameHtml(
   const piece = escaped ? decodeEscapedHtml(chunk) : chunk
   const html = opts.start ? piece : before.html + piece
   const prior = priorState(before)
-  const frame = store.updateFrame(frameId, { html }, actor.name)!
+  const frame = store.updateFrame(frameId, { html }, actor.name, { expectedUpdatedAt: opts.expectedUpdatedAt })!
   /* the opening chunk replaces the design; every later one extends this burst */
   noteHtmlChange(prior, actor, !starting)
 
@@ -1817,7 +1822,7 @@ export function updateFrame(
   frameId: string,
   patch: Partial<Pick<Frame, 'name' | 'pageId' | 'x' | 'y' | 'width' | 'height' | 'html' | 'hidden' | 'locked'>>,
   actor: Actor,
-  opts: { replace?: boolean } = {},
+  opts: { replace?: boolean; expectedUpdatedAt?: number } = {},
 ): Frame | undefined {
   const before = store.writableFrame(frameId)
   if (!before) return undefined
@@ -1827,7 +1832,7 @@ export function updateFrame(
   const prevHidden = !!before.hidden
   const prevLocked = !!before.locked
   const prior = priorState(before)
-  const frame = store.updateFrame(frameId, patch, actor.name)
+  const frame = store.updateFrame(frameId, patch, actor.name, { expectedUpdatedAt: opts.expectedUpdatedAt })
   if (!frame) return undefined
 
   const htmlChanged = patch.html !== undefined && patch.html !== prevHtml

@@ -59,9 +59,13 @@ describe('frame lock activity', () => {
     expect(messages()).toContain('renamed “Hero” to “Hero v2”')
     expect(messages()).toContain('locked “Hero v2”')
 
-    actions.updateFrame(frame.id, { html: '<h1>Hi</h1>', locked: false }, user)
-    expect(messages()).toContain('updated the design of “Hero v2”')
-    expect(messages()).toContain('unlocked “Hero v2”')
+    /* a locked frame refuses html even when the same update unlocks it: unlock first, then write */
+    expect(() => actions.updateFrame(frame.id, { html: '<h1>Hi</h1>', locked: false }, user)).toThrow(/locked/)
+    actions.updateFrame(frame.id, { name: 'Hero v3', locked: false }, user)
+    expect(messages()).toContain('renamed “Hero v2” to “Hero v3”')
+    expect(messages()).toContain('unlocked “Hero v3”')
+    actions.updateFrame(frame.id, { html: '<h1>Hi</h1>' }, user)
+    expect(messages()).toContain('updated the design of “Hero v3”')
   })
 
   it('stays quiet when the lock does not change', () => {
