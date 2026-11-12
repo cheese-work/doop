@@ -171,6 +171,15 @@
   that version without recording an undo step. Frame timestamps advance monotonically, even
   for multiple writes in the same millisecond, so concurrent saves cannot share a version.
   Delayed HTTP save responses cannot replace a newer frame received through the room.
+- Frame lock (`locked: true`): `Store.updateFrame` is the one guard for a frame's `html`, `width`
+  and `height`. It is synchronous, so the lock check and the write share one tick, and it throws
+  `FrameLockedError` before changing anything, for every actor and path (REST, MCP, restore,
+  streamed append, element-id stamping). Rename, move, hide and unlock still pass. REST answers 423
+  and MCP an error naming the frame. `expectedUpdatedAt` on `updateFrame` / `appendFrameHtml` throws
+  `FrameStaleError` on a mismatch (REST append: 412; PATCH keeps 409; MCP `expected_updated_at`
+  on set / edit / append). `persist.writeFrame` keeps the stored html and size while both the stored
+  and the incoming row are locked. `tests/frameLockGuard.test.ts` scans `server/` so a new writer of
+  those columns outside the guard fails the build.
 - Saves are serialized, tracked by undo/redo, and scoped to the originating canvas/page. Each
   completed gesture has its own undo entry. The Layers panel shows the drawing's `data-name`.
   Completed saves survive navigation; unfinished drafts are cancelled. Drawing shortcuts leave
