@@ -197,8 +197,28 @@ export const frameVersions = pgTable(
     /** 'user' | 'agent'; null when the author's kind was not known (a state
      *  authored before the server last booted) */
     savedByKind: text('saved_by_kind'),
+    /** the caller's `version_name` of a keyed write; null for an automatic burst snapshot */
+    name: text('name'),
   },
   (t) => [index('frame_versions_frame_idx').on(t.frameId), index('frame_versions_canvas_idx').on(t.canvasId)],
+)
+
+/** Idempotency keys of frame HTML writes (set/edit/append). One row per
+ *  (frame, key), written in the same transaction as the html, the size and the
+ *  named version, so a key exists exactly when its write committed. `payload_hash`
+ *  tells a retry (same hash: answer with the stored result) from a clash (other
+ *  hash: refused); `result` is the first answer, replayed verbatim. */
+export const frameWriteKeys = pgTable(
+  'frame_write_keys',
+  {
+    frameId: text('frame_id').notNull(),
+    key: text('key').notNull(),
+    payloadHash: text('payload_hash').notNull(),
+    versionId: text('version_id').notNull(),
+    result: jsonb('result').$type<{ updatedAt: number; htmlBytes: number }>().notNull(),
+    createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.frameId, t.key] })],
 )
 
 /** Design-sync keys: the write-only capability behind the /ingest endpoint.

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { nanoid } from 'nanoid'
 import { store } from './store.ts'
 import * as persist from './db/persist.ts'
@@ -1703,6 +1704,139 @@ export function appendFrameHtml(
 
   touch(frame.canvasId, actor, frameId)
   return frame
+}
+
+/* ------------------------------------------------------------------ */
+/* Idempotent frame HTML writes: at most once per (frame, idempotency key),
+   decided at the database. The key row, the frame row and a named version
+   commit in one transaction (persist.commitKeyedFrameWrite). */
+
+export class FrameWriteKeyConflictError extends Error {
+  constructor(key: string) {
+    super(`idempotency_key "${key}" was already used for a different write to this frame; send a new key`)
+  }
+}
+
+/** an edit_frame_html whose old_str is missing or ambiguous in the frame's html */
+export class FrameEditError extends Error {}
+
+export type FrameWriteRequest = (
+  | { op: 'set'; html: string }
+  | { op: 'edit'; oldStr: string; newStr: string }
+  | { op: 'append'; chunk: string; start?: boolean; done?: boolean }
+) & { key: string; versionName?: string; expectedUpdatedAt?: number }
+
+export type FrameWriteResult = {
+  /** true when an earlier write under this key answered; nothing was written now */
+  replay: boolean
+  versionId: string
+  updatedAt: number
+  htmlBytes: number
+  /** the frame as this write left it; absent on a replay (it may have changed since) */
+  frame?: Frame
+}
+
+/** One arbiter per (frame, key): a second call with the same key waits for the
+ *  first, then finds its row. The unique index backs it for other instances. */
+const keyedWrites = new Map<string, Promise<unknown>>()
+
+export function writeFrameHtmlOnce(
+  frameId: string,
+  req: FrameWriteRequest,
+  actor: Actor,
+): Promise<FrameWriteResult | undefined> {
+  const id = `${frameId}\0${req.key}`
+  const run = () => applyKeyedWrite(frameId, req, actor)
+  const queued = (keyedWrites.get(id) ?? Promise.resolve()).then(run, run)
+  keyedWrites.set(id, queued)
+  const release = () => {
+    if (keyedWrites.get(id) === queued) keyedWrites.delete(id)
+  }
+  queued.then(release, release)
+  return queued
+}
+
+function payloadHash(req: FrameWriteRequest): string {
+  const { key: _key, expectedUpdatedAt: _expected, ...payload } = req
+  return createHash('sha256').update(JSON.stringify(payload)).digest('hex')
+}
+
+function replayOf(row: persist.FrameWriteKeyRow, hash: string, key: string): FrameWriteResult {
+  if (row.payloadHash !== hash) throw new FrameWriteKeyConflictError(key)
+  return { replay: true, versionId: row.versionId, ...row.result }
+}
+
+async function applyKeyedWrite(
+  frameId: string,
+  req: FrameWriteRequest,
+  actor: Actor,
+): Promise<FrameWriteResult | undefined> {
+  const before = store.getFrame(frameId)
+  if (!before) return undefined
+  const hash = payloadHash(req)
+  /* the key is read first: a replay is not refused because the frame moved on or got locked */
+  const earlier = await persist.findFrameWriteKey(frameId, req.key)
+  if (earlier) return replayOf(earlier, hash, req.key)
+
+  /* from here to the first await the frame is checked and written in one tick: lock guard, then expectedUpdatedAt */
+  const snapshot = {
+    html: before.html,
+    width: before.width,
+    height: before.height,
+    updatedAt: before.updatedAt,
+    updatedBy: before.updatedBy,
+    approval: before.approval,
+  }
+  const opts = { expectedUpdatedAt: req.expectedUpdatedAt }
+  let frame: Frame | undefined
+  if (req.op === 'set') {
+    frame = updateFrame(frameId, { html: req.html }, actor, { replace: true, ...opts })
+  } else if (req.op === 'edit') {
+    const count = before.html.split(req.oldStr).length - 1
+    if (count === 0)
+      throw new FrameEditError('old_str not found in the frame HTML. Call get_frame to see the current content.')
+    if (count > 1)
+      throw new FrameEditError(
+        `old_str occurs ${count} times — include more surrounding context so it matches exactly once.`,
+      )
+    frame = updateFrame(frameId, { html: before.html.replace(req.oldStr, req.newStr) }, actor, opts)
+  } else {
+    frame = appendFrameHtml(frameId, req.chunk, actor, { start: req.start, done: req.done, ...opts })
+  }
+  if (!frame) return undefined
+
+  const versionId = nanoid(10)
+  const result = { updatedAt: frame.updatedAt, htmlBytes: frame.html.length }
+  const applied = frame.updatedAt
+  let raced: persist.FrameWriteKeyRow | undefined
+  try {
+    raced = await persist.commitKeyedFrameWrite(frame, {
+      key: req.key,
+      payloadHash: hash,
+      versionId,
+      versionName: req.versionName,
+      savedByKind: actor.kind,
+      result,
+    })
+  } catch (e) {
+    revertKeyedWrite(frame, snapshot, applied, actor)
+    throw e
+  }
+  if (raced) {
+    revertKeyedWrite(frame, snapshot, applied, actor)
+    return replayOf(raced, hash, req.key)
+  }
+  return { replay: false, versionId, ...result, frame }
+}
+
+/** The transaction did not commit, so the write must not stay visible: put the
+ *  frame back unless another writer has already built on it. */
+function revertKeyedWrite(frame: Frame, snapshot: Partial<Frame>, applied: number, actor: Actor) {
+  const mine = frame.updatedAt === applied
+  if (mine) Object.assign(frame, snapshot)
+  /* the commit path cancelled any pending write of this frame, so schedule one for what stays */
+  persist.saveFrame(frame)
+  if (mine) broadcast(frame.canvasId, { type: 'frame:updated', frame, actor })
 }
 
 /* ------------------------------------------------------------------ */

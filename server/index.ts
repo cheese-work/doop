@@ -1769,10 +1769,71 @@ function frameWriteRefused(res: express.Response, e: unknown): boolean {
     res.status(412).json({ error: e.message, frame: e.frame })
     return true
   }
+  if (e instanceof actions.FrameWriteKeyConflictError) {
+    res.status(409).json({ error: e.message })
+    return true
+  }
   return false
 }
 
-app.patch('/api/frames/:id', (req, res) => {
+const IDEMPOTENCY_KEY_MAX = 200
+/** `idempotency_key` / `version_name` off a request body; a bad value answers 400 and returns null. */
+function writeKeyOf(res: express.Response, body: Record<string, unknown> | undefined) {
+  const { idempotency_key: key, version_name: name } = body ?? {}
+  if (key === undefined) {
+    if (name !== undefined) res.status(400).json({ error: 'version_name needs an idempotency_key' })
+    return name === undefined ? {} : null
+  }
+  if (typeof key !== 'string' || !key || key.length > IDEMPOTENCY_KEY_MAX) {
+    res.status(400).json({ error: `idempotency_key must be a string of 1 to ${IDEMPOTENCY_KEY_MAX} characters` })
+    return null
+  }
+  if (name !== undefined && (typeof name !== 'string' || name.length > IDEMPOTENCY_KEY_MAX)) {
+    res.status(400).json({ error: `version_name must be a string of at most ${IDEMPOTENCY_KEY_MAX} characters` })
+    return null
+  }
+  return { key, versionName: name as string | undefined }
+}
+
+/** A keyed write answers 200 with the first result on a replay; `frame` rides only on a fresh write. */
+async function keyedWriteReply(
+  res: express.Response,
+  frameId: string,
+  req: actions.FrameWriteRequest,
+  actor: ReturnType<typeof userActor>,
+) {
+  try {
+    const out = await actions.writeFrameHtmlOnce(frameId, req, actor)
+    if (!out) return res.status(404).json({ error: 'frame not found' })
+    const { frame, ...result } = out
+    res.json(frame ? { ...frame, ...result } : result)
+  } catch (e) {
+    if (!frameWriteRefused(res, e)) throw e
+  }
+}
+
+app.patch('/api/frames/:id', async (req, res) => {
+  const write = writeKeyOf(res, req.body)
+  if (!write) return
+  if (write.key !== undefined) {
+    /* the key is read before expectedUpdatedAt, so only access is checked here; a stale
+       conditional write is a 412 from the guarded writer, after the key lookup */
+    if (!requireFrame(req, res, req.params.id, 'edit')) return
+    const { actor: _a, expectedUpdatedAt, idempotency_key: _k, version_name: _n, ...rest } = req.body ?? {}
+    if (typeof rest.html !== 'string' || Object.keys(rest).some((k) => k !== 'html'))
+      return res.status(400).json({ error: 'a write with an idempotency_key sets html and nothing else' })
+    if (
+      expectedUpdatedAt !== undefined &&
+      (typeof expectedUpdatedAt !== 'number' || !Number.isSafeInteger(expectedUpdatedAt) || expectedUpdatedAt < 0)
+    )
+      return res.status(400).json({ error: 'expectedUpdatedAt must be a nonnegative integer' })
+    return keyedWriteReply(
+      res,
+      req.params.id,
+      { op: 'set', html: rest.html, key: write.key, versionName: write.versionName, expectedUpdatedAt },
+      userActor(req),
+    )
+  }
   const current = requireFrame(req, res, req.params.id, 'edit', req.body?.expectedUpdatedAt)
   if (!current) return
   const { actor: _ignored, expectedUpdatedAt: _version, ...patch } = req.body ?? {}
@@ -1810,8 +1871,10 @@ app.put('/api/frames/:id/approval', (req, res) => {
   res.json(actions.setFrameApproval(current.id, status === 'ready_for_dev', req.user!))
 })
 
-app.post('/api/frames/:id/append', (req, res) => {
+app.post('/api/frames/:id/append', async (req, res) => {
   const { html_chunk, start, done, expectedUpdatedAt } = req.body ?? {}
+  const write = writeKeyOf(res, req.body)
+  if (!write) return
   if (!requireFrame(req, res, req.params.id, 'edit')) return
   if (
     expectedUpdatedAt !== undefined &&
@@ -1819,6 +1882,21 @@ app.post('/api/frames/:id/append', (req, res) => {
   )
     return res.status(400).json({ error: 'expectedUpdatedAt must be a nonnegative integer' })
   const actor = userActor(req)
+  if (write.key !== undefined)
+    return keyedWriteReply(
+      res,
+      req.params.id,
+      {
+        op: 'append',
+        chunk: String(html_chunk ?? ''),
+        start: !!start,
+        done: !!done,
+        key: write.key,
+        versionName: write.versionName,
+        expectedUpdatedAt,
+      },
+      actor,
+    )
   try {
     const frame = actions.appendFrameHtml(req.params.id, String(html_chunk ?? ''), actor, {
       start: !!start,
