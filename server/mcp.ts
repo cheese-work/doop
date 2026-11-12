@@ -6,6 +6,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { Request, Response } from 'express'
 import { fromNodeHeaders } from 'better-auth/node'
 import { z } from 'zod'
+import { SnapshotError } from './pageSnapshots.ts'
 import { FrameLockedError, FrameStaleError, PageLimitError, store } from './store.ts'
 import * as actions from './actions.ts'
 import { canvasRole } from './access.ts'
@@ -2106,6 +2107,96 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       } catch (e) {
         if (e instanceof PageLimitError) return err(e.message)
         throw e
+      }
+    },
+  )
+
+  const snapshotErr = (e: unknown) => {
+    if (e instanceof SnapshotError) return err(e.message)
+    throw e
+  }
+
+  server.registerTool(
+    'create_page_snapshot',
+    {
+      title: 'Save a named snapshot of a page',
+      description:
+        'File the whole page (every frame: name, position, size and html) under a name, to compare with or restore later. Unchanged html is stored once. Snapshots are kept until the canvas is deleted.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      inputSchema: {
+        canvas_id: z.string(),
+        page_id: z.string(),
+        name: z.string().min(1).max(100),
+        agent_name: agentName,
+      },
+    },
+    async ({ canvas_id, page_id, name, agent_name }) => {
+      if (!canvasFor(canvas_id, 'edit')) return noCanvas(canvas_id)
+      try {
+        return text({
+          ok: true,
+          snapshot: await actions.createPageSnapshot(canvas_id, page_id, name, actorFrom(agent_name)),
+        })
+      } catch (e) {
+        return snapshotErr(e)
+      }
+    },
+  )
+
+  server.registerTool(
+    'list_page_snapshots',
+    {
+      title: 'List page snapshots',
+      description:
+        "Named snapshots of a canvas (one page when page_id is given), newest first, with author, time and each frame's state. No html is returned.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: { canvas_id: z.string(), page_id: z.string().optional(), agent_name: agentName },
+    },
+    async ({ canvas_id, page_id }) => {
+      if (!canvasFor(canvas_id, 'view')) return noCanvas(canvas_id)
+      return text({ snapshots: await actions.listPageSnapshots(canvas_id, page_id) })
+    },
+  )
+
+  server.registerTool(
+    'compare_page_snapshots',
+    {
+      title: 'Compare page snapshots',
+      description:
+        'Frames added, removed and changed (with sizes) going from snapshot_id to other_snapshot_id, or to the page as it is now when other_snapshot_id is left out.',
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: {
+        canvas_id: z.string(),
+        snapshot_id: z.string(),
+        other_snapshot_id: z.string().optional(),
+        agent_name: agentName,
+      },
+    },
+    async ({ canvas_id, snapshot_id, other_snapshot_id }) => {
+      if (!canvasFor(canvas_id, 'view')) return noCanvas(canvas_id)
+      try {
+        return text(await actions.comparePageSnapshots(canvas_id, snapshot_id, other_snapshot_id))
+      } catch (e) {
+        return snapshotErr(e)
+      }
+    },
+  )
+
+  server.registerTool(
+    'restore_page_snapshot',
+    {
+      title: 'Restore a page snapshot',
+      description:
+        'Put a page back to a snapshot: html, size, position, name and visibility of its frames, and frames deleted since. The current state is filed as a new snapshot first (safetySnapshot), so a restore can be undone by restoring that. A locked frame is skipped and listed under skipped, unchanged. Frames created after the snapshot are left alone.',
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+      inputSchema: { canvas_id: z.string(), snapshot_id: z.string(), agent_name: agentName },
+    },
+    async ({ canvas_id, snapshot_id, agent_name }) => {
+      if (!canvasFor(canvas_id, 'edit')) return noCanvas(canvas_id)
+      try {
+        return text({ ok: true, ...(await actions.restorePageSnapshot(canvas_id, snapshot_id, actorFrom(agent_name))) })
+      } catch (e) {
+        return snapshotErr(e)
       }
     },
   )

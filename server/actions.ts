@@ -4,7 +4,8 @@ import * as persist from './db/persist.ts'
 import * as thumbs from './thumbs.ts'
 import { colorFor } from '../shared/types.ts'
 import { DEFAULT_ROLE_ID, mentionedRole, normalizePipeline, roleByAgentName, roleName } from '../shared/agents.ts'
-import { canvasPages } from '../shared/pages.ts'
+import { canvasPages, framePageId } from '../shared/pages.ts'
+import { SnapshotError, capturePage, compareFrames, sameState, signature, stateOf } from './pageSnapshots.ts'
 import {
   FRAME_COMMENT_SELECTOR,
   isCanvasComment,
@@ -29,6 +30,7 @@ import type {
   GuidelineDoc,
   MemoryProposal,
   MemoryReference,
+  PageSnapshot,
   RepoCardKind,
   RepoCardPayload,
   RepoScreenRef,
@@ -2270,4 +2272,139 @@ export function resolveProposal(
   broadcast(canvasId, { type: 'proposal', proposal })
   if (accept) logActivity(canvasId, actor, `accepted a Memory rule into “${proposal.guideName}”`)
   return proposal
+}
+
+/* ------------------------------------------------------------------ */
+/* Named page snapshots (CHE-5307). Every snapshot is pinned: nothing   */
+/* prunes it, whatever the 50-per-frame autosave history does.          */
+
+const RESTORE_TRIES = 3
+
+function pageOf(canvasId: string, pageId: string) {
+  const canvas = store.getCanvas(canvasId)
+  const page = canvas && canvasPages(canvas).find((p) => p.id === pageId)
+  if (!canvas || !page) throw new SnapshotError(`Unknown page ${pageId} on canvas ${canvasId}`)
+  return { canvas, page }
+}
+
+/** Capture the page now and file it. The capture is synchronous; only the
+ *  write is awaited, so the returned `signature` is the state that was filed. */
+async function fileSnapshot(canvasId: string, pageId: string, name: string, actor: Actor) {
+  const { canvas, page } = pageOf(canvasId, pageId)
+  const { frames, html } = capturePage(canvas, store.listTrash(canvasId).frames, pageId)
+  const snapshot: PageSnapshot = {
+    id: nanoid(10),
+    canvasId,
+    pageId,
+    pageName: page.name,
+    name,
+    author: actor.name,
+    authorKind: actor.kind,
+    createdAt: Date.now(),
+    frames,
+  }
+  await persist.savePageSnapshot(snapshot, html)
+  return { snapshot, signature: signature(frames) }
+}
+
+export async function createPageSnapshot(canvasId: string, pageId: string, name: string, actor: Actor) {
+  const { snapshot } = await fileSnapshot(canvasId, pageId, name, actor)
+  logActivity(canvasId, actor, `saved snapshot “${name}” of page “${snapshot.pageName}”`)
+  touch(canvasId, actor, null)
+  return snapshot
+}
+
+export const listPageSnapshots = (canvasId: string, pageId?: string) => persist.listPageSnapshots(canvasId, pageId)
+
+async function snapshotOf(canvasId: string, id: string) {
+  const snapshot = await persist.getPageSnapshot(canvasId, id)
+  if (!snapshot) throw new SnapshotError(`Unknown snapshot ${id} on canvas ${canvasId}`)
+  return snapshot
+}
+
+/** `snapshotId` against `otherId`, or against the page as it is now. */
+export async function comparePageSnapshots(canvasId: string, snapshotId: string, otherId?: string) {
+  const a = await snapshotOf(canvasId, snapshotId)
+  const b = otherId ? await snapshotOf(canvasId, otherId) : undefined
+  if (b && b.pageId !== a.pageId) throw new SnapshotError('Those snapshots are of different pages')
+  const other = b
+    ? b.frames
+    : capturePage(pageOf(canvasId, a.pageId).canvas, store.listTrash(canvasId).frames, a.pageId).frames
+  return {
+    snapshot: { id: a.id, name: a.name },
+    other: b ? { id: b.id, name: b.name } : 'live page',
+    ...compareFrames(a.frames, other),
+  }
+}
+
+/** Put a page back to a snapshot. The current state is filed as a snapshot
+ *  first, so a restore is itself reversible. Writes go through
+ *  `store.updateFrame`, the one synchronous lock guard: a locked frame is
+ *  skipped and reported, and its html, size and stamp stay as they were.
+ *  Frames made after the snapshot are left alone. */
+export async function restorePageSnapshot(canvasId: string, snapshotId: string, actor: Actor) {
+  const target = await snapshotOf(canvasId, snapshotId)
+  pageOf(canvasId, target.pageId)
+  const html = await persist.getSnapshotHtml(canvasId, [...new Set(target.frames.map((f) => f.hash))])
+  const missing = target.frames.find((f) => !html.has(f.hash))
+  if (missing) throw new SnapshotError(`Snapshot ${snapshotId} has lost the html of “${missing.name}”`)
+
+  /* File the current state, then apply in a tick that starts only after a
+     re-capture matches what was filed. A writer that slipped in during the
+     awaited save forces another round, so the safety snapshot is what the
+     restore replaces. */
+  let safety: PageSnapshot | undefined
+  for (let attempt = 0; attempt < RESTORE_TRIES && !safety; attempt++) {
+    const filed = await fileSnapshot(canvasId, target.pageId, `before restoring “${target.name}”`, actor)
+    const { canvas } = pageOf(canvasId, target.pageId)
+    const now = capturePage(canvas, store.listTrash(canvasId).frames, target.pageId)
+    if (signature(now.frames) === filed.signature) safety = filed.snapshot
+  }
+  if (!safety) throw new SnapshotError('The page keeps changing; try the restore again')
+
+  /* no await from here to the return */
+  const restored: Array<{ frameId: string; name: string }> = []
+  const skipped: Array<{ frameId: string; name: string; reason: 'locked' }> = []
+  for (const want of target.frames) {
+    const live = store.getFrame(want.frameId)
+    const cur = live ?? store.getDeletedFrame(want.frameId)
+    if (!cur || cur.canvasId !== canvasId) continue
+    const has = stateOf(cur, !live)
+    if (sameState(want, has) && framePageId(store.getCanvas(canvasId)!, cur) === target.pageId) continue
+    if (cur.locked) {
+      skipped.push({ frameId: want.frameId, name: cur.name, reason: 'locked' })
+      continue
+    }
+    if (want.deleted) {
+      if (live) deleteFrame(want.frameId, actor)
+    } else {
+      if (!live) restoreFrame(want.frameId, actor)
+      const frame = store.getFrame(want.frameId)!
+      const prior = priorState(frame)
+      const patch = {
+        name: want.name,
+        pageId: target.pageId,
+        x: want.x,
+        y: want.y,
+        width: want.width,
+        height: want.height,
+        hidden: !!want.hidden,
+        html: html.get(want.hash)!,
+      }
+      const updated = store.updateFrame(want.frameId, patch, actor.name)
+      if (!updated) continue
+      finishStream(want.frameId, false)
+      finishReveal(want.frameId)
+      noteHtmlChange(prior, actor, false)
+      broadcast(canvasId, { type: 'frame:updated', frame: updated, actor })
+    }
+    restored.push({ frameId: want.frameId, name: want.name })
+  }
+  logActivity(
+    canvasId,
+    actor,
+    `restored page “${safety.pageName}” to snapshot “${target.name}” (${restored.length} frame(s), ${skipped.length} locked and skipped)`,
+  )
+  touch(canvasId, actor, null)
+  return { safetySnapshot: safety, restored, skipped }
 }
