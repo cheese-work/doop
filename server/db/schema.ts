@@ -13,7 +13,7 @@ import {
 } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 import type { BridgeAgent } from '../../shared/bridge.ts'
-import type { CanvasGuide, CanvasPageInfo, FrameApproval } from '../../shared/types.ts'
+import type { CanvasGuide, CanvasPageInfo, DeletedPage, FrameApproval } from '../../shared/types.ts'
 import type { AutomationRunState, AutomationTrigger, Schedule, Step } from '../../shared/automations.ts'
 
 /** ActivityKit tokens are delivery secrets: never return them through read APIs. */
@@ -52,6 +52,8 @@ export const canvases = pgTable('canvases', {
   pages: jsonb('pages').$type<CanvasPageInfo[]>(),
   /** ruler guides of every page; null = none */
   guides: jsonb('guides').$type<CanvasGuide[]>(),
+  /** deleted pages, kept for restore; pages are jsonb entries, not rows */
+  deletedPages: jsonb('deleted_pages').$type<DeletedPage[]>(),
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   ownerId: text('owner_id'),
@@ -174,6 +176,8 @@ export const frames = pgTable(
     /** Figma-style lock; null = unlocked */
     locked: boolean('locked'),
     approval: jsonb('approval').$type<FrameApproval>(),
+    /** soft delete: set = in the canvas trash; the row and its versions stay */
+    deletedAt: bigint('deleted_at', { mode: 'number' }),
   },
   (t) => [index('frames_canvas_idx').on(t.canvasId)],
 )

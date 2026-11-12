@@ -1,5 +1,5 @@
 {
-  "id": "c843ce79-6a30-4cdc-a48d-bec50b0b567d",
+  "id": "3ddf761e-7980-45fa-a640-6e40384bcf6d",
   "prevId": "26192d69-aece-4ee5-89a3-3a92dd720a1d",
   "version": "7",
   "dialect": "postgresql",
@@ -770,6 +770,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "deleted_pages": {
+          "name": "deleted_pages",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "id": {
           "name": "id",
           "type": "text",
@@ -1060,12 +1066,6 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
-        },
-        "client_request_id": {
-          "name": "client_request_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -1080,28 +1080,6 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "comments_thread_request_idx": {
-          "name": "comments_thread_request_idx",
-          "columns": [
-            {
-              "expression": "parent_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "client_request_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"comments\".\"client_request_id\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -1511,6 +1489,12 @@
         "approval": {
           "name": "approval",
           "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "bigint",
           "primaryKey": false,
           "notNull": false
         }
