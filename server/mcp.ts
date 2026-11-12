@@ -2188,7 +2188,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       title: 'Restore a page snapshot',
       description:
         'Put a page back to a snapshot: html, size, position, name and visibility of its frames, and frames deleted since. The current state is filed as a new snapshot first (safetySnapshot), so a restore can be undone by restoring that. A locked frame is skipped and listed under skipped, unchanged. Frames created after the snapshot are left alone.',
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
       inputSchema: { canvas_id: z.string(), snapshot_id: z.string(), agent_name: agentName },
     },
     async ({ canvas_id, snapshot_id, agent_name }) => {
