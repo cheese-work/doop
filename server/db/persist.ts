@@ -23,6 +23,7 @@ import type {
   GuidelineDoc,
   MemoryProposal,
   MemoryReference,
+  PageSnapshot,
   RepoCardKind,
   RepoCardPayload,
   TaskFeedback,
@@ -462,6 +463,80 @@ async function appendFrameVersion(version: FrameVersion) {
   }
 }
 
+/* Named page snapshots. Unlike version writes these are awaited by the caller:
+   a restore files its safety snapshot before it changes anything, so a failed
+   write must stop it. HTML is deduplicated per canvas by content hash. */
+export async function savePageSnapshot(snapshot: PageSnapshot, htmlByHash: Map<string, string>): Promise<void> {
+  await db.transaction(async (tx) => {
+    if (htmlByHash.size) {
+      await tx
+        .insert(t.snapshotBlobs)
+        .values([...htmlByHash].map(([hash, html]) => ({ canvasId: snapshot.canvasId, hash, html })))
+        .onConflictDoNothing()
+    }
+    await tx.insert(t.pageSnapshots).values({
+      id: snapshot.id,
+      canvasId: snapshot.canvasId,
+      pageId: snapshot.pageId,
+      pageName: snapshot.pageName,
+      name: snapshot.name,
+      author: snapshot.author,
+      authorKind: snapshot.authorKind ?? null,
+      createdAt: snapshot.createdAt,
+      frames: snapshot.frames,
+    })
+  })
+}
+
+function toPageSnapshot(row: typeof t.pageSnapshots.$inferSelect): PageSnapshot {
+  return {
+    id: row.id,
+    canvasId: row.canvasId,
+    pageId: row.pageId,
+    pageName: row.pageName,
+    name: row.name,
+    author: row.author,
+    authorKind: frameVersionKind(row.authorKind),
+    createdAt: row.createdAt,
+    frames: row.frames,
+  }
+}
+
+/** Newest first; one page's, or the whole canvas's when no page is named. */
+export async function listPageSnapshots(canvasId: string, pageId?: string): Promise<PageSnapshot[]> {
+  const rows = await db
+    .select()
+    .from(t.pageSnapshots)
+    .where(
+      pageId
+        ? and(eq(t.pageSnapshots.canvasId, canvasId), eq(t.pageSnapshots.pageId, pageId))
+        : eq(t.pageSnapshots.canvasId, canvasId),
+    )
+    .orderBy(desc(t.pageSnapshots.createdAt), desc(t.pageSnapshots.id))
+  return rows.map(toPageSnapshot)
+}
+
+/** One snapshot; undefined when the id is unknown OR belongs to another
+ *  canvas, so a caller can never read across canvases by id alone. */
+export async function getPageSnapshot(canvasId: string, id: string): Promise<PageSnapshot | undefined> {
+  const [row] = await db
+    .select()
+    .from(t.pageSnapshots)
+    .where(and(eq(t.pageSnapshots.id, id), eq(t.pageSnapshots.canvasId, canvasId)))
+    .limit(1)
+  return row ? toPageSnapshot(row) : undefined
+}
+
+/** hash -> html for the hashes this canvas holds. */
+export async function getSnapshotHtml(canvasId: string, hashes: string[]): Promise<Map<string, string>> {
+  if (!hashes.length) return new Map()
+  const rows = await db
+    .select()
+    .from(t.snapshotBlobs)
+    .where(and(eq(t.snapshotBlobs.canvasId, canvasId), inArray(t.snapshotBlobs.hash, hashes)))
+  return new Map(rows.map((r) => [r.hash, r.html]))
+}
+
 function frameVersionKind(kind: string | null): ActorKind | undefined {
   return kind === 'user' || kind === 'agent' ? kind : undefined
 }
@@ -563,6 +638,8 @@ export function deleteCanvas(canvasId: string) {
       db.delete(t.frameVersions).where(eq(t.frameVersions.canvasId, canvasId)),
     ),
   )
+  swallow(db.delete(t.pageSnapshots).where(eq(t.pageSnapshots.canvasId, canvasId)))
+  swallow(db.delete(t.snapshotBlobs).where(eq(t.snapshotBlobs.canvasId, canvasId)))
   swallow(db.delete(t.memoryReferences).where(eq(t.memoryReferences.canvasId, canvasId)))
   swallow(db.delete(t.decisions).where(eq(t.decisions.canvasId, canvasId)))
   swallow(db.delete(t.memoryProposals).where(eq(t.memoryProposals.canvasId, canvasId)))

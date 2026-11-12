@@ -13,7 +13,7 @@ import {
 } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 import type { BridgeAgent } from '../../shared/bridge.ts'
-import type { CanvasGuide, CanvasPageInfo, DeletedPage, FrameApproval } from '../../shared/types.ts'
+import type { CanvasGuide, CanvasPageInfo, DeletedPage, FrameApproval, SnapshotFrame } from '../../shared/types.ts'
 import type { AutomationRunState, AutomationTrigger, Schedule, Step } from '../../shared/automations.ts'
 
 /** ActivityKit tokens are delivery secrets: never return them through read APIs. */
@@ -203,6 +203,38 @@ export const frameVersions = pgTable(
     savedByKind: text('saved_by_kind'),
   },
   (t) => [index('frame_versions_frame_idx').on(t.frameId), index('frame_versions_canvas_idx').on(t.canvasId)],
+)
+
+/** Named page snapshots (CHE-5307): one row per snapshot, the frame states as
+ *  jsonb with a hash of each frame's HTML. Every row is pinned: nothing
+ *  prunes it, unlike `frame_versions`. */
+export const pageSnapshots = pgTable(
+  'page_snapshots',
+  {
+    id: text('id').primaryKey(),
+    canvasId: text('canvas_id').notNull(),
+    pageId: text('page_id').notNull(),
+    pageName: text('page_name').notNull(),
+    name: text('name').notNull(),
+    author: text('author').notNull(),
+    /** 'user' | 'agent'; null when the author's kind was not known */
+    authorKind: text('author_kind'),
+    createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+    frames: jsonb('frames').$type<SnapshotFrame[]>().notNull(),
+  },
+  (t) => [index('page_snapshots_canvas_idx').on(t.canvasId, t.pageId)],
+)
+
+/** Frame HTML a snapshot points at, stored once per canvas and content hash,
+ *  so unchanged frames cost one row however many snapshots hold them. */
+export const snapshotBlobs = pgTable(
+  'snapshot_blobs',
+  {
+    canvasId: text('canvas_id').notNull(),
+    hash: text('hash').notNull(),
+    html: text('html').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.canvasId, t.hash] })],
 )
 
 /** Design-sync keys: the write-only capability behind the /ingest endpoint.
