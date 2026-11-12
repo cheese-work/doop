@@ -45,8 +45,10 @@ HTML + width + height (name and position stay), broadcasts `frame:updated` and l
 
 `{ id, frame_id, canvas_id, html, width, height, saved_at, saved_by, saved_by_kind }`, indexed
 by frame and by canvas. Cold path: written fire-and-forget like every other row, read only when
-someone opens the history. Deleting a frame or canvas deletes its rows; duplicating a canvas does
-not copy them.
+someone opens the history. Deleting a canvas deletes its rows; deleting a frame is a soft delete
+(`frames.deleted_at`, CHE-5306) that keeps the frame row and every version row, and restoring the
+frame (`POST /api/frames/:id/restore`, MCP `restore_frame`) returns it with its history. A deleted
+frame refuses every write with HTTP 410. Duplicating a canvas does not copy versions.
 
 ## API
 

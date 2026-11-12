@@ -86,6 +86,13 @@
 - `@electric-sql/pglite` 0.5.4 - embedded Postgres so `bun run dev` works with zero external
   services.
 - `pg` 8.22.0 - Postgres driver for the real-database path.
+- Soft delete (CHE-5306): deleting a frame sets `frames.deleted_at`; deleting a page moves its entry
+  to `canvases.deleted_pages` (jsonb, written only by `persist.saveDeletedPages`). Both leave in-memory
+  `Store` trash maps, never `Canvas`, so no client payload carries them. `store.writableFrame` is the one
+  gate every frame writer shares and throws `FrameDeletedError` (REST 410). Restore routes: `POST /api/frames/:id/restore`,
+  `POST /api/canvases/:id/pages/:pageId/restore` (brings the page's deleted frames), `GET /api/canvases/:id/trash`; MCP `restore_frame`, `restore_page`. `archive_frames` moves
+  frames to the per-canvas `Archive` page (`ARCHIVE_PAGE_ID`, always last) and hides them. Nothing in this
+  slice hard-deletes a frame, page or version row (`tests/frameTrashPersist.test.ts` scans for it).
 - Chat bridge (`server/bridge.ts`, `shared/bridge.ts`): one `canvas_bridge` row per canvas holds the Multica
   agent people chat with, the agent list the watcher publishes (`set_bridge_agents`) and its liveness
   stamp (`bridge_heartbeat`). `GET/PUT /api/canvases/:id/bridge` reads and selects; status (`ok`,

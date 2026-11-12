@@ -14,6 +14,7 @@ import type {
   AgentTask,
   CardScope,
   Canvas,
+  DeletedPage,
   DesignDecision,
   ElementComment,
   Frame,
@@ -60,6 +61,17 @@ export function saveCanvas(c: Canvas) {
       .insert(t.canvases)
       .values({ id: c.id, ...canvasColumns(c), createdAt: c.createdAt })
       .onConflictDoUpdate({ target: t.canvases.id, set: canvasColumns(c) }),
+  )
+}
+
+/** A canvas's deleted pages (soft delete, CHE-5306). Kept off `saveCanvas` so
+ * the many ordinary canvas writes cannot overwrite the column. */
+export function saveDeletedPages(canvasId: string, pages: DeletedPage[]) {
+  swallow(
+    db
+      .update(t.canvases)
+      .set({ deletedPages: pages.length ? pages : null })
+      .where(eq(t.canvases.id, canvasId)),
   )
 }
 
@@ -359,6 +371,7 @@ async function writeFrame(f: Frame) {
     hidden: f.hidden ?? null,
     locked: f.locked ?? null,
     approval: f.approval ?? null,
+    deletedAt: f.deletedAt ?? null,
   }
   const { id, createdAt, ...set } = row
   /* Second line of the frame lock (the first is `store.updateFrame`): when the
@@ -555,19 +568,6 @@ export function deleteCanvas(canvasId: string) {
   swallow(db.delete(t.memoryProposals).where(eq(t.memoryProposals.canvasId, canvasId)))
   swallow(db.delete(t.canvasMembers).where(eq(t.canvasMembers.canvasId, canvasId)))
   swallow(db.delete(t.canvases).where(eq(t.canvases.id, canvasId)))
-}
-
-export function deleteFrame(frameId: string) {
-  const timer = frameTimers.get(frameId)
-  if (timer) {
-    clearTimeout(timer)
-    frameTimers.delete(frameId)
-  }
-  swallow(db.delete(t.frames).where(eq(t.frames.id, frameId)))
-  swallow(db.delete(t.assetRefs).where(eq(t.assetRefs.frameId, frameId)))
-  queueVersionWrite(frameId, versionWrites.get(frameId)?.canvasId ?? '', () =>
-    db.delete(t.frameVersions).where(eq(t.frameVersions.frameId, frameId)),
-  )
 }
 
 /** The frame/element a prompt card was scoped to, or nothing when the row
@@ -921,6 +921,8 @@ export interface Hydrated {
   activity: Map<string, ActivityItem[]>
   decisions: Map<string, DesignDecision[]>
   proposals: Map<string, MemoryProposal[]>
+  /** soft-deleted frames and pages per canvas, kept out of `canvases[].frames` */
+  trash: Map<string, { frames: Frame[]; pages: DeletedPage[] }>
 }
 
 const LOG_CAP = 100
@@ -974,14 +976,26 @@ export async function hydrate(): Promise<Hydrated> {
     const c = byId.get(m.canvasId)
     if (c) (c.memberIds ??= []).push(m.userId)
   }
-  for (const f of frameRows)
-    byId.get(f.canvasId)?.frames.push({
+  const trash = new Map<string, { frames: Frame[]; pages: DeletedPage[] }>()
+  const trashOf = (canvasId: string) => {
+    let entry = trash.get(canvasId)
+    if (!entry) trash.set(canvasId, (entry = { frames: [], pages: [] }))
+    return entry
+  }
+  for (const c of canvasRows) if (c.deletedPages?.length) trashOf(c.id).pages = c.deletedPages
+  for (const { deletedAt, ...f } of frameRows) {
+    const frame: Frame = {
       ...f,
       pageId: f.pageId ?? undefined,
       demo: f.demo ?? undefined,
       hidden: f.hidden ?? undefined,
       locked: f.locked ?? undefined,
-    })
+      ...(deletedAt != null ? { deletedAt } : {}),
+    }
+    if (deletedAt != null) {
+      if (byId.has(f.canvasId)) trashOf(f.canvasId).frames.push(frame)
+    } else byId.get(f.canvasId)?.frames.push(frame)
+  }
   for (const c of canvases) c.frames.sort((a, b) => a.createdAt - b.createdAt)
   for (const r of referenceRows) {
     const c = byId.get(r.canvasId)
@@ -1161,7 +1175,7 @@ export async function hydrate(): Promise<Hydrated> {
     proposals.set(row.canvasId, list)
   }
 
-  return { canvases, tasks, feedback, comments, legacyCommentSelectors, activity, decisions, proposals }
+  return { canvases, tasks, feedback, comments, legacyCommentSelectors, activity, decisions, proposals, trash }
 }
 
 /** One-time import of the pre-DB data/store.json so existing canvases survive. */
