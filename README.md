@@ -952,8 +952,8 @@ so conversation context remains available. An empty result is `[]`. The tool enf
 canvas access permissions as other MCP reads; optional `agent_name` announces presence.
 It does not claim task feedback or comments, or mark anything resolved.
 
-`reply_to_comment({ canvas_id, comment_id, text, agent_name })` adds a reply to a thread,
-inheriting the root's element anchor. `resolve_comment({ canvas_id, comment_id, agent_name })`
+`reply_to_comment({ canvas_id, comment_id, text, agent_name, client_request_id? })` adds a reply to a thread,
+inheriting the root's element anchor. `client_request_id` (1 to 200 characters) is a retry key, unique per thread: repeating the call with the same key and text returns the first reply with `replay: true` and stores nothing (it costs no resident task); the same key with other text is an error. The REST route `POST /api/comments/:id/replies` takes the same field and answers a repeat with 200 and `replay: true`, or 409 for other text. `resolve_comment({ canvas_id, comment_id, agent_name })`
 closes it, and resolving an `@mention` thread also records the exchange in canvas Memory. Both
 require the same canvas access as every other MCP tool. A reply whose text `@mentions` a resident
 role spends one resident task from the account's allowance — the same free-tier meter that a board

@@ -1883,13 +1883,15 @@ async function storeComment<T>(
   try {
     return { value: await post() }
   } catch (e) {
-    console.error('[comments] could not store a comment:', e)
+    const conflict = e instanceof actions.ClientRequestConflictError
+    if (!conflict) console.error('[comments] could not store a comment:', e)
     if (gate) {
       await allowance.refundResidentTask(gate, userId).catch((err) => {
         console.error(`[comments] could not refund a resident task for ${userId}:`, err)
       })
     }
-    res.status(500).json({ error: 'comment not stored' })
+    if (conflict) res.status(409).json({ error: 'client_request_conflict', message: e.message })
+    else res.status(500).json({ error: 'comment not stored' })
     return undefined
   }
 }
@@ -1989,6 +1991,19 @@ app.post('/api/comments/:id/replies', async (req, res) => {
   if (!found) return res.status(404).json({ error: 'comment not found' })
   if (!requireCanvas(req, res, found.canvasId, 'comment')) return
   const text = String(req.body?.text ?? '')
+  const rawKey = req.body?.client_request_id
+  if (rawKey !== undefined && (typeof rawKey !== 'string' || !rawKey || rawKey.length > 200)) {
+    return res.status(400).json({ error: 'client_request_id must be a string of 1 to 200 characters' })
+  }
+  const clientRequestId: string | undefined = rawKey
+  /* a retry of an answered request is answered again, before any check or meter that could refuse it */
+  if (clientRequestId) {
+    const stored = await storeComment(res, req.user!.id, undefined, () =>
+      actions.existingReply(req.params.id, text, clientRequestId),
+    )
+    if (!stored) return
+    if (stored.value) return res.json(stored.value)
+  }
   if (!text.trim() || !(await actions.openThread(req.params.id))) {
     return res.status(404).json({ error: 'thread resolved or empty text' })
   }
@@ -2002,10 +2017,16 @@ app.post('/api/comments/:id/replies', async (req, res) => {
     }
   }
   const stored = await storeComment(res, req.user!.id, gate, () =>
-    actions.replyToComment(req.params.id, text, req.user!.name, req.user!.id),
+    actions.replyToComment(req.params.id, text, req.user!.name, req.user!.id, 'user', clientRequestId),
   )
   if (!stored) return
   const reply = stored.value
+  /* the twin of this request stored the reply first: it costs nothing */
+  if (reply && 'replay' in reply && gate) {
+    await allowance.refundResidentTask(gate, req.user!.id).catch((err) => {
+      console.error(`[comments] could not refund a resident task for ${req.user!.id}:`, err)
+    })
+  }
   if (!reply) {
     /* the thread closed while the meter was being written: give the task
        back — a failed refund is logged, never turned into a 500 */

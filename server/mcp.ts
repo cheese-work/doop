@@ -896,13 +896,31 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
         canvas_id: z.string(),
         comment_id: z.string().describe('The root comment or any reply in the thread (from get_comments)'),
         text: z.string().describe('The reply text. Trimmed; empty replies are rejected.'),
+        client_request_id: z
+          .string()
+          .min(1)
+          .max(200)
+          .optional()
+          .describe(
+            'Retry key, unique per thread. Repeating a call with the same key and text returns the first reply (replay: true) and stores nothing; the same key with different text is an error. Omit it to post a new reply every time.',
+          ),
         agent_name: agentName,
       },
     },
-    async ({ canvas_id, comment_id, text: body, agent_name }) => {
+    async ({ canvas_id, comment_id, text: body, client_request_id, agent_name }) => {
       if (!canvasFor(canvas_id, 'comment')) return noCanvas(canvas_id)
       const found = await actions.findComment(comment_id)
       if (!found || found.canvasId !== canvas_id) return noComment(comment_id)
+      /* a retry of an answered request is answered again, before any check or meter that could refuse it */
+      if (client_request_id) {
+        try {
+          const prior = await actions.existingReply(comment_id, body, client_request_id)
+          if (prior) return withFeedback(text(prior), canvas_id, actorFrom(agent_name))
+        } catch (e) {
+          if (e instanceof actions.ClientRequestConflictError) return err(e.message)
+          throw e
+        }
+      }
       if (!body.trim() || !(await actions.openThread(comment_id))) return err('thread resolved or empty text')
       /* an @mention commands the resident agent to change frames — the REST
          reply route holds comment-only visitors to the same rule */
@@ -926,15 +944,22 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
          it falls back to the canvas owner's — wrong on a shared canvas */
       let reply: Awaited<ReturnType<typeof actions.replyToComment>>
       try {
-        reply = await actions.replyToComment(comment_id, body, actor.name, ownerId, 'agent')
+        reply = await actions.replyToComment(comment_id, body, actor.name, ownerId, 'agent', client_request_id)
       } catch (e) {
-        console.error('[mcp] could not store a reply:', e)
+        const conflict = e instanceof actions.ClientRequestConflictError
+        if (!conflict) console.error('[mcp] could not store a reply:', e)
         if (gate && ownerId) {
           await allowance
             .refundResidentTask(gate, ownerId)
             .catch((e2) => console.error(`[mcp] could not refund a resident task for ${ownerId}:`, e2))
         }
-        return err('reply not stored — nothing was saved, retry later')
+        return err(conflict ? e.message : 'reply not stored — nothing was saved, retry later')
+      }
+      /* the twin of this call stored the reply first: it costs nothing */
+      if (reply && 'replay' in reply && gate && ownerId) {
+        await allowance
+          .refundResidentTask(gate, ownerId)
+          .catch((e) => console.error(`[mcp] could not refund a resident task for ${ownerId}:`, e))
       }
       if (!reply) {
         /* the thread closed while the meter was being written: give the task back */

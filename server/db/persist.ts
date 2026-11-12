@@ -696,6 +696,7 @@ function commentFromRow(
     ...(row.resolvedBy != null ? { resolvedBy: row.resolvedBy } : {}),
     ...(row.resolvedAt != null ? { resolvedAt: row.resolvedAt } : {}),
     ...(row.parentId != null ? { parentId: row.parentId } : {}),
+    ...(row.clientRequestId != null ? { clientRequestId: row.clientRequestId } : {}),
   }
 }
 
@@ -724,6 +725,7 @@ function commentRow(c: ElementComment) {
     resolvedBy: c.resolvedBy ?? null,
     resolvedAt: c.resolvedAt ?? null,
     parentId: c.parentId ?? null,
+    clientRequestId: c.clientRequestId ?? null,
   }
 }
 
@@ -776,12 +778,48 @@ async function upsertComment(row: ReturnType<typeof commentRow>): Promise<void> 
     })
 }
 
+/** A retry key reused with other text in the same thread. */
+export class ClientRequestConflictError extends Error {
+  constructor(readonly clientRequestId: string) {
+    super(`client_request_id ${clientRequestId} was already used in this thread with different text`)
+    this.name = 'ClientRequestConflictError'
+  }
+}
+
 /** A NEW comment: the row and its comment_events row in ONE transaction. Unlike
  *  the write-through saves it is awaited and its failure is thrown, so the
- *  request fails and neither row is stored. */
-export async function saveNewComment(c: ElementComment): Promise<void> {
-  await db.transaction(async (tx) => {
-    await tx.insert(t.comments).values(commentRow(c))
+ *  request fails and neither row is stored.
+ *
+ *  A keyed reply (`clientRequestId`) is stored at most once per thread: the
+ *  insert yields to the unique index, and the stored text is compared in the
+ *  same transaction. Returns undefined when stored, the first reply when the
+ *  key and text repeat, and throws ClientRequestConflictError when the text
+ *  differs. Two concurrent callers queue on the index entry, so one inserts
+ *  and the other reads the committed row. */
+export async function saveNewComment(c: ElementComment): Promise<ElementComment | undefined> {
+  return db.transaction(async (tx) => {
+    if (c.clientRequestId !== undefined && c.parentId !== undefined) {
+      const inserted = await tx
+        .insert(t.comments)
+        .values(commentRow(c))
+        .onConflictDoNothing({
+          target: [t.comments.parentId, t.comments.clientRequestId],
+          where: sql`${t.comments.clientRequestId} is not null`,
+        })
+        .returning({ id: t.comments.id })
+      if (inserted.length === 0) {
+        const [first] = await tx
+          .select()
+          .from(t.comments)
+          .where(and(eq(t.comments.parentId, c.parentId), eq(t.comments.clientRequestId, c.clientRequestId)))
+          .limit(1)
+        if (!first) throw new Error('keyed comment insert yielded to a row that is gone')
+        if (first.text !== c.text) throw new ClientRequestConflictError(c.clientRequestId)
+        return commentFromRow(first)
+      }
+    } else {
+      await tx.insert(t.comments).values(commentRow(c))
+    }
     await tx.insert(t.commentEvents).values({
       canvasId: c.canvasId,
       commentId: c.id,
@@ -789,7 +827,21 @@ export async function saveNewComment(c: ElementComment): Promise<void> {
       fromUserId: c.fromUserId ?? null,
       at: c.at,
     })
+    return undefined
   })
+}
+
+/** The reply stored under this retry key in a thread, if any. */
+export async function findReplyByRequestId(
+  rootId: string,
+  clientRequestId: string,
+): Promise<ElementComment | undefined> {
+  const [row] = await db
+    .select()
+    .from(t.comments)
+    .where(and(eq(t.comments.parentId, rootId), eq(t.comments.clientRequestId, clientRequestId)))
+    .limit(1)
+  return row ? commentFromRow(row) : undefined
 }
 
 /** One stored comment by id, for ids that have left the in-memory window. */
