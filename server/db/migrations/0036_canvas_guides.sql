@@ -1,1 +1,1 @@
-ALTER TABLE "canvases" ADD COLUMN "guides" jsonb;
+ALTER TABLE "canvases" ADD COLUMN IF NOT EXISTS "guides" jsonb;

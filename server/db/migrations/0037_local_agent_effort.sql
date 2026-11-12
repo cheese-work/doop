@@ -1,1 +1,1 @@
-ALTER TABLE "local_agent_preferences" ADD COLUMN "effort" text;
+ALTER TABLE "local_agent_preferences" ADD COLUMN IF NOT EXISTS "effort" text;

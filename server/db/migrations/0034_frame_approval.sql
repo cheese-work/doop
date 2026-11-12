@@ -1,1 +1,1 @@
-ALTER TABLE "frames" ADD COLUMN "approval" jsonb;
+ALTER TABLE "frames" ADD COLUMN IF NOT EXISTS "approval" jsonb;
