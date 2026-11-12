@@ -15,7 +15,14 @@ import { eq, inArray } from 'drizzle-orm'
 import { toNodeHandler, fromNodeHeaders } from 'better-auth/node'
 import { oAuthDiscoveryMetadata } from 'better-auth/plugins'
 import { WebSocketServer, WebSocket } from 'ws'
-import { FrameLockedError, FrameStaleError, GuideLimitError, PageLimitError, store } from './store.ts'
+import {
+  FrameDeletedError,
+  FrameLockedError,
+  FrameStaleError,
+  GuideLimitError,
+  PageLimitError,
+  store,
+} from './store.ts'
 import { parseGuide } from '../shared/guides.ts'
 import { getImage } from './previews.ts'
 import * as actions from './actions.ts'
@@ -105,7 +112,7 @@ let data = await persist.hydrate()
 if (data.canvases.length === 0 && (await persist.importLegacyJson())) {
   data = await persist.hydrate()
 }
-store.init(data.canvases)
+store.init(data.canvases, data.trash)
 await workspaces.hydrateWorkspaces() // before the first request: canvasRole reads membership
 await webhooks.hydrateWebhooks()
 billing.reportBillingConfig()
@@ -803,7 +810,8 @@ function requireFrame(
   need: CanvasRole,
   expectedUpdatedAt?: unknown,
 ) {
-  const frame = store.getFrame(frameId)
+  const live = store.getFrame(frameId)
+  const frame = live ?? store.getDeletedFrame(frameId)
   if (!frame) {
     res.status(404).json({ error: 'frame not found' })
     return null
@@ -814,6 +822,10 @@ function requireFrame(
     return null
   }
   if (!checkRole(req, res, c, need)) return null
+  if (!live) {
+    res.status(410).json({ error: new FrameDeletedError(frame).message.replace(/^Frame/, 'Gone: frame') })
+    return null
+  }
   if (expectedUpdatedAt !== undefined) {
     if (typeof expectedUpdatedAt !== 'number' || !Number.isSafeInteger(expectedUpdatedAt) || expectedUpdatedAt < 0) {
       res.status(400).json({ error: 'expectedUpdatedAt must be a nonnegative integer' })
@@ -1829,6 +1841,36 @@ app.post('/api/frames/:id/append', (req, res) => {
     res.json({ ok: true, htmlBytes: frame.html.length, updatedAt: frame.updatedAt })
   } catch (e) {
     if (!frameWriteRefused(res, e)) throw e
+  }
+})
+
+/* Soft delete leaves the row and its history; this brings the frame back. */
+app.post('/api/frames/:id/restore', (req, res) => {
+  const frame = store.getDeletedFrame(req.params.id)
+  const canvas = frame && store.getCanvas(frame.canvasId)
+  if (!frame || !canvas) return res.status(404).json({ error: 'deleted frame not found' })
+  if (!checkRole(req, res, canvas, 'edit')) return
+  const restored = actions.restoreFrame(frame.id, userActor(req))
+  if (!restored) return res.status(404).json({ error: 'deleted frame not found' })
+  res.json(restored)
+})
+
+app.get('/api/canvases/:id/trash', (req, res) => {
+  const canvas = requireCanvas(req, res, req.params.id, 'edit')
+  if (!canvas) return
+  res.json(store.listTrash(canvas.id))
+})
+
+app.post('/api/canvases/:id/pages/:pageId/restore', (req, res) => {
+  const canvas = requireCanvas(req, res, req.params.id, 'edit')
+  if (!canvas) return
+  try {
+    const restored = actions.restorePage(canvas.id, req.params.pageId, userActor(req))
+    if (!restored) return res.status(404).json({ error: 'deleted page not found' })
+    res.json(restored)
+  } catch (e) {
+    if (e instanceof PageLimitError) return res.status(400).json({ error: e.message })
+    throw e
   }
 })
 

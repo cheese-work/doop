@@ -14,6 +14,16 @@ export function pageFrames(canvas: Canvas, pageId: string): Frame[] {
 
 export const MAX_PAGE_NAME = 100
 
+/** The hidden catch-all page `archive_frames` fills; always kept last. */
+export const ARCHIVE_PAGE_ID = 'archive'
+export const ARCHIVE_PAGE_NAME = 'Archive'
+
+/** `pages` with the Archive page (when present) moved to the end. */
+export function archiveLast(pages: CanvasPageInfo[]): CanvasPageInfo[] {
+  const archive = pages.filter((page) => page.id === ARCHIVE_PAGE_ID)
+  return archive.length ? [...pages.filter((page) => page.id !== ARCHIVE_PAGE_ID), ...archive] : pages
+}
+
 /** The name for a copy of `name`: "<name> copy", then "<name> copy 2", "… 3"
  *  while `taken` already holds it. The base is trimmed so the result fits
  *  the page name limit. */
