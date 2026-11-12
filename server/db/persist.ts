@@ -483,6 +483,8 @@ export async function commitKeyedFrameWrite(
     versionId: string
     versionName?: string
     savedByKind: ActorKind
+    /** the version as the write produced it: the frame is live and may have moved on during the commit */
+    version: { html: string; width: number; height: number; savedAt: number; savedBy: string }
     result: FrameWriteKeyRow['result']
   },
 ): Promise<FrameWriteKeyRow | undefined> {
@@ -519,11 +521,11 @@ export async function commitKeyedFrameWrite(
       id: write.versionId,
       frameId: frame.id,
       canvasId: frame.canvasId,
-      html: frame.html,
-      width: frame.width,
-      height: frame.height,
-      savedAt: frame.updatedAt,
-      savedBy: frame.updatedBy,
+      html: write.version.html,
+      width: write.version.width,
+      height: write.version.height,
+      savedAt: write.version.savedAt,
+      savedBy: write.version.savedBy,
       savedByKind: write.savedByKind,
       name: write.versionName ?? null,
     })

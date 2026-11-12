@@ -725,6 +725,26 @@ class Store {
     return frame
   }
 
+  /** Put back html, size and (optionally) the stamp and approval of a write that did not commit. This
+   *  undoes the caller's own write, so it passes the lock: the frame goes back to a state it already had.
+   *  Synchronous, like `updateFrame`; the caller decides what is still theirs to take back. */
+  rollbackFrame(
+    frameId: string,
+    to: Pick<Frame, 'html' | 'width' | 'height' | 'approval'> & Partial<Pick<Frame, 'updatedAt' | 'updatedBy'>>,
+  ): Frame | undefined {
+    const frame = this.getFrame(frameId)
+    if (!frame) return undefined
+    frame.html = to.html
+    frame.width = to.width
+    frame.height = to.height
+    frame.approval = to.approval
+    if (to.updatedAt !== undefined) frame.updatedAt = to.updatedAt
+    if (to.updatedBy !== undefined) frame.updatedBy = to.updatedBy
+    const c = this.canvases.get(frame.canvasId)
+    if (c && to.updatedAt !== undefined) c.updatedAt = frame.updatedAt
+    return frame
+  }
+
   deleteFrame(frameId: string): Frame | undefined {
     const canvasId = this.frameIndex.get(frameId)
     if (!canvasId) return undefined

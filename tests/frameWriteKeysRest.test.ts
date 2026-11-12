@@ -76,6 +76,17 @@ describe('PATCH /api/frames/:id html with idempotency_key', () => {
     expect((await read(frame.id)).html).not.toBe('<h1>One</h1>')
   })
 
+  it('answers 500, not a hang, when the database refuses the write, and leaves the frame as it was', async () => {
+    const frame = await newFrame()
+    const before = await read(frame.id)
+    // a NUL byte is not valid in a Postgres text column: the commit fails
+    const res = await owner.patch(`/api/frames/${frame.id}`, { html: '<h1>\u0000</h1>', idempotency_key: 'kdb' })
+    expect(res.status).toBe(500)
+    expect((await read(frame.id)).html).toBe(before.html)
+    const ok = await owner.patch(`/api/frames/${frame.id}`, { html: '<h1>fine</h1>', idempotency_key: 'kdb' })
+    expect(ok.status).toBe(200)
+  }, 15_000)
+
   it('refuses a key on a patch that carries more than html', async () => {
     const frame = await newFrame()
     const res = await owner.patch(`/api/frames/${frame.id}`, { html: '<h1>One</h1>', x: 5, idempotency_key: 'k3' })

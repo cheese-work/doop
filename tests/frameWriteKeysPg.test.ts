@@ -199,6 +199,65 @@ describe.skipIf(!PG_URL)('frame write keys on PostgreSQL', () => {
     expect(await keyRows()).toBe(1)
   })
 
+  /** A before-insert trigger on frame_write_keys that holds the transaction open, then optionally fails it:
+   *  the window in which another writer can touch the frame. */
+  const slowKeyInsert = async (failAfter: boolean) => {
+    await pool.query(`create or replace function fwk_slow() returns trigger as $$
+      begin perform pg_sleep(0.3); ${failAfter ? "raise exception 'injected failure';" : ''} return new; end $$ language plpgsql`)
+    await pool.query('drop trigger if exists fwk_slow on frame_write_keys')
+    await pool.query(
+      'create trigger fwk_slow before insert on frame_write_keys for each row execute function fwk_slow()',
+    )
+  }
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+  it('the named version holds the html this write produced, even when a user edits during the commit', async () => {
+    await slowKeyInsert(false)
+    const write = setHtml('fwk-a', '<h1>Keyed A</h1>', 'kA', { versionName: 'A' })
+    await wait(100)
+    actions.updateFrame('fwk-a', { html: '<h1>User B edit after A</h1>' }, user)
+    const out = await write
+    await pool.query('drop trigger fwk_slow on frame_write_keys')
+    const row = (await pool.query('select html from frame_versions where id = $1', [out.versionId])).rows[0] as {
+      html: string
+    }
+    expect(row.html).toBe('<h1>Keyed A</h1>')
+  })
+
+  it('a failed commit does not leave the write behind when the frame was only renamed meanwhile', async () => {
+    await slowKeyInsert(true)
+    const first = actions.writeFrameHtmlOnce('fwk-a', { op: 'append', chunk: '<p>chunk</p>', key: 'kC' }, actor)
+    const settled = first.then(
+      () => 'ok',
+      () => 'failed',
+    )
+    await wait(100)
+    actions.updateFrame('fwk-a', { name: 'renamed' }, user)
+    expect(await settled).toBe('failed')
+    await pool.query('drop trigger fwk_slow on frame_write_keys')
+    expect(store.getFrame('fwk-a')).toMatchObject({ name: 'renamed', html: ORIGINAL })
+    const retry = await actions.writeFrameHtmlOnce('fwk-a', { op: 'append', chunk: '<p>chunk</p>', key: 'kC' }, actor)
+    expect(retry?.replay).toBe(false)
+    expect(store.getFrame('fwk-a')!.html).toBe(`${ORIGINAL}<p>chunk</p>`)
+  })
+
+  it('a failed commit that another html writer already built on is not applied a second time by the retry', async () => {
+    await slowKeyInsert(true)
+    const first = actions.writeFrameHtmlOnce('fwk-a', { op: 'append', chunk: '<p>chunk</p>', key: 'kD' }, actor)
+    const settled = first.then(
+      () => 'ok',
+      () => 'failed',
+    )
+    await wait(100)
+    actions.updateFrame('fwk-a', { html: `${ORIGINAL}<p>chunk</p><p>user</p>` }, user)
+    expect(await settled).toBe('failed')
+    await pool.query('drop trigger fwk_slow on frame_write_keys')
+    const retry = await actions.writeFrameHtmlOnce('fwk-a', { op: 'append', chunk: '<p>chunk</p>', key: 'kD' }, actor)
+    expect(retry?.replay).toBe(true)
+    expect(store.getFrame('fwk-a')!.html).toBe(`${ORIGINAL}<p>chunk</p><p>user</p>`)
+    expect(await keyRows()).toBe(1)
+  })
+
   it('without a key it behaves as before: every call writes, nothing is recorded', async () => {
     actions.updateFrame('fwk-a', { html: '<h1>One</h1>' }, actor)
     const after = actions.updateFrame('fwk-a', { html: '<h1>One</h1>' }, actor)

@@ -1759,6 +1759,14 @@ app.post('/api/canvases/:id/frames', (req, res) => {
   res.json(frame)
 })
 
+/** Answer a failed frame write: the refusal it maps to, else 500. Express 4 does not route an async
+ *  handler's rejection, so a rethrown error would leave the request hanging. */
+function frameWriteFailed(res: express.Response, e: unknown) {
+  if (frameWriteRefused(res, e)) return
+  console.error('[frame write]', e)
+  if (!res.headersSent) res.status(500).json({ error: 'frame write failed' })
+}
+
 /** 423 for a locked frame, 412 for a conditional write that lost the race; anything else is a real failure. */
 function frameWriteRefused(res: express.Response, e: unknown): boolean {
   if (e instanceof FrameLockedError) {
@@ -1808,7 +1816,7 @@ async function keyedWriteReply(
     const { frame, ...result } = out
     res.json(frame ? { ...frame, ...result } : result)
   } catch (e) {
-    if (!frameWriteRefused(res, e)) throw e
+    frameWriteFailed(res, e)
   }
 }
 
@@ -1854,7 +1862,7 @@ app.patch('/api/frames/:id', async (req, res) => {
     if (!frame) return res.status(404).json({ error: 'frame not found' })
     res.json(frame)
   } catch (e) {
-    if (!frameWriteRefused(res, e)) throw e
+    frameWriteFailed(res, e)
   }
 })
 
@@ -1906,7 +1914,7 @@ app.post('/api/frames/:id/append', async (req, res) => {
     if (!frame) return res.status(404).json({ error: 'frame not found' })
     res.json({ ok: true, htmlBytes: frame.html.length, updatedAt: frame.updatedAt })
   } catch (e) {
-    if (!frameWriteRefused(res, e)) throw e
+    frameWriteFailed(res, e)
   }
 })
 
@@ -1942,7 +1950,7 @@ app.post('/api/frames/:id/versions/:versionId/restore', async (req, res) => {
     if (!restored) return res.status(404).json({ error: 'frame not found' })
     res.json(restored)
   } catch (e) {
-    if (!frameWriteRefused(res, e)) throw e
+    frameWriteFailed(res, e)
   }
 })
 
