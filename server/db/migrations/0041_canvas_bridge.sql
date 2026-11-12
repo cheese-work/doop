@@ -1,4 +1,4 @@
-CREATE TABLE "canvas_bridge" (
+CREATE TABLE IF NOT EXISTS "canvas_bridge" (
 	"canvas_id" text PRIMARY KEY NOT NULL,
 	"agent_ref" text,
 	"agent_name" text,

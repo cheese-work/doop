@@ -1,4 +1,4 @@
-CREATE TABLE "comment_events" (
+CREATE TABLE IF NOT EXISTS "comment_events" (
 	"id" bigserial PRIMARY KEY NOT NULL,
 	"canvas_id" text NOT NULL,
 	"comment_id" text NOT NULL,
@@ -8,4 +8,4 @@ CREATE TABLE "comment_events" (
 	"acked_at" bigint
 );
 --> statement-breakpoint
-CREATE INDEX "comment_events_unacked_idx" ON "comment_events" USING btree ("canvas_id","id") WHERE "comment_events"."acked_at" is null;
+CREATE INDEX IF NOT EXISTS "comment_events_unacked_idx" ON "comment_events" USING btree ("canvas_id","id") WHERE "comment_events"."acked_at" is null;
