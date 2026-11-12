@@ -1,5 +1,13 @@
 import { nanoid } from 'nanoid'
-import { canvasPages, copyPageName, pageFrames, samePages } from '../shared/pages.ts'
+import {
+  ARCHIVE_PAGE_ID,
+  ARCHIVE_PAGE_NAME,
+  archiveLast,
+  canvasPages,
+  copyPageName,
+  pageFrames,
+  samePages,
+} from '../shared/pages.ts'
 import * as persist from './db/persist.ts'
 import type { LinkAccess } from '../shared/canvasRole.ts'
 import { MAX_GUIDES } from '../shared/guides.ts'
@@ -9,6 +17,7 @@ import type {
   CanvasGuide,
   CanvasPageInfo,
   CommunityCategory,
+  DeletedPage,
   Frame,
   GuidelineDoc,
   MemoryReference,
@@ -49,6 +58,14 @@ export class FrameStaleError extends Error {
   }
 }
 
+/** A write reached a frame that sits in the trash (CHE-5306). The message
+ *  names the frame so a person or an agent knows what to restore. */
+export class FrameDeletedError extends Error {
+  constructor(frame: Pick<Frame, 'id' | 'name'>) {
+    super(`Frame “${frame.name}” (${frame.id}) is deleted; restore it before changing it.`)
+  }
+}
+
 type PageCopy = {
   source: CanvasPageInfo
   page: CanvasPageInfo
@@ -70,7 +87,16 @@ class Store {
   /** the page copy in flight per canvas, so the next one waits for it */
   private pageCopies = new Map<string, Promise<unknown>>()
 
-  init(canvases: Canvas[]) {
+  /** Soft-deleted frames and pages per canvas. Kept off `Canvas` so the canvas
+   *  JSON every route returns never carries the trash. */
+  private trash = new Map<string, { frames: Frame[]; pages: DeletedPage[] }>()
+  private deletedIndex = new Map<string, string>() // deleted frameId -> canvasId
+
+  init(canvases: Canvas[], trash?: Map<string, { frames: Frame[]; pages: DeletedPage[] }>) {
+    for (const [canvasId, entry] of trash ?? []) {
+      this.trash.set(canvasId, entry)
+      for (const f of entry.frames) this.deletedIndex.set(f.id, canvasId)
+    }
     for (const c of canvases) {
       c.pages = canvasPages(c)
       this.canvases.set(c.id, c)
@@ -329,14 +355,28 @@ class Store {
       const startFrameId = current.find((p) => p.id === page.id)?.startFrameId
       return startFrameId ? { ...page, startFrameId } : page
     })
-    canvas.pages = merged
+    const ordered = archiveLast(merged)
+    /* a removed page is kept in the trash, with its (deleted) frames still pointing at it */
+    const now = Date.now()
+    const removed = current.filter((page) => !ordered.some((p) => p.id === page.id))
+    if (removed.length || this.trash.get(canvasId)?.pages.some((d) => ordered.some((p) => p.id === d.page.id))) {
+      const entry = this.trashOf(canvasId)
+      entry.pages = [
+        ...entry.pages.filter(
+          (d) => !ordered.some((p) => p.id === d.page.id) && !removed.some((p) => p.id === d.page.id),
+        ),
+        ...removed.map((page) => ({ page, deletedAt: now })),
+      ]
+      persist.saveDeletedPages(canvasId, entry.pages)
+    }
+    canvas.pages = ordered
     /* a deleted page takes its guides with it */
-    const kept = (guide: CanvasGuide) => merged.some((page) => page.id === guide.pageId)
+    const kept = (guide: CanvasGuide) => ordered.some((page) => page.id === guide.pageId)
     const dropped = (canvas.guides ?? []).filter((guide) => !kept(guide))
     if (dropped.length) canvas.guides = canvas.guides!.filter(kept)
     canvas.updatedAt = Date.now()
     persist.saveCanvas(canvas)
-    return { pages: merged, dropped }
+    return { pages: ordered, dropped }
   }
 
   /** Set (frameId) or clear (null) the frame a page's prototype starts on. */
@@ -386,6 +426,8 @@ class Store {
     const c = this.canvases.get(id)
     if (!c) return undefined
     for (const f of c.frames) this.frameIndex.delete(f.id)
+    for (const f of this.trash.get(id)?.frames ?? []) this.deletedIndex.delete(f.id)
+    this.trash.delete(id)
     this.canvases.delete(id)
     persist.deleteCanvas(id)
     return c
@@ -624,6 +666,38 @@ class Store {
     return this.canvases.get(canvasId)?.frames.find((f) => f.id === frameId)
   }
 
+  /** The live frame, undefined when there is none, and FrameDeletedError when
+   *  it sits in the trash. Every writer asks here, so a deleted frame is
+   *  refused in one place. */
+  writableFrame(frameId: string): Frame | undefined {
+    const frame = this.getFrame(frameId)
+    if (frame) return frame
+    const deleted = this.getDeletedFrame(frameId)
+    if (deleted) throw new FrameDeletedError(deleted)
+    return undefined
+  }
+
+  getDeletedFrame(frameId: string): Frame | undefined {
+    const canvasId = this.deletedIndex.get(frameId)
+    return canvasId ? this.trash.get(canvasId)?.frames.find((f) => f.id === frameId) : undefined
+  }
+
+  getDeletedPage(canvasId: string, pageId: string): CanvasPageInfo | undefined {
+    return this.trash.get(canvasId)?.pages.find((d) => d.page.id === pageId)?.page
+  }
+
+  /** What a canvas's trash holds: deleted frames and deleted pages. */
+  listTrash(canvasId: string): { frames: Frame[]; pages: DeletedPage[] } {
+    const entry = this.trash.get(canvasId)
+    return { frames: [...(entry?.frames ?? [])], pages: [...(entry?.pages ?? [])] }
+  }
+
+  private trashOf(canvasId: string) {
+    let entry = this.trash.get(canvasId)
+    if (!entry) this.trash.set(canvasId, (entry = { frames: [], pages: [] }))
+    return entry
+  }
+
   createFrame(
     canvasId: string,
     input: {
@@ -695,7 +769,7 @@ class Store {
       expectedUpdatedAt?: number
     } = {},
   ): Frame | undefined {
-    const frame = this.getFrame(frameId)
+    const frame = this.writableFrame(frameId)
     if (!frame) return undefined
     // The one guard for frame html, width and height (every actor, every path).
     // Synchronous: the check and the write below share one tick, so a lock
@@ -745,6 +819,8 @@ class Store {
     return frame
   }
 
+  /** Soft delete: the frame leaves the canvas and waits in the trash with
+   *  its version rows; nothing is removed from the database. */
   deleteFrame(frameId: string): Frame | undefined {
     const canvasId = this.frameIndex.get(frameId)
     if (!canvasId) return undefined
@@ -753,11 +829,82 @@ class Store {
     const idx = c.frames.findIndex((f) => f.id === frameId)
     if (idx === -1) return undefined
     const [frame] = c.frames.splice(idx, 1)
-    c.updatedAt = Date.now()
+    frame!.deletedAt = c.updatedAt = Date.now()
     this.frameIndex.delete(frameId)
-    persist.deleteFrame(frameId)
+    this.trashOf(canvasId).frames.push(frame!)
+    this.deletedIndex.set(frameId, canvasId)
+    persist.saveFrame(frame!, true)
     persist.saveCanvas(c)
     return frame
+  }
+
+  /** Bring a deleted frame back to its page (the first page when that page
+   *  is gone too). Undefined when it is not in the trash. */
+  restoreFrame(frameId: string): Frame | undefined {
+    const canvasId = this.deletedIndex.get(frameId)
+    const c = canvasId ? this.canvases.get(canvasId) : undefined
+    const entry = canvasId ? this.trash.get(canvasId) : undefined
+    const frame = entry?.frames.find((f) => f.id === frameId)
+    if (!canvasId || !c || !entry || !frame) return undefined
+    entry.frames = entry.frames.filter((f) => f !== frame)
+    this.deletedIndex.delete(frameId)
+    delete frame.deletedAt
+    const pages = canvasPages(c)
+    if (!frame.pageId || !pages.some((page) => page.id === frame.pageId)) frame.pageId = pages[0]!.id
+    frame.updatedAt = Math.max(Date.now(), frame.updatedAt + 1)
+    c.frames.push(frame)
+    c.frames.sort((a, b) => a.createdAt - b.createdAt)
+    c.updatedAt = frame.updatedAt
+    this.frameIndex.set(frameId, canvasId)
+    persist.saveFrame(frame, true)
+    persist.saveCanvas(c)
+    return frame
+  }
+
+  /** Bring a deleted page back (before Archive) with every deleted frame that
+   *  was on it. Undefined when the page is not in the trash. */
+  restorePage(
+    canvasId: string,
+    pageId: string,
+  ): { pages: CanvasPageInfo[]; page: CanvasPageInfo; frames: Frame[] } | undefined {
+    const c = this.canvases.get(canvasId)
+    const entry = this.trash.get(canvasId)
+    const deleted = entry?.pages.find((d) => d.page.id === pageId)
+    if (!c || !entry || !deleted) return undefined
+    const pages = canvasPages(c)
+    if (pages.length >= MAX_PAGES) throw new PageLimitError()
+    const page = pages.some((p) => p.name === deleted.page.name)
+      ? { ...deleted.page, name: copyPageName(deleted.page.name, names(pages)) }
+      : deleted.page
+    entry.pages = entry.pages.filter((d) => d !== deleted)
+    c.pages = archiveLast([...pages, page])
+    persist.saveDeletedPages(canvasId, entry.pages)
+    persist.saveCanvas(c)
+    const frames = entry.frames
+      .filter((f) => f.pageId === pageId)
+      .map((f) => this.restoreFrame(f.id))
+      .filter((f): f is Frame => !!f)
+    return { pages: c.pages, page, frames }
+  }
+
+  /** Move frames to the Archive page (made last on first use) and hide them. */
+  archiveFrames(
+    canvasId: string,
+    frameIds: string[],
+    by: string,
+  ): { pages: CanvasPageInfo[]; frames: Frame[] } | undefined {
+    const c = this.canvases.get(canvasId)
+    if (!c) return undefined
+    const frames = frameIds.map((id) => this.getFrame(id)).filter((f): f is Frame => !!f && f.canvasId === canvasId)
+    if (!frames.length) return undefined
+    const pages = canvasPages(c)
+    if (!pages.some((p) => p.id === ARCHIVE_PAGE_ID)) {
+      if (pages.length >= MAX_PAGES) throw new PageLimitError()
+      c.pages = archiveLast([...pages, { id: ARCHIVE_PAGE_ID, name: ARCHIVE_PAGE_NAME }])
+      persist.saveCanvas(c)
+    }
+    for (const frame of frames) this.updateFrame(frame.id, { pageId: ARCHIVE_PAGE_ID, hidden: true }, by)
+    return { pages: c.pages!, frames }
   }
 }
 

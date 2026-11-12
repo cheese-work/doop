@@ -1,12 +1,12 @@
 import { env } from './env.ts'
-import { canvasPages, samePages } from '../shared/pages.ts'
+import { ARCHIVE_PAGE_ID, canvasPages, samePages } from '../shared/pages.ts'
 import { prototypeReport, prototypeUrl, setPrototypeStart } from './prototypeTools.ts'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import type { Request, Response } from 'express'
 import { fromNodeHeaders } from 'better-auth/node'
 import { z } from 'zod'
-import { FrameLockedError, FrameStaleError, store } from './store.ts'
+import { FrameLockedError, FrameStaleError, PageLimitError, store } from './store.ts'
 import * as actions from './actions.ts'
 import { canvasRole } from './access.ts'
 import { roleAllows, type CanvasRole } from '../shared/canvasRole.ts'
@@ -329,8 +329,13 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
     return role ? ` with the access this task needs — this account can only ${role} on that canvas` : ''
   }
   const noCanvas = (id: string) => err(`no canvas with id ${id} accessible to this account${readOnlyNote(id)}`)
-  const noFrame = (id: string) =>
-    err(`no frame with id ${id} accessible to this account${readOnlyNote(store.getFrame(id)?.canvasId)}`)
+  const noFrame = (id: string) => {
+    /* a deleted frame is not missing: name it and say how to bring it back */
+    const gone = store.getDeletedFrame(id)
+    if (gone && roleOn(gone.canvasId))
+      return err(`frame “${gone.name}” (${id}) is deleted; restore it with restore_frame`)
+    return err(`no frame with id ${id} accessible to this account${readOnlyNote(store.getFrame(id)?.canvasId)}`)
+  }
   /** A write with an idempotency_key: decided at the database, in one transaction with the named version.
    *  Returns the finished tool result for a replay, or the written frame for the caller to shape as usual. */
   async function keyedWrite(
@@ -2121,6 +2126,69 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       const frame = actions.deleteFrame(frame_id, actorFrom(agent_name))
       if (!frame) return noFrame(frame_id)
       return text({ ok: true, deleted: frame.name })
+    },
+  )
+
+  server.registerTool(
+    'restore_frame',
+    {
+      title: 'Restore a deleted frame',
+      description:
+        'Bring a deleted frame back to its canvas with its full version history. Deleting a frame never removes it; list_canvas_trash is not needed, the frame id from the delete is enough.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: { frame_id: z.string(), agent_name: agentName },
+    },
+    async ({ frame_id, agent_name }) => {
+      const gone = store.getDeletedFrame(frame_id)
+      if (!gone || !canvasFor(gone.canvasId, 'edit'))
+        return err(`no deleted frame with id ${frame_id} on a canvas this account can edit`)
+      const frame = actions.restoreFrame(frame_id, actorFrom(agent_name))
+      if (!frame) return noFrame(frame_id)
+      return text({ ok: true, frame: frameSummary(frame) })
+    },
+  )
+
+  server.registerTool(
+    'restore_page',
+    {
+      title: 'Restore a deleted page',
+      description:
+        'Bring a deleted page back with the frames that were deleted on it, and their version history. A name that is taken again gets a copy suffix.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: { canvas_id: z.string(), page_id: z.string(), agent_name: agentName },
+    },
+    async ({ canvas_id, page_id, agent_name }) => {
+      if (!canvasFor(canvas_id, 'edit')) return noCanvas(canvas_id)
+      try {
+        const restored = actions.restorePage(canvas_id, page_id, actorFrom(agent_name))
+        if (!restored) return err(`no deleted page ${page_id} on canvas ${canvas_id}`)
+        return text({ ok: true, page: restored.page, frames: restored.frames.map(frameSummary) })
+      } catch (e) {
+        if (e instanceof PageLimitError) return err(e.message)
+        throw e
+      }
+    },
+  )
+
+  server.registerTool(
+    'archive_frames',
+    {
+      title: 'Archive frames',
+      description:
+        "Move frames to the canvas's Archive page (made on first use, always the last page) and hide them, in one step. Use it for designs that are out of the running but worth keeping; move them back with update_frame.",
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: { canvas_id: z.string(), frame_ids: z.array(z.string()).min(1).max(200), agent_name: agentName },
+    },
+    async ({ canvas_id, frame_ids, agent_name }) => {
+      if (!canvasFor(canvas_id, 'edit')) return noCanvas(canvas_id)
+      try {
+        const out = actions.archiveFrames(canvas_id, frame_ids, actorFrom(agent_name))
+        if (!out) return err('none of those frames are on this canvas')
+        return text({ ok: true, archived: out.moved, page: ARCHIVE_PAGE_ID })
+      } catch (e) {
+        if (e instanceof PageLimitError) return err(e.message)
+        throw e
+      }
     },
   )
 

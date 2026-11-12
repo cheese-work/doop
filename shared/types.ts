@@ -28,6 +28,9 @@ export interface Frame {
   /** Human sign-off for implementation. Missing/null means draft. Design
    * edits retain the attribution but change the status to needs_review. */
   approval?: FrameApproval | null
+  /** set when the frame was deleted: it is kept (with its versions) in the
+   *  canvas trash and absent from `Canvas.frames` until restored */
+  deletedAt?: number
 }
 
 export interface FrameApproval {
@@ -126,6 +129,12 @@ export interface CanvasPageInfo {
    *  Set only through the flow-start route or MCP tool; page-list saves keep
    *  whatever the server already has. */
   startFrameId?: string
+}
+
+/** A page that was deleted: kept so a restore brings it back. */
+export interface DeletedPage {
+  page: CanvasPageInfo
+  deletedAt: number
 }
 
 /** A ruler guide: an infinite line on one page of a canvas, in world px.

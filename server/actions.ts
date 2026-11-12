@@ -531,8 +531,9 @@ async function stampSaved(frameId: string, id: string): Promise<boolean> {
       .saveFrameNow(frame)
       .then(
         () => {
-          /* deleted while the write was out: the write must not bring it back */
-          if (!store.getFrame(frameId)) persist.deleteFrame(frameId)
+          /* deleted while the write was out: it must not clear the flag the delete saved */
+          const deleted = store.getDeletedFrame(frameId)
+          if (deleted) persist.saveFrame(deleted, true)
           for (const stamp of carried) pending.ids.delete(stamp)
           if (!pending.ids.size && unsavedStamps.get(frameId) === pending) unsavedStamps.delete(frameId)
         },
@@ -1508,9 +1509,10 @@ export async function restoreFrameVersion(
   versionId: string,
   actor: Actor,
 ): Promise<RestoredFrame | null | undefined> {
+  if (!store.writableFrame(frameId)) return undefined
   const version = await persist.getFrameVersion(frameId, versionId)
   if (!version) return null
-  const before = store.getFrame(frameId)
+  const before = store.writableFrame(frameId)
   if (!before) return undefined
   const replaced = { html: before.html, width: before.width, height: before.height }
   if (before.html === version.html && before.width === version.width && before.height === version.height)
@@ -1668,7 +1670,7 @@ export function appendFrameHtml(
   actor: Actor,
   opts: { start?: boolean; done?: boolean; expectedUpdatedAt?: number } = {},
 ): Frame | undefined {
-  const before = store.getFrame(frameId)
+  const before = store.writableFrame(frameId)
   if (!before) return undefined
 
   const starting = opts.start || !streams.has(frameId)
@@ -1986,7 +1988,7 @@ export function updateFrame(
   actor: Actor,
   opts: { replace?: boolean; expectedUpdatedAt?: number } = {},
 ): Frame | undefined {
-  const before = store.getFrame(frameId)
+  const before = store.writableFrame(frameId)
   if (!before) return undefined
   if (patch.html !== undefined) patch = { ...patch, html: repairEscapedHtml(patch.html) }
   const prevName = before.name
@@ -2052,7 +2054,7 @@ export function setFrameApproval(
   ready: boolean,
   user: { id: string; name: string },
 ): Frame | undefined {
-  const current = store.getFrame(frameId)
+  const current = store.writableFrame(frameId)
   if (!current) return undefined
   if (ready && current.approval?.status === 'ready_for_dev') return current
   const actor = resolveActor({ name: user.name, kind: 'user' })
@@ -2094,6 +2096,38 @@ export function deleteFrame(frameId: string, actor: Actor): Frame | undefined {
   logActivity(frame.canvasId, actor, `deleted frame “${frame.name}”`, frame.id)
   touch(frame.canvasId, actor, null)
   return frame
+}
+
+/** Bring a deleted frame back with its version history; peers get the frame. */
+export function restoreFrame(frameId: string, actor: Actor): Frame | undefined {
+  const frame = store.restoreFrame(frameId)
+  if (!frame) return undefined
+  broadcast(frame.canvasId, { type: 'frame:created', frame, actor })
+  logActivity(frame.canvasId, actor, `restored frame “${frame.name}”`, frame.id)
+  touch(frame.canvasId, actor, frame.id)
+  return frame
+}
+
+/** Bring a deleted page back with its deleted frames. */
+export function restorePage(canvasId: string, pageId: string, actor: Actor) {
+  const restored = store.restorePage(canvasId, pageId)
+  if (!restored) return undefined
+  broadcast(canvasId, { type: 'canvas:pages', pages: restored.pages, actor })
+  for (const frame of restored.frames) broadcast(canvasId, { type: 'frame:created', frame, actor })
+  logActivity(canvasId, actor, `restored page “${restored.page.name}” with ${restored.frames.length} frame(s)`)
+  touch(canvasId, actor, null)
+  return { page: restored.page, frames: restored.frames }
+}
+
+/** Move frames to the Archive page and hide them in one step. */
+export function archiveFrames(canvasId: string, frameIds: string[], actor: Actor) {
+  const archived = store.archiveFrames(canvasId, frameIds, actor.name)
+  if (!archived) return undefined
+  broadcast(canvasId, { type: 'canvas:pages', pages: archived.pages, actor })
+  for (const frame of archived.frames) broadcast(canvasId, { type: 'frame:updated', frame, actor })
+  logActivity(canvasId, actor, `archived ${archived.frames.length} frame(s)`)
+  touch(canvasId, actor, null)
+  return { moved: archived.frames.map((f) => f.id), pages: archived.pages }
 }
 
 /** Remove a canvas with everything attached to it; viewers are told to leave. */

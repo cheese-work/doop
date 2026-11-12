@@ -86,6 +86,13 @@
 - `@electric-sql/pglite` 0.5.4 - embedded Postgres so `bun run dev` works with zero external
   services.
 - `pg` 8.22.0 - Postgres driver for the real-database path.
+- Soft delete (CHE-5306): deleting a frame sets `frames.deleted_at`; deleting a page moves its entry
+  to `canvases.deleted_pages` (jsonb, written only by `persist.saveDeletedPages`). Both leave in-memory
+  `Store` trash maps, never `Canvas`, so no client payload carries them. `store.writableFrame` is the one
+  gate every frame writer shares and throws `FrameDeletedError` (REST 410). Restore routes: `POST /api/frames/:id/restore`,
+  `POST /api/canvases/:id/pages/:pageId/restore` (brings the page's deleted frames), `GET /api/canvases/:id/trash`; MCP `restore_frame`, `restore_page`. `archive_frames` moves
+  frames to the per-canvas `Archive` page (`ARCHIVE_PAGE_ID`, always last) and hides them. Nothing in this
+  slice hard-deletes a frame, page or version row (`tests/frameTrashPersist.test.ts` scans for it).
 - Chat bridge (`server/bridge.ts`, `shared/bridge.ts`): one `canvas_bridge` row per canvas holds the Multica
   agent people chat with, the agent list the watcher publishes (`set_bridge_agents`) and its liveness
   stamp (`bridge_heartbeat`). `GET/PUT /api/canvases/:id/bridge` reads and selects; status (`ok`,
@@ -180,7 +187,7 @@
   on set / edit / append). `persist.writeFrame` keeps the stored html and size while both the stored
   and the incoming row are locked. `tests/frameLockGuard.test.ts` scans `server/` so a new writer of
   those columns outside the guard fails the build.
-- Frame write keys (`frame_write_keys`, migration 0042; `actions.writeFrameHtmlOnce`): MCP `set_frame_html` /
+- Frame write keys (`frame_write_keys`, migration 0043; `actions.writeFrameHtmlOnce`): MCP `set_frame_html` /
   `edit_frame_html` / `append_frame_html` and REST `PATCH /api/frames/:id` (html only) and
   `POST /api/frames/:id/append` take `idempotency_key` and an optional `version_name`. The key row,
   html, size and the named `frame_versions` row commit in one transaction (`persist.commitKeyedFrameWrite`);

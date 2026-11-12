@@ -29,11 +29,10 @@ vi.mock('../server/db/persist.ts', () => ({
   saveActivity: () => {},
   saveDecision: () => {},
   saveProposal: () => {},
-  saveFrame: () => {},
-  saveCanvas: () => {},
-  deleteFrame: (id: string) => {
-    writes.push(`delete:${id}`)
+  saveFrame: (f: Frame) => {
+    if (f.deletedAt) writes.push(`deleted:${f.id}`)
   },
+  saveCanvas: () => {},
   saveFrameNow: async (f: Frame) => {
     await mocks.duringFrameWrite?.()
     if (mocks.frameFails) throw new Error('db down')
@@ -284,7 +283,7 @@ describe('stamping an element for a new comment', () => {
     expect(sent).toContain('frame:deleted')
     expect(sent).not.toContain('frame:updated')
     expect(sent).not.toContain('comment')
-    /* the stamp's write landed after the delete: the row goes again */
-    expect(writes).toEqual(['delete:f1', 'frame:f1', 'delete:f1'])
+    /* the stamp's write landed after the delete: the deleted flag is saved again */
+    expect(writes).toEqual(['deleted:f1', 'frame:f1', 'deleted:f1'])
   })
 })
