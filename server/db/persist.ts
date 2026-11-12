@@ -35,6 +35,9 @@ import type {
  * Nothing on the live path (presence, cursors, reveal ticks) awaits the DB.
  */
 
+/** the pool, or one open transaction: what a write that may join a transaction runs on */
+type Exec = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0]
+
 function swallow(p: Promise<unknown>) {
   p.catch((err) => console.error('[db] write failed', err))
 }
@@ -354,7 +357,7 @@ export function saveFrame(f: Frame, immediate = false) {
   )
 }
 
-async function writeFrame(f: Frame) {
+async function writeFrame(f: Frame, exec: Exec = db) {
   const row = {
     id: f.id,
     canvasId: f.canvasId,
@@ -381,7 +384,7 @@ async function writeFrame(f: Frame) {
      its next edit carries `locked: false` and lands whole. */
   const keepWhileLocked = (column: typeof t.frames.html | typeof t.frames.width | typeof t.frames.height) =>
     sql`CASE WHEN ${t.frames.locked} IS TRUE AND excluded.locked IS TRUE THEN ${column} ELSE excluded.${sql.identifier(column.name)} END`
-  await db
+  await exec
     .insert(t.frames)
     .values(row)
     .onConflictDoUpdate({
@@ -393,7 +396,7 @@ async function writeFrame(f: Frame) {
         height: keepWhileLocked(t.frames.height),
       },
     })
-  await syncAssetRefs(f.id, f.html)
+  await syncAssetRefs(f.id, f.html, exec)
 }
 
 /* Frame design history: one row per burst boundary (see actions.ts), newest
@@ -461,6 +464,87 @@ async function appendFrameVersion(version: FrameVersion) {
       ),
     )
   }
+}
+
+export type FrameWriteKeyRow = {
+  versionId: string
+  payloadHash: string
+  result: { updatedAt: number; htmlBytes: number }
+}
+
+/** The stored answer of an earlier write under this key, if one committed. */
+export async function findFrameWriteKey(frameId: string, key: string): Promise<FrameWriteKeyRow | undefined> {
+  const [row] = await db
+    .select({
+      versionId: t.frameWriteKeys.versionId,
+      payloadHash: t.frameWriteKeys.payloadHash,
+      result: t.frameWriteKeys.result,
+    })
+    .from(t.frameWriteKeys)
+    .where(and(eq(t.frameWriteKeys.frameId, frameId), eq(t.frameWriteKeys.key, key)))
+  return row
+}
+
+/** Commit a keyed frame write as one unit: the key row, the frame row (html and
+ *  size) and the named version land together or not at all. Resolves to the
+ *  earlier row, writing nothing, when the key is already taken (a writer that
+ *  got past the in-process arbiter, or another instance). */
+export async function commitKeyedFrameWrite(
+  frame: Frame,
+  write: {
+    key: string
+    payloadHash: string
+    versionId: string
+    versionName?: string
+    savedByKind: ActorKind
+    /** the version as the write produced it: the frame is live and may have moved on during the commit */
+    version: { html: string; width: number; height: number; savedAt: number; savedBy: string }
+    result: FrameWriteKeyRow['result']
+  },
+): Promise<FrameWriteKeyRow | undefined> {
+  /* any pending debounced write holds the very state committed below */
+  const timer = frameTimers.get(frame.id)
+  if (timer) clearTimeout(timer)
+  frameTimers.delete(frame.id)
+  return db.transaction(async (tx) => {
+    const [claimed] = await tx
+      .insert(t.frameWriteKeys)
+      .values({
+        frameId: frame.id,
+        key: write.key,
+        payloadHash: write.payloadHash,
+        versionId: write.versionId,
+        result: write.result,
+        createdAt: Date.now(),
+      })
+      .onConflictDoNothing()
+      .returning({ versionId: t.frameWriteKeys.versionId })
+    if (!claimed) {
+      const [earlier] = await tx
+        .select({
+          versionId: t.frameWriteKeys.versionId,
+          payloadHash: t.frameWriteKeys.payloadHash,
+          result: t.frameWriteKeys.result,
+        })
+        .from(t.frameWriteKeys)
+        .where(and(eq(t.frameWriteKeys.frameId, frame.id), eq(t.frameWriteKeys.key, write.key)))
+      return earlier
+    }
+    await writeFrame(frame, tx)
+    await tx.insert(t.frameVersions).values({
+      id: write.versionId,
+      frameId: frame.id,
+      canvasId: frame.canvasId,
+      html: write.version.html,
+      width: write.version.width,
+      height: write.version.height,
+      savedAt: write.version.savedAt,
+      savedBy: write.version.savedBy,
+      savedByKind: write.savedByKind,
+      name: write.versionName ?? null,
+    })
+    return undefined
+  })
 }
 
 /* Named page snapshots. Unlike version writes these are awaited by the caller:
@@ -557,6 +641,7 @@ export async function listFrameVersions(frameId: string): Promise<FrameVersionIn
       savedAt: t.frameVersions.savedAt,
       savedBy: t.frameVersions.savedBy,
       savedByKind: t.frameVersions.savedByKind,
+      name: t.frameVersions.name,
       htmlBytes: sql<number>`length(${t.frameVersions.html})`,
     })
     .from(t.frameVersions)
@@ -572,6 +657,7 @@ export async function listFrameVersions(frameId: string): Promise<FrameVersionIn
     savedBy: row.savedBy,
     savedByKind: frameVersionKind(row.savedByKind),
     htmlBytes: Number(row.htmlBytes),
+    ...(row.name ? { name: row.name } : {}),
   }))
 }
 
@@ -594,6 +680,7 @@ export async function getFrameVersion(frameId: string, versionId: string): Promi
     savedBy: row.savedBy,
     savedByKind: frameVersionKind(row.savedByKind),
     htmlBytes: row.html.length,
+    ...(row.name ? { name: row.name } : {}),
     html: row.html,
   }
 }
@@ -601,11 +688,11 @@ export async function getFrameVersion(frameId: string, versionId: string): Promi
 /* asset_refs is a projection of frame HTML: recompute this frame's full ref
    set on every durable write (never increment/decrement — nothing to drift).
    Boot reconciles the whole table, so a lost write here self-heals. */
-async function syncAssetRefs(frameId: string, html: string) {
+async function syncAssetRefs(frameId: string, html: string, exec: Exec = db) {
   const ids = [...extractAssetIds(html)]
-  await db.delete(t.assetRefs).where(eq(t.assetRefs.frameId, frameId))
+  await exec.delete(t.assetRefs).where(eq(t.assetRefs.frameId, frameId))
   if (ids.length) {
-    await db
+    await exec
       .insert(t.assetRefs)
       .values(ids.map((assetId) => ({ assetId, frameId })))
       .onConflictDoNothing()

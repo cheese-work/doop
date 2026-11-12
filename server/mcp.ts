@@ -124,9 +124,29 @@ function err(message: string) {
 
 /** A frame write the store refused (locked, or changed since read) as a tool error; any other failure is real. */
 function refusalOf(e: unknown) {
-  if (e instanceof FrameLockedError || e instanceof FrameStaleError) return err(e.message)
+  if (
+    e instanceof FrameLockedError ||
+    e instanceof FrameStaleError ||
+    e instanceof actions.FrameWriteKeyConflictError ||
+    e instanceof actions.FrameEditError
+  )
+    return err(e.message)
   throw e
 }
+
+const idempotencyKey = z
+  .string()
+  .min(1)
+  .max(200)
+  .optional()
+  .describe(
+    'Makes the write safe to retry: a call repeated with the same key and the same input writes nothing and answers with the first result (replay: true); the same key with different input is an error. Use a fresh key per intended write.',
+  )
+const versionName = z
+  .string()
+  .max(200)
+  .optional()
+  .describe('Names the version this write saves (only with idempotency_key); it shows in the frame’s history')
 
 /** `expected_updated_at` of edit_frame_html and append_frame_html: the store checks it in the tick of the write. */
 function expectedMs(expected: string | undefined): { ms?: number } | { bad: ReturnType<typeof err> } {
@@ -316,6 +336,33 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
     if (gone && roleOn(gone.canvasId))
       return err(`frame “${gone.name}” (${id}) is deleted; restore it with restore_frame`)
     return err(`no frame with id ${id} accessible to this account${readOnlyNote(store.getFrame(id)?.canvasId)}`)
+  }
+  /** A write with an idempotency_key: decided at the database, in one transaction with the named version.
+   *  Returns the finished tool result for a replay, or the written frame for the caller to shape as usual. */
+  async function keyedWrite(
+    frameId: string,
+    req: actions.FrameWriteRequest,
+    actor: Actor,
+  ): Promise<{ done: ReturnType<typeof err | typeof text> } | { frame: Frame; versionId: string }> {
+    try {
+      const out = await actions.writeFrameHtmlOnce(frameId, req, actor)
+      if (!out) return { done: noFrame(frameId) }
+      if (out.replay) {
+        return {
+          done: text({
+            ok: true,
+            replay: true,
+            versionId: out.versionId,
+            updatedAt: new Date(out.updatedAt).toISOString(),
+            htmlBytes: out.htmlBytes,
+            note: 'This idempotency_key was already applied; nothing was written now. Call get_frame for the current content.',
+          }),
+        }
+      }
+      return { frame: out.frame!, versionId: out.versionId }
+    } catch (e) {
+      return { done: refusalOf(e) }
+    }
   }
   /* Feedback is claimed, and set_status nudged, only for agents that may
      act on it: claiming assigns a human's request to this agent, which a
@@ -1207,26 +1254,46 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
           .string()
           .optional()
           .describe('updatedAt from your last get_frame; the write is refused if the frame changed since'),
+        idempotency_key: idempotencyKey,
+        version_name: versionName,
         agent_name: agentName,
       },
     },
-    async ({ frame_id, html, expected_updated_at, agent_name }) => {
+    async ({ frame_id, html, expected_updated_at, idempotency_key, version_name, agent_name }) => {
       const current = frameFor(frame_id, 'edit')
       if (!current) return noFrame(frame_id)
-      const refused = fenceError(current, expected_updated_at)
-      if (refused) return refused
       let frame
-      try {
-        frame = actions.updateFrame(frame_id, { html }, actorFrom(agent_name), { replace: true })
-      } catch (e) {
-        return refusalOf(e)
+      let versionId: string | undefined
+      if (idempotency_key !== undefined) {
+        /* the key is read first, so a replay is not refused by the fence or the lock; a new key still meets both */
+        const expected = expectedMs(expected_updated_at)
+        if ('bad' in expected) return expected.bad
+        if (expected.ms === undefined && env.DOOP_MCP_REQUIRE_FENCE) return fenceError(current, undefined)!
+        const out = await keyedWrite(
+          frame_id,
+          { op: 'set', html, key: idempotency_key, versionName: version_name, expectedUpdatedAt: expected.ms },
+          actorFrom(agent_name),
+        )
+        if ('done' in out) return out.done
+        ;({ frame, versionId } = out)
+      } else {
+        const refused = fenceError(current, expected_updated_at)
+        if (refused) return refused
+        try {
+          frame = actions.updateFrame(frame_id, { html }, actorFrom(agent_name), { replace: true })
+        } catch (e) {
+          return refusalOf(e)
+        }
       }
       if (!frame) return noFrame(frame_id)
       return withPreview(
         withGuidelinesNudge(
           withStatusNudge(
             withFeedback(
-              withEscapeNote(textWithNudge({ ok: true, frame: frameSummary(frame) }, REVIEW_NUDGE), html),
+              withEscapeNote(
+                textWithNudge({ ok: true, frame: frameSummary(frame), ...(versionId && { versionId }) }, REVIEW_NUDGE),
+                html,
+              ),
               frame.canvasId,
               actorFrom(agent_name),
             ),
@@ -1843,10 +1910,12 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
           .describe(
             'updatedAt from your last get_frame or tool result; the chunk is refused if the frame changed since',
           ),
+        idempotency_key: idempotencyKey,
+        version_name: versionName,
         agent_name: agentName,
       },
     },
-    async ({ frame_id, html_chunk, start, done, expected_updated_at, agent_name }) => {
+    async ({ frame_id, html_chunk, start, done, expected_updated_at, idempotency_key, version_name, agent_name }) => {
       if (!frameFor(frame_id, 'edit')) return noFrame(frame_id)
       if (env.DOOP_MCP_REQUIRE_FENCE) {
         return err('append_frame_html is off (DOOP_MCP_REQUIRE_FENCE is on): send the design with set_frame_html')
@@ -1854,22 +1923,39 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       const expected = expectedMs(expected_updated_at)
       if ('bad' in expected) return expected.bad
       let frame
-      try {
-        frame = actions.appendFrameHtml(frame_id, html_chunk, actorFrom(agent_name), {
-          start,
-          done,
-          expectedUpdatedAt: expected.ms,
-        })
-      } catch (e) {
-        return refusalOf(e)
+      let versionId: string | undefined
+      if (idempotency_key !== undefined) {
+        const out = await keyedWrite(
+          frame_id,
+          {
+            op: 'append',
+            chunk: html_chunk,
+            start,
+            done,
+            key: idempotency_key,
+            versionName: version_name,
+            expectedUpdatedAt: expected.ms,
+          },
+          actorFrom(agent_name),
+        )
+        if ('done' in out) return out.done
+        ;({ frame, versionId } = out)
+      } else {
+        try {
+          frame = actions.appendFrameHtml(frame_id, html_chunk, actorFrom(agent_name), {
+            start,
+            done,
+            expectedUpdatedAt: expected.ms,
+          })
+        } catch (e) {
+          return refusalOf(e)
+        }
       }
       if (!frame) return noFrame(frame_id)
+      const written = { htmlBytes: frame.html.length, ...(versionId && { versionId }) }
       const result = done
-        ? textWithNudge(
-            { ok: true, streaming: false, htmlBytes: frame.html.length },
-            `Stream complete. ${REVIEW_NUDGE}`,
-          )
-        : text({ ok: true, streaming: true, htmlBytes: frame.html.length })
+        ? textWithNudge({ ok: true, streaming: false, ...written }, `Stream complete. ${REVIEW_NUDGE}`)
+        : text({ ok: true, streaming: true, ...written })
       /* nudge only on the first chunk — mid-stream results should stay lean.
          The escape check rides along: the opening chunk decides the stream. */
       const nudged = start
@@ -1901,30 +1987,51 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
           .describe(
             'updatedAt from your last get_frame or tool result; the edit is refused if the frame changed since',
           ),
+        idempotency_key: idempotencyKey,
+        version_name: versionName,
         agent_name: agentName,
       },
     },
-    async ({ frame_id, old_str, new_str, expected_updated_at, agent_name }) => {
+    async ({ frame_id, old_str, new_str, expected_updated_at, idempotency_key, version_name, agent_name }) => {
       const f = frameFor(frame_id, 'edit')
       if (!f) return noFrame(frame_id)
-      const count = f.html.split(old_str).length - 1
-      if (count === 0) return err('old_str not found in the frame HTML. Call get_frame to see the current content.')
-      if (count > 1)
-        return err(`old_str occurs ${count} times — include more surrounding context so it matches exactly once.`)
       const expected = expectedMs(expected_updated_at)
       if ('bad' in expected) return expected.bad
       let frame
-      try {
-        frame = actions.updateFrame(frame_id, { html: f.html.replace(old_str, new_str) }, actorFrom(agent_name), {
-          expectedUpdatedAt: expected.ms,
-        })!
-      } catch (e) {
-        return refusalOf(e)
+      let versionId: string | undefined
+      if (idempotency_key !== undefined) {
+        /* old_str is matched inside the keyed write, after the key lookup: a retry whose old_str is gone is a replay */
+        const out = await keyedWrite(
+          frame_id,
+          {
+            op: 'edit',
+            oldStr: old_str,
+            newStr: new_str,
+            key: idempotency_key,
+            versionName: version_name,
+            expectedUpdatedAt: expected.ms,
+          },
+          actorFrom(agent_name),
+        )
+        if ('done' in out) return out.done
+        ;({ frame, versionId } = out)
+      } else {
+        const count = f.html.split(old_str).length - 1
+        if (count === 0) return err('old_str not found in the frame HTML. Call get_frame to see the current content.')
+        if (count > 1)
+          return err(`old_str occurs ${count} times — include more surrounding context so it matches exactly once.`)
+        try {
+          frame = actions.updateFrame(frame_id, { html: f.html.replace(old_str, new_str) }, actorFrom(agent_name), {
+            expectedUpdatedAt: expected.ms,
+          })!
+        } catch (e) {
+          return refusalOf(e)
+        }
       }
       return withPreview(
         withStatusNudge(
           withFeedback(
-            textWithNudge({ ok: true, frame: frameSummary(frame) }, REVIEW_NUDGE),
+            textWithNudge({ ok: true, frame: frameSummary(frame), ...(versionId && { versionId }) }, REVIEW_NUDGE),
             frame.canvasId,
             actorFrom(agent_name),
           ),

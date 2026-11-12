@@ -55,6 +55,8 @@ export interface FrameVersionInfo {
   savedByKind?: ActorKind
   savedAt: number
   htmlBytes: number
+  /** the `version_name` a keyed agent write gave it; automatic snapshots have none */
+  name?: string
 }
 
 export interface FrameVersion extends FrameVersionInfo {

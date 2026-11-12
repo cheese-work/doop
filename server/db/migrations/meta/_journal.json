@@ -309,6 +309,13 @@
       "when": 1794488857028,
       "tag": "0044_page_snapshots",
       "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1794488857029,
+      "tag": "0045_frame_write_keys",
+      "breakpoints": true
     }
   ]
 }

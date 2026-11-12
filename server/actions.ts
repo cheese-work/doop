@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { nanoid } from 'nanoid'
 import { store } from './store.ts'
 import * as persist from './db/persist.ts'
@@ -1735,6 +1736,197 @@ export function appendFrameHtml(
 
   touch(frame.canvasId, actor, frameId)
   return frame
+}
+
+/* ------------------------------------------------------------------ */
+/* Idempotent frame HTML writes: at most once per (frame, idempotency key),
+   decided at the database. The key row, the frame row and a named version
+   commit in one transaction (persist.commitKeyedFrameWrite). */
+
+export class FrameWriteKeyConflictError extends Error {
+  constructor(key: string) {
+    super(`idempotency_key "${key}" was already used for a different write to this frame; send a new key`)
+  }
+}
+
+/** an edit_frame_html whose old_str is missing or ambiguous in the frame's html */
+export class FrameEditError extends Error {}
+
+export type FrameWriteRequest = (
+  | { op: 'set'; html: string }
+  | { op: 'edit'; oldStr: string; newStr: string }
+  | { op: 'append'; chunk: string; start?: boolean; done?: boolean }
+) & { key: string; versionName?: string; expectedUpdatedAt?: number }
+
+export type FrameWriteResult = {
+  /** true when an earlier write under this key answered; nothing was written now */
+  replay: boolean
+  versionId: string
+  updatedAt: number
+  htmlBytes: number
+  /** the frame as this write left it; absent on a replay (it may have changed since) */
+  frame?: Frame
+}
+
+/** One arbiter per (frame, key): a second call with the same key waits for the
+ *  first, then finds its row. The unique index backs it for other instances. */
+const keyedWrites = new Map<string, Promise<unknown>>()
+
+export function writeFrameHtmlOnce(
+  frameId: string,
+  req: FrameWriteRequest,
+  actor: Actor,
+): Promise<FrameWriteResult | undefined> {
+  const id = `${frameId}\0${req.key}`
+  const run = () => applyKeyedWrite(frameId, req, actor)
+  const queued = (keyedWrites.get(id) ?? Promise.resolve()).then(run, run)
+  keyedWrites.set(id, queued)
+  const release = () => {
+    if (keyedWrites.get(id) === queued) keyedWrites.delete(id)
+  }
+  queued.then(release, release)
+  return queued
+}
+
+function payloadHash(req: FrameWriteRequest): string {
+  const { key: _key, expectedUpdatedAt: _expected, ...payload } = req
+  return createHash('sha256').update(JSON.stringify(payload)).digest('hex')
+}
+
+function replayOf(row: persist.FrameWriteKeyRow, hash: string, key: string): FrameWriteResult {
+  if (row.payloadHash !== hash) throw new FrameWriteKeyConflictError(key)
+  return { replay: true, versionId: row.versionId, ...row.result }
+}
+
+type KeyedCommit = Parameters<typeof persist.commitKeyedFrameWrite>[1]
+
+/** Writes whose commit failed after another writer had already built on them: they stay in memory, so a
+ *  retry under the same key commits them (once the database allows it) instead of applying them again. */
+const stuckKeyedWrites = new Map<string, KeyedCommit>()
+
+async function applyKeyedWrite(
+  frameId: string,
+  req: FrameWriteRequest,
+  actor: Actor,
+): Promise<FrameWriteResult | undefined> {
+  const before = store.getFrame(frameId)
+  if (!before) return undefined
+  const hash = payloadHash(req)
+  const id = `${frameId}\0${req.key}`
+  /* the key is read first: a replay is not refused because the frame moved on or got locked */
+  const earlier = await persist.findFrameWriteKey(frameId, req.key)
+  if (earlier) {
+    stuckKeyedWrites.delete(id)
+    return replayOf(earlier, hash, req.key)
+  }
+  const stuck = stuckKeyedWrites.get(id)
+  if (stuck) return commitStuckWrite(id, before, stuck, hash, req.key)
+
+  /* from here to the first await the frame is checked and written in one tick: lock guard, then expectedUpdatedAt */
+  const snapshot = {
+    html: before.html,
+    width: before.width,
+    height: before.height,
+    updatedAt: before.updatedAt,
+    updatedBy: before.updatedBy,
+    approval: before.approval,
+  }
+  const opts = { expectedUpdatedAt: req.expectedUpdatedAt }
+  let frame: Frame | undefined
+  if (req.op === 'set') {
+    frame = updateFrame(frameId, { html: req.html }, actor, { replace: true, ...opts })
+  } else if (req.op === 'edit') {
+    const count = before.html.split(req.oldStr).length - 1
+    if (count === 0)
+      throw new FrameEditError('old_str not found in the frame HTML. Call get_frame to see the current content.')
+    if (count > 1)
+      throw new FrameEditError(
+        `old_str occurs ${count} times — include more surrounding context so it matches exactly once.`,
+      )
+    frame = updateFrame(frameId, { html: before.html.replace(req.oldStr, req.newStr) }, actor, opts)
+  } else {
+    frame = appendFrameHtml(frameId, req.chunk, actor, { start: req.start, done: req.done, ...opts })
+  }
+  if (!frame) return undefined
+
+  /* what this write produced, taken now: the frame object is live and the awaits below let others edit it */
+  const applied = {
+    html: frame.html,
+    width: frame.width,
+    height: frame.height,
+    updatedAt: frame.updatedAt,
+    updatedBy: frame.updatedBy,
+    approval: frame.approval,
+  }
+  const write: KeyedCommit = {
+    key: req.key,
+    payloadHash: hash,
+    versionId: nanoid(10),
+    versionName: req.versionName,
+    savedByKind: actor.kind,
+    version: {
+      html: applied.html,
+      width: applied.width,
+      height: applied.height,
+      savedAt: applied.updatedAt,
+      savedBy: applied.updatedBy,
+    },
+    result: { updatedAt: applied.updatedAt, htmlBytes: applied.html.length },
+  }
+  let raced: persist.FrameWriteKeyRow | undefined
+  try {
+    raced = await persist.commitKeyedFrameWrite(frame, write)
+  } catch (e) {
+    if (!revertKeyedWrite(frame, snapshot, applied, actor)) stuckKeyedWrites.set(id, write)
+    throw e
+  }
+  if (raced) {
+    if (!revertKeyedWrite(frame, snapshot, applied, actor)) stuckKeyedWrites.set(id, write)
+    return replayOf(raced, hash, req.key)
+  }
+  return { replay: false, versionId: write.versionId, ...write.result, frame }
+}
+
+/** A retry of a write whose commit failed but could not be taken back: commit what is already in memory. */
+async function commitStuckWrite(
+  id: string,
+  frame: Frame,
+  stuck: KeyedCommit,
+  hash: string,
+  key: string,
+): Promise<FrameWriteResult> {
+  if (stuck.payloadHash !== hash) throw new FrameWriteKeyConflictError(key)
+  const raced = await persist.commitKeyedFrameWrite(frame, stuck)
+  stuckKeyedWrites.delete(id)
+  if (raced) return replayOf(raced, hash, key)
+  return { replay: true, versionId: stuck.versionId, ...stuck.result }
+}
+
+/** The transaction did not commit, so the write must not stay visible. Take back only what this write
+ *  changed and nobody has touched since: the html and size if still as written, the stamp and approval
+ *  if the frame was not edited at all after. A rename or move in between survives. Resolves to false
+ *  when another writer already built on the html: it stays, and the caller keeps the write to commit. */
+function revertKeyedWrite(
+  frame: Frame,
+  snapshot: Pick<Frame, 'html' | 'width' | 'height' | 'updatedAt' | 'updatedBy' | 'approval'>,
+  applied: typeof snapshot,
+  actor: Actor,
+): boolean {
+  const untouched = frame.updatedAt === applied.updatedAt
+  const asWritten = frame.html === applied.html && frame.width === applied.width && frame.height === applied.height
+  if (asWritten) {
+    store.rollbackFrame(frame.id, {
+      html: snapshot.html,
+      width: snapshot.width,
+      height: snapshot.height,
+      approval: frame.approval === applied.approval ? snapshot.approval : frame.approval,
+      ...(untouched ? { updatedAt: snapshot.updatedAt, updatedBy: snapshot.updatedBy } : {}),
+    })
+  }
+  /* the commit path cancelled any pending write of this frame, so schedule one for what stays */
+  persist.saveFrame(frame)
+  if (asWritten) broadcast(frame.canvasId, { type: 'frame:updated', frame, actor })
+  return asWritten
 }
 
 /* ------------------------------------------------------------------ */

@@ -199,6 +199,14 @@
   on set / edit / append). `persist.writeFrame` keeps the stored html and size while both the stored
   and the incoming row are locked. `tests/frameLockGuard.test.ts` scans `server/` so a new writer of
   those columns outside the guard fails the build.
+- Frame write keys (`frame_write_keys`, migration 0045; `actions.writeFrameHtmlOnce`): MCP `set_frame_html` /
+  `edit_frame_html` / `append_frame_html` and REST `PATCH /api/frames/:id` (html only) and
+  `POST /api/frames/:id/append` take `idempotency_key` and an optional `version_name`. The key row,
+  html, size and the named `frame_versions` row commit in one transaction (`persist.commitKeyedFrameWrite`);
+  memory is reverted if it fails. The key is checked before the lock guard and `expectedUpdatedAt`: same
+  key and payload hash answers 200 with the first `versionId` and `replay: true` and writes nothing;
+  same key, other payload is 409; a new key takes the normal path (423, then 412). A key is scoped to
+  its frame. No key, no change. Tests: `frameWriteKeysPg.test.ts` (real Postgres), `frameWriteKeysRest.test.ts`.
 - Saves are serialized, tracked by undo/redo, and scoped to the originating canvas/page. Each
   completed gesture has its own undo entry. The Layers panel shows the drawing's `data-name`.
   Completed saves survive navigation; unfinished drafts are cancelled. Drawing shortcuts leave
