@@ -6,7 +6,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { Request, Response } from 'express'
 import { fromNodeHeaders } from 'better-auth/node'
 import { z } from 'zod'
-import { store } from './store.ts'
+import { FrameLockedError, FrameStaleError, store } from './store.ts'
 import * as actions from './actions.ts'
 import { canvasRole } from './access.ts'
 import { roleAllows, type CanvasRole } from '../shared/canvasRole.ts'
@@ -119,6 +119,20 @@ const MAX_MCP_PDF_BYTES = 15_000_000
 
 function err(message: string) {
   return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true }
+}
+
+/** A frame write the store refused (locked, or changed since read) as a tool error; any other failure is real. */
+function refusalOf(e: unknown) {
+  if (e instanceof FrameLockedError || e instanceof FrameStaleError) return err(e.message)
+  throw e
+}
+
+/** `expected_updated_at` of edit_frame_html and append_frame_html: the store checks it in the tick of the write. */
+function expectedMs(expected: string | undefined): { ms?: number } | { bad: ReturnType<typeof err> } {
+  if (expected === undefined) return {}
+  const ms = Date.parse(expected)
+  if (Number.isNaN(ms)) return { bad: err('expected_updated_at must be an ISO timestamp, as updatedAt from get_frame') }
+  return { ms }
 }
 
 /** The write fence of set_frame_html: `expected` is the frame's updatedAt as get_frame returns it (ISO string).
@@ -1170,7 +1184,12 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       if (!current) return noFrame(frame_id)
       const refused = fenceError(current, expected_updated_at)
       if (refused) return refused
-      const frame = actions.updateFrame(frame_id, { html }, actorFrom(agent_name), { replace: true })
+      let frame
+      try {
+        frame = actions.updateFrame(frame_id, { html }, actorFrom(agent_name), { replace: true })
+      } catch (e) {
+        return refusalOf(e)
+      }
       if (!frame) return noFrame(frame_id)
       return withPreview(
         withGuidelinesNudge(
@@ -1787,15 +1806,32 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
           .describe('The next piece of HTML, appended to what has been sent so far. Raw markup — never escaped.'),
         start: z.boolean().optional().describe('true on the first chunk — clears the frame and starts the live stream'),
         done: z.boolean().optional().describe('true on the final chunk — ends the live stream'),
+        expected_updated_at: z
+          .string()
+          .optional()
+          .describe(
+            'updatedAt from your last get_frame or tool result; the chunk is refused if the frame changed since',
+          ),
         agent_name: agentName,
       },
     },
-    async ({ frame_id, html_chunk, start, done, agent_name }) => {
+    async ({ frame_id, html_chunk, start, done, expected_updated_at, agent_name }) => {
       if (!frameFor(frame_id, 'edit')) return noFrame(frame_id)
       if (env.DOOP_MCP_REQUIRE_FENCE) {
         return err('append_frame_html is off (DOOP_MCP_REQUIRE_FENCE is on): send the design with set_frame_html')
       }
-      const frame = actions.appendFrameHtml(frame_id, html_chunk, actorFrom(agent_name), { start, done })
+      const expected = expectedMs(expected_updated_at)
+      if ('bad' in expected) return expected.bad
+      let frame
+      try {
+        frame = actions.appendFrameHtml(frame_id, html_chunk, actorFrom(agent_name), {
+          start,
+          done,
+          expectedUpdatedAt: expected.ms,
+        })
+      } catch (e) {
+        return refusalOf(e)
+      }
       if (!frame) return noFrame(frame_id)
       const result = done
         ? textWithNudge(
@@ -1828,17 +1864,32 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
         frame_id: z.string(),
         old_str: z.string().describe('Exact text to find in the frame HTML — must occur exactly once'),
         new_str: z.string().describe('Replacement text'),
+        expected_updated_at: z
+          .string()
+          .optional()
+          .describe(
+            'updatedAt from your last get_frame or tool result; the edit is refused if the frame changed since',
+          ),
         agent_name: agentName,
       },
     },
-    async ({ frame_id, old_str, new_str, agent_name }) => {
+    async ({ frame_id, old_str, new_str, expected_updated_at, agent_name }) => {
       const f = frameFor(frame_id, 'edit')
       if (!f) return noFrame(frame_id)
       const count = f.html.split(old_str).length - 1
       if (count === 0) return err('old_str not found in the frame HTML. Call get_frame to see the current content.')
       if (count > 1)
         return err(`old_str occurs ${count} times — include more surrounding context so it matches exactly once.`)
-      const frame = actions.updateFrame(frame_id, { html: f.html.replace(old_str, new_str) }, actorFrom(agent_name))!
+      const expected = expectedMs(expected_updated_at)
+      if ('bad' in expected) return expected.bad
+      let frame
+      try {
+        frame = actions.updateFrame(frame_id, { html: f.html.replace(old_str, new_str) }, actorFrom(agent_name), {
+          expectedUpdatedAt: expected.ms,
+        })!
+      } catch (e) {
+        return refusalOf(e)
+      }
       return withPreview(
         withStatusNudge(
           withFeedback(
@@ -1861,7 +1912,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       title: 'Rename, move or resize a frame',
       _meta: previewToolMeta('Updating the frame…', 'Frame updated'),
       description:
-        'Update frame metadata: rename it, move/resize it, or move it to another page using pageId. Set locked to true to lock the frame on the canvas (humans cannot select, move, resize or delete it from the stage until it is unlocked) or false to unlock it.',
+        'Update frame metadata: rename it, move/resize it, or move it to another page using pageId. Set locked to true to lock the frame on the canvas (humans cannot select, move, resize or delete it from the stage until it is unlocked) or false to unlock it. A locked frame refuses every change to its HTML and size (width, height) from everyone, agents included; rename and move still work, and unlocking is its own call (it cannot carry an HTML or size change).',
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: {
         frame_id: z.string(),
@@ -1879,7 +1930,12 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       const clean = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined))
       if (!Object.keys(clean).length) return err('nothing to update')
       if (!frameFor(frame_id, 'edit')) return noFrame(frame_id)
-      const frame = actions.updateFrame(frame_id, clean, actorFrom(agent_name))
+      let frame
+      try {
+        frame = actions.updateFrame(frame_id, clean, actorFrom(agent_name))
+      } catch (e) {
+        return refusalOf(e)
+      }
       if (!frame) return noFrame(frame_id)
       return withPreview(
         withFeedback(text({ ok: true, frame: frameSummary(frame) }), frame.canvasId, actorFrom(agent_name)),
@@ -1929,7 +1985,12 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
     },
     async ({ frame_id, version_id, agent_name }) => {
       if (!frameFor(frame_id, 'edit')) return noFrame(frame_id)
-      const restored = await actions.restoreFrameVersion(frame_id, version_id, actorFrom(agent_name))
+      let restored
+      try {
+        restored = await actions.restoreFrameVersion(frame_id, version_id, actorFrom(agent_name))
+      } catch (e) {
+        return refusalOf(e)
+      }
       if (restored === null) return err(`no version ${version_id} on frame ${frame_id} — call list_frame_versions`)
       if (!restored) return noFrame(frame_id)
       return withFeedback(

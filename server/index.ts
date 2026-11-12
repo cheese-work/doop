@@ -15,7 +15,7 @@ import { eq, inArray } from 'drizzle-orm'
 import { toNodeHandler, fromNodeHeaders } from 'better-auth/node'
 import { oAuthDiscoveryMetadata } from 'better-auth/plugins'
 import { WebSocketServer, WebSocket } from 'ws'
-import { GuideLimitError, PageLimitError, store } from './store.ts'
+import { FrameLockedError, FrameStaleError, GuideLimitError, PageLimitError, store } from './store.ts'
 import { parseGuide } from '../shared/guides.ts'
 import { getImage } from './previews.ts'
 import * as actions from './actions.ts'
@@ -1759,6 +1759,19 @@ app.post('/api/canvases/:id/frames', (req, res) => {
   res.json(frame)
 })
 
+/** 423 for a locked frame, 412 for a conditional write that lost the race; anything else is a real failure. */
+function frameWriteRefused(res: express.Response, e: unknown): boolean {
+  if (e instanceof FrameLockedError) {
+    res.status(423).json({ error: e.message })
+    return true
+  }
+  if (e instanceof FrameStaleError) {
+    res.status(412).json({ error: e.message, frame: e.frame })
+    return true
+  }
+  return false
+}
+
 app.patch('/api/frames/:id', (req, res) => {
   const current = requireFrame(req, res, req.params.id, 'edit', req.body?.expectedUpdatedAt)
   if (!current) return
@@ -1775,9 +1788,13 @@ app.patch('/api/frames/:id', (req, res) => {
   /* the eye in the Layers panel: anything but a literal true shows the frame */
   if (patch.hidden !== undefined) clean.hidden = patch.hidden === true
   if (patch.locked !== undefined) clean.locked = !!patch.locked
-  const frame = actions.updateFrame(req.params.id, clean, actor)
-  if (!frame) return res.status(404).json({ error: 'frame not found' })
-  res.json(frame)
+  try {
+    const frame = actions.updateFrame(req.params.id, clean, actor)
+    if (!frame) return res.status(404).json({ error: 'frame not found' })
+    res.json(frame)
+  } catch (e) {
+    if (!frameWriteRefused(res, e)) throw e
+  }
 })
 
 app.put('/api/frames/:id/approval', (req, res) => {
@@ -1794,15 +1811,25 @@ app.put('/api/frames/:id/approval', (req, res) => {
 })
 
 app.post('/api/frames/:id/append', (req, res) => {
+  const { html_chunk, start, done, expectedUpdatedAt } = req.body ?? {}
   if (!requireFrame(req, res, req.params.id, 'edit')) return
-  const { html_chunk, start, done } = req.body ?? {}
+  if (
+    expectedUpdatedAt !== undefined &&
+    (typeof expectedUpdatedAt !== 'number' || !Number.isSafeInteger(expectedUpdatedAt) || expectedUpdatedAt < 0)
+  )
+    return res.status(400).json({ error: 'expectedUpdatedAt must be a nonnegative integer' })
   const actor = userActor(req)
-  const frame = actions.appendFrameHtml(req.params.id, String(html_chunk ?? ''), actor, {
-    start: !!start,
-    done: !!done,
-  })
-  if (!frame) return res.status(404).json({ error: 'frame not found' })
-  res.json({ ok: true, htmlBytes: frame.html.length })
+  try {
+    const frame = actions.appendFrameHtml(req.params.id, String(html_chunk ?? ''), actor, {
+      start: !!start,
+      done: !!done,
+      expectedUpdatedAt,
+    })
+    if (!frame) return res.status(404).json({ error: 'frame not found' })
+    res.json({ ok: true, htmlBytes: frame.html.length, updatedAt: frame.updatedAt })
+  } catch (e) {
+    if (!frameWriteRefused(res, e)) throw e
+  }
 })
 
 app.delete('/api/frames/:id', (req, res) => {
@@ -1831,10 +1858,14 @@ app.get('/api/frames/:id/versions/:versionId', async (req, res) => {
 app.post('/api/frames/:id/versions/:versionId/restore', async (req, res) => {
   if (!requireFrame(req, res, req.params.id, 'edit')) return
   const actor = userActor(req)
-  const restored = await actions.restoreFrameVersion(req.params.id, req.params.versionId, actor)
-  if (restored === null) return res.status(404).json({ error: 'version not found' })
-  if (!restored) return res.status(404).json({ error: 'frame not found' })
-  res.json(restored)
+  try {
+    const restored = await actions.restoreFrameVersion(req.params.id, req.params.versionId, actor)
+    if (restored === null) return res.status(404).json({ error: 'version not found' })
+    if (!restored) return res.status(404).json({ error: 'frame not found' })
+    res.json(restored)
+  } catch (e) {
+    if (!frameWriteRefused(res, e)) throw e
+  }
 })
 
 /* A comment and its outbox event are stored in one awaited transaction; when it fails nothing was

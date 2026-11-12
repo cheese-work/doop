@@ -4,7 +4,7 @@ import { nanoid } from 'nanoid'
 import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import { db } from './db/index.ts'
 import { syncEdges, syncKeys, syncLinks } from './db/schema.ts'
-import { store } from './store.ts'
+import { FrameLockedError, store } from './store.ts'
 import * as actions from './actions.ts'
 import type { Frame } from '../shared/types.ts'
 import { MAX_FRAME_HTML_BYTES } from './limits.ts'
@@ -361,7 +361,13 @@ export async function handleIngest(req: express.Request, res: express.Response) 
     }
     pageLastWrite.set(marker, Date.now())
     /* geometry the user may have arranged stays; content and height track the app */
-    actions.updateFrame(existing.id, { html: wrapped, name: title.slice(0, 80), height }, actor)
+    try {
+      actions.updateFrame(existing.id, { html: wrapped, name: title.slice(0, 80), height }, actor)
+    } catch (e) {
+      /* a locked screen keeps the design it has: the sync skips it */
+      if (!(e instanceof FrameLockedError)) throw e
+      return res.json({ ok: true, frameId: existing.id, locked: true })
+    }
     await saveLinks(key.id, page, links)
     return res.json({ ok: true, frameId: existing.id, updated: true })
   }
