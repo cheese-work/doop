@@ -187,7 +187,7 @@
   on set / edit / append). `persist.writeFrame` keeps the stored html and size while both the stored
   and the incoming row are locked. `tests/frameLockGuard.test.ts` scans `server/` so a new writer of
   those columns outside the guard fails the build.
-- Frame write keys (`frame_write_keys`, migration 0043; `actions.writeFrameHtmlOnce`): MCP `set_frame_html` /
+- Frame write keys (`frame_write_keys`, migration 0044; `actions.writeFrameHtmlOnce`): MCP `set_frame_html` /
   `edit_frame_html` / `append_frame_html` and REST `PATCH /api/frames/:id` (html only) and
   `POST /api/frames/:id/append` take `idempotency_key` and an optional `version_name`. The key row,
   html, size and the named `frame_versions` row commit in one transaction (`persist.commitKeyedFrameWrite`);
