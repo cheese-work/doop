@@ -528,6 +528,8 @@ export interface ElementComment {
   /** set on a reply: the root comment of its thread. Replies inherit the
    *  root's anchor and are listed under its pin instead of getting their own */
   parentId?: string
+  /** set on a reply the caller keyed: one reply per (thread, key), so a retry cannot post it twice */
+  clientRequestId?: string
 }
 
 export interface ActivityItem {

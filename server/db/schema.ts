@@ -429,8 +429,15 @@ export const comments = pgTable(
     resolvedBy: text('resolved_by'),
     resolvedAt: bigint('resolved_at', { mode: 'number' }),
     parentId: text('parent_id'),
+    /* a caller's retry key for a reply: unique per thread (parent_id) when set */
+    clientRequestId: text('client_request_id'),
   },
-  (t) => [index('comments_canvas_idx').on(t.canvasId)],
+  (t) => [
+    index('comments_canvas_idx').on(t.canvasId),
+    uniqueIndex('comments_thread_request_idx')
+      .on(t.parentId, t.clientRequestId)
+      .where(sql`${t.clientRequestId} is not null`),
+  ],
 )
 
 /** Append-only outbox of new comments, written in the same transaction as the

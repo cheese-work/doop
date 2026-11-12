@@ -854,7 +854,11 @@ export async function replyToComment(
   from: string,
   fromUserId?: string,
   kind: ActorKind = 'user',
-): Promise<ElementComment | undefined> {
+  clientRequestId?: string,
+): Promise<ElementComment | Replayed | undefined> {
+  /* a retry of an answered request is answered again, even once the thread is resolved */
+  const prior = clientRequestId ? await existingReply(commentId, text, clientRequestId) : undefined
+  if (prior) return prior
   const first = await openThread(commentId)
   if (!first) return undefined
   return withThreadLock(first.root.id, async () => {
@@ -864,8 +868,28 @@ export async function replyToComment(
     const anchor = replyAnchor(open)
     if (!anchor) return undefined
     if (!findInMemory(open.root.id)) await restoreThread(open.root)
-    return postComment(open.root.canvasId, anchor, text, from, fromUserId, kind, open.root.id)
+    return postComment(open.root.canvasId, anchor, text, from, fromUserId, kind, open.root.id, clientRequestId)
   })
+}
+
+/** A reply that was already stored: the first reply for this retry key, marked `replay`. */
+export type Replayed = ElementComment & { replay: true }
+export { ClientRequestConflictError } from './db/persist.ts'
+
+/** The reply already stored under this retry key in the comment's thread, marked as a
+ *  replay, or undefined when the key is new. Throws ClientRequestConflictError when
+ *  the key was used with different text. Checked before metering, so a retry costs nothing. */
+export async function existingReply(
+  commentId: string,
+  text: string,
+  clientRequestId: string,
+): Promise<Replayed | undefined> {
+  const parent = await findComment(commentId)
+  if (!parent) return undefined
+  const prior = await persist.findReplyByRequestId(parent.parentId ?? parent.id, clientRequestId)
+  if (!prior) return undefined
+  if (prior.text !== text.trim()) throw new persist.ClientRequestConflictError(clientRequestId)
+  return { ...prior, replay: true }
 }
 
 function replyAnchor({ root, frame }: { root: ElementComment; frame?: Frame }): CommentAnchor | undefined {
@@ -905,7 +929,8 @@ async function postComment(
   fromUserId?: string,
   kind: ActorKind = 'user',
   parentId?: string,
-): Promise<ElementComment | undefined> {
+  clientRequestId?: string,
+): Promise<ElementComment | Replayed | undefined> {
   const clean = text.trim()
   if (!clean) return undefined
   /* @Doop, @brand, @a11y… — whichever resident agent is mentioned picks it up */
@@ -926,8 +951,11 @@ async function postComment(
     at,
     ...(mentioned ? { forAgent: true, targetAgent: mentioned.name } : {}),
     ...(parentId ? { parentId } : {}),
+    ...(clientRequestId ? { clientRequestId } : {}),
   }
-  await persist.saveNewComment(comment)
+  /* a keyed reply that lost the race to its twin is the twin: nothing joins the log */
+  const first = await persist.saveNewComment(comment)
+  if (first) return { ...first, replay: true }
   const stored = commentLog.get(canvasId) ?? []
   stored.unshift(comment)
   trimComments(stored, parentId)
