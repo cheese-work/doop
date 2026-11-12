@@ -5,7 +5,7 @@ name: image-build
 
 on:
   push:
-    branches: [ci/che-5119-image-build]
+    branches: [ci/che-5119-image-build, ci/che-2734-image-revision]
   workflow_dispatch:
     inputs:
       sha:
@@ -40,7 +40,10 @@ jobs:
           context: .
           push: true
           tags: ghcr.io/${{ github.repository }}:${{ env.SHA }}
-          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          # The C00 readback (deploy/cd/c00.sh) compares the revision label with the deployed SHA (CHE-2734).
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ env.SHA }}
       - run: |
           {
             echo "image: ghcr.io/${{ github.repository }}:${{ env.SHA }}"
