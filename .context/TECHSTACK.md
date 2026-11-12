@@ -93,6 +93,18 @@
   `POST /api/canvases/:id/pages/:pageId/restore` (brings the page's deleted frames), `GET /api/canvases/:id/trash`; MCP `restore_frame`, `restore_page`. `archive_frames` moves
   frames to the per-canvas `Archive` page (`ARCHIVE_PAGE_ID`, always last) and hides them. Nothing in this
   slice hard-deletes a frame, page or version row (`tests/frameTrashPersist.test.ts` scans for it).
+- Page snapshots (CHE-5307, `server/pageSnapshots.ts`, `actions.createPageSnapshot` and friends): a named,
+  pinned copy of a whole page. `page_snapshots` holds name, page, author, time and each frame's state
+  (name, position, size, hidden, deleted, html hash); the html lives once per canvas in `snapshot_blobs`
+  (pk canvas + sha256), so unchanged frames cost nothing. A snapshot is never pruned (the 50-per-frame
+  `frame_versions` autosave trim is separate) and goes with its canvas. MCP: `create_page_snapshot`,
+  `list_page_snapshots`, `compare_page_snapshots` (added / removed / changed with sizes, by hash, to another
+  snapshot or the live page), `restore_page_snapshot`; list and compare need view access, create and restore
+  edit. Restore first files the current page as a `before restoring ...` snapshot (awaited, then re-captured
+  in one tick, up to 3 tries, so a writer that raced the save cannot slip past it), then applies every frame
+  in one synchronous tick through `store.updateFrame`, the lock guard: a locked frame that differs is
+  skipped, reported under `skipped` and left as it was. Frames deleted since come back; the `locked` flag and
+  frames made after the snapshot are left alone. No branching, merge or UI.
 - Chat bridge (`server/bridge.ts`, `shared/bridge.ts`): one `canvas_bridge` row per canvas holds the Multica
   agent people chat with, the agent list the watcher publishes (`set_bridge_agents`) and its liveness
   stamp (`bridge_heartbeat`). `GET/PUT /api/canvases/:id/bridge` reads and selects; status (`ok`,
@@ -187,7 +199,7 @@
   on set / edit / append). `persist.writeFrame` keeps the stored html and size while both the stored
   and the incoming row are locked. `tests/frameLockGuard.test.ts` scans `server/` so a new writer of
   those columns outside the guard fails the build.
-- Frame write keys (`frame_write_keys`, migration 0044; `actions.writeFrameHtmlOnce`): MCP `set_frame_html` /
+- Frame write keys (`frame_write_keys`, migration 0045; `actions.writeFrameHtmlOnce`): MCP `set_frame_html` /
   `edit_frame_html` / `append_frame_html` and REST `PATCH /api/frames/:id` (html only) and
   `POST /api/frames/:id/append` take `idempotency_key` and an optional `version_name`. The key row,
   html, size and the named `frame_versions` row commit in one transaction (`persist.commitKeyedFrameWrite`);

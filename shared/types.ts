@@ -63,6 +63,38 @@ export interface FrameVersion extends FrameVersionInfo {
   html: string
 }
 
+/** One frame as a page snapshot recorded it: its geometry and a hash of its
+ *  HTML (the HTML itself lives once per distinct hash, `snapshot_blobs`). */
+export interface SnapshotFrame {
+  frameId: string
+  name: string
+  x: number
+  y: number
+  width: number
+  height: number
+  hidden?: boolean
+  locked?: boolean
+  /** the frame was in the page's trash when the snapshot was taken */
+  deleted: boolean
+  /** sha256 of the frame's HTML */
+  hash: string
+  htmlBytes: number
+}
+
+/** A named snapshot of a whole page. Every snapshot is pinned: nothing prunes
+ *  it, whatever the 50-per-frame autosave history does. */
+export interface PageSnapshot {
+  id: string
+  canvasId: string
+  pageId: string
+  pageName: string
+  name: string
+  author: string
+  authorKind?: ActorKind
+  createdAt: number
+  frames: SnapshotFrame[]
+}
+
 export interface CanvasMeta {
   id: string
   name: string

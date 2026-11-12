@@ -44,6 +44,10 @@ const MISSING = [
   'archive_frames',
   'list_frame_versions',
   'restore_frame_version',
+  'create_page_snapshot', // named page snapshots (CHE-5307): MCP only for now
+  'list_page_snapshots',
+  'compare_page_snapshots',
+  'restore_page_snapshot',
   'set_canvas_pages',
   'reply_to_comment',
   'resolve_comment',
