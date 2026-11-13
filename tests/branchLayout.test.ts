@@ -27,7 +27,7 @@ describe('merge-queue-watch continuity (C-1.6)', () => {
 describe('mirror workflow (C-1.3)', () => {
   const w = () => read('.github/workflows/mirror-upstream-main.yml')
   it('has cron, dispatch, environment and non-cancelling concurrency', () => {
-    expect(w()).toContain('cron: "17 */6 * * *"')
+    expect(w()).toContain("cron: '17 */6 * * *'")
     expect(w()).toContain('workflow_dispatch:')
     expect(w()).toMatch(/environment: ci-app-token/)
     expect(w()).toMatch(/group: mirror-upstream-main\n\s+cancel-in-progress: false/)
