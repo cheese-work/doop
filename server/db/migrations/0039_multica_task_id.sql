@@ -1,0 +1,1 @@
+ALTER TABLE "tasks" ADD COLUMN "multica_task_id" text;

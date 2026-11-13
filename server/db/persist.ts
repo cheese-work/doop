@@ -593,6 +593,7 @@ export function saveTask(canvasId: string, task: AgentTask) {
     payload: task.payload ? JSON.stringify(task.payload) : null,
     scope: task.scope ? JSON.stringify(task.scope) : null,
     frameIds: task.frameIds?.join(',') ?? null,
+    multicaTaskId: task.multicaTaskId ?? null,
   }
   const write = () =>
     db
@@ -867,6 +868,7 @@ export async function hydrate(): Promise<Hydrated> {
       ...repoCardFields(row.kind, row.payload),
       ...scopeField(row.scope),
       ...(row.frameIds ? { frameIds: row.frameIds.split(',').filter(Boolean) } : {}),
+      ...(row.multicaTaskId ? { multicaTaskId: row.multicaTaskId } : {}),
     })
     tasks.set(row.canvasId, list)
   }

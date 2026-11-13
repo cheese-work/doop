@@ -133,11 +133,18 @@ function logActivity(canvasId: string, actor: Actor, message: string, frameId?: 
 }
 
 export function resolveActor(
-  raw: { name?: string; kind?: string; clientId?: string; owner?: string } | undefined,
+  raw: { name?: string; kind?: string; clientId?: string; owner?: string; multicaTaskId?: string } | undefined,
 ): Actor {
   const kind = raw?.kind === 'agent' ? 'agent' : raw?.kind === 'user' ? 'user' : 'agent'
   const name = raw?.name?.trim() || (kind === 'agent' ? 'AI Agent' : 'Anonymous')
-  return { name, kind, color: colorFor(name), clientId: raw?.clientId, owner: raw?.owner }
+  return {
+    name,
+    kind,
+    color: colorFor(name),
+    clientId: raw?.clientId,
+    owner: raw?.owner,
+    ...(kind === 'agent' && raw?.multicaTaskId ? { multicaTaskId: raw.multicaTaskId } : {}),
+  }
 }
 
 function touch(canvasId: string, actor: Actor, frameId?: string | null) {
@@ -264,7 +271,8 @@ export function setAgentStatus(canvasId: string, actor: Actor, status: string) {
   /* board cards stay open until explicitly completed — a status change
      narrates work ON a card, it doesn't end it */
   const open = list.find((t) => sameAgent(t, actor) && !t.endedAt && !t.queuedBy)
-  if (open?.status === clean) return // same status re-posted: nothing new
+  /* same status re-posted by the same run: nothing new */
+  if (open?.status === clean && (actor.multicaTaskId ?? open.multicaTaskId) === open.multicaTaskId) return
   const runStartedAt = open ? (open.runStartedAt ?? open.startedAt) : undefined
   if (open) {
     open.endedAt = Date.now()
@@ -276,6 +284,7 @@ export function setAgentStatus(canvasId: string, actor: Actor, status: string) {
       id: nanoid(8),
       agentName: actor.name,
       owner: actor.owner,
+      ...(actor.multicaTaskId ? { multicaTaskId: actor.multicaTaskId } : {}),
       color: actor.color,
       status: clean,
       startedAt: Date.now(),
@@ -723,6 +732,7 @@ function autoTask(canvasId: string, actor: Actor, status: string, frameId: strin
     id: nanoid(8),
     agentName: actor.name,
     owner: actor.owner,
+    ...(actor.multicaTaskId ? { multicaTaskId: actor.multicaTaskId } : {}),
     color: actor.color,
     status,
     startedAt: Date.now(),
@@ -1322,6 +1332,13 @@ export function setCanvasPages(canvasId: string, pages: import('../shared/types.
 /** Point a page's prototype flow at a frame (or clear it); peers get the page list. */
 export function setFlowStart(canvasId: string, pageId: string, frameId: string | null, actor: Actor) {
   const pages = store.setFlowStart(canvasId, pageId, frameId)
+  if (pages) broadcast(canvasId, { type: 'canvas:pages', pages, actor })
+  return pages
+}
+
+/** A member binds a page to a Multica issue (or unbinds it); peers get the page list. */
+export function setPageIssue(canvasId: string, pageId: string, issueId: string | null, actor: Actor) {
+  const pages = store.setPageIssue(canvasId, pageId, issueId, 'member')
   if (pages) broadcast(canvasId, { type: 'canvas:pages', pages, actor })
   return pages
 }

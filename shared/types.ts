@@ -124,6 +124,14 @@ export interface CanvasPageInfo {
    *  Set only through the flow-start route or MCP tool; page-list saves keep
    *  whatever the server already has. */
   startFrameId?: string
+  /** the Multica issue this page is bound to (shared/pageIssue.ts). Written
+   *  only by a member (PUT …/pages/:pageId/issue) or by the server's Design-URL
+   *  derivation — never by an agent, MCP tool, designctl or a page-list save,
+   *  and never copied with a page or a canvas. */
+  issueId?: string
+  /** who wrote `issueId`: 'member' links survive the Design-URL sync, 'design'
+   *  links follow it and are cleared when the issue's Design URL stops naming the page */
+  issueSource?: 'member' | 'design'
 }
 
 /** A ruler guide: an infinite line on one page of a canvas, in world px.
@@ -323,6 +331,8 @@ export interface Actor {
   clientId?: string
   /** for agents: display name of the user whose OAuth token authorized it */
   owner?: string
+  /** for agents run by Multica: the Multica task (run) id from X-Multica-Task-Id */
+  multicaTaskId?: string
 }
 
 export interface Presence {
@@ -352,6 +362,8 @@ export interface AgentTask {
   agentName: string
   /** whose token the agent connected with */
   owner?: string
+  /** the Multica task (run) that made this task's MCP calls, when it sent one */
+  multicaTaskId?: string
   color: string
   status: string
   startedAt: number

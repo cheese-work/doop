@@ -1,4 +1,6 @@
 import { env } from './env.ts'
+import { listPageRuns, multicaRunsSource } from './multicaRuns.ts'
+import { isUuid } from '../shared/pageIssue.ts'
 import { canvasPages, framePageId, samePages } from '../shared/pages.ts'
 import { FIRST_CANVAS_PATH, SIGNUP_PARAM, parseSignupMethod } from '../shared/firstCanvas.ts'
 import { localAgentRouter, handleLocalAgentMcp } from './localAgent.ts'
@@ -1662,6 +1664,37 @@ app.put('/api/canvases/:id/pages/:pageId/flow-start', (req, res) => {
   }
   const actor = actions.resolveActor({ name: req.user!.name, kind: 'user' })
   res.json(actions.setFlowStart(canvas.id, req.params.pageId, frameId, actor))
+})
+
+/* The page's Multica issue: the authoritative page-to-issue link. Only a signed-in
+   member with edit access writes it here (null unbinds). Agent keys never reach
+   this route and MCP has no tool for it. */
+app.put('/api/canvases/:id/pages/:pageId/issue', (req, res) => {
+  const canvas = requireCanvas(req, res, req.params.id, 'edit')
+  if (!canvas) return
+  const issueId: unknown = req.body?.issueId
+  if (issueId !== null && (typeof issueId !== 'string' || !isUuid(issueId)))
+    return res.status(400).json({ error: 'issueId must be an issue UUID or null' })
+  if (!canvasPages(canvas).some((p) => p.id === req.params.pageId))
+    return res.status(404).json({ error: 'page not found' })
+  const actor = actions.resolveActor({ name: req.user!.name, kind: 'user' })
+  res.json(actions.setPageIssue(canvas.id, req.params.pageId, issueId, actor))
+})
+
+/* The Multica runs of a page: its bound issue's runs plus the DM's chat runs. */
+app.get('/api/canvases/:id/pages/:pageId/runs', async (req, res) => {
+  const canvas = requireCanvas(req, res, req.params.id, 'view')
+  if (!canvas) return
+  const source = multicaRunsSource(env)
+  if (!source) return res.status(503).json({ error: 'Multica is not configured on this server.' })
+  try {
+    const result = await listPageRuns(canvas, req.params.pageId, source)
+    if (!result.ok) return res.status(result.status).json({ error: result.error })
+    res.json(result)
+  } catch (err) {
+    console.error('page runs failed', err)
+    res.status(502).json({ error: 'Multica could not list the runs.' })
+  }
 })
 
 /* Ruler guides, one per request so two people dragging different guides

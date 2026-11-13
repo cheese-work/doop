@@ -161,6 +161,11 @@ const schema = {
   LINEAR_CLIENT_ID: str({ default: undefined }),
   LINEAR_CLIENT_SECRET: str({ default: undefined }),
   LINEAR_WEBHOOK_SECRET: str({ default: undefined }),
+  /* Multica: lists the runs of a page's bound issue (GET /api/canvases/:id/pages/:pageId/runs) */
+  MULTICA_API_URL: str({ default: undefined }),
+  MULTICA_API_TOKEN: str({ default: undefined }),
+  MULTICA_WORKSPACE_ID: str({ default: undefined }),
+  MULTICA_WEB_URL: str({ default: undefined }),
   LINEAR_API_URL: str({ default: 'https://api.linear.app/graphql' }),
   LINEAR_TOKEN_URL: str({ default: 'https://api.linear.app/oauth/token' }),
   SLACK_CLIENT_ID: str({ default: undefined }),

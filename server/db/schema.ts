@@ -335,6 +335,8 @@ export const tasks = pgTable(
     scope: text('scope'),
     /** comma-joined ids of the frames edited while the task was open, most recent last */
     frameIds: text('frame_ids'),
+    /** the Multica task (run) whose MCP calls made this task; null for humans and other clients */
+    multicaTaskId: text('multica_task_id'),
   },
   (t) => [index('tasks_canvas_idx').on(t.canvasId)],
 )
