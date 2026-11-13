@@ -12,6 +12,11 @@ export function serveClient(app: Express, dist: string): void {
     '/assets',
     express.static(path.join(dist, 'assets'), { maxAge: ONE_YEAR_SECONDS * 1000, immutable: true, index: false }),
   )
+  /* the worker script must revalidate on every load (static below) and may control the whole origin */
+  app.get('/sw.js', (_req, res, next) => {
+    res.setHeader('Service-Worker-Allowed', '/')
+    next()
+  })
   app.use(express.static(dist, { maxAge: 0, setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache') }))
   app.get('*', (_req, res) => {
     res.setHeader('Cache-Control', 'no-cache')

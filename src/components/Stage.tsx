@@ -20,9 +20,11 @@ import { cameraOnCursor, cameraToFollow } from '../lib/follow'
 import { SnapGuides } from './SnapGuides'
 import { GuideLines, Rulers } from './Rulers'
 import { useIsMobile } from '../hooks/use-mobile'
+import { reviewLayout } from '../lib/reviewLayout'
 import { isTypingTarget, MOD_KEY } from '../lib/keys'
 import { cn } from '../lib/utils'
 import { gesture } from '../lib/gesture'
+import { createTapDetector } from '../lib/doubleTap'
 import { hasFrameClip, pasteFrameAtScreen } from '../lib/frameClipboard'
 import { MenuHint } from './ui/menu'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from './ui/context-menu'
@@ -34,6 +36,7 @@ import { TOOLS, isDrawingTool, resolvePointerAction, toolForKey, type Tool } fro
 import { useCanvasDrawing } from './CanvasDrawing'
 import { FrameLabelLayer } from './FrameLabelLayer'
 import { layoutZoomFor } from '../lib/layoutZoom'
+import { useCulledFrames } from './useCulledFrames'
 
 const MIN_ZOOM = 0.08
 /* The settled world is laid out at up to this zoom too (layoutZoomFor), so
@@ -134,6 +137,7 @@ export function Stage({
   const zoomLabelRef = useRef<HTMLSpanElement>(null)
   const setViewport = useStore((s) => s.setViewport)
   const canvas = usePageCanvas()
+  const culledFrames = useCulledFrames(ref)
   const activePageId = useStore((s) => s.activePageId)
   const select = useStore((s) => s.select)
   const panMode = useStore((s) => s.panMode)
@@ -146,6 +150,7 @@ export function Stage({
   /* view links get Select and Hand, comment links add the Comment tool */
   const role = useStore(roleOf)
   const readOnly = !roleAllows(role, 'edit')
+  const { toolRail } = reviewLayout({ isMobile, role })
   const setTool = useStore((s) => s.setTool)
   const [panning, setPanning] = useState(false)
   /* the selection rectangle being dragged out, in world coordinates */
@@ -162,6 +167,7 @@ export function Stage({
   const [layoutZoom, setLayoutZoom] = useState(1)
   const layoutZoomRef = useRef(1)
   const fitted = useRef(false)
+  const taps = useRef(createTapDetector())
   const deepLinkHandled = useRef(false)
   const focusedPage = useRef<string | null>(null)
   const [linkSearch, setLinkSearch] = useState(location.search)
@@ -623,6 +629,24 @@ export function Stage({
     }
   }, [])
 
+  /* double-tap fit: judged on release so a pan or a pinch never counts (the
+     press itself still starts its pan — the detector only watches) */
+  useEffect(() => {
+    const t = taps.current
+    const touch = (fn: (e: PointerEvent) => void) => (e: PointerEvent) => e.pointerType === 'touch' && fn(e)
+    const onMove = touch((e) => t.move(e.pointerId, e.clientX, e.clientY))
+    const onUp = touch((e) => t.up(e.pointerId, e.timeStamp, e.clientX, e.clientY) && fit())
+    const onCancel = touch(() => t.cancel())
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onCancel)
+    return () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onCancel)
+    }
+  }, [fit])
+
   /* ⌘0 → 100%, ⌘+ / ⌘− → step zoom, all pivoting on the view center —
      preventDefault keeps the browser's own page zoom out of it. ⇧1 / ⇧2 fit
      everything / the selection and ⇧R shows or hides the rulers, as in Figma. */
@@ -741,6 +765,16 @@ export function Stage({
     const isBackground =
       e.target === e.currentTarget || target.classList.contains('world') || !!target.closest('[data-frame-locked]')
     const s = useStore.getState()
+    /* a second finger-tap on empty canvas fits the view, like ⇧1 (see the
+       release listener above); drawing and comment tools keep their taps */
+    if (e.pointerType === 'touch')
+      taps.current.down(
+        e.pointerId,
+        e.timeStamp,
+        e.clientX,
+        e.clientY,
+        isBackground && (s.tool === 'select' || s.tool === 'hand'),
+      )
     const action = resolvePointerAction({
       tool: s.tool,
       target: isBackground ? 'background' : 'frame',
@@ -921,7 +955,7 @@ export function Stage({
                   f.hidden ? (
                     <HiddenFrameView key={f.id} frame={f} />
                   ) : (
-                    <FrameView key={f.id} frame={f} layoutZoom={layoutZoom} />
+                    <FrameView key={f.id} frame={f} layoutZoom={layoutZoom} mounted={!culledFrames.has(f.id)} />
                   ),
                 )}
               </FrameLabelLayer.Provider>
@@ -959,7 +993,7 @@ export function Stage({
           className={cn(
             'absolute bottom-[calc(8px+env(safe-area-inset-bottom))] left-1/2 z-[35] -translate-x-1/2 sm:bottom-4',
             'md:top-[calc(var(--chrome-top,0px)+10px)] md:bottom-auto md:left-[var(--rail-left,14px)] md:translate-x-0 md:transition-[left] md:duration-150',
-            uiHidden && 'hidden',
+            (uiHidden || !toolRail) && 'hidden',
           )}
         >
           {isDrawingTool(tool) && (

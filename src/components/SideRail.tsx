@@ -103,23 +103,29 @@ export function SideRail({
 export function PanelTabButtons({
   onOpen,
   tooltipSide = 'left',
+  commentsOnly = false,
 }: {
   onOpen: (tab: PanelTab) => void
   tooltipSide?: 'left' | 'bottom'
+  commentsOnly?: boolean
 }) {
   const working = useStore((s) => s.tasks.filter((t) => t.agentName && !t.endedAt && !t.failedAt).length)
   const proposalPending = useStore((s) => s.proposals.some((p) => p.status === 'pending'))
   const openThreads = useOpenThreadCount()
   return (
     <>
-      <ToolbarControl
-        side={tooltipSide}
-        label={working ? `Agents · ${working} working · ⌘K to ask the Doop Agent` : 'Agents · ⌘K to ask the Doop Agent'}
-        onClick={() => onOpen('tasks')}
-      >
-        <SparkIcon />
-        {working > 0 && <ToolbarDot className="bg-success" />}
-      </ToolbarControl>
+      {!commentsOnly && (
+        <ToolbarControl
+          side={tooltipSide}
+          label={
+            working ? `Agents · ${working} working · ⌘K to ask the Doop Agent` : 'Agents · ⌘K to ask the Doop Agent'
+          }
+          onClick={() => onOpen('tasks')}
+        >
+          <SparkIcon />
+          {working > 0 && <ToolbarDot className="bg-success" />}
+        </ToolbarControl>
+      )}
       <ToolbarControl
         side={tooltipSide}
         label={openThreads ? `Comments · ${openThreads} open` : 'Comments'}
@@ -128,26 +134,30 @@ export function PanelTabButtons({
         <CommentIcon />
         {openThreads > 0 && <ToolbarDot className="bg-brand" />}
       </ToolbarControl>
-      <ToolbarControl side={tooltipSide} label="Activity" onClick={() => onOpen('activity')}>
-        <PulseIcon />
-      </ToolbarControl>
-      <ToolbarControl
-        side={tooltipSide}
-        label={proposalPending ? 'Memory · suggestion to review' : 'Memory'}
-        onClick={() => onOpen('memory')}
-      >
-        <BookOpenIcon />
-        {proposalPending && <ToolbarDot className="bg-brand" />}
-      </ToolbarControl>
+      {!commentsOnly && (
+        <>
+          <ToolbarControl side={tooltipSide} label="Activity" onClick={() => onOpen('activity')}>
+            <PulseIcon />
+          </ToolbarControl>
+          <ToolbarControl
+            side={tooltipSide}
+            label={proposalPending ? 'Memory · suggestion to review' : 'Memory'}
+            onClick={() => onOpen('memory')}
+          >
+            <BookOpenIcon />
+            {proposalPending && <ToolbarDot className="bg-brand" />}
+          </ToolbarControl>
+        </>
+      )}
     </>
   )
 }
 
 /** The phone-sized island of those buttons, in the top-right corner under the bar. */
-export function MobilePanelTabs({ onOpen }: { onOpen: (tab: PanelTab) => void }) {
+export function MobilePanelTabs({ onOpen, commentsOnly }: { onOpen: (tab: PanelTab) => void; commentsOnly?: boolean }) {
   return (
     <Toolbar aria-label="Canvas panels" className={cn(island, 'top-2 right-2')}>
-      <PanelTabButtons onOpen={onOpen} tooltipSide="bottom" />
+      <PanelTabButtons onOpen={onOpen} tooltipSide="bottom" commentsOnly={commentsOnly} />
     </Toolbar>
   )
 }

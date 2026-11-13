@@ -5,6 +5,7 @@ import { setName } from '../lib/identity'
 import { beginBrowserSignIn, supportsBrowserSignIn } from '../lib/desktop'
 import type { DesktopSignInProvider, ProviderRedirects } from '../lib/desktopAuth'
 import { safeRelativeTarget } from '../lib/safeTarget'
+import { ssoErrorReturnURL, withoutSsoError } from '../lib/ssoReturn'
 import { CODEX_SETUP_PATH } from '../lib/codexConnection'
 import { FIRST_CANVAS_PATH, firstCanvasPathAfterSignup } from '../../shared/firstCanvas'
 import { isDesktopShell } from '../lib/shell'
@@ -204,7 +205,7 @@ export function AuthPage() {
 
   /* the SSO error code has been shown; keep it out of the address bar */
   useEffect(() => {
-    if (ssoErrorFromUrl()) history.replaceState(null, '', location.pathname)
+    if (ssoErrorFromUrl()) history.replaceState(null, '', withoutSsoError(location.pathname, location.search))
   }, [])
 
   /* Both providers leave for the IdP and come back with a session (or an
@@ -233,7 +234,10 @@ export function AuthPage() {
         setNotice(browserSignInNotice)
         return
       }
-      const res = await start({ ...ssoRedirects(provider), errorCallbackURL: '/auth' })
+      const res = await start({
+        ...ssoRedirects(provider),
+        errorCallbackURL: ssoErrorReturnURL(location.pathname, location.search),
+      })
       if (res.error) setError(res.error.message ?? startFailed)
     } finally {
       setBusy(false)
