@@ -205,4 +205,4 @@ is the frame `updatedAt` values in that folder's `LOCK.json`. The merge SHA live
 | Topic          | Direction            | doop file (page)          | Locked frames (`updatedAt` in `LOCK.json`)                                    | Lock PR |
 | -------------- | -------------------- | ------------------------- | ----------------------------------------------------------------------------- | ------- |
 | `lifecycle-ui` | A "Quiet in place"   | `TgQKWNP_e3` (`che-5478`) | `Dx0dkXCQdJ` `ihyEfz5eKc` `i42zJDTQ6k` `ozJA_LNVyn` `oQjlN1W4mM` `TWLkRxuIds` | #39     |
-| `agents-panel` | B "Pinned run strip" | `mRAnnjvGod` (`che-5570`) | `M9_tXaRCW6`                                                                  | PENDING |
+| `agents-panel` | B "Pinned run strip" | `mRAnnjvGod` (`che-5570`) | `M9_tXaRCW6`                                                                  | #41     |
