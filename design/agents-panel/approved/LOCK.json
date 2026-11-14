@@ -1,0 +1,23 @@
+{
+  "provider": "doop",
+  "base_url": "https://congvc-c00.taila6fa8a.ts.net:34443/",
+  "canvas_or_project_id": "mRAnnjvGod",
+  "page_id": "che-5570",
+  "direction": "B",
+  "screens": [
+    {
+      "screen": "B Chat + pinned run strip, Agents panel (7 states, B1 to B7)",
+      "frame_id": "M9_tXaRCW6",
+      "file": "B-pinned-run-strip.html",
+      "updatedAt": "2026-11-14T10:56:45.272Z",
+      "content_sha256": "97b0dcbd041776584ba1c218a9db23a9faef89237f52f6465f0881dae5a9d543"
+    }
+  ],
+  "export_sha256": "a90400f14c80a49f6f8e0b08a66744bd1a649c6b419588bc5460a3ee524ef80d",
+  "export_sha256_method": "sha256 of the output of `sha256sum` over the one HTML file, run inside the approved/ folder, so the path in the line is the bare file name",
+  "exported_at": "2026-11-14 20:25 ICT",
+  "exported_by": "x99-claude-sonnet-design / Claude Sonnet 5.5 / X99",
+  "issue": "CHE-5570",
+  "selection_id": "01a1d9af-7cbf-781d-bdb5-aff8b7ef21d5",
+  "ux_verdict_id": "01a1da26-cb47-7daf-b121-b1daccaa600d"
+}

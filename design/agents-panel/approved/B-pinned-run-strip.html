@@ -1,0 +1,255 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>B pinned run strip v2</title><style>
+:root{--canvas:#fdfdfd;--white:#fff;--ink:#111;--soft:#4a4944;--faint:#575652;--deep:#f0f0f0;--sub:#f7f7f7;--line:#dcdcdc;--ls:#ececec;--brand:#0177d3;--brand-ink:#fff;--info-bg:#e8f1fb;--info-ink:#0a5aa6;--ok-bg:#e6f4ea;--ok-ink:#1b6b34;--ok-dot:#1b8a3f;--warn-bg:#fff4d6;--warn-ink:#7a5200;--err:#b32a18;--err-line:#e6b3ab;--alert-bg:#fff1e8;--alert-ink:#8a3a10;--idle:#8a8985;--term-bg:#111;--term-ink:#e8e8e6;--term-dim:#b4b3af;--float:0 0 0 1px rgba(0,0,0,.05),0 6px 20px rgba(0,0,0,.08);--ring:0 0 0 1px var(--line);--ring-err:0 0 0 1px var(--err-line)}
+*{box-sizing:border-box;margin:0}
+[hidden]{display:none!important}
+body{width:2180px;height:780px;padding:20px;display:grid;grid-template-columns:repeat(7,280px);gap:30px;align-content:start;background-color:var(--canvas);background-image:radial-gradient(var(--line) 1px,transparent 1.2px);background-size:20px 20px;font:12.5px/1.4 Inter,'Helvetica Neue',Helvetica,Arial,sans-serif;color:var(--ink);-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;border:0;background:none;cursor:pointer;text-align:inherit}
+a{color:inherit;text-decoration:none}
+button:focus-visible,a:focus-visible{outline:2px solid var(--brand);outline-offset:1px}
+svg.i{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.15;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.spin{animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.spin{animation:none}}
+.col{display:flex;flex-direction:column;gap:8px;min-width:0}
+.cap{font-size:12px;font-weight:500;height:16px}
+.nt{font-size:11.5px;color:var(--soft);line-height:1.4}
+.panel{position:relative;height:660px;background:var(--white);border-radius:14px;box-shadow:var(--float);display:flex;flex-direction:column;overflow:hidden}
+.ph{display:flex;align-items:center;justify-content:space-between;height:42px;flex:none;padding:0 10px;border-bottom:1px solid var(--ls)}
+.tabs{display:flex;gap:2px;align-items:center}
+.tab{position:relative;display:inline-flex;align-items:center;height:28px;padding:0 8px;border-radius:8px;color:var(--soft);font-size:12px}
+.tab .tl{display:none}
+.tab.on{background:var(--deep);color:var(--ink);font-weight:500;gap:7px}
+.tab.on .tl{display:inline}
+.cnt{position:absolute;top:-3px;right:-3px;height:15px;min-width:15px;border-radius:8px;background:var(--brand);color:var(--brand-ink);font:600 10px/15px 'Geist Mono',monospace;text-align:center;padding:0 3px}
+.x{display:grid;place-items:center;width:28px;height:28px;border-radius:7px;color:var(--faint)}
+.tp{flex:1;min-height:0;display:flex;flex-direction:column}
+.ctx{display:flex;align-items:center;gap:6px;height:34px;flex:none;padding:0 12px;border-bottom:1px solid var(--ls);font-size:12px;color:var(--soft)}
+.ctx .k{color:var(--ink)}
+.ctx .lk{margin-left:auto;display:grid;place-items:center;width:24px;height:24px;border-radius:7px;color:var(--faint)}
+.mono{font:11px 'Geist Mono',monospace;color:var(--faint)}
+.body{flex:1;min-height:0;overflow:hidden;padding:10px;display:flex;flex-direction:column;gap:10px;justify-content:flex-end}
+.m{display:flex;flex-direction:column;gap:3px}
+.who{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--faint);min-width:0}
+.who b{font-weight:500;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.who .mono{margin-left:auto;flex:none}
+.b{font-size:12.5px;padding:7px 9px;border-radius:10px;background:var(--sub)}
+.b.me{background:var(--deep)}
+.b.pend{border:1px dashed var(--faint);color:var(--soft)}
+.b.old{background:var(--white);border:1px dashed var(--line);color:var(--soft)}
+.av{display:grid;place-items:center;width:16px;height:16px;border-radius:8px;font-size:10px;font-weight:500;color:var(--brand-ink);background:var(--ink);flex:none}
+.av.a{background:var(--info-bg);color:var(--info-ink)}.av.u{background:var(--ls);color:var(--ink)}
+.chip{display:inline-flex;align-items:center;gap:4px;height:18px;padding:0 6px;border-radius:9px;font-size:11px;background:var(--deep);color:var(--soft);white-space:nowrap;flex:none}
+.chip.m{background:var(--info-bg);color:var(--info-ink)}.chip.a{background:var(--ok-bg);color:var(--ok-ink)}.chip.y{background:var(--warn-bg);color:var(--warn-ink)}
+.rc{border-radius:10px;box-shadow:var(--ring);padding:8px;display:flex;flex-direction:column;gap:6px;background:var(--white)}
+.rh{display:flex;align-items:center;gap:6px;font-size:12px;min-width:0}
+.rh b{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.dot{width:8px;height:8px;border-radius:4px;background:var(--ok-dot);flex:none}
+.dot.f{background:var(--idle)}
+.live{background:var(--term-bg);color:var(--term-ink);border-radius:8px;padding:8px;font:11px/1.6 'Geist Mono',monospace}
+.live i{font-style:normal;color:var(--term-dim);margin-right:6px}
+.acts{display:flex;gap:6px;flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:28px;padding:0 8px;border-radius:8px;font-size:12px;background:var(--white);box-shadow:var(--ring);white-space:nowrap}
+.btn.s{height:24px;font-size:11.5px}
+.btn.d{color:var(--err);box-shadow:var(--ring-err)}
+.btn[aria-disabled=true]{color:var(--faint);background:var(--sub);box-shadow:0 0 0 1px var(--ls);cursor:not-allowed}
+.ban{display:flex;gap:8px;align-items:flex-start;padding:8px 10px;border-radius:10px;font-size:11.5px;background:var(--alert-bg);color:var(--alert-ink)}
+.ban b{font-weight:500;display:block;font-size:12px}
+.emp{display:flex;flex-direction:column;gap:6px;align-items:flex-start;padding:10px;border-radius:10px;background:var(--sub);font-size:12px;color:var(--soft)}
+.emp b{font-weight:500;color:var(--ink)}
+.cmp{margin:0 10px 10px;border-radius:12px;box-shadow:var(--ring);background:var(--white);padding:8px;display:flex;flex-direction:column;gap:6px;flex:none}
+.fchip{align-self:flex-start;display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 4px 0 7px;border-radius:7px;background:var(--deep);font-size:11.5px;max-width:100%}
+.fchip span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fchip button{display:grid;place-items:center;width:18px;height:18px;border-radius:5px;color:var(--faint)}
+.ta{min-height:34px;font-size:12.5px;color:var(--faint);padding:2px}
+.ta.v{color:var(--ink)}.ta.busy{color:var(--soft)}
+.st{display:flex;align-items:center;gap:6px;padding:0 2px}
+.crow{display:flex;align-items:center;gap:4px}
+.ib{display:grid;place-items:center;width:28px;height:28px;border-radius:7px;color:var(--soft)}
+.ib.e{color:var(--err)}
+.ib[aria-disabled=true]{color:var(--faint);cursor:not-allowed}
+.sel{margin-left:auto;display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 8px;border-radius:8px;font-size:12px;max-width:172px;min-width:0}
+.sel.open{background:var(--deep)}
+.sel .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sel[aria-disabled=true]{color:var(--faint);cursor:not-allowed}
+.send{display:grid;place-items:center;width:28px;height:28px;border-radius:14px;background:var(--ink);color:var(--canvas);flex:none}
+.send[aria-disabled=true]{background:var(--deep);color:var(--faint);cursor:not-allowed}
+.menu{position:absolute;left:10px;right:10px;bottom:134px;background:var(--white);border-radius:12px;box-shadow:var(--float);padding:6px;display:flex;flex-direction:column;gap:2px;z-index:2}
+.mh{font-size:11px;color:var(--faint);padding:6px 8px 2px}
+.mi{display:flex;align-items:center;gap:8px;height:30px;padding:0 8px;border-radius:7px;font-size:12px}
+.mi.on{background:var(--deep)}
+.mi .ck{margin-left:auto}
+.mf{font-size:11px;color:var(--faint);padding:4px 8px;border-top:1px solid var(--ls);margin-top:4px}
+.strip{flex:none;padding:8px 10px;border-bottom:1px solid var(--ls);display:flex;flex-direction:column;gap:6px;background:var(--sub)}
+.strip.one{flex-direction:row;align-items:center;gap:6px;height:34px;padding:0 10px;font-size:11.5px}
+.sh{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--soft)}
+.sh b,.strip.one b{font-weight:500;color:var(--ink)}
+.tg{margin-left:auto;display:grid;place-items:center;width:28px;height:28px;border-radius:7px;color:var(--faint)}
+.sh .tg{height:24px;width:24px}
+.row{display:flex;align-items:center;gap:8px;min-height:32px;padding:4px 8px;border-radius:8px;background:var(--white);box-shadow:var(--ring);font-size:12px;min-width:0}
+.row .g{flex:1;min-width:0;display:flex;flex-direction:column}
+.row .g b{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .g span{font-size:11px;color:var(--faint)}
+.row .ib{width:24px;height:24px}
+.row .ok{color:var(--ok-ink)}.row .er{color:var(--err)}
+.fold{display:flex;align-items:center;gap:6px;height:28px;padding:0 8px;border-radius:8px;font-size:11.5px;color:var(--soft)}
+</style></head><body>
+<svg aria-hidden="true" focusable="false" width="0" height="0" style="position:absolute"><defs>
+<symbol id="spark" viewBox="0 0 24 24"><path d="M9.94 14.06 8 20l-1.94-5.94L0 12l6.06-2.06L8 4l1.94 5.94L16 12zM19 3v4M21 5h-4M19 17v4M21 19h-4"/></symbol>
+<symbol id="msg" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+<symbol id="act" viewBox="0 0 24 24"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></symbol>
+<symbol id="book" viewBox="0 0 24 24"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></symbol>
+<symbol id="x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+<symbol id="up" viewBox="0 0 24 24"><path d="m5 12 7-7 7 7M12 19V5"/></symbol>
+<symbol id="clip" viewBox="0 0 24 24"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></symbol>
+<symbol id="frame" viewBox="0 0 24 24"><path d="M22 6H2M22 18H2M6 2v20M18 2v20"/></symbol>
+<symbol id="cd" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+<symbol id="cu" viewBox="0 0 24 24"><path d="m18 15-6-6-6 6"/></symbol>
+<symbol id="ext" viewBox="0 0 24 24"><path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+<symbol id="stop" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/></symbol>
+<symbol id="steer" viewBox="0 0 24 24"><path d="m15 10 5 5-5 5M4 4v7a4 4 0 0 0 4 4h12"/></symbol>
+<symbol id="check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+<symbol id="off" viewBox="0 0 24 24"><path d="M12 20h.01M8.5 16.43a5 5 0 0 1 7 0M5 12.86a10 10 0 0 1 5.17-2.69M19 12.86a10 10 0 0 0-2-1.52M2 8.82a15 15 0 0 1 4.18-2.64M22 8.82a15 15 0 0 0-11.29-3.76M2 2l20 20"/></symbol>
+<symbol id="rs" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8M21 3v5h-5M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16M3 21v-5h5"/></symbol>
+<symbol id="link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></symbol>
+<symbol id="sp" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-6.22-8.56"/></symbol>
+</defs></svg>
+
+<!-- B1 one run live -->
+<div class="col"><div class="cap">B1 · One run live</div>
+<div class="panel">
+<div class="ph"><div class="tabs" role="tablist" aria-label="Page panels"><button class="tab on" role="tab" id="p1-ta" aria-label="Agents" aria-selected="true" aria-controls="p1-a" tabindex="0"><svg class="i" aria-hidden="true"><use href="#spark"/></svg><span class="tl">Agents</span></button><button class="tab" role="tab" id="p1-tc" aria-label="Comments, 2 new" aria-selected="false" aria-controls="p1-c" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#msg"/></svg><span class="tl">Comments</span><span class="cnt" aria-hidden="true">2</span></button><button class="tab" role="tab" id="p1-tt" aria-label="Activity" aria-selected="false" aria-controls="p1-t" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#act"/></svg><span class="tl">Activity</span></button><button class="tab" role="tab" id="p1-tm" aria-label="Memory" aria-selected="false" aria-controls="p1-m" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#book"/></svg><span class="tl">Memory</span></button></div><button class="x" aria-label="Close panel"><svg class="i" aria-hidden="true"><use href="#x"/></svg></button></div>
+<div class="tp" role="tabpanel" id="p1-a" aria-labelledby="p1-ta">
+<div class="ctx"><span class="mono k">CHE-5570</span><span>agents panel</span><a class="lk" href="#" aria-label="Open CHE-5570 in Multica"><svg class="i" aria-hidden="true"><use href="#ext"/></svg></a></div>
+<div class="strip"><div class="sh"><b>Runs on this page</b><span class="chip a">1 live</span><span class="chip">2 finished</span><button class="tg" type="button" aria-expanded="true" aria-label="Collapse runs"><svg class="i" aria-hidden="true"><use href="#cu"/></svg></button></div>
+<div class="rc"><div class="rh"><span class="dot"></span><b>x99-claude-sonnet-design</b><span class="mono" style="margin-left:auto">4 min</span></div>
+<div class="live"><i>15:05 ICT</i>Reading frame<br><i>15:06 ICT</i>Writing state B2<br><i>15:06 ICT</i>Screenshot ok</div>
+<div class="acts"><a class="btn" href="#"><svg class="i" aria-hidden="true"><use href="#ext"/></svg>Live view</a><button class="btn" type="button" aria-disabled="true"><svg class="i" aria-hidden="true"><use href="#steer"/></svg>Steer</button><button class="btn d" type="button"><svg class="i" aria-hidden="true"><use href="#stop"/></svg>Stop</button></div>
+<div class="mono">Steer is available after CHE-3073 slice D.</div></div></div>
+<div class="body">
+<div class="m"><div class="who"><span class="av u">C</span><b>Cheese</b><span class="chip">DM</span><span class="mono">15:02 ICT</span></div><div class="b me">One composer. Runs open live from here.</div></div>
+<div class="m"><div class="who"><span class="av a">x</span><b>x99-claude-sonnet-design</b><span class="chip m">DM</span><span class="mono">15:03 ICT</span></div><div class="b">Building three directions on this page. Back in a few minutes.</div></div>
+</div>
+<div class="cmp"><div class="fchip"><svg class="i" aria-hidden="true"><use href="#frame"/></svg><span>Agents panel · B</span><button type="button" aria-label="Remove frame context"><svg class="i" style="width:11px;height:11px" aria-hidden="true"><use href="#x"/></svg></button></div><div class="ta">Message x99-claude-sonnet-design…</div><div class="crow"><button class="ib" type="button" aria-label="Attach"><svg class="i" aria-hidden="true"><use href="#clip"/></svg></button><button class="sel" type="button" aria-haspopup="listbox"><span class="av a">x</span><span class="n">x99-claude-sonnet-design</span><svg class="i" aria-hidden="true"><use href="#cd"/></svg></button><button class="send" type="button" aria-label="Send"><svg class="i" aria-hidden="true"><use href="#up"/></svg></button></div></div>
+</div>
+<div role="tabpanel" id="p1-c" aria-labelledby="p1-tc" hidden></div><div role="tabpanel" id="p1-t" aria-labelledby="p1-tt" hidden></div><div role="tabpanel" id="p1-m" aria-labelledby="p1-tm" hidden></div>
+</div>
+<div class="nt">One live run: the strip opens to a card with the log tail and Live view, Steer, Stop. Finished runs stay a count in the header.</div></div>
+
+<!-- B2 run finished -->
+<div class="col"><div class="cap">B2 · Run finished · strip folded</div>
+<div class="panel">
+<div class="ph"><div class="tabs" role="tablist" aria-label="Page panels"><button class="tab on" role="tab" id="p2-ta" aria-label="Agents" aria-selected="true" aria-controls="p2-a" tabindex="0"><svg class="i" aria-hidden="true"><use href="#spark"/></svg><span class="tl">Agents</span></button><button class="tab" role="tab" id="p2-tc" aria-label="Comments, 2 new" aria-selected="false" aria-controls="p2-c" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#msg"/></svg><span class="tl">Comments</span><span class="cnt" aria-hidden="true">2</span></button><button class="tab" role="tab" id="p2-tt" aria-label="Activity" aria-selected="false" aria-controls="p2-t" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#act"/></svg><span class="tl">Activity</span></button><button class="tab" role="tab" id="p2-tm" aria-label="Memory" aria-selected="false" aria-controls="p2-m" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#book"/></svg><span class="tl">Memory</span></button></div><button class="x" aria-label="Close panel"><svg class="i" aria-hidden="true"><use href="#x"/></svg></button></div>
+<div class="tp" role="tabpanel" id="p2-a" aria-labelledby="p2-ta">
+<div class="ctx"><span class="mono k">CHE-5570</span><span>agents panel</span><a class="lk" href="#" aria-label="Open CHE-5570 in Multica"><svg class="i" aria-hidden="true"><use href="#ext"/></svg></a></div>
+<div class="strip one"><b>Runs on this page</b><span class="chip">2 finished</span><button class="tg" type="button" aria-expanded="false" aria-label="Expand runs"><svg class="i" aria-hidden="true"><use href="#cd"/></svg></button></div>
+<div class="body">
+<div class="m"><div class="who"><span class="av u">C</span><b>Cheese</b><span class="chip">DM</span><span class="mono">15:02 ICT</span></div><div class="b me">One composer. Runs open live from here.</div></div>
+<div class="m"><div class="who"><span class="av a">x</span><b>x99-claude-sonnet-design</b><span class="chip m">DM</span><span class="mono">15:09 ICT</span></div><div class="b">Directions A, B and C are on this page. Ready for review.</div></div>
+<div class="m"><div class="who"><span class="av">D</span><b>Doop Agent</b><span class="chip">Doop</span><span class="mono">15:10 ICT</span></div><div class="b">Padding on Agents panel · B is now 16.</div></div>
+</div>
+<div class="cmp"><div class="fchip"><svg class="i" aria-hidden="true"><use href="#frame"/></svg><span>Agents panel · B</span><button type="button" aria-label="Remove frame context"><svg class="i" style="width:11px;height:11px" aria-hidden="true"><use href="#x"/></svg></button></div><div class="ta">What should change in this frame…</div><div class="crow"><button class="ib" type="button" aria-label="Attach"><svg class="i" aria-hidden="true"><use href="#clip"/></svg></button><button class="sel" type="button" aria-haspopup="listbox"><span class="av">D</span><span class="n">Doop Agent</span><svg class="i" aria-hidden="true"><use href="#cd"/></svg></button><button class="send" type="button" aria-label="Send"><svg class="i" aria-hidden="true"><use href="#up"/></svg></button></div></div>
+</div>
+<div role="tabpanel" id="p2-c" aria-labelledby="p2-tc" hidden></div><div role="tabpanel" id="p2-t" aria-labelledby="p2-tt" hidden></div><div role="tabpanel" id="p2-m" aria-labelledby="p2-tm" hidden></div>
+</div>
+<div class="nt">No run live: the strip is one line and gives its height to the chat. Expand lists finished runs, newest first, each with Open run in Multica.</div></div>
+
+<!-- B3 no runs, selector open -->
+<div class="col"><div class="cap">B3 · No runs · agent selector open</div>
+<div class="panel">
+<div class="ph"><div class="tabs" role="tablist" aria-label="Page panels"><button class="tab on" role="tab" id="p3-ta" aria-label="Agents" aria-selected="true" aria-controls="p3-a" tabindex="0"><svg class="i" aria-hidden="true"><use href="#spark"/></svg><span class="tl">Agents</span></button><button class="tab" role="tab" id="p3-tc" aria-label="Comments, 2 new" aria-selected="false" aria-controls="p3-c" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#msg"/></svg><span class="tl">Comments</span><span class="cnt" aria-hidden="true">2</span></button><button class="tab" role="tab" id="p3-tt" aria-label="Activity" aria-selected="false" aria-controls="p3-t" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#act"/></svg><span class="tl">Activity</span></button><button class="tab" role="tab" id="p3-tm" aria-label="Memory" aria-selected="false" aria-controls="p3-m" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#book"/></svg><span class="tl">Memory</span></button></div><button class="x" aria-label="Close panel"><svg class="i" aria-hidden="true"><use href="#x"/></svg></button></div>
+<div class="tp" role="tabpanel" id="p3-a" aria-labelledby="p3-ta">
+<div class="ctx"><span class="mono k">CHE-5570</span><span>agents panel</span><a class="lk" href="#" aria-label="Open CHE-5570 in Multica"><svg class="i" aria-hidden="true"><use href="#ext"/></svg></a></div>
+<div class="strip one"><b>Runs on this page</b><span class="chip">None</span></div>
+<div class="body"><div class="emp"><b>No messages yet</b><span>Say what should change. Pick who answers below. A run shows above when a Multica agent starts work here.</span></div></div>
+<div class="menu" role="listbox" aria-label="Send to">
+<div class="mh">Doop</div>
+<div class="mi" role="option" aria-selected="false"><span class="av">D</span>Doop Agent<span class="mono" style="margin-left:auto">edits frames</span></div>
+<div class="mh">Multica · CHE-5570 DM</div>
+<div class="mi on" role="option" aria-selected="true"><span class="av a">x</span>x99-claude-sonnet-design<svg class="i ck" aria-hidden="true"><use href="#check"/></svg></div>
+<div class="mi" role="option" aria-selected="false"><span class="av a">x</span>x99-codex-luna-design</div>
+<div class="mi" role="option" aria-selected="false"><span class="av a">x</span>x99-agy-gemini-ux</div>
+<div class="mf">A Multica message goes to the issue DM and starts a run.</div>
+</div>
+<div class="cmp"><div class="fchip"><svg class="i" aria-hidden="true"><use href="#frame"/></svg><span>Agents panel · B</span><button type="button" aria-label="Remove frame context"><svg class="i" style="width:11px;height:11px" aria-hidden="true"><use href="#x"/></svg></button></div><div class="ta">Message x99-claude-sonnet-design…</div><div class="crow"><button class="ib" type="button" aria-label="Attach"><svg class="i" aria-hidden="true"><use href="#clip"/></svg></button><button class="sel open" type="button" aria-haspopup="listbox" aria-expanded="true"><span class="av a">x</span><span class="n">x99-claude-sonnet-design</span><svg class="i" aria-hidden="true"><use href="#cu"/></svg></button><button class="send" type="button" aria-label="Send"><svg class="i" aria-hidden="true"><use href="#up"/></svg></button></div></div>
+</div>
+<div role="tabpanel" id="p3-c" aria-labelledby="p3-tc" hidden></div><div role="tabpanel" id="p3-t" aria-labelledby="p3-tt" hidden></div><div role="tabpanel" id="p3-m" aria-labelledby="p3-tm" hidden></div>
+</div>
+<div class="nt">Issue bound, nothing running. The strip is one line with a None chip. The chat empty state says when a run appears.</div></div>
+
+<!-- B4 no issue -->
+<div class="col"><div class="cap">B4 · No issue · project DM</div>
+<div class="panel">
+<div class="ph"><div class="tabs" role="tablist" aria-label="Page panels"><button class="tab on" role="tab" id="p4-ta" aria-label="Agents" aria-selected="true" aria-controls="p4-a" tabindex="0"><svg class="i" aria-hidden="true"><use href="#spark"/></svg><span class="tl">Agents</span></button><button class="tab" role="tab" id="p4-tc" aria-label="Comments, 2 new" aria-selected="false" aria-controls="p4-c" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#msg"/></svg><span class="tl">Comments</span><span class="cnt" aria-hidden="true">2</span></button><button class="tab" role="tab" id="p4-tt" aria-label="Activity" aria-selected="false" aria-controls="p4-t" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#act"/></svg><span class="tl">Activity</span></button><button class="tab" role="tab" id="p4-tm" aria-label="Memory" aria-selected="false" aria-controls="p4-m" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#book"/></svg><span class="tl">Memory</span></button></div><button class="x" aria-label="Close panel"><svg class="i" aria-hidden="true"><use href="#x"/></svg></button></div>
+<div class="tp" role="tabpanel" id="p4-a" aria-labelledby="p4-ta">
+<div class="ctx"><span>Baseline · no issue</span><button class="btn s" type="button" style="margin-left:auto"><svg class="i" style="width:12px;height:12px" aria-hidden="true"><use href="#link"/></svg>Bind issue</button></div>
+<div class="strip one"><b>Runs on this page</b><span class="chip">Needs an issue</span></div>
+<div class="body">
+<div class="m"><div class="who"><span class="av u">C</span><b>Cheese</b><span class="chip">Project DM</span><span class="mono">12 Nov 09:40 ICT</span></div><div class="b me">Which pages still have no issue?</div></div>
+<div class="m"><div class="who"><span class="av a">x</span><b>x99-claude-sonnet-design</b><span class="chip m">Project DM</span><span class="mono">09:41 ICT</span></div><div class="b">Baseline, Flows and Direction. They are shared pages.</div></div>
+</div>
+<div class="cmp"><div class="fchip"><svg class="i" aria-hidden="true"><use href="#frame"/></svg><span>Baseline · Agents panel</span><button type="button" aria-label="Remove frame context"><svg class="i" style="width:11px;height:11px" aria-hidden="true"><use href="#x"/></svg></button></div><div class="ta">Message the project DM…</div><div class="crow"><button class="ib" type="button" aria-label="Attach"><svg class="i" aria-hidden="true"><use href="#clip"/></svg></button><button class="sel" type="button" aria-haspopup="listbox"><span class="av a">x</span><span class="n">x99-claude-sonnet-design</span><svg class="i" aria-hidden="true"><use href="#cd"/></svg></button><button class="send" type="button" aria-label="Send"><svg class="i" aria-hidden="true"><use href="#up"/></svg></button></div></div>
+</div>
+<div role="tabpanel" id="p4-c" aria-labelledby="p4-tc" hidden></div><div role="tabpanel" id="p4-t" aria-labelledby="p4-tt" hidden></div><div role="tabpanel" id="p4-m" aria-labelledby="p4-tm" hidden></div>
+</div>
+<div class="nt">Baseline page, no issue. The strip is one line that says why it is off. Bind issue turns it on. The DM is the project DM.</div></div>
+
+<!-- B5 unreachable -->
+<div class="col"><div class="cap">B5 · Multica unreachable</div>
+<div class="panel">
+<div class="ph"><div class="tabs" role="tablist" aria-label="Page panels"><button class="tab on" role="tab" id="p5-ta" aria-label="Agents" aria-selected="true" aria-controls="p5-a" tabindex="0"><svg class="i" aria-hidden="true"><use href="#spark"/></svg><span class="tl">Agents</span></button><button class="tab" role="tab" id="p5-tc" aria-label="Comments, 2 new" aria-selected="false" aria-controls="p5-c" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#msg"/></svg><span class="tl">Comments</span><span class="cnt" aria-hidden="true">2</span></button><button class="tab" role="tab" id="p5-tt" aria-label="Activity" aria-selected="false" aria-controls="p5-t" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#act"/></svg><span class="tl">Activity</span></button><button class="tab" role="tab" id="p5-tm" aria-label="Memory" aria-selected="false" aria-controls="p5-m" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#book"/></svg><span class="tl">Memory</span></button></div><button class="x" aria-label="Close panel"><svg class="i" aria-hidden="true"><use href="#x"/></svg></button></div>
+<div class="tp" role="tabpanel" id="p5-a" aria-labelledby="p5-ta">
+<div class="ctx"><span class="mono k">CHE-5570</span><span>agents panel</span><a class="lk" href="#" aria-label="Open CHE-5570 in Multica"><svg class="i" aria-hidden="true"><use href="#ext"/></svg></a></div>
+<div class="strip"><div class="sh"><b>Runs on this page</b><span class="chip y">Unknown</span></div>
+<div class="row"><span class="dot f"></span><div class="g"><b>x99-claude-sonnet-design</b><span>Last seen 15:06 ICT · status unknown</span></div><button class="btn s" type="button" aria-disabled="true">Stop</button></div></div>
+<div class="body">
+<div class="ban" role="alert"><svg class="i" style="margin-top:2px" aria-hidden="true"><use href="#off"/></svg><div><b>Can't reach Multica</b>Doop Agent still works. Messages to Multica agents wait here.<div style="margin-top:6px"><button class="btn s" type="button"><svg class="i" style="width:12px;height:12px" aria-hidden="true"><use href="#rs"/></svg>Retry</button></div></div></div>
+<div class="m"><div class="who"><span class="av a">x</span><b>x99-claude-sonnet-design</b><span class="chip">Cached</span><span class="mono">15:03 ICT</span></div><div class="b old">Building three directions on this page. Back in a few minutes.</div></div>
+</div>
+<div class="cmp"><div class="fchip"><svg class="i" aria-hidden="true"><use href="#frame"/></svg><span>Agents panel · B</span><button type="button" aria-label="Remove frame context"><svg class="i" style="width:11px;height:11px" aria-hidden="true"><use href="#x"/></svg></button></div><div class="ta v">Add the Stop button first.</div><div class="mono st">Kept. Sends when Multica is back.</div><div class="crow"><button class="ib" type="button" aria-label="Attach"><svg class="i" aria-hidden="true"><use href="#clip"/></svg></button><button class="sel" type="button" aria-haspopup="listbox"><span class="av a">x</span><span class="n">x99-claude-sonnet-design</span><svg class="i" aria-hidden="true"><use href="#cd"/></svg></button><button class="send" type="button" aria-label="Send" aria-disabled="true"><svg class="i" aria-hidden="true"><use href="#up"/></svg></button></div></div>
+</div>
+<div role="tabpanel" id="p5-c" aria-labelledby="p5-tc" hidden></div><div role="tabpanel" id="p5-t" aria-labelledby="p5-tt" hidden></div><div role="tabpanel" id="p5-m" aria-labelledby="p5-tm" hidden></div>
+</div>
+<div class="nt">Multica down. Strip says Unknown and Stop is off. Cached chat has a dashed outline. Typed text stays. Doop Agent still sends.</div></div>
+
+<!-- B6 sending -->
+<div class="col"><div class="cap">B6 · Composer sending</div>
+<div class="panel">
+<div class="ph"><div class="tabs" role="tablist" aria-label="Page panels"><button class="tab on" role="tab" id="p6-ta" aria-label="Agents" aria-selected="true" aria-controls="p6-a" tabindex="0"><svg class="i" aria-hidden="true"><use href="#spark"/></svg><span class="tl">Agents</span></button><button class="tab" role="tab" id="p6-tc" aria-label="Comments, 2 new" aria-selected="false" aria-controls="p6-c" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#msg"/></svg><span class="tl">Comments</span><span class="cnt" aria-hidden="true">2</span></button><button class="tab" role="tab" id="p6-tt" aria-label="Activity" aria-selected="false" aria-controls="p6-t" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#act"/></svg><span class="tl">Activity</span></button><button class="tab" role="tab" id="p6-tm" aria-label="Memory" aria-selected="false" aria-controls="p6-m" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#book"/></svg><span class="tl">Memory</span></button></div><button class="x" aria-label="Close panel"><svg class="i" aria-hidden="true"><use href="#x"/></svg></button></div>
+<div class="tp" role="tabpanel" id="p6-a" aria-labelledby="p6-ta">
+<div class="ctx"><span class="mono k">CHE-5570</span><span>agents panel</span><a class="lk" href="#" aria-label="Open CHE-5570 in Multica"><svg class="i" aria-hidden="true"><use href="#ext"/></svg></a></div>
+<div class="strip one"><b>Runs on this page</b><span class="chip">None</span></div>
+<div class="body">
+<div class="m"><div class="who"><span class="av u">C</span><b>Cheese</b><span class="chip y">Sending</span><span class="mono">15:12 ICT</span></div><div class="b me pend">Add the Stop button first.</div></div>
+</div>
+<div class="cmp" aria-busy="true"><div class="fchip"><svg class="i" aria-hidden="true"><use href="#frame"/></svg><span>Agents panel · B</span><button type="button" aria-label="Remove frame context" aria-disabled="true"><svg class="i" style="width:11px;height:11px" aria-hidden="true"><use href="#x"/></svg></button></div><div class="ta busy">Add the Stop button first.</div><div class="mono st" role="status"><svg class="i spin" aria-hidden="true"><use href="#sp"/></svg>Sending to x99-claude-sonnet-design…</div><div class="crow"><button class="ib" type="button" aria-label="Attach" aria-disabled="true"><svg class="i" aria-hidden="true"><use href="#clip"/></svg></button><button class="sel" type="button" aria-haspopup="listbox" aria-disabled="true"><span class="av a">x</span><span class="n">x99-claude-sonnet-design</span><svg class="i" aria-hidden="true"><use href="#cd"/></svg></button><button class="send" type="button" aria-label="Sending" aria-disabled="true"><svg class="i spin" aria-hidden="true"><use href="#sp"/></svg></button></div></div>
+</div>
+<div role="tabpanel" id="p6-c" aria-labelledby="p6-tc" hidden></div><div role="tabpanel" id="p6-t" aria-labelledby="p6-tt" hidden></div><div role="tabpanel" id="p6-m" aria-labelledby="p6-tm" hidden></div>
+</div>
+<div class="nt">Applies to every state above. Field, selector and Send go busy, the text stays, the bubble shows Sending. On failure the text returns to the field with Retry.</div></div>
+
+<!-- B7 several runs -->
+<div class="col"><div class="cap">B7 · Several runs · strip lighter</div>
+<div class="panel">
+<div class="ph"><div class="tabs" role="tablist" aria-label="Page panels"><button class="tab on" role="tab" id="p7-ta" aria-label="Agents" aria-selected="true" aria-controls="p7-a" tabindex="0"><svg class="i" aria-hidden="true"><use href="#spark"/></svg><span class="tl">Agents</span></button><button class="tab" role="tab" id="p7-tc" aria-label="Comments, 2 new" aria-selected="false" aria-controls="p7-c" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#msg"/></svg><span class="tl">Comments</span><span class="cnt" aria-hidden="true">2</span></button><button class="tab" role="tab" id="p7-tt" aria-label="Activity" aria-selected="false" aria-controls="p7-t" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#act"/></svg><span class="tl">Activity</span></button><button class="tab" role="tab" id="p7-tm" aria-label="Memory" aria-selected="false" aria-controls="p7-m" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#book"/></svg><span class="tl">Memory</span></button></div><button class="x" aria-label="Close panel"><svg class="i" aria-hidden="true"><use href="#x"/></svg></button></div>
+<div class="tp" role="tabpanel" id="p7-a" aria-labelledby="p7-ta">
+<div class="ctx"><span class="mono k">CHE-5570</span><span>agents panel</span><a class="lk" href="#" aria-label="Open CHE-5570 in Multica"><svg class="i" aria-hidden="true"><use href="#ext"/></svg></a></div>
+<div class="strip"><div class="sh"><b>Runs on this page</b><span class="chip a">2 live</span><span class="chip">3 finished</span><button class="tg" type="button" aria-expanded="true" aria-label="Collapse runs"><svg class="i" aria-hidden="true"><use href="#cu"/></svg></button></div>
+<div class="row"><span class="dot"></span><div class="g"><b>x99-claude-sonnet-design</b><span>Writing state B2 · 4 min</span></div><a class="ib" href="#" aria-label="Live view: x99-claude-sonnet-design"><svg class="i" aria-hidden="true"><use href="#ext"/></svg></a><button class="ib e" type="button" aria-label="Stop x99-claude-sonnet-design"><svg class="i" aria-hidden="true"><use href="#stop"/></svg></button></div>
+<div class="row"><span class="dot"></span><div class="g"><b>x99-codex-luna-design</b><span>Scoring frames · 1 min</span></div><a class="ib" href="#" aria-label="Live view: x99-codex-luna-design"><svg class="i" aria-hidden="true"><use href="#ext"/></svg></a><button class="ib e" type="button" aria-label="Stop x99-codex-luna-design"><svg class="i" aria-hidden="true"><use href="#stop"/></svg></button></div>
+<button class="fold" type="button" aria-expanded="false"><svg class="i" aria-hidden="true"><use href="#cd"/></svg>Show 3 finished runs</button></div>
+<div class="body">
+<div class="m"><div class="who"><span class="av u">C</span><b>Cheese</b><span class="chip">DM</span><span class="mono">15:02 ICT</span></div><div class="b me">Score all three, then hand back.</div></div>
+<div class="m"><div class="who"><span class="av a">x</span><b>x99-codex-luna-design</b><span class="chip m">DM</span><span class="mono">15:11 ICT</span></div><div class="b">Started. B first.</div></div>
+</div>
+<div class="cmp"><div class="fchip"><svg class="i" aria-hidden="true"><use href="#frame"/></svg><span>Agents panel · B</span><button type="button" aria-label="Remove frame context"><svg class="i" style="width:11px;height:11px" aria-hidden="true"><use href="#x"/></svg></button></div><div class="ta">Message x99-codex-luna-design…</div><div class="crow"><button class="ib" type="button" aria-label="Attach"><svg class="i" aria-hidden="true"><use href="#clip"/></svg></button><button class="sel" type="button" aria-haspopup="listbox"><span class="av a">x</span><span class="n">x99-codex-luna-design</span><svg class="i" aria-hidden="true"><use href="#cd"/></svg></button><button class="send" type="button" aria-label="Send"><svg class="i" aria-hidden="true"><use href="#up"/></svg></button></div></div>
+</div>
+<div role="tabpanel" id="p7-c" aria-labelledby="p7-tc" hidden></div><div role="tabpanel" id="p7-t" aria-labelledby="p7-tt" hidden></div><div role="tabpanel" id="p7-m" aria-labelledby="p7-tm" hidden></div>
+</div>
+<div class="nt">Two or more live: compact rows with icon-only Live view and Stop, no log tail. Steer stays in the single-run card. Finished runs fold behind one row.</div></div>
+<script>
+document.querySelectorAll('[role=tablist]').forEach(function(l){var t=[].slice.call(l.querySelectorAll('[role=tab]'));
+function sel(n){t.forEach(function(b,i){var on=i===n;b.setAttribute('aria-selected',on);b.tabIndex=on?0:-1;b.classList.toggle('on',on);document.getElementById(b.getAttribute('aria-controls')).hidden=!on});t[n].focus()}
+l.addEventListener('keydown',function(e){var i=t.indexOf(document.activeElement);if(i<0)return;var k={ArrowRight:(i+1)%t.length,ArrowLeft:(i-1+t.length)%t.length,Home:0,End:t.length-1}[e.key];if(k===undefined)return;e.preventDefault();sel(k)});
+t.forEach(function(b,i){b.addEventListener('click',function(){sel(i)})})});
+</script>
+</body></html>
