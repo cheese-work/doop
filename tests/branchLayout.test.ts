@@ -83,4 +83,35 @@ describe('scripts/mirror-upstream-main.sh', { timeout: 120_000 }, () => {
     expect(r.stderr).toContain('not a fast-forward')
     expect(mirror()).toBe(before)
   })
+  it('refuses to advance a mirror seeded from a diverged fork main (why init must not use main)', () => {
+    // fork main and upstream main share a base, then each gets its own commits
+    const up = join(dir, 'up')
+    git(up, 'branch', 'fork-main')
+    commit(up, 'upstream only')
+    git(up, 'checkout', '-q', 'fork-main')
+    commit(up, 'fork only')
+    git(up, 'checkout', '-q', 'main')
+    git(up, 'push', '-q', join(dir, 'target.git'), 'fork-main:refs/heads/upstream-main')
+    const before = mirror()
+    const r = run()
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toContain('not a fast-forward')
+    expect(mirror()).toBe(before)
+  })
+  it('fast-forwards a mirror seeded at the upstream tip', () => {
+    const up = join(dir, 'up')
+    git(up, 'push', '-q', join(dir, 'target.git'), 'main:refs/heads/upstream-main')
+    commit(up, 'next')
+    expect(run().status).toBe(0)
+    expect(mirror()).toBe(git(up, 'rev-parse', 'main'))
+  })
+})
+
+describe('scripts/doop-s1-admin.sh initial mirror (C-1.3)', () => {
+  const a = () => read('scripts/doop-s1-admin.sh')
+  it('seeds upstream-main from the upstream tip, never from fork main', () => {
+    expect(a()).toContain('UP=kgoedecke/doop')
+    expect(a()).toContain('"repos/$UP/git/ref/heads/main"')
+    expect(a()).not.toContain('"repos/$R/git/ref/heads/main"')
+  })
 })
