@@ -1,0 +1,175 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>A3 Page versions</title><style>
+:root{--deep:#f0f0f0;--sub:#f7f7f7;--ink:#111;--soft:#5f5e5b;--faint:#6b6a67;--ls:#ececec;--brand:#0177d3;--float:0 0 0 1px rgba(0,0,0,.05),0 6px 20px rgba(0,0,0,.08);--pop:0 0 0 1px rgba(0,0,0,.06),0 10px 30px rgba(0,0,0,.14);--ring:0 0 0 1px #dcdcdc}
+*{box-sizing:border-box;margin:0}
+body{width:1440px;height:1140px;position:relative;overflow:hidden;background:#fdfdfd;font:12.5px/1.4 Inter,'Helvetica Neue',Helvetica,Arial,sans-serif;color:#111;-webkit-font-smoothing:antialiased}
+.shell{position:absolute;left:0;top:0;width:1440px;height:900px;overflow:hidden;background-color:#fdfdfd;background-image:radial-gradient(#dcdcdc 1px,transparent 1.2px);background-size:20px 20px}
+button{font:inherit;color:inherit;border:0;background:none;cursor:pointer;text-align:inherit}
+button:focus-visible{outline:2px solid #0177d3;outline-offset:1px}
+svg.i{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.15;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.pill{display:flex;align-items:center;gap:2px;height:36px;padding:0 5px;border-radius:12px;background:#fff;box-shadow:var(--float)}
+.pill>*{display:flex;align-items:center;gap:6px;height:28px;padding:0 8px;border-radius:7px;color:var(--soft)}
+.sep{width:1px;height:16px;background:var(--ls);padding:0!important}
+.badge{display:inline-flex;align-items:center;height:18px;padding:0 6px;border-radius:4px;background:var(--sub);box-shadow:var(--ring);font:10px 'Geist Mono',ui-monospace,monospace;color:var(--soft)}
+.prim{display:flex;align-items:center;gap:6px;height:36px;padding:0 14px;border-radius:12px;background:#111;color:#fdfdfd;font-weight:500}
+.panel{position:absolute;top:60px;bottom:14px;background:#fff;border-radius:14px;box-shadow:var(--float);display:flex;flex-direction:column;overflow:hidden}
+.ph{display:flex;align-items:center;justify-content:space-between;height:40px;padding:0 10px 0 14px;border-bottom:1px solid var(--ls);font-weight:500}
+.ph span{display:flex;align-items:center;gap:7px}
+.ib{display:grid;place-items:center;width:24px;height:24px;border-radius:6px;color:var(--faint)}
+.sh{display:flex;align-items:center;justify-content:space-between;height:24px;margin-top:6px;padding:0 10px 0 14px;font-size:11px;color:var(--faint)}
+.pg,.ly{display:flex;align-items:center;gap:4px;height:27px;margin:0 8px;padding-right:10px;border-radius:7px;color:var(--soft);width:calc(100% - 16px)}
+.pg svg{margin-left:10px;color:var(--faint)}
+.pg.on,.ly.on{background:var(--deep);color:var(--ink);font-weight:500}
+.pg.on svg{color:var(--ink)}
+.pg .n{margin-left:auto;font:10px 'Geist Mono',monospace;color:var(--faint)}
+.ly{height:28px;gap:5px}
+.ly svg.c{color:var(--faint)}
+.srch{margin:8px;height:30px;border-radius:15px;box-shadow:var(--ring);display:flex;align-items:center;gap:8px;padding:0 12px;color:var(--faint);background:#fff}
+.tabs{display:flex;gap:2px;align-items:center}
+.tab{position:relative;display:inline-flex;align-items:center;height:26px;padding:0 8px;border-radius:8px;color:var(--soft);gap:7px;font-size:12px}
+.tab.on{background:var(--deep);color:var(--ink);font-weight:500}
+.av{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-size:9px;font-weight:500;font-style:normal;box-shadow:0 0 0 2px #fff;flex:none}
+.meta{font-size:11px;color:var(--faint)}
+.tool{position:absolute;left:292px;top:420px;display:flex;flex-direction:column;gap:2px;width:40px;padding:5px;border-radius:12px;background:#fff;box-shadow:var(--float)}
+.tool button{display:grid;place-items:center;width:30px;height:28px;border-radius:7px;color:var(--soft)}
+.tool button.on{background:var(--deep);color:var(--ink)}
+.lbl{position:absolute;font-size:11px;color:var(--faint);white-space:nowrap}
+.fr{position:absolute;background:#fff;border-radius:2px;box-shadow:0 0 0 1px rgba(0,0,0,.08)}
+.fr i{display:block;border-radius:3px;background:var(--ls)}
+.btn{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 11px;border-radius:8px;background:#fff;box-shadow:var(--ring);font-size:12px;font-weight:500;white-space:nowrap}
+.btn.p{background:#111;color:#fdfdfd;box-shadow:none}
+.strip{position:absolute;left:0;top:900px;width:1440px;height:240px;background:#f7f7f7;border-top:1px solid #dcdcdc;padding:10px 16px 14px}
+.strip h3{font-size:11px;font-weight:500;color:var(--soft);margin-bottom:8px}
+.grid{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}
+.sc{height:176px;background:#fff;border-radius:12px;box-shadow:var(--ring);padding:12px;display:flex;flex-direction:column;gap:8px;overflow:hidden}
+.sc h4{font-size:11px;font-weight:500;color:var(--faint)}
+.sc b{font-weight:500;font-size:13.5px}
+.sk{height:10px;border-radius:5px;background:var(--ls)}
+.ban{display:flex;gap:6px;align-items:flex-start;padding:7px 9px;border-radius:8px;font-size:12px}
+.err{background:#fdeceb;color:#8f2214}.off{background:#fff1e8;color:#8a3a10}
+.s{color:var(--soft)}.f{color:var(--faint)}
+.scrim{position:absolute;inset:0;background:rgba(17,17,17,.22);z-index:4}
+.mod{position:absolute;left:330px;top:70px;width:780px;height:760px;background:#fff;border-radius:14px;box-shadow:var(--pop);z-index:6;display:flex;flex-direction:column;overflow:hidden}
+.mh{display:flex;align-items:center;gap:8px;height:52px;padding:0 12px 0 18px;border-bottom:1px solid var(--ls)}
+.mh h2{font-size:15px;font-weight:600;flex:1}
+.mb{display:flex;flex:1;min-height:0}
+.lst{width:320px;border-right:1px solid var(--ls);padding:8px;display:flex;flex-direction:column;gap:2px;overflow:hidden}
+.vr{display:flex;align-items:center;gap:8px;min-height:52px;padding:6px 8px;border-radius:7px;width:100%}
+.vr.on{background:var(--deep)}
+.vr .t{flex:1;min-width:0}
+.vr .nm{font-weight:500;display:flex;align-items:center;gap:6px}
+.pin{color:var(--brand)}
+.det{flex:1;padding:16px 18px;display:flex;flex-direction:column;gap:12px;overflow:hidden}
+.grp{border-radius:10px;box-shadow:var(--ring);overflow:hidden}
+.gh{display:flex;align-items:center;gap:8px;height:30px;padding:0 12px;background:var(--sub);font-weight:500}
+.gr{display:flex;align-items:center;gap:8px;min-height:32px;padding:4px 12px;border-top:1px solid var(--ls)}
+.chg{display:inline-grid;place-items:center;width:18px;height:18px;border-radius:4px;font:10px 'Geist Mono',monospace;font-weight:500}
+.ad{background:#e8f5ee;color:#17673f}.rm{background:#fdeceb;color:#8f2214}.ch{background:#e8f2fb;color:#0159a0}
+.mf{display:flex;align-items:center;gap:8px;height:56px;padding:0 18px;border-top:1px solid var(--ls);justify-content:flex-end}
+</style></head><body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+<symbol id="plus" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></symbol>
+<symbol id="minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+<symbol id="x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+<symbol id="cd" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+<symbol id="cr" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+<symbol id="layers" viewBox="0 0 24 24"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/></symbol>
+<symbol id="file" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></symbol>
+<symbol id="frame" viewBox="0 0 24 24"><path d="M22 6H2M22 18H2M6 2v20M18 2v20"/></symbol>
+<symbol id="box" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/></symbol>
+<symbol id="circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/></symbol>
+<symbol id="msg" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+<symbol id="act" viewBox="0 0 24 24"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></symbol>
+<symbol id="bot" viewBox="0 0 24 24"><path d="M12 8V4H8"/><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M2 14h2M20 14h2M15 13v2M9 13v2"/></symbol>
+<symbol id="book" viewBox="0 0 24 24"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></symbol>
+<symbol id="pcl" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18m7-6-3-3 3-3"/></symbol>
+<symbol id="dl" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></symbol>
+<symbol id="ul" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></symbol>
+<symbol id="link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></symbol>
+<symbol id="play" viewBox="0 0 24 24"><path d="M6 3l14 9-14 9z"/></symbol>
+<symbol id="ptr" viewBox="0 0 24 24"><path d="M12.586 12.586 19 19M3.688 3.037a.497.497 0 0 0-.651.651l6.5 15.999a.501.501 0 0 0 .947-.062l1.569-6.083a2 2 0 0 1 1.448-1.479l6.124-1.579a.5.5 0 0 0 .063-.947z"/></symbol>
+<symbol id="type" viewBox="0 0 24 24"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></symbol>
+<symbol id="pen" viewBox="0 0 24 24"><path d="M12 20h9M16.376 3.622a1 1 0 0 1 3.002 3.002L7.368 18.635a2 2 0 0 1-.855.506l-2.872.838a.5.5 0 0 1-.62-.62l.838-2.872a2 2 0 0 1 .506-.854z"/></symbol>
+<symbol id="alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></symbol>
+<symbol id="wifioff" viewBox="0 0 24 24"><path d="M12 20h.01M8.5 16.4a5 5 0 0 1 7 0M2 8.8a15 15 0 0 1 4.2-2.6M5 12.9a10 10 0 0 1 5.2-2.7M22 8.8a15 15 0 0 0-8.9-2.7M19 12.9a10 10 0 0 0-2.6-1.9M2 2l20 20"/></symbol>
+<symbol id="archive" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="5" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8M10 12h4"/></symbol>
+<symbol id="undo" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></symbol>
+<symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+<symbol id="pin" viewBox="0 0 24 24"><path d="M12 17v5M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></symbol>
+<symbol id="clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></symbol>
+<symbol id="check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+</defs></svg>
+
+<div class="shell">
+<div style="position:absolute;top:14px;left:14px;right:14px;display:flex;justify-content:space-between;align-items:flex-start">
+ <div class="pill"><button><svg class="i" aria-hidden="true"><use href="#folder"/></svg>All canvases</button><span class="sep"></span><span style="color:var(--ink);font-weight:500">Checkout redesign</span><span class="badge">k3Hq9Lm2Pa</span><span style="font-size:11px;color:var(--faint);padding-left:0">— Auto-saved</span></div>
+ <div class="pill" style="position:absolute;left:50%;transform:translateX(-50%)"><span><i class="av" style="background:#e7e1f5;color:#4b3a8a;width:24px;height:24px">CV</i><i class="av" style="background:#fff;color:#111;width:24px;height:24px;margin-left:-6px;box-shadow:0 0 0 2px #fff,0 0 0 3px #dcdcdc"><svg class="i" aria-hidden="true"><use href="#bot"/></svg></i></span><span style="font-size:11px;color:var(--faint);padding-left:0">2 here</span></div>
+ <div style="display:flex;gap:10px">
+  <div class="pill"><button><svg class="i" aria-hidden="true"><use href="#dl"/></svg>Import</button><span class="sep"></span><button><svg class="i" aria-hidden="true"><use href="#ul"/></svg>Export</button></div>
+  <div class="pill"><button><svg class="i" aria-hidden="true"><use href="#link"/></svg>Share</button><button aria-label="Prototype"><svg class="i" aria-hidden="true"><use href="#ptr"/></svg></button><button aria-label="Present"><svg class="i" aria-hidden="true"><use href="#play"/></svg></button></div>
+  <button class="prim"><svg class="i" aria-hidden="true"><use href="#plus"/></svg>Connect AI</button>
+ </div>
+</div>
+
+<div class="panel" style="left:14px;width:264px">
+ <div class="ph"><span><svg class="i" aria-hidden="true"><use href="#layers"/></svg>Layers</span><button class="ib" aria-label="Collapse panel"><svg class="i" aria-hidden="true"><use href="#pcl"/></svg></button></div>
+ <div class="sh"><span>Pages</span><button class="ib" style="width:20px;height:20px" aria-label="Add page"><svg class="i" aria-hidden="true"><use href="#plus"/></svg></button></div>
+ <button class="pg"><svg class="i" aria-hidden="true"><use href="#file"/></svg>Home</button>
+ <button class="pg on" aria-current="page"><svg class="i" aria-hidden="true"><use href="#file"/></svg>Checkout<span class="n">v8</span></button>
+ <button class="pg"><svg class="i" aria-hidden="true"><use href="#file"/></svg>Mobile</button>
+ <button class="pg"><svg class="i" aria-hidden="true"><use href="#archive"/></svg>Archive<span class="n">2</span></button>
+ <div class="sh" style="margin-top:10px"><span>Layers</span></div>
+ <button class="ly" style="padding-left:6px"><svg class="i c" aria-hidden="true"><use href="#cr"/></svg><svg class="i" aria-hidden="true"><use href="#frame"/></svg>Cart · phone</button>
+ <button class="ly" style="padding-left:6px"><svg class="i c" aria-hidden="true"><use href="#cr"/></svg><svg class="i" aria-hidden="true"><use href="#frame"/></svg>Cart · desktop</button>
+ <button class="ly" style="padding-left:6px"><svg class="i c" aria-hidden="true"><use href="#cr"/></svg><svg class="i" aria-hidden="true"><use href="#frame"/></svg>Order summary</button>
+ <div style="flex:1"></div>
+ <div class="srch"><svg class="i" aria-hidden="true"><use href="#search"/></svg>Search layers</div>
+</div>
+
+<div class="tool"><button class="on" aria-label="Move"><svg class="i" aria-hidden="true"><use href="#ptr"/></svg></button><button aria-label="Frame"><svg class="i" aria-hidden="true"><use href="#frame"/></svg></button><button aria-label="Rectangle"><svg class="i" aria-hidden="true"><use href="#box"/></svg></button><button aria-label="Ellipse"><svg class="i" aria-hidden="true"><use href="#circle"/></svg></button><button aria-label="Text"><svg class="i" aria-hidden="true"><use href="#type"/></svg></button><button aria-label="Pen"><svg class="i" aria-hidden="true"><use href="#pen"/></svg></button><button aria-label="Comment"><svg class="i" aria-hidden="true"><use href="#msg"/></svg></button></div>
+
+<div class="lbl" style="left:392px;top:172px">Cart · phone</div>
+<div class="fr" style="left:392px;top:192px;width:200px;height:340px"><i style="margin:16px;width:80px;height:10px"></i><i style="margin:0 16px 8px;width:168px;height:34px"></i><i style="margin:0 16px 8px;width:168px;height:34px"></i></div>
+<div class="lbl" style="left:640px;top:172px">Cart · desktop</div>
+<div class="fr" style="left:640px;top:192px;width:360px;height:240px"><i style="margin:16px;width:100px;height:10px"></i><i style="margin:0 16px 8px;width:300px;height:34px"></i></div>
+
+<div class="panel" style="right:14px;width:280px">
+ <div class="ph" style="padding:0 10px;height:42px"><div class="tabs" role="tablist"><button class="tab" role="tab" aria-selected="false" aria-label="Agents"><svg class="i" aria-hidden="true"><use href="#bot"/></svg></button><button class="tab" role="tab" aria-selected="false" aria-label="Comments"><svg class="i" aria-hidden="true"><use href="#msg"/></svg></button><button class="tab on" role="tab" aria-selected="true"><svg class="i" aria-hidden="true"><use href="#act"/></svg>Activity</button><button class="tab" role="tab" aria-selected="false" aria-label="Memory"><svg class="i" aria-hidden="true"><use href="#book"/></svg></button></div><button class="ib" aria-label="Close"><svg class="i" aria-hidden="true"><use href="#x"/></svg></button></div>
+ <div style="padding:10px 14px;display:flex;gap:8px"><i class="av" style="background:#e7e1f5;color:#4b3a8a">CV</i><div><div><b style="font-weight:500">Cheese</b> saved version CHE-5162 v8</div><div class="meta">13 Nov 2026 17:40 ICT</div></div></div>
+</div>
+
+<div class="scrim"></div>
+<div class="mod" role="dialog" aria-label="Page versions · Checkout">
+ <div class="mh"><svg class="i" aria-hidden="true"><use href="#clock"/></svg><h2>Page versions · Checkout</h2><button class="btn"><svg class="i" aria-hidden="true"><use href="#plus"/></svg>Save version</button><button class="ib" aria-label="Close" style="width:32px;height:32px"><svg class="i" aria-hidden="true"><use href="#x"/></svg></button></div>
+ <div class="mb">
+  <div class="lst" role="listbox" aria-label="Versions">
+   <button class="vr" role="option" aria-selected="false"><div class="t"><div class="nm">Current<span class="badge">live</span></div><div class="meta">Not saved as a version</div></div></button>
+   <button class="vr on" role="option" aria-selected="true"><i class="av" style="background:#e7e1f5;color:#4b3a8a">CV</i><div class="t"><div class="nm">CHE-5162 v8<svg class="i pin" aria-label="Pinned"><use href="#pin"/></svg></div><div class="meta">Cheese · 13 Nov 2026 17:40 ICT</div></div></button>
+   <button class="vr" role="option" aria-selected="false"><i class="av" style="background:#fff;color:#111;box-shadow:0 0 0 1px #dcdcdc"><svg class="i" style="width:12px;height:12px" aria-hidden="true"><use href="#bot"/></svg></i><div class="t"><div class="nm">CHE-5162 v7</div><div class="meta">doop agent · 13 Nov 2026 16:05 ICT</div></div></button>
+   <button class="vr" role="option" aria-selected="false"><i class="av" style="background:#e7e1f5;color:#4b3a8a">CV</i><div class="t"><div class="nm">Before archive<svg class="i pin" aria-label="Pinned"><use href="#pin"/></svg></div><div class="meta">Cheese · 13 Nov 2026 09:10 ICT</div></div></button>
+   <button class="vr" role="option" aria-selected="false"><i class="av" style="background:#fff;color:#111;box-shadow:0 0 0 1px #dcdcdc"><svg class="i" style="width:12px;height:12px" aria-hidden="true"><use href="#bot"/></svg></i><div class="t"><div class="nm">CHE-5162 v6</div><div class="meta">x99-claude-sonnet-design · 12 Nov 2026 18:22 ICT</div></div></button>
+   <button class="vr" role="option" aria-selected="false"><i class="av" style="background:#e7e1f5;color:#4b3a8a">CV</i><div class="t"><div class="nm">Baseline lock<svg class="i pin" aria-label="Pinned"><use href="#pin"/></svg></div><div class="meta">Cheese · 10 Nov 2026 11:00 ICT</div></div></button>
+  </div>
+  <div class="det">
+   <div><div style="font-size:15px;font-weight:600">CHE-5162 v8 vs current</div><div class="meta" style="margin-top:2px">Compare shows what changed in frames. Nothing is applied until you restore.</div></div>
+   <div class="grp"><div class="gh"><span class="chg ad">+</span>Added<span class="meta" style="margin-left:auto">2</span></div><div class="gr"><svg class="i" aria-hidden="true"><use href="#frame"/></svg>Order summary</div><div class="gr"><svg class="i" aria-hidden="true"><use href="#frame"/></svg>Cart · promo</div></div>
+   <div class="grp"><div class="gh"><span class="chg rm">−</span>Removed<span class="meta" style="margin-left:auto">1</span></div><div class="gr"><svg class="i" aria-hidden="true"><use href="#frame"/></svg>Cart · v0</div></div>
+   <div class="grp"><div class="gh"><span class="chg ch">~</span>Changed<span class="meta" style="margin-left:auto">3</span></div><div class="gr"><svg class="i" aria-hidden="true"><use href="#frame"/></svg>Cart · phone<span class="meta" style="margin-left:auto">layout, text</span></div><div class="gr"><svg class="i" aria-hidden="true"><use href="#frame"/></svg>Cart · desktop<span class="meta" style="margin-left:auto">size</span></div><div class="gr"><svg class="i" aria-hidden="true"><use href="#frame"/></svg>Header<span class="meta" style="margin-left:auto">colour</span></div></div>
+   <div style="display:flex;align-items:center;gap:6px;color:var(--soft)"><svg class="i" aria-hidden="true"><use href="#pin"/></svg>Pinned versions are kept when old versions are cleared.</div>
+  </div>
+ </div>
+ <div class="mf"><button class="btn"><svg class="i" aria-hidden="true"><use href="#pin"/></svg>Unpin</button><span style="flex:1"></span><button class="btn">Close</button><button class="btn p"><svg class="i" aria-hidden="true"><use href="#undo"/></svg>Restore CHE-5162 v8…</button></div>
+</div>
+</div>
+
+<div class="strip">
+ <h3>A3 · Page versions — opened from the Pages row (Checkout · v8 chip, menu "Page versions…"); modal follows FrameHistoryModal · new on the source-drawn shell @a77d356</h3>
+ <div class="grid">
+  <div class="sc"><h4>Restore confirm</h4><b>Restore Checkout to CHE-5162 v8?</b><span class="s">The current state is saved first as "Before restore · 13 Nov 2026 18:20 ICT". Nothing is lost.</span><div style="display:flex;gap:6px;margin-top:auto"><button class="btn">Cancel</button><button class="btn p">Save current, then restore</button></div></div>
+  <div class="sc"><h4>Loading</h4><div class="sk" style="width:60%"></div><div class="sk"></div><div class="sk" style="width:80%"></div><div class="sk" style="width:40%"></div><span class="f">Reading versions…</span></div>
+  <div class="sc"><h4>Empty</h4><b>No versions yet</b><span class="s">Save one to keep a named snapshot of this page you can compare and restore.</span><button class="btn" style="align-self:flex-start;margin-top:auto"><svg class="i" aria-hidden="true"><use href="#plus"/></svg>Save version</button></div>
+  <div class="sc"><h4>Error</h4><div class="ban err" role="alert"><svg class="i" aria-hidden="true"><use href="#alert"/></svg><span>Could not restore CHE-5162 v8 (409). The page changed while you read it.</span></div><button class="btn" style="align-self:flex-start">Reload versions</button></div>
+  <div class="sc"><h4>Disconnected</h4><div class="ban off" role="status"><svg class="i" aria-hidden="true"><use href="#wifioff"/></svg><span>Offline. Compare works on saved data. Restore is paused.</span></div><span class="f">Reconnecting…</span></div>
+ </div>
+</div>
+</body></html>
