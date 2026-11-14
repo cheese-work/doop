@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -113,5 +113,69 @@ describe('scripts/doop-s1-admin.sh initial mirror (C-1.3)', () => {
     expect(a()).toContain('UP=kgoedecke/doop')
     expect(a()).toContain('"repos/$UP/git/ref/heads/main"')
     expect(a()).not.toContain('"repos/$R/git/ref/heads/main"')
+  })
+})
+
+// Behavioral: run the admin script against a fake `gh` that logs every call.
+describe('scripts/doop-s1-admin.sh upstream-main seeding gate (C-1.3)', () => {
+  let dir: string
+  const MUTATION = /rulesets|environments|default_branch|PATCH|PUT/
+  const fakeGh = `#!/usr/bin/env bash
+echo "$*" >> "$FAKE_LOG"
+case "$*" in *--input*) cat >/dev/null ;; esac
+case "$*" in
+  *"git/ref/heads/upstream-main"*) [ "$FAKE_EXISTS" = 1 ] && { echo sha-mirror; exit 0; } || exit 1 ;;
+  *"kgoedecke/doop/git/ref/heads/main"*) echo sha-up; exit 0 ;;
+  *"git/refs"*) [ "$FAKE_CREATE" = ok ] && exit 0 || exit 1 ;;
+  *"/compare/"*) echo "$FAKE_COMPARE"; exit 0 ;;
+  *"rulesets/1"*) echo '{"name":"n","target":"branch","enforcement":"active","rules":[],"conditions":{"ref_name":{"include":[],"exclude":[]}}}'; exit 0 ;;
+  *"/rulesets"*"--jq"*) echo 1; exit 0 ;;
+esac
+exit 0
+`
+  const sh = (cmd: string, env: Record<string, string>) => {
+    const r = spawnSync('bash', [resolve('scripts/doop-s1-admin.sh'), cmd], {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, FAKE_LOG: join(dir, 'log'), ...env },
+    })
+    const log = existsSync(join(dir, 'log')) ? readFileSync(join(dir, 'log'), 'utf8') : ''
+    return { ...r, log }
+  }
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'admin-'))
+    writeFileSync(join(dir, 'gh'), fakeGh, { mode: 0o755 })
+  })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  it('stops before any settings change when branch creation fails', () => {
+    const r = sh('apply', { FAKE_EXISTS: '0', FAKE_CREATE: 'fail' })
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toContain('upstream-main')
+    expect(r.log).not.toMatch(MUTATION)
+  })
+  it('stops before any settings change when an existing upstream-main diverged', () => {
+    const r = sh('apply', { FAKE_EXISTS: '1', FAKE_COMPARE: 'diverged' })
+    expect(r.status).not.toBe(0)
+    expect(r.log).not.toMatch(MUTATION)
+  })
+  it('stops when an existing upstream-main is ahead of upstream (not an ancestor)', () => {
+    const r = sh('apply', { FAKE_EXISTS: '1', FAKE_COMPARE: 'behind' })
+    expect(r.status).not.toBe(0)
+    expect(r.log).not.toMatch(MUTATION)
+  })
+  it('proceeds when an existing upstream-main is an ancestor of upstream', () => {
+    const r = sh('apply', { FAKE_EXISTS: '1', FAKE_COMPARE: 'ahead' })
+    expect(r.status).toBe(0)
+    expect(r.log).toMatch(/PATCH/)
+  })
+  it('proceeds after a successful create', () => {
+    const r = sh('apply', { FAKE_EXISTS: '0', FAKE_CREATE: 'ok' })
+    expect(r.status).toBe(0)
+    expect(r.log).toMatch(/PATCH/)
+  })
+  it('verify fails when upstream-main is absent', () => {
+    const r = sh('verify', { FAKE_EXISTS: '0' })
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toContain('upstream-main')
   })
 })

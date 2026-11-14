@@ -7,14 +7,27 @@ R=cheese-work/doop
 UP=kgoedecke/doop  # fork parent; the mirror script fast-forwards from here
 rs() { gh api "repos/$R/rulesets" --jq ".[]|select(.name==\"$1\")|.id"; }
 
+die() { echo "ERROR: $*" >&2; exit 1; }
+# 3 (branch): upstream-main must exist at, or behind, the UPSTREAM tip, never cut from fork main. Fork main
+# has diverged from upstream (fork-only commits), so such a branch could never fast-forward (CHE-5543 review P1).
+# Fork and parent share one object network, so the ref can point at the parent commit directly.
+# Any failure aborts apply before rulesets or the default branch change (CHE-5543 review round 2 P1).
+seed_upstream_main() {
+  local sha status
+  sha=$(gh api "repos/$UP/git/ref/heads/main" --jq .object.sha) || die "cannot read $UP main; upstream-main not seeded"
+  [ -n "$sha" ] || die "empty $UP main sha; upstream-main not seeded"
+  if gh api "repos/$R/git/ref/heads/upstream-main" >/dev/null 2>&1; then
+    # existing branch must be an ancestor of the upstream tip (compare upstream-main...tip is ahead or identical)
+    status=$(gh api "repos/$R/compare/upstream-main...$sha" --jq .status) || die "cannot compare upstream-main with $UP main"
+    case "$status" in ahead | identical) ;; *) die "existing upstream-main is not an ancestor of $UP main (compare status: $status); fix or delete it first" ;; esac
+  else
+    gh api "repos/$R/git/refs" -f ref=refs/heads/upstream-main -f sha="$sha" >/dev/null || die "could not create upstream-main from $UP main"
+  fi
+}
+
 apply() {
   gh api "repos/$R/contents/.github/workflows/merge-queue-watch.yml?ref=cheese/main" --jq .path >/dev/null  # C-1.6 precondition
-  # 3 (branch): seed upstream-main at the UPSTREAM tip, not fork main. Fork main has diverged from
-  # upstream (fork-only commits), so a branch cut from it could never fast-forward (CHE-5543 review P1).
-  # Fork and parent share one object network, so the ref can point at the parent commit directly.
-  gh api "repos/$R/git/ref/heads/upstream-main" >/dev/null 2>&1 || \
-    gh api "repos/$R/git/refs" -f ref=refs/heads/upstream-main -f sha="$(gh api "repos/$UP/git/ref/heads/main" --jq .object.sha)" >/dev/null || \
-    echo "WARN: could not seed upstream-main; the first mirror-upstream-main dispatch creates it from upstream main"
+  seed_upstream_main  # exits non-zero before any settings change if the mirror branch is not usable
   # 1: retarget both rulesets to refs/heads/main
   for n in "protect main" "protect default branches"; do
     id=$(rs "$n")
@@ -42,6 +55,7 @@ apply() {
   date -u +"switched at %FT%TZ ($(TZ=Asia/Bangkok date +%T) ICT)"
 }
 verify() {
+  gh api "repos/$R/git/ref/heads/upstream-main" --jq .object.sha >/dev/null || die "upstream-main is missing"
   gh api "repos/$R" --jq '"default_branch=" + .default_branch'
   gh api "repos/$R/rulesets" --jq '.[]|[.name,(.id|tostring)]|@tsv'
   gh api "repos/$R/rulesets" --jq '.[]|.id' | while read -r id; do gh api "repos/$R/rulesets/$id" --jq '[.name,.conditions.ref_name.include[0],([.rules[].type]|join(","))]|@tsv'; done
