@@ -1,8 +1,9 @@
 import { nanoid } from 'nanoid'
-import { canvasPages, copyPageName, pageFrames, samePages } from '../shared/pages.ts'
+import { canvasPages, copyPageName, framePageId, pageFrames, samePages } from '../shared/pages.ts'
 import * as persist from './db/persist.ts'
 import type { LinkAccess } from '../shared/canvasRole.ts'
 import { MAX_GUIDES } from '../shared/guides.ts'
+import { deriveDesignLinks, isUuid, type DesignIssue } from '../shared/pageIssue.ts'
 import type {
   Canvas,
   CanvasGuide,
@@ -188,7 +189,7 @@ class Store {
       createdAt: now,
       updatedAt: now,
       frames,
-      pages: canvasPages(source).map((page) => ({ ...page })),
+      pages: canvasPages(source).map(({ issueId: _issue, issueSource: _source, ...page }) => ({ ...page })),
       ...(source.guides?.length ? { guides: source.guides.map((guide) => ({ ...guide })) } : {}),
       ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
       ...(guidelines?.length ? { guidelines } : {}),
@@ -290,9 +291,13 @@ class Store {
     /* a page-list save renames, reorders, adds or deletes pages — it never
        moves a flow start, which only setFlowStart changes */
     const current = canvasPages(canvas)
-    const merged = pages.map(({ startFrameId: _ignored, ...page }) => {
-      const startFrameId = current.find((p) => p.id === page.id)?.startFrameId
-      return startFrameId ? { ...page, startFrameId } : page
+    const merged = pages.map(({ startFrameId: _ignored, issueId: _issue, issueSource: _source, ...page }) => {
+      const existing = current.find((p) => p.id === page.id)
+      return {
+        ...page,
+        ...(existing?.startFrameId ? { startFrameId: existing.startFrameId } : {}),
+        ...(existing?.issueId ? { issueId: existing.issueId, issueSource: existing.issueSource } : {}),
+      }
     })
     canvas.pages = merged
     /* a deleted page takes its guides with it */
@@ -318,6 +323,51 @@ class Store {
     canvas.updatedAt = Date.now()
     persist.saveCanvas(canvas)
     return canvas.pages
+  }
+
+  /** Bind (issueId) or unbind (null) a page's Multica issue. Only the member
+   *  route and the Design-URL derivation call this — page-list saves, copies
+   *  and MCP tools never reach it. Undefined for an unknown canvas or page or
+   *  a malformed issue id. */
+  setPageIssue(canvasId: string, pageId: string, issueId: string | null, source: 'member' | 'design') {
+    const canvas = this.canvases.get(canvasId)
+    if (!canvas || (issueId !== null && !isUuid(issueId))) return undefined
+    const pages = canvasPages(canvas)
+    if (!pages.some((p) => p.id === pageId)) return undefined
+    canvas.pages = pages.map((page) => {
+      if (page.id !== pageId) return page
+      const { issueId: _previous, issueSource: _source, ...rest } = page
+      return issueId ? { ...rest, issueId: issueId.toLowerCase(), issueSource: source } : rest
+    })
+    canvas.updatedAt = Date.now()
+    persist.saveCanvas(canvas)
+    return canvas.pages
+  }
+
+  /** Reconcile the 'design' links with the issues' Design URLs: link a page an
+   *  issue alone names, and clear a design link the URLs no longer support (stale
+   *  or in conflict). Member links are never touched. */
+  applyDesignLinks(canvasId: string, issues: DesignIssue[]) {
+    const canvas = this.canvases.get(canvasId)
+    if (!canvas) return undefined
+    const pages = canvasPages(canvas)
+    const frameIds = new Map(canvas.frames.map((f) => [f.id, framePageId(canvas, f)]))
+    const { links } = deriveDesignLinks(canvasId, pages, issues, (id) => frameIds.get(id))
+    let changed = false
+    const next = pages.map((page) => {
+      if (page.issueSource === 'member') return page
+      const want = links.get(page.id)
+      if (want === page.issueId) return page
+      changed = true
+      const { issueId: _previous, issueSource: _source, ...rest } = page
+      return want ? { ...rest, issueId: want, issueSource: 'design' as const } : rest
+    })
+    if (changed) {
+      canvas.pages = next
+      canvas.updatedAt = Date.now()
+      persist.saveCanvas(canvas)
+    }
+    return canvas.pages ?? next
   }
 
   /** Add a ruler guide, or move one that exists. Undefined when the canvas

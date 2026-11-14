@@ -186,6 +186,14 @@
   (`BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, provider client IDs/secrets) come from the
   environment (`.env`, documented in `.env.example`); never committed.
 
+- Multica links (`shared/pageIssue.ts`, `server/multicaRuns.ts`): a page's `issueId` is server-owned like
+  `startFrameId` (`setPages` and copies drop client values) and is written only by a member's
+  `PUT /api/canvases/:id/pages/:pageId/issue` or the Design-property derivation (`store.applyDesignLinks`,
+  fail closed on a missing or conflicting link); MCP has no tool for it. An MCP call's `X-Multica-Task-Id` header
+  is stored on the agent task (`tasks.multica_task_id`). `GET /api/canvases/:id/pages/:pageId/runs` lists the
+  bound issue's runs from Multica (`MULTICA_API_URL`, `MULTICA_API_TOKEN`, `MULTICA_WORKSPACE_ID`,
+  `MULTICA_WEB_URL`; 503 when unset), each with a hop-in URL.
+
 ## 6. Build and Dependency Management
 
 - Canvas access: `canvasRole` in `server/access.ts` gives owners, members and workspace members
