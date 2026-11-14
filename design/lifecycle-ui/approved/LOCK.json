@@ -10,49 +10,49 @@
       "frame_id": "Dx0dkXCQdJ",
       "file": "A1-frame-lock.html",
       "updatedAt": "2026-11-13T11:55:52.343Z",
-      "content_sha256": "1b3868f4c9d116fce0977db9aa9289707080e98b853d3a11bf8561818c9f271b"
+      "content_sha256": "f2ddda6e0f60f0274986a25a30c48db58025f6f8527516b140d89ebf0e81dc93"
     },
     {
       "screen": "A2 Archive and trash (desktop 1440)",
       "frame_id": "ihyEfz5eKc",
       "file": "A2-archive-and-trash.html",
       "updatedAt": "2026-11-14T05:04:50.384Z",
-      "content_sha256": "6b299aaf14ff0fd207afac6a87d214cabdefd3c0fed18115d90eab3f8a712d29"
+      "content_sha256": "f93a77cff8ad46a27c71990d6c2893895b3365377dbb86933070d72156769c12"
     },
     {
       "screen": "A3 Page snapshots (desktop 1440)",
       "frame_id": "i42zJDTQ6k",
       "file": "A3-page-snapshots.html",
       "updatedAt": "2026-11-14T05:03:54.440Z",
-      "content_sha256": "1b76c04cb96e1eca70015d3772de28a49db0ce01ab804b22f56ad846c9703c14"
+      "content_sha256": "243b0540d7ed4ea6fa7b655e6be1e66d6d828a519fb7162b40ab923acf245813"
     },
     {
       "screen": "A4 Comment resolution (desktop 1440)",
       "frame_id": "ozJA_LNVyn",
       "file": "A4-comment-resolution.html",
       "updatedAt": "2026-11-14T05:03:49.527Z",
-      "content_sha256": "10f4bf3e254ad9759f32428b6d313753d4fb5f233b983730048d5beb84b6f374"
+      "content_sha256": "890fdc7fa59690860c709e62b653cb332cb0c00fec7aa703bf85d573162fbf2c"
     },
     {
       "screen": "A5 Project ledger (desktop 1440)",
       "frame_id": "oQjlN1W4mM",
       "file": "A5-project-ledger.html",
       "updatedAt": "2026-11-14T05:03:52.024Z",
-      "content_sha256": "4e62e412577393a37587baff13718b2040232961c3ec9d788636de08ecd3fca2"
+      "content_sha256": "b32ae97c7a82dd92c4092952273dd7b39a4f0c3e89caac499eefd9e8379bbe89"
     },
     {
       "screen": "A Phone 390, all five screens",
       "frame_id": "TWLkRxuIds",
       "file": "A-phone-390-all-five.html",
       "updatedAt": "2026-11-13T11:56:04.256Z",
-      "content_sha256": "f7db8a5abffe62ae8456a626708f8a39622bd5ec8727b8fac583c338840d29de"
+      "content_sha256": "ca9a6ca3da9a92844badefd5c09e6a870abcab144b0ce34eef4b29f39ddb4d94"
     }
   ],
-  "export_sha256": "c789cdfc7ba38ebc7d7a7dc39cf47c531f3110617bbafc4176db7037ed9e3b1b",
+  "export_sha256": "a5a03c7f327accda82cc3e9d8fb30e3eb72885e3f7a8037e523b8bf610d39b11",
   "export_sha256_method": "sha256 of the output of `sha256sum` over the six HTML files in the order listed in screens",
-  "exported_at": "2026-11-14 12:38 ICT",
+  "exported_at": "2026-11-14 13:02 ICT",
   "exported_by": "x99-claude-sonnet-design / Claude Sonnet 5.5 / X99",
   "issue": "CHE-5478",
-  "selection_id": "01a1d87e-4390-706b-8a5f-549472ac19a9",
+  "selection_id": "01a1d873-0ad1-76c4-b2d6-774d3ad0c2fa",
   "ux_verdict_id": "01a1d885-ea2c-790f-9549-45da97807561"
 }
