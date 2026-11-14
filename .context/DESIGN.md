@@ -196,3 +196,12 @@ density="rail"` (the group caption with its chevron) and `DashNavItem density="r
 
 - `--breakpoint-xs`: `30rem`, `--breakpoint-md`: `56.25rem` - custom additions on top of
   Tailwind's defaults.
+
+## Approved revisions
+
+One row per locked design (`design/<topic>/approved/`, written by the design loop's lock PR). The row's doop version
+is the frame `updatedAt` values in that folder's `LOCK.json`. The merge SHA lives on the issue, not here.
+
+| Topic          | Direction          | doop file (page)          | Locked frames (`updatedAt` in `LOCK.json`)                                    | Lock PR |
+| -------------- | ------------------ | ------------------------- | ----------------------------------------------------------------------------- | ------- |
+| `lifecycle-ui` | A "Quiet in place" | `TgQKWNP_e3` (`che-5478`) | `Dx0dkXCQdJ` `ihyEfz5eKc` `i42zJDTQ6k` `ozJA_LNVyn` `oQjlN1W4mM` `TWLkRxuIds` | PENDING |

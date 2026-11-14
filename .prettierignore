@@ -10,6 +10,9 @@ desktop/CHANGELOG.md
 # Real frames captured verbatim as Blitz bridge test fixtures
 ios/BlitzKit/rust/tests/*.html
 
+# Approved design locks: verbatim doop frame exports (design/<topic>/approved/)
+design/*/approved/*.html
+
 # iOS build outputs (nested .gitignore entries that Prettier does not read)
 ios/DerivedData*/
 ios/.build/

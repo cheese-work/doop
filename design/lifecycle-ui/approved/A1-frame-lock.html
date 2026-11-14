@@ -1,0 +1,186 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>A1 Frame lock</title><style>
+:root{--deep:#f0f0f0;--sub:#f7f7f7;--ink:#111;--soft:#5f5e5b;--faint:#6b6a67;--ls:#ececec;--brand:#0177d3;--float:0 0 0 1px rgba(0,0,0,.05),0 6px 20px rgba(0,0,0,.08);--pop:0 0 0 1px rgba(0,0,0,.06),0 10px 30px rgba(0,0,0,.14);--ring:0 0 0 1px #dcdcdc}
+*{box-sizing:border-box;margin:0}
+body{width:1440px;height:1140px;position:relative;overflow:hidden;background:#fdfdfd;font:12.5px/1.4 Inter,'Helvetica Neue',Helvetica,Arial,sans-serif;color:#111;-webkit-font-smoothing:antialiased}
+.shell{position:absolute;left:0;top:0;width:1440px;height:900px;overflow:hidden;background-color:#fdfdfd;background-image:radial-gradient(#dcdcdc 1px,transparent 1.2px);background-size:20px 20px}
+button{font:inherit;color:inherit;border:0;background:none;cursor:pointer;text-align:inherit}
+button:focus-visible{outline:2px solid #0177d3;outline-offset:1px}
+svg.i{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.15;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.pill{display:flex;align-items:center;gap:2px;height:36px;padding:0 5px;border-radius:12px;background:#fff;box-shadow:var(--float)}
+.pill>*{display:flex;align-items:center;gap:6px;height:28px;padding:0 8px;border-radius:7px;color:var(--soft)}
+.sep{width:1px;height:16px;background:var(--ls);padding:0!important}
+.badge{display:inline-flex;align-items:center;height:18px;padding:0 6px;border-radius:4px;background:var(--sub);box-shadow:var(--ring);font:10px 'Geist Mono',ui-monospace,monospace;color:var(--soft)}
+.prim{display:flex;align-items:center;gap:6px;height:36px;padding:0 14px;border-radius:12px;background:#111;color:#fdfdfd;font-weight:500}
+.panel{position:absolute;top:60px;bottom:14px;background:#fff;border-radius:14px;box-shadow:var(--float);display:flex;flex-direction:column;overflow:hidden}
+.ph{display:flex;align-items:center;justify-content:space-between;height:40px;padding:0 10px 0 14px;border-bottom:1px solid var(--ls);font-weight:500}
+.ph span{display:flex;align-items:center;gap:7px}
+.ib{display:grid;place-items:center;width:24px;height:24px;border-radius:6px;color:var(--faint)}
+.sh{display:flex;align-items:center;justify-content:space-between;height:24px;margin-top:6px;padding:0 10px 0 14px;font-size:11px;color:var(--faint)}
+.pg,.ly{display:flex;align-items:center;gap:4px;height:27px;margin:0 8px;padding-right:10px;border-radius:7px;color:var(--soft);width:calc(100% - 16px)}
+.pg svg{margin-left:10px;color:var(--faint)}
+.pg.on,.ly.on{background:var(--deep);color:var(--ink);font-weight:500}
+.pg.on svg{color:var(--ink)}
+.ly{height:28px;gap:5px}
+.ly .lk{margin-left:auto;color:var(--ink)}
+.ly svg.c{color:var(--faint)}
+.srch{margin:8px;height:30px;border-radius:15px;box-shadow:var(--ring);display:flex;align-items:center;gap:8px;padding:0 12px;color:var(--faint);background:#fff}
+.tabs{display:flex;gap:2px;align-items:center}
+.tab{position:relative;display:inline-flex;align-items:center;height:26px;padding:0 8px;border-radius:8px;color:var(--soft);gap:7px;font-size:12px}
+.tab.on{background:var(--deep);color:var(--ink);font-weight:500}
+.cnt{position:absolute;top:-3px;right:-3px;height:14px;min-width:14px;border-radius:8px;background:var(--brand);color:#fff;font:8px/14px 'Geist Mono',monospace;text-align:center;padding:0 3px}
+.av{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-size:9px;font-weight:500;font-style:normal;box-shadow:0 0 0 2px #fff;flex:none}
+.meta{font-size:11px;color:var(--faint)}
+.tool{position:absolute;left:292px;top:290px;display:flex;flex-direction:column;gap:2px;width:40px;padding:5px;border-radius:12px;background:#fff;box-shadow:var(--float)}
+.tool button{display:grid;place-items:center;width:30px;height:28px;border-radius:7px;color:var(--soft)}
+.tool button.on{background:var(--deep);color:var(--ink)}
+.lbl{position:absolute;font-size:11px;color:var(--faint);white-space:nowrap;display:flex;align-items:center;gap:4px}
+.fr{position:absolute;background:#fff;border-radius:2px;box-shadow:0 0 0 1px rgba(0,0,0,.08)}
+.fr i{display:block;border-radius:3px;background:var(--ls)}
+.menu{position:absolute;width:224px;padding:5px;border-radius:12px;background:#fff;box-shadow:var(--pop)}
+.mi{display:flex;align-items:center;gap:8px;height:28px;padding:0 8px;border-radius:7px;width:100%}
+.mi.hi{background:var(--deep)}
+.mi.dis{color:#b8b8b8}
+.mi kbd{margin-left:auto;font:10px 'Geist Mono',monospace;color:var(--faint)}
+.mi .tg{margin-left:auto;font:10px 'Geist Mono',monospace;color:var(--faint)}
+.msep{height:1px;background:var(--ls);margin:4px 2px}
+.toast{position:absolute;display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border-radius:12px;background:#fff;box-shadow:var(--pop)}
+.btn{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 11px;border-radius:8px;background:#fff;box-shadow:var(--ring);font-size:12px;font-weight:500;white-space:nowrap}
+.btn.p{background:#111;color:#fdfdfd;box-shadow:none}
+.strip{position:absolute;left:0;top:900px;width:1440px;height:240px;background:#f7f7f7;border-top:1px solid #dcdcdc;padding:10px 16px 14px}
+.strip h3{font-size:11px;font-weight:500;color:var(--soft);margin-bottom:8px}
+.grid{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}
+.sc{height:176px;background:#fff;border-radius:12px;box-shadow:var(--ring);padding:12px;display:flex;flex-direction:column;gap:8px;overflow:hidden}
+.sc h4{font-size:11px;font-weight:500;color:var(--faint)}
+.sc b{font-weight:500;font-size:13.5px}
+.sk{height:10px;border-radius:5px;background:var(--ls)}
+.ban{display:flex;gap:6px;align-items:flex-start;padding:7px 9px;border-radius:8px;font-size:12px}
+.err{background:#fdeceb;color:#8f2214}.off{background:#fff1e8;color:#8a3a10}
+.s{color:var(--soft)}.f{color:var(--faint)}
+</style></head><body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+<symbol id="plus" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></symbol>
+<symbol id="minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+<symbol id="x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+<symbol id="cd" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+<symbol id="cr" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+<symbol id="lock" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></symbol>
+<symbol id="unlock" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></symbol>
+<symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+<symbol id="layers" viewBox="0 0 24 24"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/></symbol>
+<symbol id="file" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></symbol>
+<symbol id="frame" viewBox="0 0 24 24"><path d="M22 6H2M22 18H2M6 2v20M18 2v20"/></symbol>
+<symbol id="box" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/></symbol>
+<symbol id="circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/></symbol>
+<symbol id="msg" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+<symbol id="act" viewBox="0 0 24 24"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></symbol>
+<symbol id="bot" viewBox="0 0 24 24"><path d="M12 8V4H8"/><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M2 14h2M20 14h2M15 13v2M9 13v2"/></symbol>
+<symbol id="book" viewBox="0 0 24 24"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></symbol>
+<symbol id="pcl" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18m7-6-3-3 3-3"/></symbol>
+<symbol id="dl" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></symbol>
+<symbol id="ul" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></symbol>
+<symbol id="link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></symbol>
+<symbol id="play" viewBox="0 0 24 24"><path d="M6 3l14 9-14 9z"/></symbol>
+<symbol id="ptr" viewBox="0 0 24 24"><path d="M12.586 12.586 19 19M3.688 3.037a.497.497 0 0 0-.651.651l6.5 15.999a.501.501 0 0 0 .947-.062l1.569-6.083a2 2 0 0 1 1.448-1.479l6.124-1.579a.5.5 0 0 0 .063-.947z"/></symbol>
+<symbol id="type" viewBox="0 0 24 24"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></symbol>
+<symbol id="pen" viewBox="0 0 24 24"><path d="M12 20h9M16.376 3.622a1 1 0 0 1 3.002 3.002L7.368 18.635a2 2 0 0 1-.855.506l-2.872.838a.5.5 0 0 1-.62-.62l.838-2.872a2 2 0 0 1 .506-.854z"/></symbol>
+<symbol id="fold" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5M7 9l5-5 5 5"/></symbol>
+<symbol id="alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></symbol>
+<symbol id="wifioff" viewBox="0 0 24 24"><path d="M12 20h.01M8.5 16.4a5 5 0 0 1 7 0M2 8.8a15 15 0 0 1 4.2-2.6M5 12.9a10 10 0 0 1 5.2-2.7M22 8.8a15 15 0 0 0-8.9-2.7M19 12.9a10 10 0 0 0-2.6-1.9M2 2l20 20"/></symbol>
+</defs></svg>
+
+<div class="shell">
+<!-- top bar -->
+<div style="position:absolute;top:14px;left:14px;right:14px;display:flex;justify-content:space-between;align-items:flex-start">
+ <div class="pill"><button><svg class="i" aria-hidden="true"><use href="#folder"/></svg>All canvases</button><span class="sep"></span><span style="color:var(--ink);font-weight:500">Checkout redesign</span><span class="badge">k3Hq9Lm2Pa</span><span style="font-size:11px;color:var(--faint);padding-left:0">— Auto-saved</span></div>
+ <div class="pill" style="position:absolute;left:50%;transform:translateX(-50%)"><span><i class="av" style="background:#e7e1f5;color:#4b3a8a;width:24px;height:24px">CV</i><i class="av" style="background:#fff;color:#111;width:24px;height:24px;margin-left:-6px;box-shadow:0 0 0 2px #fff,0 0 0 3px #dcdcdc"><svg class="i" aria-hidden="true"><use href="#bot"/></svg></i></span><span style="font-size:11px;color:var(--faint);padding-left:0">2 here</span></div>
+ <div style="display:flex;gap:10px">
+  <div class="pill"><button><svg class="i" aria-hidden="true"><use href="#dl"/></svg>Import</button><span class="sep"></span><button><svg class="i" aria-hidden="true"><use href="#ul"/></svg>Export</button></div>
+  <div class="pill"><button><svg class="i" aria-hidden="true"><use href="#link"/></svg>Share</button><button aria-label="Prototype"><svg class="i" aria-hidden="true"><use href="#ptr"/></svg></button><button aria-label="Present"><svg class="i" aria-hidden="true"><use href="#play"/></svg></button></div>
+  <button class="prim"><svg class="i" aria-hidden="true"><use href="#plus"/></svg>Connect AI</button>
+ </div>
+</div>
+
+<!-- layers panel -->
+<div class="panel" style="left:14px;width:264px">
+ <div class="ph"><span><svg class="i" aria-hidden="true"><use href="#layers"/></svg>Layers</span><button class="ib" aria-label="Collapse panel"><svg class="i" aria-hidden="true"><use href="#pcl"/></svg></button></div>
+ <div class="sh"><span>Pages</span><button class="ib" style="width:20px;height:20px" aria-label="Add page"><svg class="i" aria-hidden="true"><use href="#plus"/></svg></button></div>
+ <button class="pg"><svg class="i" aria-hidden="true"><use href="#file"/></svg>Home</button>
+ <button class="pg on" aria-current="page"><svg class="i" aria-hidden="true"><use href="#file"/></svg>Checkout</button>
+ <button class="pg"><svg class="i" aria-hidden="true"><use href="#file"/></svg>Mobile</button>
+ <div class="sh" style="margin-top:10px"><span>Layers</span><span style="display:flex;gap:2px"><button class="ib" style="width:20px;height:20px" aria-label="Collapse all"><svg class="i" aria-hidden="true"><use href="#fold"/></svg></button><button class="ib" style="width:20px;height:20px" aria-label="New frame"><svg class="i" aria-hidden="true"><use href="#plus"/></svg></button></span></div>
+ <div role="tree" style="flex:1;overflow:hidden">
+  <button class="ly" role="treeitem" style="padding-left:6px"><svg class="i c" aria-hidden="true"><use href="#cr"/></svg><svg class="i" aria-hidden="true"><use href="#frame"/></svg>Cart · desktop</button>
+  <button class="ly on" role="treeitem" aria-selected="true" style="padding-left:6px"><svg class="i c" aria-hidden="true"><use href="#cr"/></svg><svg class="i" aria-hidden="true"><use href="#frame"/></svg>Cart · phone<svg class="i lk" role="img" aria-label="Locked by Cheese"><use href="#lock"/></svg></button>
+  <button class="ly" role="treeitem" style="padding-left:6px"><svg class="i c" aria-hidden="true"><use href="#cr"/></svg><svg class="i" aria-hidden="true"><use href="#frame"/></svg>Empty cart</button>
+ </div>
+ <div class="srch"><svg class="i" aria-hidden="true"><use href="#search"/></svg>Search layers</div>
+</div>
+
+<!-- lock tooltip from the Layers row (new) -->
+<div class="menu" style="left:286px;top:262px;width:236px;padding:10px 12px;z-index:5">
+ <div style="display:flex;align-items:center;gap:6px;font-weight:500"><svg class="i" aria-hidden="true"><use href="#lock"/></svg>Locked</div>
+ <div style="display:grid;grid-template-columns:52px 1fr;gap:3px 8px;margin-top:6px;font-size:12px"><span class="f">By</span><span>Cheese</span><span class="f">When</span><span>13 Nov 2026 16:20 ICT</span><span class="f">Reason</span><span>Direction B not chosen</span></div>
+</div>
+
+<!-- tool rail -->
+<div class="tool" role="toolbar" aria-orientation="vertical" style="left:292px;top:420px">
+ <button class="on" aria-label="Move" aria-pressed="true"><svg class="i" aria-hidden="true"><use href="#ptr"/></svg></button>
+ <button aria-label="Frame"><svg class="i" aria-hidden="true"><use href="#frame"/></svg></button>
+ <button aria-label="Rectangle"><svg class="i" aria-hidden="true"><use href="#box"/></svg></button>
+ <button aria-label="Ellipse"><svg class="i" aria-hidden="true"><use href="#circle"/></svg></button>
+ <button aria-label="Text"><svg class="i" aria-hidden="true"><use href="#type"/></svg></button>
+ <button aria-label="Pen"><svg class="i" aria-hidden="true"><use href="#pen"/></svg></button>
+ <button aria-label="Comment"><svg class="i" aria-hidden="true"><use href="#msg"/></svg></button>
+</div>
+
+<!-- stage -->
+<div class="lbl" style="left:392px;top:152px">Cart · desktop</div>
+<div class="fr" style="left:392px;top:172px;width:440px;height:300px"><i style="margin:18px;width:120px;height:12px;background:#d9d9d9"></i><i style="margin:0 18px 10px;width:260px;height:44px"></i><i style="margin:0 18px 10px;width:260px;height:44px"></i><i style="position:absolute;right:18px;bottom:18px;width:96px;height:30px;background:#111;border-radius:8px"></i></div>
+<div class="lbl" style="left:872px;top:152px;color:var(--brand)"><svg class="i" style="width:11px;height:11px" aria-hidden="true"><use href="#lock"/></svg>Cart · phone<span style="margin-left:4px;height:18px;padding:0 6px;border-radius:4px;background:var(--sub);box-shadow:var(--ring);color:var(--soft);display:inline-flex;align-items:center">Locked · Cheese · 16:20 ICT</span></div>
+<div class="fr" style="left:872px;top:172px;width:170px;height:300px;box-shadow:0 0 0 1px var(--brand)"><i style="margin:14px;width:70px;height:10px;background:#d9d9d9"></i><i style="margin:0 14px 8px;width:140px;height:36px"></i><i style="margin:0 14px 8px;width:140px;height:36px"></i><i style="position:absolute;left:14px;right:14px;bottom:14px;height:28px;background:#111;border-radius:8px"></i></div>
+<div class="lbl" style="left:392px;top:520px">Empty cart</div>
+<div class="fr" style="left:392px;top:540px;width:300px;height:160px"><i style="margin:60px auto 0;width:120px;height:12px"></i></div>
+
+<!-- context menu on the locked frame (existing Lock/Unlock item, plus the new text) -->
+<div class="menu" style="left:908px;top:320px;z-index:5" role="menu" aria-label="Frame">
+ <button class="mi" role="menuitem">Rename<kbd>Enter</kbd></button>
+ <button class="mi" role="menuitem">Duplicate<kbd>Cmd+D</kbd></button>
+ <div class="msep"></div>
+ <button class="mi hi" role="menuitem"><svg class="i" aria-hidden="true"><use href="#unlock"/></svg>Unlock<kbd>Cmd+Shift+L</kbd></button>
+ <button class="mi" role="menuitem"><svg class="i" aria-hidden="true"><use href="#cd"/></svg>Move to Archive</button>
+ <div class="msep"></div>
+ <button class="mi dis" role="menuitem" aria-disabled="true">Delete frame<span class="tg">Unlock first</span></button>
+</div>
+
+<!-- refusal toast -->
+<div class="toast" role="alert" style="left:340px;bottom:58px;width:560px">
+ <svg class="i" style="color:#8a3a10;margin-top:2px" aria-hidden="true"><use href="#alert"/></svg>
+ <div style="flex:1"><b style="font-weight:500">Edit refused: Cart · phone is locked</b><div class="s" style="margin-top:2px">Cheese locked it on 13 Nov 2026 16:20 ICT (reason: Direction B not chosen). Unlock it to change its HTML or size. Rename and move still work.</div></div>
+ <button class="btn"><svg class="i" aria-hidden="true"><use href="#unlock"/></svg>Unlock…</button>
+</div>
+
+<!-- zoom -->
+<div class="pill" style="position:absolute;right:304px;bottom:14px;height:34px"><button aria-label="Zoom out" style="width:28px;padding:0;justify-content:center"><svg class="i" aria-hidden="true"><use href="#minus"/></svg></button><span style="font:11px 'Geist Mono',monospace;width:44px;justify-content:center;padding:0">100%</span><button aria-label="Zoom in" style="width:28px;padding:0;justify-content:center"><svg class="i" aria-hidden="true"><use href="#plus"/></svg></button></div>
+
+<!-- activity panel: Activity tab -->
+<div class="panel" style="right:14px;width:280px">
+ <div class="ph" style="padding:0 10px;height:42px"><div class="tabs" role="tablist"><button class="tab" role="tab" aria-selected="false" aria-label="Agents"><svg class="i" aria-hidden="true"><use href="#bot"/></svg></button><button class="tab" role="tab" aria-selected="false" aria-label="Comments"><svg class="i" aria-hidden="true"><use href="#msg"/></svg><span class="cnt">2</span></button><button class="tab on" role="tab" aria-selected="true"><svg class="i" aria-hidden="true"><use href="#act"/></svg>Activity</button><button class="tab" role="tab" aria-selected="false" aria-label="Memory"><svg class="i" aria-hidden="true"><use href="#book"/></svg></button></div><button class="ib" aria-label="Close"><svg class="i" aria-hidden="true"><use href="#x"/></svg></button></div>
+ <div style="padding:10px 14px;border-bottom:1px solid var(--ls);display:flex;gap:8px"><i class="av" style="background:#fff;color:#111;box-shadow:0 0 0 1px #dcdcdc"><svg class="i" style="width:12px;height:12px" aria-hidden="true"><use href="#bot"/></svg></i><div><div><b style="font-weight:500">doop agent</b> edit refused</div><div class="s">Cart · phone is locked.</div><div class="meta">16:31 ICT</div></div></div>
+ <div style="padding:10px 14px;border-bottom:1px solid var(--ls);display:flex;gap:8px"><i class="av" style="background:#e7e1f5;color:#4b3a8a">CV</i><div><div><b style="font-weight:500">Cheese</b> locked Cart · phone</div><div class="s">Direction B not chosen.</div><div class="meta">16:20 ICT</div></div></div>
+ <div style="padding:10px 14px;display:flex;gap:8px"><i class="av" style="background:#e7e1f5;color:#4b3a8a">CV</i><div><div><b style="font-weight:500">Cheese</b> renamed a frame</div><div class="s">Cart · phone</div><div class="meta">15:48 ICT</div></div></div>
+</div>
+</div>
+
+<!-- states strip -->
+<div class="strip">
+ <h3>A1 · Frame lock — unlock confirm and states · drawn on the source-drawn shell @a77d356 (Layers lock toggle and Lock/Unlock Cmd+Shift+L exist today; owner/reason marker, refusal text and confirm are new)</h3>
+ <div class="grid">
+  <div class="sc"><h4>Unlock confirm</h4><b>Unlock Cart · phone?</b><span class="s">Anyone, agents included, can then edit it. Locked by Cheese on 13 Nov 2026 16:20 ICT.</span><div style="display:flex;gap:6px;margin-top:auto"><button class="btn">Keep locked</button><button class="btn p">Unlock</button></div></div>
+  <div class="sc"><h4>Loading</h4><div class="sk" style="width:40%"></div><div class="sk"></div><div class="sk" style="width:70%"></div><span class="f">Reading lock state…</span></div>
+  <div class="sc"><h4>Empty — nothing locked</h4><b>No locked frames</b><span class="s">Lock a frame to keep it from edits. Right-click a frame, or press Cmd+Shift+L.</span><button class="btn" style="align-self:flex-start;margin-top:auto"><svg class="i" aria-hidden="true"><use href="#lock"/></svg>Lock frame</button></div>
+  <div class="sc"><h4>Error</h4><div class="ban err" role="alert"><svg class="i" aria-hidden="true"><use href="#alert"/></svg><span>Could not unlock Cart · phone (403). It is still locked.</span></div><button class="btn" style="align-self:flex-start">Try again</button></div>
+  <div class="sc"><h4>Disconnected</h4><div class="ban off" role="status"><svg class="i" aria-hidden="true"><use href="#wifioff"/></svg><span>Offline. Lock and unlock are paused. Locked frames stay locked.</span></div><span class="f">Reconnecting…</span></div>
+ </div>
+</div>
+</body></html>

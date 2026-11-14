@@ -1,0 +1,201 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>A phone 390</title><style>
+*{box-sizing:border-box;margin:0}
+body{width:2100px;height:1140px;padding:15px;background:#f0f0f0;display:grid;grid-template-columns:repeat(5,390px);gap:0 30px;align-content:start;font:12.5px/1.4 Inter,'Helvetica Neue',Helvetica,Arial,sans-serif;color:#111;-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;border:0;background:none;text-align:inherit;cursor:pointer}
+button:focus-visible{outline:2px solid #0177d3;outline-offset:1px}
+svg.i{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.15;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.cap{font-size:12px;font-weight:500;height:22px;color:#111}
+.phone{position:relative;width:390px;height:844px;overflow:hidden;border-radius:14px;box-shadow:0 0 0 1px #dcdcdc;background-color:#fdfdfd;background-image:radial-gradient(#dcdcdc 1px,transparent 1.2px);background-size:20px 20px}
+.pill{display:flex;align-items:center;gap:2px;height:36px;padding:0 5px;border-radius:12px;background:#fff;box-shadow:0 0 0 1px rgba(0,0,0,.05),0 6px 20px rgba(0,0,0,.08);color:#5f5e5b}
+.pill>*{display:flex;align-items:center;gap:6px;height:28px;padding:0 8px;border-radius:7px}
+.tb{position:absolute;top:10px;left:10px;right:10px;display:flex;justify-content:space-between;align-items:center}
+.isl{position:absolute;left:10px;top:60px}
+.scrim{position:absolute;inset:0;background:rgba(17,17,17,.18)}
+.sheet{position:absolute;left:0;right:0;bottom:0;background:#fff;border-radius:16px 16px 0 0;box-shadow:0 -1px 0 rgba(0,0,0,.06),0 -10px 30px rgba(0,0,0,.12);display:flex;flex-direction:column;overflow:hidden}
+.hd{width:36px;height:4px;border-radius:2px;background:#dcdcdc;margin:8px auto 0;flex:none}
+.ph{display:flex;align-items:center;justify-content:space-between;height:44px;padding:0 0 0 14px;border-bottom:1px solid #ececec;font-weight:500;flex:none}
+.ph>span{display:flex;align-items:center;gap:7px}
+.x{display:grid;place-items:center;width:44px;height:44px;color:#6b6a67}
+.sh{display:flex;align-items:center;justify-content:space-between;height:24px;margin-top:6px;padding:0 14px;font-size:11px;color:#6b6a67;flex:none}
+.row{display:flex;align-items:center;gap:6px;height:44px;margin:0 8px;padding:0 10px;border-radius:7px;color:#5f5e5b;width:calc(100% - 16px);flex:none}
+.row.on{background:#f0f0f0;color:#111;font-weight:500}
+.row.t2{height:56px}
+.row .tx{display:flex;flex-direction:column;min-width:0;flex:1;line-height:1.35}
+.row .tx b{font-weight:500;color:#111}
+.f{color:#6b6a67}.s{color:#5f5e5b}
+.m{font-size:11px;color:#6b6a67}
+.chip{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 7px;border-radius:10px;background:#f7f7f7;box-shadow:0 0 0 1px #dcdcdc;font-size:11px;color:#5f5e5b;white-space:nowrap}
+.chip.b{background:#e8f1fb;color:#0a5aa6;box-shadow:none}
+.chip.g{background:#e6f4ea;color:#1b6b34;box-shadow:none}
+.chip.y{background:#fff4d6;color:#7a5200;box-shadow:none}
+.chip.r{background:#fdeceb;color:#8f2214;box-shadow:none}
+.chip .i{width:11px;height:11px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:44px;padding:0 14px;border-radius:10px;background:#fff;box-shadow:0 0 0 1px #dcdcdc;font-size:13px;font-weight:500;white-space:nowrap}
+.btn.p{background:#111;color:#fdfdfd;box-shadow:none}
+.btn.d{color:#b32a18;box-shadow:0 0 0 1px #e6b3ab}
+.btn.sel{background:#f0f0f0;box-shadow:0 0 0 1px #111;color:#111}
+.btn.q{width:44px;padding:0}
+.conf{margin-top:auto;border-top:1px solid #dcdcdc;padding:12px 14px 16px;display:flex;flex-direction:column;gap:8px;background:#fff;flex:none}
+.conf b{font-weight:500;font-size:13px}
+.two{display:flex;gap:8px}.two>*{flex:1}
+.toast{position:absolute;left:10px;right:10px;top:106px;z-index:6;padding:10px 14px;border-radius:12px;background:#111;color:#fdfdfd;box-shadow:0 0 0 1px rgba(0,0,0,.06),0 10px 30px rgba(0,0,0,.14);display:flex;gap:8px;align-items:flex-start;font-size:12.5px}
+.fr{position:absolute;background:#fff;border-radius:2px;box-shadow:0 0 0 1px rgba(0,0,0,.08)}
+.fr i{display:block;border-radius:3px;background:#ececec}
+.lbl{position:absolute;font-size:11px;color:#6b6a67;display:flex;align-items:center;gap:4px;white-space:nowrap}
+.pin{position:absolute;width:22px;height:22px;border-radius:50% 50% 50% 0;display:grid;place-items:center;font-size:10px;font-weight:500;color:#fff;background:#0177d3;box-shadow:0 0 0 2px #fff}
+.pin.r{background:#6b6a67}
+.sts{display:flex;flex-direction:column;gap:6px;margin-top:10px}
+.sts>div{height:44px;background:#fff;border-radius:10px;box-shadow:0 0 0 1px #dcdcdc;padding:0 10px;display:flex;gap:8px;align-items:center;font-size:12px}
+.sts b{width:78px;flex:none;font-size:11px;font-weight:500;color:#5f5e5b}
+.sk{height:8px;border-radius:4px;background:#ececec;flex:1}
+.er{color:#8f2214}.of{color:#8a3a10}
+.box{margin:8px 14px 0;background:#f7f7f7;border-radius:8px;padding:9px 11px;display:flex;flex-direction:column;gap:4px;flex:none}
+.th{margin:8px 14px 0;border-radius:10px;box-shadow:0 0 0 1px #dcdcdc;padding:10px 11px;display:flex;flex-direction:column;gap:8px;flex:none}
+.rep{background:#f7f7f7;border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:4px}
+</style></head><body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="plus" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></symbol>
+<symbol id="x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+<symbol id="cr" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+<symbol id="cd" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+<symbol id="lock" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></symbol>
+<symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+<symbol id="layers" viewBox="0 0 24 24"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/></symbol>
+<symbol id="file" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></symbol>
+<symbol id="frame" viewBox="0 0 24 24"><path d="M22 6H2M22 18H2M6 2v20M18 2v20"/></symbol>
+<symbol id="folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+<symbol id="dots" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+<symbol id="msg" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+<symbol id="archive" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="5" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8M10 12h4"/></symbol>
+<symbol id="trash" viewBox="0 0 24 24"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></symbol>
+<symbol id="rs" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></symbol>
+<symbol id="check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+<symbol id="ext" viewBox="0 0 24 24"><path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+<symbol id="ban" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></symbol>
+<symbol id="alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></symbol>
+<symbol id="wifioff" viewBox="0 0 24 24"><path d="M12 20h.01M8.5 16.4a5 5 0 0 1 7 0M2 8.8a15 15 0 0 1 4.2-2.6M5 12.9a10 10 0 0 1 5.2-2.7M22 8.8a15 15 0 0 0-8.9-2.7M19 12.9a10 10 0 0 0-2.6-1.9M2 2l20 20"/></symbol>
+<symbol id="book" viewBox="0 0 24 24"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></symbol>
+<symbol id="pin" viewBox="0 0 24 24"><path d="M12 17v5M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></symbol>
+</defs></svg>
+
+<!-- A1 frame lock -->
+<div>
+<div class="cap">A1 · Frame lock</div>
+<div class="phone">
+ <div class="tb"><div class="pill"><span style="padding:0 6px;width:32px;height:32px;justify-content:center"><svg class="i" aria-hidden="true"><use href="#folder"/></svg></span><span style="color:#111;font-weight:500;max-width:116px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;line-height:28px">Checkout redesign</span></div><div style="display:flex;gap:8px;align-items:center"><div class="pill" style="padding:0 6px"><span style="padding:0"><i style="display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:#e7e1f5;color:#4b3a8a;font-size:9px;font-weight:500;font-style:normal;box-shadow:0 0 0 2px #fff">CV</i></span></div><span style="display:flex;align-items:center;height:36px;padding:0 14px;border-radius:12px;background:#111;color:#fdfdfd;font-weight:500">AI</span><span class="pill" style="width:36px;padding:0;justify-content:center;color:#111"><svg class="i" style="fill:#111;stroke:#111;stroke-width:2" aria-hidden="true"><use href="#dots"/></svg></span></div></div>
+ <div class="lbl" style="left:46px;top:164px;color:#5f5e5b"><svg class="i" aria-hidden="true"><use href="#lock"/></svg>Card · header</div>
+ <div class="fr" style="left:46px;top:182px;width:200px;height:110px"><i style="margin:12px;width:60px;height:8px"></i><i style="margin:0 12px;width:130px;height:28px"></i></div>
+ <div class="toast" role="alert"><svg class="i" style="margin-top:2px" aria-hidden="true"><use href="#lock"/></svg><span>Edit refused. Card · header is locked by Cheese since 13 Nov 2026 15:30 ICT.</span></div>
+ <div class="scrim"></div>
+ <div class="sheet" style="height:520px" role="dialog" aria-label="Card · header">
+  <div class="hd"></div>
+  <div class="ph"><span><svg class="i" aria-hidden="true"><use href="#frame"/></svg>Card · header<span class="chip"><svg class="i" aria-hidden="true"><use href="#lock"/></svg>Locked</span></span><button class="x" aria-label="Close"><svg class="i" aria-hidden="true"><use href="#x"/></svg></button></div>
+  <div class="row t2"><div class="tx"><span class="m">Locked by</span><b>Cheese</b></div></div>
+  <div class="row t2"><div class="tx"><span class="m">When</span><b>13 Nov 2026 15:30 ICT</b></div></div>
+  <div class="row t2"><div class="tx"><span class="m">Why</span><b>Option A chosen</b></div></div>
+  <div class="sh" style="margin-top:8px"><span>Locked in this page</span></div>
+  <button class="row on"><svg class="i" style="color:#6b6a67" aria-hidden="true"><use href="#cr"/></svg><svg class="i" aria-hidden="true"><use href="#frame"/></svg>Card · header<svg class="i" style="margin-left:auto;color:#111" aria-hidden="true"><use href="#lock"/></svg></button>
+  <button class="row"><svg class="i" style="color:#6b6a67" aria-hidden="true"><use href="#cr"/></svg><svg class="i" aria-hidden="true"><use href="#frame"/></svg>Card · list</button>
+  <div class="conf"><b>Unlock Card · header?</b><span class="s">Edits become possible again. The lock record stays in Activity.</span><div class="two"><button class="btn">Cancel</button><button class="btn p">Unlock</button></div></div>
+ </div>
+</div>
+<div class="sts"><div><b>Loading</b><div class="sk"></div></div><div><b>Empty</b><span class="s">No locked frames</span></div><div><b>Error</b><span class="er">Could not lock. Try again.</span></div><div><b>Disconnected</b><span class="of">Offline. Lock changes paused.</span></div></div>
+</div>
+
+<!-- A2 archive and trash -->
+<div>
+<div class="cap">A2 · Archive and trash</div>
+<div class="phone">
+ <div class="tb"><div class="pill"><span style="padding:0 6px;width:32px;height:32px;justify-content:center"><svg class="i" aria-hidden="true"><use href="#folder"/></svg></span><span style="color:#111;font-weight:500;max-width:116px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;line-height:28px">Checkout redesign</span></div><div style="display:flex;gap:8px;align-items:center"><div class="pill" style="padding:0 6px"><span style="padding:0"><i style="display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:#e7e1f5;color:#4b3a8a;font-size:9px;font-weight:500;font-style:normal;box-shadow:0 0 0 2px #fff">CV</i></span></div><span style="display:flex;align-items:center;height:36px;padding:0 14px;border-radius:12px;background:#111;color:#fdfdfd;font-weight:500">AI</span><span class="pill" style="width:36px;padding:0;justify-content:center;color:#111"><svg class="i" style="fill:#111;stroke:#111;stroke-width:2" aria-hidden="true"><use href="#dots"/></svg></span></div></div>
+ <div class="pill isl"><span style="background:#f0f0f0;color:#111;font-weight:500"><svg class="i" aria-hidden="true"><use href="#layers"/></svg>Layers</span><span><svg class="i" aria-hidden="true"><use href="#msg"/></svg>Comments</span></div>
+ <div class="scrim"></div>
+ <div class="sheet" style="height:680px" role="dialog" aria-label="Layers">
+  <div class="hd"></div>
+  <div class="ph"><span><svg class="i" aria-hidden="true"><use href="#layers"/></svg>Layers</span><button class="x" aria-label="Close"><svg class="i" aria-hidden="true"><use href="#x"/></svg></button></div>
+  <div class="sh"><span>Pages</span><span style="width:44px;height:24px;display:grid;place-items:center;margin-right:-14px"><svg class="i" aria-hidden="true"><use href="#plus"/></svg></span></div>
+  <button class="row"><svg class="i f" aria-hidden="true"><use href="#file"/></svg>Baseline</button>
+  <button class="row on"><svg class="i" aria-hidden="true"><use href="#file"/></svg>CHE-5478 · lifecycle-ui</button>
+  <button class="row" aria-expanded="true"><svg class="i f" aria-hidden="true"><use href="#cd"/></svg><svg class="i f" aria-hidden="true"><use href="#archive"/></svg>Archive<span class="chip" style="margin-left:auto">2</span></button>
+  <div class="row" style="padding-left:34px"><svg class="i f" aria-hidden="true"><use href="#file"/></svg><span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">CHE-5162 · decision-card</span><button class="btn q" style="height:36px;width:44px" aria-label="Restore page"><svg class="i" aria-hidden="true"><use href="#rs"/></svg></button></div>
+  <div class="row" style="padding-left:34px"><svg class="i f" aria-hidden="true"><use href="#file"/></svg><span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">CHE-4616 · governed writes</span><button class="btn q" style="height:36px;width:44px" aria-label="Restore page"><svg class="i" aria-hidden="true"><use href="#rs"/></svg></button></div>
+  <button class="row" aria-expanded="true" style="margin-top:6px"><svg class="i f" aria-hidden="true"><use href="#cd"/></svg><svg class="i f" aria-hidden="true"><use href="#trash"/></svg>Trash<span class="chip" style="margin-left:auto">3 frames</span></button>
+  <div class="row" style="padding-left:34px"><svg class="i f" aria-hidden="true"><use href="#frame"/></svg><span style="flex:1">Card · header</span><button class="btn q" style="height:36px;width:44px" aria-label="Restore frame"><svg class="i" aria-hidden="true"><use href="#rs"/></svg></button></div>
+  <div class="row" style="padding-left:34px"><svg class="i f" aria-hidden="true"><use href="#frame"/></svg><span style="flex:1">Order summary</span><button class="btn q" style="height:36px;width:44px" aria-label="Restore frame"><svg class="i" aria-hidden="true"><use href="#rs"/></svg></button></div>
+  <div class="row" style="padding-left:34px"><svg class="i f" aria-hidden="true"><use href="#frame"/></svg><span style="flex:1">Promo banner</span><button class="btn q" style="height:36px;width:44px" aria-label="Restore frame"><svg class="i" aria-hidden="true"><use href="#rs"/></svg></button></div>
+  <div class="conf"><b>Purge 3 frames for good?</b><span class="s">This cannot be undone. Restore keeps them.</span><div class="two"><button class="btn">Cancel</button><button class="btn d">Purge 3</button></div></div>
+ </div>
+</div>
+<div class="sts"><div><b>Loading</b><div class="sk"></div></div><div><b>Empty</b><span class="s">Trash is empty</span></div><div><b>Error</b><span class="er">Could not restore. Rename, retry.</span></div><div><b>Disconnected</b><span class="of">Offline. Restore paused.</span></div></div>
+</div>
+
+<!-- A3 page versions -->
+<div>
+<div class="cap">A3 · Page versions</div>
+<div class="phone">
+ <div class="tb"><div class="pill"><span style="padding:0 6px;width:32px;height:32px;justify-content:center"><svg class="i" aria-hidden="true"><use href="#folder"/></svg></span><span style="color:#111;font-weight:500;max-width:116px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;line-height:28px">Checkout redesign</span></div><div style="display:flex;gap:8px;align-items:center"><div class="pill" style="padding:0 6px"><span style="padding:0"><i style="display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:#e7e1f5;color:#4b3a8a;font-size:9px;font-weight:500;font-style:normal;box-shadow:0 0 0 2px #fff">CV</i></span></div><span style="display:flex;align-items:center;height:36px;padding:0 14px;border-radius:12px;background:#111;color:#fdfdfd;font-weight:500">AI</span><span class="pill" style="width:36px;padding:0;justify-content:center;color:#111"><svg class="i" style="fill:#111;stroke:#111;stroke-width:2" aria-hidden="true"><use href="#dots"/></svg></span></div></div>
+ <div class="scrim"></div>
+ <div class="sheet" style="height:680px" role="dialog" aria-label="Page versions">
+  <div class="hd"></div>
+  <div class="ph"><span>Page versions · 8</span><span style="display:flex;align-items:center"><button class="btn" style="height:36px;padding:0 12px">Save</button><button class="x" aria-label="Close"><svg class="i" aria-hidden="true"><use href="#x"/></svg></button></span></div>
+  <button class="row t2"><div class="tx"><span><b>CHE-5162 v8</b> <span class="chip" style="margin-left:4px">current</span></span><span class="m">Cheese · 13 Nov 2026 15:02 ICT</span></div></button>
+  <button class="row t2 on" aria-pressed="true"><div class="tx"><span><b>CHE-5162 v7</b> <span class="chip" style="margin-left:4px"><svg class="i" aria-hidden="true"><use href="#pin"/></svg>Pinned</span></span><span class="m">Luna · 12 Nov 2026 18:20 ICT</span></div></button>
+  <div style="display:flex;gap:8px;margin:0 14px 6px"><button class="btn sel" style="flex:1">Compare</button><button class="btn" style="flex:1">Restore</button></div>
+  <div class="box"><div style="display:flex;gap:6px;flex-wrap:wrap"><span class="chip g">1 added</span><span class="chip y">1 changed</span><span class="chip r">1 removed</span></div><span class="s">v7 to v8 · Order summary added · Card · header changed · Promo banner removed</span></div>
+  <button class="row t2" style="margin-top:6px"><div class="tx"><span><b>CHE-5162 v6</b></span><span class="m">Sonnet · 12 Nov 2026 16:41 ICT</span></div></button>
+  <button class="row t2"><div class="tx"><span><b>CHE-5162 v5</b></span><span class="m">Cheese · 12 Nov 2026 11:05 ICT</span></div></button>
+  <div class="conf"><b>Restore v7?</b><span class="s">Your current state is saved first as CHE-5162 v9, then v7 comes back.</span><div class="two"><button class="btn">Cancel</button><button class="btn p">Save, restore</button></div></div>
+ </div>
+</div>
+<div class="sts"><div><b>Loading</b><div class="sk"></div></div><div><b>Empty</b><span class="s">No versions yet</span></div><div><b>Error</b><span class="er">Restore failed. Page unchanged.</span></div><div><b>Disconnected</b><span class="of">Offline. Compare paused.</span></div></div>
+</div>
+
+<!-- A4 comment resolution -->
+<div>
+<div class="cap">A4 · Comment resolution</div>
+<div class="phone">
+ <div class="tb"><div class="pill"><span style="padding:0 6px;width:32px;height:32px;justify-content:center"><svg class="i" aria-hidden="true"><use href="#folder"/></svg></span><span style="color:#111;font-weight:500;max-width:116px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;line-height:28px">Checkout redesign</span></div><div style="display:flex;gap:8px;align-items:center"><div class="pill" style="padding:0 6px"><span style="padding:0"><i style="display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:#e7e1f5;color:#4b3a8a;font-size:9px;font-weight:500;font-style:normal;box-shadow:0 0 0 2px #fff">CV</i></span></div><span style="display:flex;align-items:center;height:36px;padding:0 14px;border-radius:12px;background:#111;color:#fdfdfd;font-weight:500">AI</span><span class="pill" style="width:36px;padding:0;justify-content:center;color:#111"><svg class="i" style="fill:#111;stroke:#111;stroke-width:2" aria-hidden="true"><use href="#dots"/></svg></span></div></div>
+ <div class="pill isl"><span><svg class="i" aria-hidden="true"><use href="#layers"/></svg>Layers</span><span style="background:#f0f0f0;color:#111;font-weight:500"><svg class="i" aria-hidden="true"><use href="#msg"/></svg>Comments</span></div>
+ <div class="lbl" style="left:46px;top:112px">Cart · phone</div>
+ <div class="fr" style="left:46px;top:130px;width:110px;height:130px"><i style="margin:10px;width:40px;height:8px"></i><i style="margin:0 10px;width:90px;height:24px"></i></div>
+ <div class="pin" style="left:136px;top:144px">1</div><div class="pin r" style="left:120px;top:214px">2</div>
+ <div class="scrim"></div>
+ <div class="sheet" style="height:680px" role="dialog" aria-label="Comments">
+  <div class="hd"></div>
+  <div class="ph"><span><svg class="i" aria-hidden="true"><use href="#msg"/></svg>Comments</span><button class="x" aria-label="Close"><svg class="i" aria-hidden="true"><use href="#x"/></svg></button></div>
+  <div style="display:flex;gap:8px;padding:8px 14px 0;flex:none"><button class="btn sel" style="flex:1;height:44px">Open 2</button><button class="btn" style="flex:1;height:44px">Resolved 2</button></div>
+  <div class="box"><span class="m">Since last review · 13 Nov 2026 14:00 ICT</span><span><b style="font-weight:500">2 resolved</b> · 1 addressed, 1 moved to Multica</span><span><b style="font-weight:500">2 still open</b> · 1 waits on a Multica question</span></div>
+  <div class="th"><div style="display:flex;gap:6px;align-items:center"><b style="font-weight:500">Cheese</b><span class="m">14:50 ICT</span></div><span>Total is hidden under the keyboard.</span>
+   <div class="rep"><span class="m">x99-claude-sonnet-design</span><span>[dsg:CHE-5162] Fixed in CHE-5162 v8. Sticky total now.</span></div>
+   <span class="m">Resolve as</span>
+   <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn sel" style="height:44px"><svg class="i" aria-hidden="true"><use href="#check"/></svg>Addressed</button><button class="btn" style="height:44px"><svg class="i" aria-hidden="true"><use href="#ban"/></svg>Won't fix</button><button class="btn" style="height:44px"><svg class="i" aria-hidden="true"><use href="#ext"/></svg>Moved to Multica</button></div>
+   <span class="m">Reply names CHE-5162 v8. Suggested: Addressed.</span></div>
+  <div class="th"><div style="display:flex;gap:6px;align-items:center"><b style="font-weight:500">Cheese</b><span class="chip">Open · waits on Multica</span></div><span>Which payment methods can we ship by launch?</span><span class="chip b" style="align-self:flex-start"><svg class="i" aria-hidden="true"><use href="#ext"/></svg>CHE-5301</span></div>
+ </div>
+</div>
+<div class="sts"><div><b>Loading</b><div class="sk"></div></div><div><b>Empty</b><span class="s">No comments yet</span></div><div><b>Error</b><span class="er">Could not resolve (500). Still open.</span></div><div><b>Disconnected</b><span class="of">Offline. Reply kept, sends later.</span></div></div>
+</div>
+
+<!-- A5 project ledger -->
+<div>
+<div class="cap">A5 · Project ledger</div>
+<div class="phone">
+ <div class="tb"><div class="pill"><span style="padding:0 6px;width:32px;height:32px;justify-content:center"><svg class="i" aria-hidden="true"><use href="#folder"/></svg></span><span style="color:#111;font-weight:500;max-width:116px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;line-height:28px">Checkout redesign</span></div><div style="display:flex;gap:8px;align-items:center"><div class="pill" style="padding:0 6px"><span style="padding:0"><i style="display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:#e7e1f5;color:#4b3a8a;font-size:9px;font-weight:500;font-style:normal;box-shadow:0 0 0 2px #fff">CV</i></span></div><span style="display:flex;align-items:center;height:36px;padding:0 14px;border-radius:12px;background:#111;color:#fdfdfd;font-weight:500">AI</span><span class="pill" style="width:36px;padding:0;justify-content:center;color:#111"><svg class="i" style="fill:#111;stroke:#111;stroke-width:2" aria-hidden="true"><use href="#dots"/></svg></span></div></div>
+ <div class="pill isl"><span style="background:#f0f0f0;color:#111;font-weight:500"><svg class="i" aria-hidden="true"><use href="#layers"/></svg>Layers</span><span><svg class="i" aria-hidden="true"><use href="#msg"/></svg>Comments</span></div>
+ <div class="scrim"></div>
+ <div class="sheet" style="height:560px" role="dialog" aria-label="Layers">
+  <div class="hd"></div>
+  <div class="ph"><span><svg class="i" aria-hidden="true"><use href="#layers"/></svg>Layers</span><button class="x" aria-label="Close"><svg class="i" aria-hidden="true"><use href="#x"/></svg></button></div>
+  <div class="box" style="margin-top:8px"><span><b style="font-weight:500">Ledger page.</b> Baseline holds the latest approved designs. It changes only when a locked proposal lands.</span></div>
+  <div class="sh"><span>Pages</span><span style="width:44px;height:24px;display:grid;place-items:center;margin-right:-14px"><svg class="i" aria-hidden="true"><use href="#plus"/></svg></span></div>
+  <button class="row on" aria-current="page"><svg class="i" aria-hidden="true"><use href="#file"/></svg>Baseline<span class="chip b" style="margin-left:auto"><svg class="i" aria-hidden="true"><use href="#book"/></svg>Ledger</span></button>
+  <button class="row"><svg class="i f" aria-hidden="true"><use href="#file"/></svg>Flows</button>
+  <button class="row"><svg class="i f" aria-hidden="true"><use href="#file"/></svg>Direction</button>
+  <button class="row"><svg class="i f" aria-hidden="true"><use href="#file"/></svg>CHE-5478 · lifecycle-ui</button>
+  <button class="row" aria-expanded="false"><svg class="i f" aria-hidden="true"><use href="#cr"/></svg>Finished<span class="chip" style="margin-left:auto">2</span></button>
+  <button class="row"><svg class="i f" aria-hidden="true"><use href="#archive"/></svg>Archive<span class="chip" style="margin-left:auto">2</span></button>
+  <div class="box" style="margin-top:10px"><span class="m">Last merged into Baseline</span><span>CHE-5162 v8 · 13 Nov 2026 17:58 ICT</span></div>
+ </div>
+</div>
+<div class="sts"><div><b>Loading</b><div class="sk"></div></div><div><b>Empty</b><span class="s">No ledger page. Mark one.</span></div><div><b>Error</b><span class="er">Could not move (409). Reload.</span></div><div><b>Disconnected</b><span class="of">Offline. Pages read only.</span></div></div>
+</div>
+</body></html>
