@@ -10,9 +10,27 @@ import { expect, it } from 'vitest'
  * one the database applied. The fork's comment_events migration was applied
  * before the upstream migrations that now precede it, so a database that has
  * it must still receive every upstream migration. */
+const UPSTREAM_0034_TO_0039 = [
+  '0034_frame_approval',
+  '0035_approval_automations',
+  '0036_canvas_guides',
+  '0037_local_agent_effort',
+  '0038_reasoning_effort',
+  '0039_comment_element_ids',
+]
+const FORK_ALL = [
+  '0049_comment_events',
+  '0050_canvas_bridge',
+  '0051_soft_delete',
+  '0052_comment_client_request_id',
+  '0053_page_snapshots',
+  '0054_frame_write_keys',
+]
+
 it.each([
-  ['comment_events', ['0040_comment_events']],
-  ['comment_events and canvas_bridge', ['0040_comment_events', '0041_canvas_bridge']],
+  ['comment_events', ['0049_comment_events']],
+  ['comment_events and canvas_bridge', ['0049_comment_events', '0050_canvas_bridge']],
+  ['every fork migration and upstream 0034 to 0039 (the C00 database)', [...UPSTREAM_0034_TO_0039, ...FORK_ALL]],
 ])(
   'a database that already has %s still gets every upstream migration',
   { timeout: 60_000 },
@@ -39,16 +57,18 @@ it.each([
         "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'",
       )
       expect(tables.rows.map((row) => row.table_name)).toEqual(
-        expect.arrayContaining(['comment_events', 'canvas_bridge', 'automation_approvals']),
+        expect.arrayContaining(['comment_events', 'canvas_bridge', 'automation_approvals', 'agent_feedback']),
       )
       const columns = await client.query<{ table_name: string; column_name: string }>(
-        "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public' AND column_name IN ('approval', 'guides', 'element_id', 'reasoning_effort', 'effort')",
+        "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public' AND column_name IN ('approval', 'guides', 'element_id', 'reasoning_effort', 'effort', 'rotation', 'deleted_at')",
       )
       expect(columns.rows.map((row) => `${row.table_name}.${row.column_name}`).sort()).toEqual(
         expect.arrayContaining([
           'canvases.guides',
           'comments.element_id',
           'frames.approval',
+          'frames.deleted_at',
+          'frames.rotation',
           'local_agent_preferences.effort',
           'model_accounts.reasoning_effort',
         ]),

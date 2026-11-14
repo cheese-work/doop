@@ -32,6 +32,10 @@
     "allow-claude-stop",
     "allow-claude-add-extension",
     "allow-codex-add-mcp",
-    "allow-view-menu-state"
+    "allow-fonts-choose-local",
+    "allow-fonts-read-local",
+    "allow-view-menu-state",
+    "allow-update-card-ready",
+    "allow-update-restart"
   ]
 }

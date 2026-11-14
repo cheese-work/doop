@@ -37,7 +37,6 @@ const BY_CONTEXT = [
 /** Real gaps: MCP agents can do these and resident agents cannot yet. */
 const MISSING = [
   'get_canvas',
-  'update_frame',
   'delete_frame',
   'restore_frame',
   'restore_page',
@@ -48,9 +47,7 @@ const MISSING = [
   'list_page_snapshots',
   'compare_page_snapshots',
   'restore_page_snapshot',
-  'set_canvas_pages',
-  'reply_to_comment',
-  'resolve_comment',
+  'set_page_background',
   'export_frame',
   'upload_asset',
   'list_linear_issues', // integration tools, registered by their connections
