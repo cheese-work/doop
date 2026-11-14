@@ -1,8 +1,9 @@
-import { memo, useCallback, useContext, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { ElementComment, Frame } from '../../shared/types'
 import { canEditOpenCanvas, pickedSelectors, useStore } from '../lib/store'
 import { isCanvasElement } from '../lib/drawing'
+import { isLayerLocked, standaloneSelector } from '../lib/layerEdits'
 import { drawingDropFrame, moveDrawing, type DrawingHit } from '../lib/drawingMove'
 import { useElementMove } from './ElementMove'
 import { FrameLabelLayer } from './FrameLabelLayer'
@@ -26,34 +27,32 @@ import { FrameContextMenu } from './FrameContextMenu'
 import { FrameApprovalBadge } from './FrameApproval'
 import { ElementContextMenu, type LiveHit } from './ElementContextMenu'
 import { CodePanel } from './CodePanel'
+import { TextFormatToolbar } from './TextFormatToolbar'
+import type { TextFormatState } from '../lib/richText'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from './ui/context-menu'
 import { DEFAULT_ROLE_ID } from '../../shared/agents'
 import { posthog } from '../lib/posthog'
 import { isResidentLimit } from './TeamAllowance'
 import { CommentComposer, CommentPin, CommentThread } from './CommentPopovers'
-import { FRAME_COMMENT_SELECTOR, isElementComment, isFrameComment } from '../../shared/comments'
+import { FRAME_COMMENT_SELECTOR, isElementComment, isFrameComment, elementCommentPosition } from '../../shared/comments'
 import { elementIdSelector } from '../../shared/elementId'
 import { cn } from '@/lib/utils'
 import { Button } from './ui/button'
 import { Tooltip } from './ui/tooltip'
-import {
-  CheckIcon,
-  CodeIcon,
-  CommentIcon,
-  EditIcon,
-  EyeClosedIcon,
-  GithubIcon,
-  LockIcon,
-  SyncIcon,
-  SparkIcon,
-} from './ui/icons'
+import { CodeIcon, CommentIcon, EditIcon, EyeClosedIcon, GithubIcon, LockIcon, SyncIcon, SparkIcon } from './ui/icons'
 import { isSyncedFrame } from '../lib/sync'
 import { isGithubFrame, isGithubPlaceholder } from '../lib/github'
 import { AgentIcon } from './AgentIcon'
-import { ElementResizeHandles } from './ElementResizeHandles'
+import { ElementResizeHandles, type ElementGeometry } from './ElementResizeHandles'
+import { selectionBox } from '../lib/elementRotate'
 import { FrameResizeHandles } from './FrameResizeHandles'
-import { keepRatioAfterSnap, resizeFrameRect } from '../lib/frameResize'
+import { keepAnchorTurned, keepRatioAfterSnap, resizeFrameRect } from '../lib/frameResize'
+import { pointerAngle, rotateVector, rotatedBounds, rotatedBy, unrotatePoint } from '../../shared/frameRotation'
 import { sizeLabel, type ResizeHandle } from '../lib/elementResize'
+import { withFontFaces } from '../../shared/fonts'
+import { withWebFontLinks } from '../../shared/webFonts'
+import { withTokenBlock } from '../../shared/designTokens'
+import { canvasFonts } from '../lib/customFonts'
 import { t as translate, useT } from '../lib/i18n'
 
 /** ?comment=<rootId> — the link in a comment email. The thread opens once
@@ -66,16 +65,24 @@ function deepLinkedThread(): string | null {
 
 /** Where a pointer event landed relative to an element, in design px (screen
  *  px over the camera zoom: the frame lives inside the zoomed stage). */
-function designPoint(e: React.MouseEvent, el: Element): { x: number; y: number } {
+function designPoint(e: React.MouseEvent, el: Element, rotation = 0): { x: number; y: number } {
   const box = el.getBoundingClientRect()
   const zoom = useStore.getState().viewport.zoom
-  return { x: (e.clientX - box.left) / zoom, y: (e.clientY - box.top) / zoom }
+  if (!rotation) return { x: (e.clientX - box.left) / zoom, y: (e.clientY - box.top) / zoom }
+  /* a turned frame's box is the axis-aligned bounds of the turned element:
+     the press is turned back about its centre to land in the design */
+  const size =
+    el instanceof HTMLElement
+      ? { width: el.offsetWidth * zoom, height: el.offsetHeight * zoom }
+      : { width: box.width, height: box.height }
+  const at = unrotatePoint({ x: e.clientX, y: e.clientY }, box, size, rotation)
+  return { x: at.x / zoom, y: at.y / zoom }
 }
 
 /** Where a press landed on its target, as `offsetX` measured it; `offsetX`
  *  itself counts zoomed px in Chromium under the world's CSS zoom. */
-function designOffset(e: React.PointerEvent<HTMLElement>): { x: number; y: number } {
-  return designPoint(e, e.target instanceof HTMLElement ? e.target : e.currentTarget)
+function designOffset(e: React.PointerEvent<HTMLElement>, rotation = 0): { x: number; y: number } {
+  return designPoint(e, e.target instanceof HTMLElement ? e.target : e.currentTarget, rotation)
 }
 
 /* Counter-scale contract: chrome that keeps constant on-screen size divides
@@ -87,9 +94,22 @@ const COUNTER_SCALE = '[transform:scale(min(calc(1/var(--zoom,1)),2.4))]'
    comment UI (CommentPopovers): screen UI the user reads and types in keeps
    its size at every zoom, the way Figma's comment pins do. */
 const POPOVER_SCALE = '[transform:scale(calc(1/var(--zoom,1)))_translateY(calc(-100%_-_8px))]'
+/* the same popover over a selection wearing its grips: it sits clear of
+   the rotate zones outside the top corners, which reach 25px above */
+const POPOVER_SCALE_CLEAR = '[transform:scale(calc(1/var(--zoom,1)))_translateY(calc(-100%_-_30px))]'
 
 /* screen px between a frame's name and its top edge, at every zoom */
 const LABEL_GAP = 6
+
+/** The world y of the lowest point a frame reaches, turned or not. */
+function badgeBottom(frame: Frame): number {
+  const b = rotatedBounds(frame, frame.rotation ?? 0)
+  return b.y + b.height
+}
+/* a selected frame's outline, grips and toolbar paint above every frame on
+   the page (whose z-indexes are their ranks in the paint order), so a layer
+   in front never covers the selection being worked on */
+const SELECTION_CHROME_Z = 1_000_000
 const EDITOR_CHIP =
   'inline-flex items-center gap-1 rounded-full px-[7px] py-0.5 text-[10px] font-bold text-white animate-[chip-in_0.25s_ease] @max-[180px]/title:px-[4px] @max-[180px]/title:py-[3px]'
 /* a frame narrower on screen than a chip's words keeps only its icon, so
@@ -102,13 +122,13 @@ const EL_TOOLBAR_BTN = 'rounded-[7px] px-2 py-1 text-xs'
  *  then a dashed box with its name, so a pick from the Layers panel still
  *  shows where the frame sits. It takes no pointer events: there is nothing
  *  to drag, and the eye in the Layers panel is the way back. */
-export function HiddenFrameView({ frame }: { frame: Frame }) {
+export function HiddenFrameView({ frame, stack }: { frame: Frame; stack?: number }) {
   const selected = useStore((s) => s.selectedIds.includes(frame.id))
   if (!selected) return null
   return (
     <div
       className="pointer-events-none absolute"
-      style={{ left: frame.x, top: frame.y, width: frame.width, height: frame.height }}
+      style={{ left: frame.x, top: frame.y, width: frame.width, height: frame.height, zIndex: stack }}
     >
       <div
         className={cn(
@@ -176,6 +196,10 @@ interface ProbeHit {
   rect: { x: number; y: number; width: number; height: number }
   /** whether a width/height applies to the box (not an inline text run) */
   sizable?: boolean
+  /** the element's own turn, degrees clockwise, and its box before it:
+   *  the selection furniture is drawn on the box and turned with it */
+  rotation?: number
+  box?: { width: number; height: number }
   /** inside a locked layer: selectable, but it takes no edits */
   locked?: boolean
 }
@@ -191,17 +215,28 @@ function frameCommentHit(x: number, y: number): ProbeHit {
 /* `doop:locate` request ids for the outlines of a multi-element pick */
 const PICK_REQ = '__pick__:'
 
-type DragRect = { id: string; x: number; y: number; width: number; height: number }
+type DragRect = { id: string; x: number; y: number; width: number; height: number; rotation?: number }
 
 interface HoverHit {
   tag: string
+  /** the runtime's positional path to the element, the same language the picked element's `probe` speaks */
+  selector: string
   rect: { x: number; y: number; width: number; height: number }
 }
 
 /* Counter-scaled overlays (labels, pins, popovers) get their scale from the
    `--zoom` CSS variable the Stage sets, so a viewport change never re-renders
    this component — memo holds as long as the frame and layout zoom are unchanged. */
-export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame: Frame; layoutZoom: number }) {
+export const FrameView = memo(function FrameView({
+  frame,
+  stack,
+  layoutZoom,
+}: {
+  frame: Frame
+  /** its place in the page's paint order (the Stage's z-index), front highest */
+  stack?: number
+  layoutZoom: number
+}) {
   const t = useT()
   const [menuTarget, setMenuTarget] = useState<
     'frame' | 'loading' | { selector: string | null; html: string; hit?: LiveHit }
@@ -240,6 +275,9 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
   const me = getIdentity().clientId
   const editors = Object.values(presences).filter((p) => p.activeFrameId === frame.id && p.clientId !== me)
   const [dragging, setDragging] = useState(false)
+  /* a standalone shape on its way across the canvas shows as itself alone:
+     no ring, grips or size badge until it is let go */
+  const [shapeMoving, setShapeMoving] = useState(false)
   /* a standalone element dragged over a frame: the frame it would go into,
      highlighted in the world the way a drawing's drop target is */
   const [dropTarget, setDropTarget] = useState<{ frame: Frame; world: Element } | null>(null)
@@ -262,7 +300,15 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
     let send = dragSenders.get(id)
     if (!send) {
       send = throttle((r: DragRect) => {
-        sendWs({ type: 'frame:drag', frameId: r.id, x: r.x, y: r.y, width: r.width, height: r.height })
+        sendWs({
+          type: 'frame:drag',
+          frameId: r.id,
+          x: r.x,
+          y: r.y,
+          width: r.width,
+          height: r.height,
+          ...(r.rotation !== undefined ? { rotation: r.rotation } : {}),
+        })
       }, 50)
       dragSenders.set(id, send)
     }
@@ -297,7 +343,7 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
       e.preventDefault()
       if (!s.selectedIds.includes(frame.id)) select(frame.id)
       if (probeOnClick) {
-        const at = designOffset(e)
+        const at = designOffset(e, frame.rotation)
         probeAt(at.x, at.y, 'comment')
       }
       return
@@ -370,7 +416,7 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
     setDragging(true)
     clearHover()
     const start = { x: e.clientX, y: e.clientY }
-    const off = designOffset(e)
+    const off = designOffset(e, frame.rotation)
     const orig = { x: frame.x, y: frame.y, width: frame.width, height: frame.height }
     /* the drag's baseline: finger position and frame rect the deltas are
        measured from. Starts at pointer-down, and re-anchors while a pinch
@@ -429,6 +475,7 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
         void api.deleteFrame(copy.id).catch(console.error)
       }
       setDragging(false)
+      setShapeMoving(false)
       if (duplicating) setDuping(false)
       useStore.getState().setSnapGuides([])
       setDropTarget(null)
@@ -453,6 +500,7 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
         return
       }
       if (Math.abs(ev.clientX - start.x) + Math.abs(ev.clientY - start.y) > 4) moved = true
+      if (standaloneMove && moved) setShapeMoving(true)
       last = { x: ev.clientX, y: ev.clientY }
       if (duplicating && moved && !dupDropped) {
         dupDropped = true
@@ -460,7 +508,7 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
           const src = frames.find((f) => f.id === g.id)
           if (!src) continue
           api
-            .createFrame(src.canvasId, { name: src.name, html: src.html, ...g.orig })
+            .createFrame(src.canvasId, { name: src.name, html: src.html, rotation: src.rotation, ...g.orig })
             .then((f) => {
               /* a gesture called off takes its copy back, however late the
                  copy arrives; one that finished keeps it, as an undo step */
@@ -479,10 +527,19 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
       const dx = (ev.clientX - base.x) / zoom
       const dy = (ev.clientY - base.y) / zoom
       const from = base.rect
+      /* a turned frame's grips pull along its own axes: the travel is turned
+         back by its rotation, and the far corner stays where it was */
+      const turn = mode === 'resize' ? (frame.rotation ?? 0) : 0
+      const pull = rotateVector({ x: dx, y: dy }, -turn)
       const raw =
         mode === 'move'
           ? { ...from, x: Math.round(from.x + dx), y: Math.round(from.y + dy) }
-          : resizeFrameRect(handle, from, { dx, dy }, { keepRatio: ev.shiftKey })
+          : keepAnchorTurned(
+              handle,
+              from,
+              resizeFrameRect(handle, from, { dx: pull.x, dy: pull.y }, { keepRatio: ev.shiftKey }),
+              turn,
+            )
       /* edges pull onto neighbouring frames' edges/centers and the page's
          ruler guides; ⌥ drags free —
          except that a ⌥⇧ duplicate-drag holds ⌥ for the whole gesture, and
@@ -490,7 +547,8 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
          riding along in the group are not neighbours, and neither is a
          hidden frame — there is nothing on the stage to line up with. */
       const others = currentPageCanvas()?.frames.filter((f) => !f.hidden && !groupIds.has(f.id)) ?? []
-      const free = ev.altKey && !duplicating
+      /* a turned frame's edges lie along nothing: no snapping while resizing it */
+      const free = (ev.altKey && !duplicating) || !!turn
       let snapped = free ? { ...raw, guides: [] } : snapFrame(mode, raw, others, zoom, visibleGuides(), handle)
       /* with Shift the ratio wins: the snapped axis leads, the other follows */
       if (mode === 'resize' && ev.shiftKey && !free) snapped = keepRatioAfterSnap(handle, from, raw, snapped)
@@ -528,6 +586,7 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
       unsubscribe()
       setDropTarget(null)
       setDragging(false)
+      setShapeMoving(false)
       if (duplicating) setDuping(false)
       useStore.getState().setSnapGuides([])
       const live = useStore.getState().canvas?.frames ?? []
@@ -597,6 +656,82 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
     return { move: onMove, up: onUp }
   }
 
+  /** A press on a rotate zone outside a corner: the frame turns about its
+   *  centre with the pointer, Shift snapping to 15°, and the turn is saved
+   *  once on release as one undo step. Esc puts the frame back. */
+  function startRotate(e: React.PointerEvent<HTMLDivElement>) {
+    const s = useStore.getState()
+    const action = resolvePointerAction({
+      tool: s.tool,
+      target: 'frame',
+      button: e.button,
+      pointerType: e.pointerType,
+      spaceHeld: s.panMode,
+    })
+    if (action !== 'frame-drag' || frame.locked || !canEditOpenCanvas(s)) return
+    e.stopPropagation()
+    e.preventDefault()
+    if (!s.selectedIds.includes(frame.id)) select(frame.id)
+    const surface = surfaceRef.current
+    if (!surface) return
+    /* the rotation's centre is the frame's centre, which the turned box's
+       bounds share whatever the rotation */
+    const box = surface.getBoundingClientRect()
+    const center = { x: box.left + box.width / 2, y: box.top + box.height / 2 }
+    const startRotation = frame.rotation ?? 0
+    const startAngle = pointerAngle(center, { x: e.clientX, y: e.clientY })
+    setDragging(true)
+    clearHover()
+    let cancelled = false
+    const stop = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', cancel)
+      window.removeEventListener('keydown', onKey, true)
+      setDragging(false)
+    }
+    const cancel = () => {
+      if (cancelled) return
+      cancelled = true
+      stop()
+      useStore.getState().patchFrameLocal(frame.id, { rotation: startRotation })
+      sendDrag(frame.id, {
+        id: frame.id,
+        x: frame.x,
+        y: frame.y,
+        width: frame.width,
+        height: frame.height,
+        rotation: startRotation,
+      })
+    }
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') cancel()
+    }
+    function onMove(ev: PointerEvent) {
+      if (ev.pointerId !== e.pointerId) return
+      const angle = pointerAngle(center, { x: ev.clientX, y: ev.clientY })
+      const rotation = rotatedBy(startRotation, startAngle, angle, { snap: ev.shiftKey })
+      useStore.getState().patchFrameLocal(frame.id, { rotation })
+      const f = useStore.getState().canvas?.frames.find((x) => x.id === frame.id)
+      if (f) sendDrag(f.id, { id: f.id, x: f.x, y: f.y, width: f.width, height: f.height, rotation })
+    }
+    function onUp() {
+      if (cancelled) return
+      stop()
+      const live = useStore.getState().canvas?.frames.find((x) => x.id === frame.id)
+      const rotation = live?.rotation ?? 0
+      /* a click leaves the frame as it was: nothing to save */
+      if (rotation === startRotation) return
+      trackSave(api.updateFrame(frame.id, { rotation }).catch(console.error))
+      recordUpdate(frame.id, { rotation: startRotation }, { rotation }, true)
+      closePopovers()
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', cancel)
+    window.addEventListener('keydown', onKey, true)
+  }
+
   const html = useThrottledValue(frame.html, 150)
   const remoteEditor = editors[0]
 
@@ -650,6 +785,10 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
   const frameComments = useStore((s) => s.comments).filter((c) => c.frameId === frame.id)
   /* only thread roots get a pin; replies live inside the root's popover */
   const comments = frameComments.filter((c) => !c.parentId && !c.resolvedAt)
+  /* ⇧C hides the pins (an open thread stays); the Comment tool shows them */
+  const pinsShown = useStore((s) => s.viewOptions.comments || s.tool === 'comment')
+  /* a pin being dragged stays mounted: its release listeners live on it */
+  const draggedPin = useStore((s) => s.commentDrag?.id)
   const [probe, setProbe] = useState<ProbeHit | null>(null)
   useEffect(() => {
     // The request also distinguishes a return to previously rendered HTML
@@ -682,6 +821,7 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
   }, [menuProbe, runtimeDocument, frame.html, frame.id])
   /* element selected for text editing inside the iframe (edit mode only) */
   const [activeHit, setActiveHit] = useState<ProbeHit | null>(null)
+  const [textFormat, setTextFormat] = useState<TextFormatState>({})
   const [composing, setComposing] = useState(false)
   const [openThread, setOpenThread] = useState<string | null>(null)
   const [linkedThread, setLinkedThread] = useState<string | null>(deepLinkedThread)
@@ -702,10 +842,14 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
   const hoverKey = useRef<string | null>(null)
 
   const hoverLast = useRef(0)
-  function sendHover(x: number, y: number) {
+  /* where the pointer last was over this frame, in design px, while it is
+     still over it: the document under it can change without it moving */
+  const hoverAt = useRef<{ x: number; y: number } | null>(null)
+  function sendHover(x: number, y: number, force = false) {
+    hoverAt.current = { x, y }
     /* pointermove fires every frame — one probe per ~40ms is plenty */
     const now = Date.now()
-    if (now - hoverLast.current < 40) return
+    if (!force && now - hoverLast.current < 40) return
     hoverLast.current = now
     hoverReq.current += 1
     iframeRef.current?.contentWindow?.postMessage({ type: 'doop:hover', reqId: hoverReq.current, x, y }, '*')
@@ -716,6 +860,38 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
     hoverKey.current = null
     setHover(null)
   }
+
+  function leaveHover() {
+    hoverAt.current = null
+    clearHover()
+  }
+
+  /* the document changed under a still pointer (⌫ took the hovered layer,
+     a save landed): the outline drawn for the old document is stale, so ask
+     again at the same point once the runtime shows the new one — the
+     element now under the pointer is outlined, or nothing is */
+  useEffect(() => {
+    if (!runtimeDocument) return
+    const at = hoverAt.current
+    if (!at) return
+    /* the old outline's key must match no answer, not even "nothing here",
+       so the reply always redraws */
+    hoverKey.current = 'stale'
+    if (
+      editing ||
+      pathEdit ||
+      dragging ||
+      elementMove.moving ||
+      resizing ||
+      frame.locked ||
+      tool === 'hand' ||
+      tool === 'zoom'
+    ) {
+      clearHover()
+      return
+    }
+    sendHover(at.x, at.y, true)
+  }, [runtimeDocument]) // eslint-disable-line react-hooks/exhaustive-deps
 
   /* a Layers row under the pointer outlines its element here, the same as a
      hover over the frame: ask the runtime where the element is, and draw the
@@ -785,7 +961,7 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
 
   /* keep comment pins glued to their elements: re-locate whenever the frame's
      html or the comment set changes, or a pin is moved onto another element */
-  const commentKey = comments.map((c) => c.id + (c.elementId ?? '')).join(',')
+  const commentKey = JSON.stringify(comments.map((c) => [c.id, c.elementId, c.x, c.y, c.elementOrigin]))
   useEffect(() => {
     if (!runtimeReady) return
     for (const c of comments) {
@@ -795,7 +971,7 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
         '*',
       )
     }
-  }, [runtimeReady, html, commentKey]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [runtimeReady, runtimeDocument, html, frame.width, frame.height, commentKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
   /* the selection outline follows its element across html updates (streams,
      agent edits) the same way pins do */
@@ -812,13 +988,24 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
     )
   }, [runtimeReady, html, layerHover])
 
+  /* Resets of the probe are queued from layout effects, not made during
+     render as other derived state is: the runtime's replies refresh the
+     probe through updater functions, and when React has skipped a queued
+     updater for a lower-priority lane it later replays it from the state
+     before it. A reset made during render is not in that queue, so the
+     replay brought the stale probe back and the effect below re-picked the
+     element a link or a deselect had just cleared (pageCanvasBrowser). An
+     update queued from an effect is replayed in order, after the refresh. */
   /* deselecting the frame drops its element selection too, so a stale
      outline never reappears when the frame is picked again */
+  useLayoutEffect(() => {
+    // eslint-disable-next-line react/set-state-in-effect -- queued on purpose, see above
+    if (!selected) setProbe(null)
+  }, [selected])
   const [wasSelected, setWasSelected] = useState(selected)
   if (wasSelected !== selected) {
     setWasSelected(selected)
-    if (!selected) setProbe(null)
-    else if (linkedThread) {
+    if (selected && linkedThread) {
       /* the emailed thread, now that selection will not close it again */
       setOpenThread(linkedThread)
       setLinkedThread(null)
@@ -870,13 +1057,22 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
     }
   }, [probeSel, frame.id])
   const wantedSel = useStore((s) => (s.selectedElement?.frameId === frame.id ? s.selectedElement.selector : null))
-  const [seenWantedSel, setSeenWantedSel] = useState(wantedSel)
-  if (seenWantedSel !== wantedSel) {
-    setSeenWantedSel(wantedSel)
-    /* Returning to a frame-only link (or closing the element panel) also
-       removes the previous element's toolbar and outline. */
+  /* a standalone element is one thing on the canvas, its shape filling its
+     shell: picking that shape (a click, its Layers row) keeps the shell's
+     ring, grips and size badge, which size the shape with it, and never
+     dresses the shape in a second outline and grips of its own, which would
+     size it inside a shell that stays put */
+  const shellSel = useMemo(() => standaloneSelector(frame), [frame])
+  const shellPicked = !!wantedSel && wantedSel === shellSel
+  /* the shape's own layer lock holds the shell's grips too: a resize of the
+     shell is a resize of the locked shape */
+  const shellLocked = useMemo(() => !!shellSel && isLayerLocked(frame, shellSel), [frame, shellSel])
+  /* Returning to a frame-only link (or closing the element panel) also
+     removes the previous element's toolbar and outline. */
+  useLayoutEffect(() => {
+    // eslint-disable-next-line react/set-state-in-effect -- queued on purpose, see above
     if (!wantedSel) setProbe((p) => (p?.selector === FRAME_COMMENT_SELECTOR ? p : null))
-  }
+  }, [wantedSel])
   /* the rest of a multi-element pick: each is outlined like the primary,
      re-located whenever the document changes. A string key keeps the
      selection identity-stable, so memo holds. */
@@ -885,6 +1081,32 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
   )
   const picked = JSON.parse(pickedKey) as string[]
   const multiPick = picked.length > 1
+  /* the picked element's grips and rotate zones: only where a drag can
+     change the box, and never on a locked layer or frame, or under the
+     Comment tool — nor on a multi-element pick, where a drag would size
+     only one */
+  const furnitureShown =
+    !!probe &&
+    probe.selector !== shellSel &&
+    !multiPick &&
+    selected &&
+    !editing &&
+    !pathEdit &&
+    !dragging &&
+    !elementMove.moving &&
+    tool === 'select' &&
+    !!probe.sizable &&
+    !probe.locked &&
+    !frame.locked &&
+    !readOnly
+  /* the hover outline is for what the pointer could pick: an element already
+     picked wears its selection hairline, and the hover's blue wash on top of
+     it would tint a picked root wrapper's whole frame. A standalone element's
+     shape is its shell's selection, so a selected shell hides it too. */
+  const hoverOnSelected =
+    !!hover &&
+    selected &&
+    (picked.includes(hover.selector) || probe?.selector === hover.selector || hover.selector === shellSel)
   const [pickRects, setPickRects] = useState<Record<string, ProbeHit['rect'] | null>>({})
   useEffect(() => {
     if (!runtimeReady) return
@@ -971,18 +1193,22 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
       if (ev.data?.type === 'doop:hover-result' && ev.data.reqId === hoverReq.current) {
         const hit = (ev.data.hit ?? null) as HoverHit | null
         /* only re-render when the outlined element actually changes */
-        const key = hit ? hit.tag + JSON.stringify(hit.rect) : null
+        const key = hit ? hit.selector + JSON.stringify(hit.rect) : null
         if (key !== hoverKey.current) {
           hoverKey.current = key
           setHover(hit)
         }
       }
+      if (ev.data?.type === 'doop:text-state') setTextFormat(ev.data.state ?? {})
       if (ev.data?.type === 'doop:active') {
         const hit = (ev.data.hit ?? null) as ProbeHit | null
         /* rect refreshes for the same element keep the composer open;
            switching elements (or deselecting) closes it */
         const moved = (hit?.selector ?? null) !== activeSelRef.current
-        if (moved) setComposing(false)
+        if (moved) {
+          setComposing(false)
+          setTextFormat({})
+        }
         activeSelRef.current = hit?.selector ?? null
         setActiveHit(hit)
         /* Editing retains an element selection for its Design/HTML panel.
@@ -1006,7 +1232,7 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
           /* the tag of the selector's last step: "section:nth-of-type(2)" → "section" */
           const tag = (selector.split('>').at(-1) ?? '').trim().split(/[:.#[]/)[0] ?? ''
           hoverKey.current = null
-          setHover(rect ? { tag, rect } : null)
+          setHover(rect ? { tag, selector, rect } : null)
           return
         }
         if (ev.data.reqId.startsWith(PICK_REQ)) {
@@ -1020,12 +1246,20 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
           const rect = ev.data.rect as ProbeHit['rect'] | null
           setProbe((p) => {
             if (!p || p.selector !== ev.data.selector) return p
-            return rect ? { ...p, rect, sizable: ev.data.sizable === true } : null
+            if (!rect) return null
+            const box = ev.data.box as ProbeHit['box'] | null
+            return {
+              ...p,
+              rect,
+              sizable: ev.data.sizable === true,
+              rotation: typeof ev.data.rotation === 'number' ? ev.data.rotation : 0,
+              ...(box ? { box } : {}),
+            }
           })
           return
         }
         const rect = ev.data.rect as { x: number; y: number; width: number } | null
-        setPinPos((m) => ({ ...m, [ev.data.reqId]: rect ? { x: rect.x + rect.width, y: rect.y } : null }))
+        setPinPos((m) => ({ ...m, [ev.data.reqId]: rect ? { x: rect.x, y: rect.y } : null }))
       }
     }
     window.addEventListener('message', onMsg)
@@ -1104,10 +1338,19 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
       )
     }
     setEditing(true)
-    iframeRef.current?.contentWindow?.postMessage({ type: 'doop:edit', on: true }, '*')
+    /* the point goes along so the runtime edits the text under it straight
+       away, all of it selected, as a double-click does in Figma */
+    iframeRef.current?.contentWindow?.postMessage({ type: 'doop:edit', on: true, x: at?.x, y: at?.y }, '*')
+  }
+  /* focus held by the frame's document (a text edit) comes back to the page,
+     so the canvas's keyboard shortcuts hear the next key */
+  function reclaimFocus() {
+    const iframe = iframeRef.current
+    if (iframe && document.activeElement === iframe) iframe.blur()
   }
   function exitEdit() {
     iframeRef.current?.contentWindow?.postMessage({ type: 'doop:edit', on: false }, '*')
+    reclaimFocus()
     setEditing(false)
     setActiveHit(null)
     setComposing(false)
@@ -1135,14 +1378,27 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
         localHtml.current = ev.data.html
         setRuntimeDocument({ html: ev.data.html, request: ++htmlRequest.current })
         noteFrameDocument(frame.id, ev.data.html)
+        /* a newly used library font brings its @font-face along, a hosted one
+           its stylesheet link; the saved
+           document then differs from the runtime's, so the post effect sends
+           it back in and the face loads at once */
+        const library = canvasFonts()
+        const canvas = useStore.getState().canvas
+        /* tokens first, so a family named through a font token is seen by the font scan */
+        const withTokens = withTokenBlock(ev.data.html, canvas?.tokens ?? [], canvas?.tokenThemes ?? [])
+        const html = withWebFontLinks(withFontFaces(withTokens, library), library)
         const before = useStore.getState().canvas?.frames.find((f) => f.id === frame.id)?.html
-        useStore.getState().patchFrameLocal(frame.id, { html: ev.data.html })
-        trackSave(api.updateFrame(frame.id, { html: ev.data.html }).catch(console.error))
-        if (before !== undefined)
-          recordUpdate(frame.id, { html: before }, { html: ev.data.html }, ev.data.discrete === true)
+        useStore.getState().patchFrameLocal(frame.id, { html })
+        trackSave(api.updateFrame(frame.id, { html }).catch(console.error))
+        if (before !== undefined) recordUpdate(frame.id, { html: before }, { html }, ev.data.discrete === true)
       }
       if (ev.data?.type === 'doop:edit-esc') {
         setEditing(false)
+        /* the keyboard was in the frame's document while the text was being
+           edited; it stays there after Escape unless the frame lets go, and
+           the canvas's own shortcuts (⌫ on the still-selected element, a
+           tool letter) listen on this window */
+        reclaimFocus()
         setSuspendPost(true)
         window.setTimeout(() => setSuspendPost(false), 500)
       }
@@ -1174,13 +1430,13 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
      store and the iframe has to be told, so this is a sync with an external
      system rather than derived state. */
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- see above
+    // eslint-disable-next-line react/set-state-in-effect -- exitEdit syncs the iframe's edit mode
     if (!selected && editing) exitEdit()
   }, [selected]) // eslint-disable-line react-hooks/exhaustive-deps
   /* so does a lock arriving from a collaborator (or an agent) mid-session:
      what was typed so far is flushed by the exit, nothing more lands */
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- external-system sync, as above
+    // eslint-disable-next-line react/set-state-in-effect -- exitEdit syncs the iframe's edit mode
     if ((frame.locked || readOnly) && editing) exitEdit()
   }, [frame.locked, readOnly]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1219,6 +1475,11 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
               top: frame.y,
               width: frame.width,
               height: frame.height,
+              /* the whole frame turns about its centre: surface, name, grips */
+              transform: frame.rotation ? `rotate(${frame.rotation}deg)` : undefined,
+              /* selected, the frame's parts take its place in the stack one by
+                 one, so its selection chrome can rise above the whole page */
+              zIndex: selected ? undefined : stack,
               '--editing-color': stream?.color ?? remoteEditor?.color ?? flash?.color,
             } as React.CSSProperties
           }
@@ -1259,9 +1520,10 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
         >
           {labelLayer &&
             selected &&
+            !shapeMoving &&
             !editing &&
             !pathEdit &&
-            !wantedSel &&
+            (!wantedSel || shellPicked) &&
             createPortal(
               <div
                 data-frame-size=""
@@ -1270,7 +1532,9 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
                 className="pointer-events-none absolute whitespace-nowrap rounded-tag bg-[rgb(60,130,246)] px-2 py-1 text-label font-medium text-white tabular-nums"
                 style={{
                   left: `calc(var(--vx, 0px) + ${frame.x + frame.width / 2}px * var(--zoom, 1))`,
-                  top: `calc(var(--vy, 0px) + ${frame.y + frame.height}px * var(--zoom, 1))`,
+                  /* under the box the turned frame covers, so a turn never
+                     leaves the badge across the frame */
+                  top: `calc(var(--vy, 0px) + ${badgeBottom(frame)}px * var(--zoom, 1))`,
                   transform: `translate(-50%, ${LABEL_GAP + 4}px)`,
                 }}
               >
@@ -1298,6 +1562,8 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
                 width: 'calc(100% * var(--zoom, 1))',
                 transform: `scale(calc(1 / var(--zoom, 1))) translateY(-${LABEL_GAP}px)`,
                 cursor: duping || dupKeyHeld ? DUP_CURSOR : undefined,
+                /* the frame's place in the stack, while its wrapper gives it up */
+                zIndex: selected ? stack : undefined,
               }}
               onPointerDown={(e) => startDrag(e, 'move', false, true)}
             >
@@ -1382,34 +1648,48 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
             ref={surfaceRef}
             className={cn(
               'absolute inset-0 overflow-hidden',
-              isCanvasElement(frame.html) ? 'bg-transparent' : 'border border-line bg-white',
+              isCanvasElement(frame.html) ? 'bg-transparent' : 'bg-white',
               /* Select keeps the arrow, like Figma: the frame is a thing to
                  point at, not a handle. The Hand tool's grab and the Comment
                  tool's bubble come from the Stage, which overrides every
                  cursor under it. */
               elementMove.moving ? 'cursor-move' : 'cursor-default',
-              !isCanvasElement(frame.html) && (dragging ? 'shadow-pop' : 'shadow-card'),
-              selected && !pathEdit && 'outline-2 outline-offset-1 outline-brand',
-              editing && 'cursor-text outline-2 outline-offset-1 outline-dashed outline-brand',
+              /* no edge at rest, as in Figma: the artwork meets the canvas
+                 directly. A hovered frame wears a soft one-screen-pixel brand ring
+                 (the selected one has its own), a dragged one lifts */
+              !isCanvasElement(frame.html) &&
+                (dragging
+                  ? 'shadow-pop'
+                  : !selected &&
+                    'hover:shadow-[0_0_0_calc(1px/var(--zoom,1))_color-mix(in_srgb,var(--brand)_55%,transparent)]'),
+              editing && 'cursor-text',
               !stream &&
                 remoteEditor &&
                 'outline-2 outline-offset-1 outline-solid outline-[var(--editing-color,var(--brand))]',
-              stream && 'border-transparent outline-none',
+              stream && 'outline-none',
             )}
-            /* the selection ring is screen px like the grips: two pixels
-               straddling the frame's edge at every zoom, so on the pixel grid
-               it runs down the middle of the edge's line, never beside it */
+            /* a remote editor's ring has the selection ring's geometry: two
+               screen pixels straddling the frame's edge at every zoom */
             style={{
               outlineWidth: 'calc(2px / var(--zoom, 1))',
               outlineOffset: 'calc(-1px / var(--zoom, 1))',
               cursor: duping || (dupKeyHeld && !editing) ? DUP_CURSOR : undefined,
+              /* only while selected, when the wrapper gives up its place: inside
+                 an unselected frame's own stacking context a z-index here would
+                 cover the frame's pins and hover outlines */
+              zIndex: selected ? stack : undefined,
             }}
             onPointerDown={(e) => startDrag(e, 'move', true)}
             onDoubleClick={(e) => {
-              void enterElementEdit(designPoint(e, e.currentTarget))
+              void enterElementEdit(designPoint(e, e.currentTarget, frame.rotation))
             }}
             onPointerMove={(e) => {
-              /* the Hand only pans, and a locked frame has nothing to pick: no
+              /* where the pointer is stays current through a drag or a resize
+                 too: once the gesture's save lands, the hover is probed again
+                 at the pointer's spot, which the gesture has moved */
+              const at = designPoint(e, e.currentTarget, frame.rotation)
+              hoverAt.current = at
+              /* the Hand only pans, the Zoom only zooms, and a locked frame has nothing to pick: no
                  element outlines in either case */
               if (
                 editing ||
@@ -1420,13 +1700,13 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
                 frame.locked ||
                 !frame.html ||
                 !runtimeReady ||
-                tool === 'hand'
+                tool === 'hand' ||
+                tool === 'zoom'
               )
                 return
-              const at = designPoint(e, e.currentTarget)
               sendHover(at.x, at.y)
             }}
-            onPointerLeave={clearHover}
+            onPointerLeave={leaveHover}
           >
             <iframe
               ref={iframeRef}
@@ -1467,290 +1747,366 @@ export const FrameView = memo(function FrameView({ frame, layoutZoom }: { frame:
             lifted while editing so clicks land in the editable document,
             but not under a file drag, whose drop belongs to the canvas */}
             {(!editing || panMode || fileDragging || tool !== 'select') && <div className="absolute inset-0" />}
-            {/* above the selection outline (z-[3]), or that outline covers the
-            hovered element's tag */}
-            {hover && !editing && !pathEdit && !dragging && !elementMove.moving && !resizing && (
+          </div>
+          {/* everything drawn over the frame rather than in it: selection ring,
+              element outlines, grips, comments and the element toolbar. While
+              the frame is selected the layer stacks above every frame, so a
+              layer in front of this one never hides what is being worked on */}
+          <div
+            data-frame-chrome=""
+            className="pointer-events-none absolute inset-0"
+            style={{ zIndex: selected ? SELECTION_CHROME_Z : undefined }}
+          >
+            {/* the frame's selection ring (not over an agent's stream, which has
+              its own): two screen pixels straddling its edge, so on the pixel
+              grid it runs down the middle of the edge's line */}
+            {/* a picked element inside the frame is the selection: the frame
+              keeps no ring of its own then, as its grips go too */}
+            {selected && (!wantedSel || shellPicked) && !pathEdit && !stream && !shapeMoving && (
               <div
-                className="pointer-events-none absolute z-[4] bg-[rgba(60,130,246,0.06)] shadow-[inset_0_0_0_calc(1px/var(--zoom,1))_#3c82f6]"
-                style={{ left: hover.rect.x, top: hover.rect.y, width: hover.rect.width, height: hover.rect.height }}
-              >
-                <span
-                  className={cn(
-                    'absolute top-0 left-0 whitespace-nowrap bg-[#3c82f6] px-1.5 py-[3px] text-[10px] font-bold leading-none text-white [font-family:ui-monospace,monospace]',
-                    hover.rect.y < 18
-                      ? 'origin-top-left rounded-[0_0_4px_0] [transform:translateY(0)_scale(min(calc(1/var(--zoom,1)),2.4))]'
-                      : 'origin-bottom-left rounded-[4px_4px_4px_0] [transform:translateY(-100%)_scale(min(calc(1/var(--zoom,1)),2.4))]',
-                  )}
-                >
-                  {hover.tag}
-                </span>
-              </div>
-            )}
-            {probe && probe.selector !== FRAME_COMMENT_SELECTOR && selected && !editing && !pathEdit && !dragging && (
-              <div
-                /* a one-pixel hairline, the way Paper outlines a selection */
-                className="pointer-events-none absolute z-[3] shadow-[inset_0_0_0_calc(1px/var(--zoom,1))_#3c82f6]"
-                style={{ left: probe.rect.x, top: probe.rect.y, width: probe.rect.width, height: probe.rect.height }}
+                data-frame-selection=""
+                className="pointer-events-none absolute inset-0 outline-solid outline-brand"
+                style={{ outlineWidth: 'calc(2px / var(--zoom, 1))', outlineOffset: 'calc(-1px / var(--zoom, 1))' }}
               />
             )}
-            {selected &&
-              !editing &&
-              !pathEdit &&
-              !dragging &&
-              picked
-                .filter((selector) => selector !== probe?.selector)
-                .map((selector) => {
-                  const rect = pickRects[selector]
-                  return (
-                    rect && (
-                      <div
-                        key={selector}
-                        data-picked-element=""
-                        className="pointer-events-none absolute z-[3] shadow-[inset_0_0_0_calc(1px/var(--zoom,1))_#3c82f6]"
-                        style={{ left: rect.x, top: rect.y, width: rect.width, height: rect.height }}
-                      />
+            {/* the element's hover and selection furniture: outlines, grips and
+              the size badge sit outside the surface, whose overflow clips the
+              document to the frame, so a layer wider or taller than its frame
+              is outlined in full while its content stays clipped. The layer
+              covers the surface, where the document starts, so a rect in
+              design px lands on the element it measures */}
+            <div data-element-furniture="" className="pointer-events-none absolute inset-0">
+              {/* above the selection outline (z-[3]), or that outline covers the
+              hovered element's tag */}
+              {hover && !hoverOnSelected && !editing && !pathEdit && !dragging && !elementMove.moving && !resizing && (
+                <>
+                  {/* the wash stays inside the frame: a root element taller or
+                    wider than its frame (a page whose content runs past the
+                    artboard) would otherwise tint the canvas around it, which
+                    reads as the whole canvas being selected. The hairline and
+                    tag below stay unclipped like the selection outline */}
+                  <div className="pointer-events-none absolute inset-0 z-[4] overflow-hidden">
+                    <div
+                      data-hover-wash=""
+                      className="absolute bg-[rgba(60,130,246,0.06)]"
+                      style={{
+                        left: hover.rect.x,
+                        top: hover.rect.y,
+                        width: hover.rect.width,
+                        height: hover.rect.height,
+                      }}
+                    />
+                  </div>
+                  <div
+                    data-hover-outline=""
+                    className="pointer-events-none absolute z-[4] shadow-[inset_0_0_0_calc(1px/var(--zoom,1))_#3c82f6]"
+                    style={{
+                      left: hover.rect.x,
+                      top: hover.rect.y,
+                      width: hover.rect.width,
+                      height: hover.rect.height,
+                    }}
+                  >
+                    <span
+                      className={cn(
+                        'absolute top-0 left-0 whitespace-nowrap bg-[#3c82f6] px-1.5 py-[3px] text-[10px] font-bold leading-none text-white [font-family:ui-monospace,monospace]',
+                        hover.rect.y < 18
+                          ? 'origin-top-left rounded-[0_0_4px_0] [transform:translateY(0)_scale(min(calc(1/var(--zoom,1)),2.4))]'
+                          : 'origin-bottom-left rounded-[4px_4px_4px_0] [transform:translateY(-100%)_scale(min(calc(1/var(--zoom,1)),2.4))]',
+                      )}
+                    >
+                      {hover.tag}
+                    </span>
+                  </div>
+                </>
+              )}
+              {probe &&
+                probe.selector !== FRAME_COMMENT_SELECTOR &&
+                probe.selector !== shellSel &&
+                selected &&
+                !editing &&
+                !pathEdit &&
+                !dragging &&
+                !elementMove.moving && (
+                  <div
+                    data-element-outline=""
+                    /* a one-pixel hairline, the way Paper outlines a selection */
+                    className="pointer-events-none absolute z-[3] shadow-[inset_0_0_0_calc(1px/var(--zoom,1))_#3c82f6]"
+                    /* on the element's own box, turned with it */
+                    style={selectionBox(probe.rect, probe.rotation, probe.box)}
+                  />
+                )}
+              {/* the text being edited wears the same hairline, grips aside: one
+              look for a selected element, in or out of a text edit */}
+              {editing && activeHit && (
+                <div
+                  data-editing-outline=""
+                  className="pointer-events-none absolute z-[3] shadow-[inset_0_0_0_calc(1px/var(--zoom,1))_#3c82f6]"
+                  style={{
+                    left: activeHit.rect.x,
+                    top: activeHit.rect.y,
+                    width: activeHit.rect.width,
+                    height: activeHit.rect.height,
+                  }}
+                />
+              )}
+              {selected &&
+                !editing &&
+                !pathEdit &&
+                !dragging &&
+                !elementMove.moving &&
+                picked
+                  .filter((selector) => selector !== probe?.selector)
+                  .map((selector) => {
+                    const rect = pickRects[selector]
+                    return (
+                      rect && (
+                        <div
+                          key={selector}
+                          data-picked-element=""
+                          className="pointer-events-none absolute z-[3] shadow-[inset_0_0_0_calc(1px/var(--zoom,1))_#3c82f6]"
+                          style={{ left: rect.x, top: rect.y, width: rect.width, height: rect.height }}
+                        />
+                      )
                     )
-                  )
-                })}
-            {/* the grips: only where a drag can change the box, and never on
-                a locked layer or frame, or under the Comment tool — nor on a
-                multi-element pick, where a drag would size only one */}
-            {probe &&
-              !multiPick &&
-              selected &&
-              !editing &&
-              !pathEdit &&
-              !dragging &&
-              !elementMove.moving &&
-              tool === 'select' &&
-              probe.sizable &&
-              !probe.locked &&
-              !frame.locked &&
-              !readOnly && (
+                  })}
+              {/* the grips: only where a drag can change the box, and never on
+              a locked layer or frame, or under the Comment tool — nor on a
+              multi-element pick, where a drag would size only one */}
+              {furnitureShown && probe && (
                 <ElementResizeHandles
                   frame={frame}
                   selector={probe.selector}
-                  rect={probe.rect}
-                  onRect={(rect) => setProbe((p) => (p && p.selector === probe.selector ? { ...p, rect } : p))}
+                  geometry={{ rect: probe.rect, rotation: probe.rotation ?? 0, box: probe.box ?? probe.rect }}
+                  onGeometry={(g: ElementGeometry) =>
+                    setProbe((p) => (p && p.selector === probe.selector ? { ...p, ...g } : p))
+                  }
                   onResizing={(on) => {
                     if (on) clearHover()
                     setResizing(on)
                   }}
                 />
               )}
-          </div>
-          {/* someone else just changed this frame: their highlight, the remote
+            </div>
+            {/* someone else just changed this frame: their highlight, the remote
               editor's outline in their colour, fading out. Outside the body,
               whose overflow would clip an outline. */}
-          {flash && (
-            <div
-              /* the selection ring's own geometry, in the editor's colour */
-              className="pointer-events-none absolute inset-0 outline-solid outline-[var(--editing-color)] animate-[fade-out_1.2s_ease-out_forwards]"
-              style={
-                {
-                  '--editing-color': flash.color,
-                  outlineWidth: 'calc(2px / var(--zoom, 1))',
-                  outlineOffset: 'calc(-1px / var(--zoom, 1))',
-                } as React.CSSProperties
-              }
-            />
-          )}
+            {flash && (
+              <div
+                /* the selection ring's own geometry, in the editor's colour */
+                className="pointer-events-none absolute inset-0 outline-solid outline-[var(--editing-color)] animate-[fade-out_1.2s_ease-out_forwards]"
+                style={
+                  {
+                    '--editing-color': flash.color,
+                    outlineWidth: 'calc(2px / var(--zoom, 1))',
+                    outlineOffset: 'calc(-1px / var(--zoom, 1))',
+                  } as React.CSSProperties
+                }
+              />
+            )}
 
-          {editing && (
-            <div
-              className={cn(
-                'absolute top-[calc(100%_+_10px)] left-0 flex origin-top-left items-center whitespace-nowrap rounded-full bg-ink p-1 text-[11px] font-semibold text-paper shadow-card',
-                COUNTER_SCALE,
-              )}
-              onPointerDown={(e) => e.stopPropagation()}
-            >
-              <Button
-                variant="primary"
-                size="pill"
-                className="border-transparent px-2.5 shadow-none hover:translate-x-0 hover:translate-y-0 hover:brightness-110 hover:shadow-none"
-                onClick={exitEdit}
-                title={t('stage.saveAndFinish')}
-              >
-                <CheckIcon size={12} />
-                {t('stage.done')}
-              </Button>
-            </div>
-          )}
-
-          {/* element comments: pins + element toolbar + composer, all in frame
+            {/* element comments: pins + element toolbar + composer, all in frame
           coords. The toolbar anchors to the probed element normally, and to
           the actively edited element in edit mode. `data-comment-ui`: the
           Comment tool's cursor is forced over the whole stage except inside
           the comment UI, which keeps its own cursors. */}
-          {(() => {
-            const anchor = editing ? activeHit : probe
-            return (
-              <div data-comment-ui className="pointer-events-none absolute inset-0">
-                {comments.map((c) => {
-                  const pos = isFrameComment(c) ? { x: c.x, y: c.y } : pinPos[c.id]
-                  if (!pos) return null
-                  const open = openThread === c.id
-                  const replies = frameComments.filter((r) => r.parentId === c.id).reverse() // store is newest-first
-                  const thread: [ElementComment, ...ElementComment[]] = [c, ...replies.sort((a, b) => a.at - b.at)]
-                  return (
-                    <CommentPin
-                      key={c.id}
-                      thread={thread}
-                      open={open}
-                      left={Math.min(Math.max(pos.x, 10), frame.width - 10)}
-                      top={Math.min(Math.max(pos.y, 10), frame.height - 10)}
-                      onToggle={() => {
-                        setProbe(null)
-                        setComposing(false)
-                        setOpenThread(open ? null : c.id)
-                      }}
-                    >
-                      <CommentThread
+            {(() => {
+              const anchor = editing ? activeHit : probe
+              return (
+                <div data-comment-ui className="pointer-events-none absolute inset-0">
+                  {comments.map((c) => {
+                    const pos = isFrameComment(c) ? { x: c.x, y: c.y } : elementCommentPosition(c, pinPos[c.id])
+                    const open = openThread === c.id
+                    if (!pos || (!pinsShown && !open && draggedPin !== c.id)) return null
+                    const replies = frameComments.filter((r) => r.parentId === c.id).reverse() // store is newest-first
+                    const thread: [ElementComment, ...ElementComment[]] = [c, ...replies.sort((a, b) => a.at - b.at)]
+                    return (
+                      <CommentPin
+                        key={c.id}
                         thread={thread}
-                        onReply={(text) =>
-                          api
-                            .replyComment(c.id, text)
-                            .then(() => posthog.capture('element_comment_replied'))
-                            .catch((err) => {
-                              /* the wall explains a hit limit; anything else
-                                 surfaces in the thread so the draft survives */
-                              if (isResidentLimit(err)) useStore.getState().setLimitWall(true)
-                              throw err
-                            })
-                        }
-                        onResolve={() => {
-                          api
-                            .resolveComment(c.id)
-                            .then(() => posthog.capture('element_comment_resolved'))
-                            .catch(console.error)
-                          setOpenThread(null)
+                        open={open}
+                        left={pos.x}
+                        top={pos.y}
+                        onToggle={() => {
+                          setProbe(null)
+                          setComposing(false)
+                          setOpenThread(open ? null : c.id)
                         }}
-                        onRetry={(id) =>
-                          api.retryComment(id).catch((err) => {
-                            if (isResidentLimit(err)) useStore.getState().setLimitWall(true)
-                            else console.error(err)
-                          })
-                        }
-                      />
-                    </CommentPin>
-                  )
-                })}
+                      >
+                        <CommentThread
+                          thread={thread}
+                          onReply={(text) =>
+                            api
+                              .replyComment(c.id, text)
+                              .then(() => posthog.capture('element_comment_replied'))
+                              .catch((err) => {
+                                /* the wall explains a hit limit; anything else
+                                 surfaces in the thread so the draft survives */
+                                if (isResidentLimit(err)) useStore.getState().setLimitWall(true)
+                                throw err
+                              })
+                          }
+                          onResolve={() => {
+                            api
+                              .resolveComment(c.id)
+                              .then(() => posthog.capture('element_comment_resolved'))
+                              .catch(console.error)
+                            setOpenThread(null)
+                          }}
+                          onRetry={(id) =>
+                            api.retryComment(id).catch((err) => {
+                              if (isResidentLimit(err)) useStore.getState().setLimitWall(true)
+                              else console.error(err)
+                            })
+                          }
+                        />
+                      </CommentPin>
+                    )
+                  })}
 
-                {anchor && (editing || !multiPick) && selected && !contextMenuOpen && !elementMove.moving && (
-                  <div
-                    className={cn('pointer-events-auto absolute z-[7] origin-top-left', POPOVER_SCALE)}
-                    style={{
-                      left: Math.min(Math.max(anchor.rect.x, 4), Math.max(4, frame.width - 60)),
-                      top: Math.max(anchor.rect.y, 2),
-                    }}
-                    onPointerDown={(e) => e.stopPropagation()}
-                  >
-                    {!composing ? (
-                      <>
-                        <div className="flex items-center gap-1.5 whitespace-nowrap rounded-[10px] bg-ink px-[7px] py-[5px] shadow-pop">
-                          <span className="rounded-[5px] bg-paper/[0.14] px-[5px] py-px text-[11px] font-bold text-paper [font-family:ui-monospace,monospace]">
-                            {anchor.tag}
-                          </span>
-                          <Button
-                            variant="inverse"
-                            className={EL_TOOLBAR_BTN}
-                            onClick={() => {
-                              setComposePrefill('')
-                              setComposing(true)
-                            }}
-                          >
-                            <CommentIcon size="rail" /> {t('stage.elementComment')}
-                          </Button>
-                          <Button
-                            variant="inverse"
-                            className={EL_TOOLBAR_BTN}
-                            onClick={() => {
-                              /* pre-mentioned → the comment dispatches as an agent
-                             job scoped to this element's selector + snippet */
-                              setComposePrefill(`@${DEFAULT_ROLE_ID} `)
-                              setComposing(true)
-                            }}
-                          >
-                            <SparkIcon size="rail" /> {t('stage.askAi')}
-                          </Button>
-                          <Button
-                            variant="inverse"
-                            className={EL_TOOLBAR_BTN}
-                            onClick={() => (codeView === null ? requestCode(anchor.selector) : setCodeView(null))}
-                          >
-                            <CodeIcon size="button" /> {t('stage.code')}
-                          </Button>
-                          <Button
-                            variant="inverse"
-                            className={EL_TOOLBAR_BTN}
-                            aria-label={t('stage.copyLinkToElement')}
-                            onClick={() => void copyElementLink(frame, anchor)}
-                          >
-                            {t('stage.copyLink')}
-                          </Button>
-                          {!editing && canEdit && anchor.text !== '' && (
+                  {anchor && (editing || !multiPick) && selected && !contextMenuOpen && !elementMove.moving && (
+                    <div
+                      className={cn(
+                        'pointer-events-auto absolute z-[7] origin-top-left',
+                        furnitureShown && !composing ? POPOVER_SCALE_CLEAR : POPOVER_SCALE,
+                      )}
+                      style={{
+                        left: Math.min(
+                          Math.max(composing ? (anchor.point?.x ?? anchor.rect.x) : anchor.rect.x, 4),
+                          Math.max(4, frame.width - 60),
+                        ),
+                        top: Math.max(composing ? (anchor.point?.y ?? anchor.rect.y) : anchor.rect.y, 2),
+                      }}
+                      onPointerDown={(e) => e.stopPropagation()}
+                    >
+                      {!composing ? (
+                        <>
+                          {editing && (
+                            <div className="mb-1 flex w-fit rounded-control bg-ink p-1 shadow-pop">
+                              <TextFormatToolbar
+                                state={textFormat}
+                                onFormat={(command) =>
+                                  iframeRef.current?.contentWindow?.postMessage(
+                                    { type: 'doop:text-format', command },
+                                    '*',
+                                  )
+                                }
+                              />
+                            </div>
+                          )}
+                          <div className="flex items-center gap-1.5 whitespace-nowrap rounded-[10px] bg-ink px-[7px] py-[5px] shadow-pop">
+                            <span className="rounded-[5px] bg-paper/[0.14] px-[5px] py-px text-[11px] font-bold text-paper [font-family:ui-monospace,monospace]">
+                              {anchor.tag}
+                            </span>
                             <Button
                               variant="inverse"
                               className={EL_TOOLBAR_BTN}
                               onClick={() => {
-                                enterEdit()
+                                setComposePrefill('')
+                                setComposing(true)
                               }}
                             >
-                              <EditIcon size="rail" /> {t('stage.editText')}
+                              <CommentIcon size="rail" /> {t('stage.elementComment')}
                             </Button>
-                          )}
-                        </div>
-                        {codeView !== null && <CodePanel key={anchor.selector} code={codeView} />}
-                      </>
-                    ) : (
-                      <CommentComposer
-                        initialText={composePrefill}
-                        placeholder={anchor.selector === FRAME_COMMENT_SELECTOR ? t('stage.commentOnFrame') : undefined}
-                        onSubmit={(text) => {
-                          /* the point rides along with an element too: should the
-                             element not be found in the saved HTML (a script made
-                             it), the comment lands on the frame there instead */
-                          api
-                            .addComment(frame.id, {
-                              selector: anchor.selector,
-                              ...(anchor.elementId ? { elementId: anchor.elementId } : {}),
-                              snippet: anchor.snippet,
-                              text,
-                              x: anchor.point?.x ?? anchor.rect.x,
-                              y: anchor.point?.y ?? anchor.rect.y,
-                            })
-                            .then(() => posthog.capture('element_comment_created'))
-                            .catch((err) => {
-                              /* an @mention past the free tier raises the wall */
-                              if (isResidentLimit(err)) useStore.getState().setLimitWall(true)
-                              else console.error(err)
-                            })
-                          if (editing) setComposing(false)
-                          else closePopovers()
-                        }}
-                        onCancel={() => (editing ? setComposing(false) : closePopovers())}
-                      />
-                    )}
-                  </div>
-                )}
-              </div>
-            )
-          })()}
+                            <Button
+                              variant="inverse"
+                              className={EL_TOOLBAR_BTN}
+                              onClick={() => {
+                                /* pre-mentioned → the comment dispatches as an agent
+                             job scoped to this element's selector + snippet */
+                                setComposePrefill(`@${DEFAULT_ROLE_ID} `)
+                                setComposing(true)
+                              }}
+                            >
+                              <SparkIcon size="rail" /> {t('stage.askAi')}
+                            </Button>
+                            <Button
+                              variant="inverse"
+                              className={EL_TOOLBAR_BTN}
+                              onClick={() => (codeView === null ? requestCode(anchor.selector) : setCodeView(null))}
+                            >
+                              <CodeIcon size="button" /> {t('stage.code')}
+                            </Button>
+                            <Button
+                              variant="inverse"
+                              className={EL_TOOLBAR_BTN}
+                              aria-label={t('stage.copyLinkToElement')}
+                              onClick={() => void copyElementLink(frame, anchor)}
+                            >
+                              {t('stage.copyLink')}
+                            </Button>
+                            {!editing && canEdit && anchor.text !== '' && (
+                              <Button
+                                variant="inverse"
+                                className={EL_TOOLBAR_BTN}
+                                onClick={() => {
+                                  enterEdit()
+                                }}
+                              >
+                                <EditIcon size="rail" /> {t('stage.editText')}
+                              </Button>
+                            )}
+                          </div>
+                          {codeView !== null && <CodePanel key={anchor.selector} code={codeView} />}
+                        </>
+                      ) : (
+                        <CommentComposer
+                          initialText={composePrefill}
+                          placeholder={
+                            anchor.selector === FRAME_COMMENT_SELECTOR ? t('stage.commentOnFrame') : undefined
+                          }
+                          onSubmit={(text) => {
+                            /* Keep the clicked point until the element moves. If the
+                             element cannot be found in saved HTML, use a frame pin. */
+                            api
+                              .addComment(frame.id, {
+                                selector: anchor.selector,
+                                ...(anchor.elementId ? { elementId: anchor.elementId } : {}),
+                                snippet: anchor.snippet,
+                                text,
+                                x: anchor.point?.x ?? anchor.rect.x,
+                                y: anchor.point?.y ?? anchor.rect.y,
+                                elementOrigin: { x: anchor.rect.x, y: anchor.rect.y },
+                              })
+                              .then(() => posthog.capture('element_comment_created'))
+                              .catch((err) => {
+                                /* an @mention past the free tier raises the wall */
+                                if (isResidentLimit(err)) useStore.getState().setLimitWall(true)
+                                else console.error(err)
+                              })
+                            if (editing) setComposing(false)
+                            else closePopovers()
+                          }}
+                          onCancel={() => (editing ? setComposing(false) : closePopovers())}
+                        />
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
 
-          {/* the frame's grips: only with Select, and never over a picked
+            {/* the frame's grips: only with Select, and never over a picked
               element's own grips, which sit under this layer */}
-          {selected &&
-            tool === 'select' &&
-            !wantedSel &&
-            !elementMove.moving &&
-            !frame.locked &&
-            !readOnly &&
-            !pathEdit &&
-            !editing && (
-              <FrameResizeHandles onStart={(e, handle) => startDrag(e, 'resize', false, false, false, handle)} />
-            )}
-          {elementMove.preview}
-          {pathEdit && <PathEditor frame={frame} initial={pathEdit} onClose={closePathEdit} />}
+            {selected &&
+              tool === 'select' &&
+              (!wantedSel || shellPicked) &&
+              !elementMove.moving &&
+              !shapeMoving &&
+              !frame.locked &&
+              !shellLocked &&
+              !readOnly &&
+              !pathEdit &&
+              !editing && (
+                <FrameResizeHandles
+                  rotation={frame.rotation ?? 0}
+                  onStart={(e, handle) => startDrag(e, 'resize', false, false, false, handle)}
+                  onRotateStart={startRotate}
+                />
+              )}
+            {elementMove.preview}
+            {pathEdit && <PathEditor frame={frame} initial={pathEdit} onClose={closePathEdit} />}
+          </div>
         </div>
       </ContextMenuTrigger>
       {menuTarget === 'frame' ? (
