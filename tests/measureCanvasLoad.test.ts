@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net'
 import { existsSync } from 'node:fs'
 import { chromium } from 'playwright-core'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { checkSession, measureCanvasLoad, median, summarizeCanvas } from '../scripts/perf/measure-canvas-load.ts'
+import { fetchCanvasJson, measureCanvasLoad, median, summarizeCanvas } from '../scripts/perf/measure-canvas-load.ts'
 
 /* CHE-5849: the load-time baseline for the big doop file. The summary counts
    what the canvas JSON carries; the measurement waits for every mounted frame
@@ -37,7 +37,7 @@ describe('median', () => {
   })
 })
 
-describe('checkSession', () => {
+describe('fetchCanvasJson', () => {
   let server: Server
   let baseUrl = ''
   beforeAll(async () => {
@@ -49,11 +49,12 @@ describe('checkSession', () => {
   })
   afterAll(() => new Promise<void>((r) => server.close(() => r())))
 
-  it('passes for a cookie the API accepts', async () => {
-    await expect(checkSession(baseUrl, 'fx', 'sid=abc')).resolves.toBeUndefined()
+  it('returns the canvas JSON body for a cookie the API accepts', async () => {
+    const body = await fetchCanvasJson(baseUrl, 'fx', 'sid=abc')
+    expect(body.toString('utf8')).toBe('{}')
   })
   it('fails at once with the status and a hint to copy a fresh cookie', async () => {
-    await expect(checkSession(baseUrl, 'fx', 'sid=stale')).rejects.toThrow(/401.*fresh cookie/s)
+    await expect(fetchCanvasJson(baseUrl, 'fx', 'sid=stale')).rejects.toThrow(/401.*fresh cookie/s)
   })
 })
 
@@ -102,9 +103,11 @@ describe.skipIf(!chromiumPresent)('measureCanvasLoad against a fixture server', 
     expect(out.runs).toHaveLength(3)
     for (const r of out.runs) {
       expect(r.ms).toBeGreaterThanOrEqual(500)
-      expect(r.framesTotal).toBe(2)
       expect(r.iframesMounted).toBe(2)
     }
+    // payload numbers come from one request made outside the browser, so a slow
+    // browser-side response body cannot stall a run (CHE-5849 baseline hang)
+    expect(out.canvasJsonBytes).toBeGreaterThan(allHtml.length)
     expect(out.medianMs).toBe(median(out.runs.map((r) => r.ms)))
     expect(out.frames).toBe(2)
     expect(out.dataUriCount).toBe(2)
@@ -126,6 +129,7 @@ describe.skipIf(!chromiumPresent)('measureCanvasLoad against a fixture server', 
     expect(text).toMatch(/browser started/)
     expect(text).toMatch(/page loaded/)
     expect(text).toMatch(/canvas JSON \d+ bytes/)
+    expect(text).toMatch(/all frames ready after \d+ ms/)
     expect(text).toMatch(/iframes ready \d+\/\d+/)
   }, 60_000)
 })
