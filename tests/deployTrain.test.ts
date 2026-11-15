@@ -20,6 +20,8 @@ const D_PRED = 'sha256:' + 'd'.repeat(64)
 const D_CAND = 'sha256:' + 'e'.repeat(64)
 const D_THIRD = 'sha256:' + 'f'.repeat(64)
 const ARMED = 'armed:n1:99:' + CAND
+const CLEAR = 'clear:' + '0'.repeat(32) + ':restore'
+const CLEAR_LIFT = 'clear:' + '9'.repeat(32) + ':4242'
 const BOT = 'github-actions[bot]'
 
 const httpError = (status: number) => Object.assign(new Error(`GitHub ${status}`), { status })
@@ -35,7 +37,7 @@ function api(vars: Vars, mergers: Record<string, string | null> = { [MID]: 'cong
   const routes: Record<string, unknown> = {
     [`repos/${REPO}/actions/variables/DOOP_DEPLOY_TRAIN`]: () => val(vars.sw, 'on')(),
     [`repos/${REPO}/actions/variables/MAIN_RED_PAUSED`]: () => val(vars.paused, null)(),
-    [`repos/${REPO}/actions/variables/DOOP_DEPLOY_SUSPENDED`]: () => val(vars.marker, 'clear:n0:restore')(),
+    [`repos/${REPO}/actions/variables/DOOP_DEPLOY_SUSPENDED`]: () => val(vars.marker, CLEAR)(),
   }
   let n = 10
   for (const [sha, login] of Object.entries(mergers)) {
@@ -115,6 +117,25 @@ describe('decideRun: entry rules (C-4, Done when 1)', () => {
     expect(await d('someone')).toMatchObject({ go: false, skip: false })
   })
 
+  it('recovery rerun: allowed only when the rerun’s triggering actor is allowlisted (C-4)', async () => {
+    const rerun = (trigger: string, extra = '') =>
+      decideRun(
+        entry({
+          event: 'workflow_dispatch',
+          inputs: { mode: 'recovery' },
+          actor: 'congvc-dev',
+          trigger,
+          attempt: '2',
+          extra,
+          ghApi: api({ sw: 'off', marker: null }),
+        }),
+      )
+    expect(await rerun('congvc-dev')).toMatchObject({ go: true, mode: 'recovery' })
+    expect(await rerun('congvc-bot-x99', 'congvc-bot-x99')).toMatchObject({ go: true })
+    expect(await rerun('someone')).toMatchObject({ go: false, skip: false })
+    expect(await rerun(BOT)).toMatchObject({ go: false, skip: false })
+  })
+
   it('drill mode is refused until S6', async () => {
     const r = await decideRun(
       entry({ event: 'workflow_dispatch', inputs: { mode: 'drill' }, actor: 'congvc-dev', trigger: 'congvc-dev' }),
@@ -135,6 +156,9 @@ describe('decideRun: train gates skip (Done when 2)', () => {
     ['marker armed', { marker: 'armed:n:1:' + CAND }],
     ['marker suspended', { marker: 'suspended:n:1:' + CAND + ':migrated' }],
     ['marker garbage', { marker: 'ok' }],
+    ['marker with the clear prefix but no nonce', { marker: 'clear:n0:restore' }],
+    ['marker clear with a short nonce', { marker: 'clear:abc:restore' }],
+    ['marker clear with a trailing line', { marker: CLEAR + '\nx' }],
   ])('%s', async (_n, vars) => {
     expect(await decideRun(entry({ ghApi: api(vars) }))).toMatchObject({ go: false, skip: true })
   })
@@ -150,6 +174,38 @@ describe('decideRun: train gates skip (Done when 2)', () => {
       }),
     )
     expect(r).toMatchObject({ go: true })
+  })
+})
+
+describe('train reads the marker only, no run history (C-10.4, S3a)', () => {
+  it('the gate script carries no history walk and no legacy decider', async () => {
+    // @ts-expect-error plain .mjs script, no type declarations
+    const gate = (await import('../scripts/deploy-gate.mjs')) as Record<string, unknown>
+    expect(Object.keys(gate)).not.toContain('decide')
+    expect(Object.keys(gate)).not.toContain('recheck')
+    const { readFileSync } = await import('node:fs')
+    const text = readFileSync('scripts/deploy-gate.mjs', 'utf8')
+    for (const gone of [
+      'MAX_AGE',
+      'MAX_PAGES',
+      'LAG',
+      'suspendedBy',
+      'workflows/image.yml/runs?branch=${BRANCH}&per_page',
+    ]) {
+      expect(text, gone).not.toContain(gone)
+    }
+  })
+
+  it('a train run never reads a workflow run to decide', async () => {
+    const reads: string[] = []
+    const inner = api({})
+    const ghApi = async (path: string) => {
+      reads.push(path)
+      return inner(path)
+    }
+    expect(await decideRun(entry({ ghApi }))).toMatchObject({ go: true })
+    expect(await ops({}, { ghApi })('pre-arm')).toMatchObject({ go: true })
+    expect(reads.filter((p) => p.includes('/actions/runs'))).toEqual([])
   })
 })
 
@@ -349,7 +405,7 @@ describe('recheckOp revalidates the entry on this attempt (Done when 1, rerun of
 
 describe('recheckOp after the arm write (Done when 3)', () => {
   it('success sequence: clear, pre-arm, arm, pre-apply, apply, confirm with the candidate running', async () => {
-    const vars: Vars = { marker: 'clear:n0:restore' }
+    const vars: Vars = { marker: CLEAR }
     let running = { digest: D_PRED, label: RUNNING }
     const op = ops(vars, { running: async () => running })
     expect(await op('pre-arm')).toMatchObject({ go: true })
@@ -415,7 +471,7 @@ describe('recheckOp after the arm write (Done when 3)', () => {
     for (const marker of [
       'armed:n9:2:' + CAND,
       'suspended:n9:2:' + CAND + ':x',
-      'clear:n9:lift',
+      CLEAR_LIFT,
       ARMED + 'x',
       null,
       httpError(500),
@@ -441,7 +497,7 @@ describe('recheckOp after the arm write (Done when 3)', () => {
         go: false,
         skip: false,
       })
-      expect(await ops({ marker: 'clear:n6:lift', sw }, base)('pre-apply', own)).toMatchObject({
+      expect(await ops({ marker: CLEAR_LIFT, sw }, base)('pre-apply', own)).toMatchObject({
         go: false,
         skip: false,
       })
@@ -450,7 +506,7 @@ describe('recheckOp after the arm write (Done when 3)', () => {
 
   it.each(['pre-arm', 'pre-apply', 'confirm', 'rollback'])('%s refuses when quiescence is not proven', async (op) => {
     const r = await ops(
-      { marker: op === 'pre-arm' ? 'clear:n0:restore' : ARMED },
+      { marker: op === 'pre-arm' ? CLEAR : ARMED },
       { quiescent: async () => ({ ok: false, reason: 'session left' }) },
     )(op, ARMED)
     expect(r).toMatchObject({ go: false, skip: false })

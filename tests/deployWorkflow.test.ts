@@ -176,6 +176,98 @@ describe('D2 C00 jobs: deploy, readback-confirm, rollback', () => {
   })
 })
 
+describe('D2 suspension marker wiring (CHE-5545, C-10.1 to C-10.3)', () => {
+  const deploy = job(d2, 'deploy')
+  const confirm = job(d2, 'readback-confirm')
+  const rollback = job(d2, 'rollback')
+  const at = (j: string, needle: string) => {
+    const i = j.indexOf(needle)
+    expect(i, needle).toBeGreaterThan(-1)
+    return i
+  }
+
+  it.each([
+    ['deploy', deploy],
+    ['readback-confirm', confirm],
+    ['rollback', rollback],
+  ])('%s writes the marker with a GitHub App token from the doop-deploy-marker environment', (_n, j) => {
+    expect(j).toMatch(/environment: doop-deploy-marker/)
+    expect(j).toMatch(/uses: actions\/create-github-app-token@[0-9a-f]{40}/)
+    expect(j).toContain('permission-variables: write')
+    expect(j).toContain('repositories: doop')
+    // The token is minted just before the first marker write, never ahead of a check or a rollback it could block.
+    expect(at(j, 'create-github-app-token')).toBeLessThan(at(j, 'deploy-marker.mjs'))
+    expect(j).toMatch(/GH_TOKEN: \$\{\{ steps\.app\.outputs\.token \}\}/)
+  })
+
+  it('hosted jobs never get the marker token or the environment', () => {
+    for (const name of ['resolve', 'admit']) {
+      expect(job(d2, name)).not.toContain('doop-deploy-marker')
+      expect(job(d2, name)).not.toContain('create-github-app-token')
+    }
+  })
+
+  it('arms right after the pre-arm check and before login, apply or any docker call', () => {
+    const arm = at(deploy, 'deploy-marker.mjs')
+    expect(arm).toBeGreaterThan(at(deploy, '--op pre-arm'))
+    for (const later of ['docker login', 'c00.sh apply', 'c00.sh readback']) expect(arm).toBeLessThan(at(deploy, later))
+    // A train run arms; recovery and drill suspend. Neither can write clear.
+    expect(deploy).toMatch(/deploy-marker\.mjs arm/)
+    expect(deploy).toMatch(/deploy-marker\.mjs suspend/)
+    expect(deploy).not.toMatch(/deploy-marker\.mjs restore/)
+  })
+
+  it('a failed arm write stops the deploy: login, apply and readback run only after a passing arm', () => {
+    const armStep = deploy.slice(at(deploy, 'id: arm'), at(deploy, 'Log in to GHCR'))
+    expect(armStep).not.toMatch(/continue-on-error|if: always|if: \$\{\{ (always|failure)/)
+    for (const name of ['Apply', 'Read back']) {
+      const step = deploy.slice(at(deploy, `- name: ${name}`)).split('\n      - ')[0] ?? ''
+      expect(step, name).not.toMatch(/always\(\)|failure\(\)|cancelled\(\)/)
+    }
+  })
+
+  it('the run-own marker value is the arm step output, not a value computed from the run id', () => {
+    for (const j of [deploy, confirm, rollback]) expect(j).not.toMatch(/armed:n\{|format\('armed:/)
+    expect(deploy).toMatch(/MARKER_EXPECT: \$\{\{ steps\.arm\.outputs\.marker \}\}/)
+    expect(deploy).toMatch(/outputs:[\s\S]*marker: \$\{\{ steps\.arm\.outputs\.marker \}\}/)
+    expect(confirm).toMatch(/MARKER_EXPECT: \$\{\{ needs\.deploy\.outputs\.marker \}\}/)
+    expect(rollback).toMatch(/MARKER_EXPECT: \$\{\{ needs\.deploy\.outputs\.marker \}\}/)
+  })
+
+  it('only a passing confirm of a train run restores; the restore is its last step and never runs after a failure', () => {
+    const restore = at(confirm, 'deploy-marker.mjs restore')
+    expect(restore).toBeGreaterThan(at(confirm, '--op confirm'))
+    const step = confirm.slice(confirm.lastIndexOf('- name:', restore))
+    expect(step).toMatch(/if: \$\{\{ env\.DEPLOY_MODE == 'train' \}\}/)
+    expect(step).not.toMatch(/always\(\)|failure\(\)|cancelled\(\)|continue-on-error/)
+    expect(step).toContain('MARKER_EXPECT')
+    expect(confirm.slice(restore + 1)).not.toContain('\n      - name:')
+  })
+
+  it('rollback suspends over its own arm after the check, whatever the rollback itself did', () => {
+    const suspendAt = at(rollback, 'deploy-marker.mjs suspend')
+    expect(suspendAt).toBeGreaterThan(at(rollback, '--op rollback'))
+    expect(suspendAt).toBeGreaterThan(at(rollback, 'c00.sh rollback'))
+    const step = rollback.slice(rollback.lastIndexOf('- name:', suspendAt))
+    expect(step).toMatch(/if: \$\{\{ !cancelled\(\) && steps\.check\.outputs\.go == 'true' \}\}/)
+    expect(step).toContain('MARKER_EXPECT')
+    expect(rollback).not.toMatch(/deploy-marker\.mjs (arm|restore)/)
+    // A failed token mint can never keep a broken deploy from rolling back: it comes after the rollback.
+    expect(at(rollback, 'create-github-app-token')).toBeGreaterThan(at(rollback, 'c00.sh rollback'))
+  })
+
+  it('the marker is written by these three C00 jobs only', () => {
+    for (const name of ['resolve', 'admit']) expect(job(d2, name)).not.toContain('deploy-marker.mjs')
+    expect(d1).not.toContain('deploy-marker.mjs')
+  })
+
+  it('passes ids and values through env, never into a script', () => {
+    for (const j of [deploy, confirm, rollback]) {
+      for (const line of j.split('\n').filter((l) => /^\s+run:/.test(l))) expect(line).not.toContain('${{')
+    }
+  })
+})
+
 describe('compose overlay', () => {
   const overlay = readFileSync('deploy/cd/compose.image.yml', 'utf8')
 

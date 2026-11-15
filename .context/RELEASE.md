@@ -47,7 +47,10 @@ D2 runs three times a day (06:17, 14:17, 22:17 ICT) and on dispatch. `resolve` a
 pick the newest `cheese/main` commit with a successful D1 run and pin the manifest, D1 run, image label and
 migration inventory to it. `deploy`, `readback-confirm` and `rollback` run on the `cheese-c00-deploy` runner
 in concurrency group `c00-deploy-doop`; `c00.sh apply` also takes a host `flock`. The train ships off: repo
-variable `DOOP_DEPLOY_TRAIN` absent or not `on` means every scheduled run skips. Setup and rules:
+variable `DOOP_DEPLOY_TRAIN` absent or not `on` means every scheduled run skips. The suspension marker
+`DOOP_DEPLOY_SUSPENDED` is armed by a train run before its first change, restored only by that run's passing
+confirm, and written `suspended:*` (never clear) by recovery, drill and rollback, via `scripts/deploy-marker.mjs`
+and a GitHub App token from environment `doop-deploy-marker`. Setup and rules:
 [`deploy/cd/README.md`](../deploy/cd/README.md).
 
 ## Desktop app (Tauri: macOS DMG + Windows NSIS installer + Linux AppImage/.deb/.rpm)

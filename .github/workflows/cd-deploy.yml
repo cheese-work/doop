@@ -6,12 +6,16 @@ name: CD deploy
 #
 #   resolve (hosted)   enter the run, pick the candidate, read the D1 manifest
 #   admit (hosted)     pin: manifest, D1 run, image label and migration inventory all name the candidate
-#   deploy (C00)       pre-arm check, then apply (flock + pre-apply check) and readback
-#   readback-confirm   confirm check on C00 that the candidate is what runs
-#   rollback           rollback check, then roll back by digest only if C00 still runs the candidate
+#   deploy (C00)       pre-arm check, ARM the marker, then apply (flock + pre-apply check) and readback
+#   readback-confirm   confirm check on C00 that the candidate is what runs; a train run then restores the marker
+#   rollback           rollback check, roll back by digest only if C00 still runs the candidate, then suspend
 #
+# The suspension marker (repo variable DOOP_DEPLOY_SUSPENDED, CHE-5545, plan C-10) is written only by the three
+# C00 jobs, with scripts/deploy-marker.mjs: a train run arms it before its first change and only a passing
+# confirm of that same run restores it; recovery and drill runs, and a rollback, write `suspended:*` and never
+# `clear:*`. Every failure leaves it armed or suspended, which stops the train. Lifting is S3b.
 # The train ships OFF: the repository variable DOOP_DEPLOY_TRAIN is absent or not 'on', so a scheduled run
-# ends at `resolve` as a clean skip. Arming, restoring and lifting the suspension marker are S3a.
+# ends at `resolve` as a clean skip.
 # Schedule: 23:17, 07:17 and 15:17 UTC = 06:17, 14:17 and 22:17 ICT.
 on:
   schedule:
@@ -142,6 +146,7 @@ jobs:
     if: ${{ needs.admit.outputs.go == 'true' && github.repository == 'cheese-work/doop' }}
     runs-on: [self-hosted, cheese-c00-deploy]
     timeout-minutes: 30
+    environment: doop-deploy-marker
     permissions:
       contents: read
       packages: read
@@ -153,12 +158,11 @@ jobs:
       go: ${{ steps.prearm.outputs.go }}
       predecessor_digest: ${{ steps.prearm.outputs.predecessor_digest }}
       attempted: ${{ steps.apply.outputs.attempted }}
+      marker: ${{ steps.arm.outputs.marker }}
     env:
       DEPLOY_REF: ${{ format('ghcr.io/{0}@{1}', github.repository, needs.admit.outputs.digest) }}
       DEPLOY_SHA: ${{ needs.admit.outputs.candidate }}
       DEPLOY_MODE: ${{ needs.admit.outputs.mode }}
-      # This run's own marker value; S3a writes it to DOOP_DEPLOY_SUSPENDED before the first change.
-      MARKER_EXPECT: ${{ format('armed:n{0}:{1}:{2}', github.run_attempt, github.run_id, needs.admit.outputs.candidate) }}
       C00_COMPOSE_DIR: ${{ vars.C00_DOOP_COMPOSE_DIR || '/home/congvc/.local/share/doop' }}
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
@@ -185,6 +189,32 @@ jobs:
       - name: Pre-arm check
         id: prearm
         run: node scripts/deploy-gate.mjs recheck "$DEPLOY_MODE" --op pre-arm
+      # The marker is a repository variable; `github.token` cannot write one, so a GitHub App token does. It is
+      # minted in the environment that holds the App key, only for variables, and just before its first use.
+      - name: Mint the marker token
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.DOOP_MARKER_APP_ID }}
+          private-key: ${{ secrets.DOOP_MARKER_APP_KEY }}
+          repositories: doop
+          permission-variables: write
+      # Step 2 (C-10.2): before any login, pull or start. A train run arms from clear; recovery and drill write
+      # suspended over whatever stands. A failed write fails the job here, so nothing below runs and nothing
+      # on C00 has changed.
+      - name: Arm the marker
+        id: arm
+        if: ${{ steps.prearm.outputs.go == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          RUN_ID: ${{ github.run_id }}
+          SHA: ${{ needs.admit.outputs.candidate }}
+        run: |
+          if [ "$DEPLOY_MODE" = train ]; then
+            node scripts/deploy-marker.mjs arm
+          else
+            node scripts/deploy-marker.mjs suspend --any --reason "$DEPLOY_MODE"
+          fi
       - name: Log in to GHCR
         if: ${{ steps.prearm.outputs.go == 'true' }}
         env:
@@ -194,6 +224,8 @@ jobs:
       - name: Apply
         id: apply
         if: ${{ steps.prearm.outputs.go == 'true' }}
+        env:
+          MARKER_EXPECT: ${{ steps.arm.outputs.marker }}
         run: bash deploy/cd/c00.sh apply
       - name: Read back (digest, SHA, health)
         if: ${{ steps.prearm.outputs.go == 'true' }}
@@ -207,6 +239,7 @@ jobs:
     if: ${{ needs.deploy.result == 'success' && needs.deploy.outputs.attempted == 'true' && github.repository == 'cheese-work/doop' }}
     runs-on: [self-hosted, cheese-c00-deploy]
     timeout-minutes: 20
+    environment: doop-deploy-marker
     permissions:
       contents: read
     concurrency:
@@ -216,7 +249,6 @@ jobs:
       DEPLOY_REF: ${{ format('ghcr.io/{0}@{1}', github.repository, needs.admit.outputs.digest) }}
       DEPLOY_SHA: ${{ needs.admit.outputs.candidate }}
       DEPLOY_MODE: ${{ needs.admit.outputs.mode }}
-      MARKER_EXPECT: ${{ format('armed:n{0}:{1}:{2}', github.run_attempt, github.run_id, needs.admit.outputs.candidate) }}
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
       EXTRA: ${{ vars.C00_DEPLOY_AUTHORIZERS }}
@@ -230,15 +262,35 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # Restoring the marker after a pass is S3a; this job proves the candidate is what runs.
       - name: Confirm check
+        env:
+          MARKER_EXPECT: ${{ needs.deploy.outputs.marker }}
         run: node scripts/deploy-gate.mjs recheck "$DEPLOY_MODE" --op confirm --expect "$MARKER_EXPECT"
+      # The marker is a repository variable; `github.token` cannot write one, so a GitHub App token does. It is
+      # minted in the environment that holds the App key, only for variables, and just before its first use.
+      - name: Mint the marker token
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.DOOP_MARKER_APP_ID }}
+          private-key: ${{ secrets.DOOP_MARKER_APP_KEY }}
+          repositories: doop
+          permission-variables: write
+      # Last step, and only after the confirm passed: this run's own armed value becomes a new clear (C-10.2).
+      # Recovery and drill never restore; a failed or refused restore leaves the marker armed, which is suspended.
+      - name: Restore the marker
+        if: ${{ env.DEPLOY_MODE == 'train' }}
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          MARKER_EXPECT: ${{ needs.deploy.outputs.marker }}
+        run: node scripts/deploy-marker.mjs restore
 
   rollback:
     needs: [admit, deploy, readback-confirm]
     if: ${{ always() && needs.deploy.outputs.attempted == 'true' && (needs.deploy.result == 'failure' || needs.readback-confirm.result == 'failure') && github.repository == 'cheese-work/doop' }}
     runs-on: [self-hosted, cheese-c00-deploy]
     timeout-minutes: 20
+    environment: doop-deploy-marker
     permissions:
       contents: read
     concurrency:
@@ -248,7 +300,6 @@ jobs:
       DEPLOY_REF: ${{ format('ghcr.io/{0}@{1}', github.repository, needs.admit.outputs.digest) }}
       DEPLOY_SHA: ${{ needs.admit.outputs.candidate }}
       DEPLOY_MODE: ${{ needs.admit.outputs.mode }}
-      MARKER_EXPECT: ${{ format('armed:n{0}:{1}:{2}', github.run_attempt, github.run_id, needs.admit.outputs.candidate) }}
       PREDECESSOR_DIGEST: ${{ needs.deploy.outputs.predecessor_digest }}
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
@@ -267,7 +318,30 @@ jobs:
       # Acts on what C00 runs: the candidate rolls back; the predecessor or a newer deploy is left alone.
       - name: Rollback check
         id: check
+        env:
+          MARKER_EXPECT: ${{ needs.deploy.outputs.marker }}
         run: node scripts/deploy-gate.mjs recheck "$DEPLOY_MODE" --op rollback --expect "$MARKER_EXPECT"
       - name: Roll back by digest
         if: ${{ steps.check.outputs.action == 'rollback' }}
         run: bash deploy/cd/c00.sh rollback
+      # The marker is a repository variable; `github.token` cannot write one, so a GitHub App token does. It is
+      # minted in the environment that holds the App key, only for variables, and just before its first use.
+      - name: Mint the marker token
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.DOOP_MARKER_APP_ID }}
+          private-key: ${{ secrets.DOOP_MARKER_APP_KEY }}
+          repositories: doop
+          permission-variables: write
+      # Whatever the rollback did, even if it failed: this run's armed value becomes suspended (C-10.3). Only a
+      # lift (S3b) clears it. Not after a refused check, where the marker is no longer this run's own.
+      - name: Suspend the marker
+        if: ${{ !cancelled() && steps.check.outputs.go == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          MARKER_EXPECT: ${{ needs.deploy.outputs.marker }}
+          RUN_ID: ${{ github.run_id }}
+          SHA: ${{ needs.admit.outputs.candidate }}
+          ACTION: ${{ steps.check.outputs.action }}
+        run: node scripts/deploy-marker.mjs suspend --reason "rollback-$ACTION"
