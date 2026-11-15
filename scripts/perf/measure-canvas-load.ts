@@ -6,9 +6,10 @@
  *
  * Per run: a fresh browser (so a cold cache), open /c/<canvas>, wait until every mounted
  * frame iframe has posted `doop:frame-ready` and the set has held for 500 ms, and report the
- * time from navigation start. The canvas JSON gives the frame HTML payload and the count of
- * `data:` image URIs. Frames far from the camera hold no iframe (src/lib/frameCulling.ts), so
- * the run also reports framesTotal beside iframesMounted. */
+ * time from navigation start. One request from Node (not the browser) fetches the canvas JSON
+ * for the frame HTML payload and the count of `data:` image URIs. Frames far from the camera
+ * hold no iframe (src/lib/frameCulling.ts), so each run reports iframesMounted beside the
+ * total `frames`. */
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 import { chromium } from 'playwright-core'
@@ -21,11 +22,7 @@ export interface CanvasSummary {
 
 export interface RunResult {
   ms: number
-  framesTotal: number
   iframesMounted: number
-  canvasJsonBytes: number
-  htmlBytes: number
-  dataUriCount: number
 }
 
 export interface MeasureOptions {
@@ -74,14 +71,16 @@ function parseCookie(header: string, url: string) {
     })
 }
 
-/** One plain request with the cookie, so a stale cookie fails in a second, not after the 120 s wait. */
-export async function checkSession(baseUrl: string, canvasId: string, cookie: string): Promise<void> {
+/** The canvas JSON, fetched once outside the browser. A stale cookie fails in a second, not after the 120 s
+ * wait, and the payload numbers never depend on Playwright reading a large response body. */
+export async function fetchCanvasJson(baseUrl: string, canvasId: string, cookie: string): Promise<Buffer> {
   const res = await fetch(`${baseUrl}/api/canvases/${canvasId}`, { headers: { cookie } })
   if (!res.ok)
     throw new Error(
       `${baseUrl}/api/canvases/${canvasId} answered ${res.status}: the cookie is missing, expired or cannot view this canvas. ` +
         'Copy a fresh cookie from a logged-in doop tab (DevTools, Network, any /api request, Cookie header) and rerun.',
     )
+  return Buffer.from(await res.arrayBuffer())
 }
 
 function within<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
@@ -111,18 +110,6 @@ async function measureOnce(opts: MeasureOptions): Promise<RunResult> {
         if (e.data?.type === 'doop:frame-ready' && e.source) ready.add(e.source)
       })
     })
-    const apiPath = `/api/canvases/${canvasId}`
-    const canvasBody = new Promise<Buffer>((resolve, reject) => {
-      page.on('response', (res) => {
-        if (new URL(res.url()).pathname !== apiPath) return
-        if (!res.ok()) return reject(new Error(`${apiPath} answered ${res.status()}`))
-        res.body().then((b) => {
-          say(`  [${t()}] canvas JSON ${b.length} bytes`)
-          resolve(b)
-        }, reject)
-      })
-    })
-    canvasBody.catch(() => {}) // surfaced below; a rejection before the await must not crash the run
     beat = setInterval(() => {
       // the page may be too busy to answer, so the probe has its own short limit
       within(
@@ -155,22 +142,10 @@ async function measureOnce(opts: MeasureOptions): Promise<RunResult> {
       SETTLE_MS,
       { polling: 25, timeout: timeoutMs },
     )
-    // a 401 or 404 on the canvas request ends the run now, not after the timeout
-    wait.catch(() => {}) // the race below reports it; a late timeout after browser.close() must not go unhandled
-    const failed = canvasBody.then(() => new Promise<never>(() => {}))
-    const handle = await Promise.race([wait, failed])
-    const ms = (await handle.jsonValue()) as number
-    const iframesMounted = await page.locator('[data-frame-surface] iframe').count()
-    const body = await canvasBody
-    const summary = summarizeCanvas(JSON.parse(body.toString('utf8')))
-    return {
-      ms,
-      framesTotal: summary.frames,
-      iframesMounted,
-      canvasJsonBytes: body.length,
-      htmlBytes: summary.htmlBytes,
-      dataUriCount: summary.dataUriCount,
-    }
+    wait.catch(() => {}) // the await below reports it; a late timeout after browser.close() must not go unhandled
+    const ms = (await (await wait).jsonValue()) as number
+    say(`  [${t()}] all frames ready after ${Math.round(ms)} ms`)
+    return { ms, iframesMounted: await page.locator('[data-frame-surface] iframe').count() }
   } finally {
     clearInterval(beat)
     // a frozen renderer can make a plain close() wait forever
@@ -184,20 +159,23 @@ export async function measureCanvasLoad(opts: MeasureOptions) {
   const runs: RunResult[] = []
   const total = opts.runs ?? 5
   const say = opts.onProgress ?? (() => {})
+  const body = await fetchCanvasJson(opts.baseUrl, opts.canvasId, opts.cookie ?? '')
+  const summary = summarizeCanvas(JSON.parse(body.toString('utf8')))
+  say(`canvas JSON ${body.length} bytes, ${summary.frames} frames, ${summary.dataUriCount} data: image URIs`)
   for (let i = 0; i < total; i++) {
     say(`run ${i + 1}/${total} ...`)
     // goto and the ready-wait each get timeoutMs; this stops a run stuck beyond both
     runs.push(await within(measureOnce(opts), 2 * (opts.timeoutMs ?? 120_000) + 30_000, `run ${i + 1}`))
     say(`run ${i + 1}/${total} done: ${Math.round(runs[i]?.ms ?? Number.NaN)} ms`)
   }
-  const last = runs.at(-1)
-  if (!last) throw new Error('runs must be at least 1')
+  if (runs.length === 0) throw new Error('runs must be at least 1')
   return {
     runs,
     medianMs: median(runs.map((r) => r.ms)),
-    frames: last.framesTotal,
-    htmlBytes: last.htmlBytes,
-    dataUriCount: last.dataUriCount,
+    frames: summary.frames,
+    canvasJsonBytes: body.length,
+    htmlBytes: summary.htmlBytes,
+    dataUriCount: summary.dataUriCount,
   }
 }
 
@@ -217,9 +195,7 @@ async function main() {
   // doop answers 401 to an anonymous API call and the SPA then never requests the canvas
   if (!cookie) throw new Error('set DOOP_SESSION_COOKIE to a session cookie of an account that can view the canvas')
   const base = baseUrl.replace(/\/$/, '')
-  console.error('checking the cookie ...')
-  await checkSession(base, canvasId, cookie)
-  console.error(`cookie accepted. ${values.runs} cold runs follow, each prints a line every 10 s ...`)
+  console.error(`fetching the canvas JSON, then ${values.runs} cold runs, each prints a line every 10 s ...`)
   const result = await measureCanvasLoad({
     baseUrl: base,
     canvasId,
