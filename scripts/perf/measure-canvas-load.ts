@@ -70,6 +70,16 @@ function parseCookie(header: string, url: string) {
     })
 }
 
+/** One plain request with the cookie, so a stale cookie fails in a second, not after the 120 s wait. */
+export async function checkSession(baseUrl: string, canvasId: string, cookie: string): Promise<void> {
+  const res = await fetch(`${baseUrl}/api/canvases/${canvasId}`, { headers: { cookie } })
+  if (!res.ok)
+    throw new Error(
+      `${baseUrl}/api/canvases/${canvasId} answered ${res.status}: the cookie is missing, expired or cannot view this canvas. ` +
+        'Copy a fresh cookie from a logged-in doop tab (DevTools, Network, any /api request, Cookie header) and rerun.',
+    )
+}
+
 async function measureOnce(opts: MeasureOptions): Promise<RunResult> {
   const { baseUrl, canvasId, cookie, timeoutMs = 120_000, viewport = { width: 1440, height: 900 } } = opts
   const browser = await chromium.launch()
@@ -132,7 +142,11 @@ async function measureOnce(opts: MeasureOptions): Promise<RunResult> {
 
 export async function measureCanvasLoad(opts: MeasureOptions) {
   const runs: RunResult[] = []
-  for (let i = 0; i < (opts.runs ?? 5); i++) runs.push(await measureOnce(opts))
+  const total = opts.runs ?? 5
+  for (let i = 0; i < total; i++) {
+    runs.push(await measureOnce(opts))
+    console.error(`run ${i + 1}/${total}: ${Math.round(runs[i]?.ms ?? Number.NaN)} ms`) // stderr keeps stdout the JSON result
+  }
   const last = runs.at(-1)
   if (!last) throw new Error('runs must be at least 1')
   return {
@@ -159,12 +173,11 @@ async function main() {
   const cookie = process.env.DOOP_SESSION_COOKIE
   // doop answers 401 to an anonymous API call and the SPA then never requests the canvas
   if (!cookie) throw new Error('set DOOP_SESSION_COOKIE to a session cookie of an account that can view the canvas')
-  const result = await measureCanvasLoad({
-    baseUrl: baseUrl.replace(/\/$/, ''),
-    canvasId,
-    cookie,
-    runs: Number(values.runs),
-  })
+  const base = baseUrl.replace(/\/$/, '')
+  console.error('checking the cookie ...')
+  await checkSession(base, canvasId, cookie)
+  console.error(`cookie accepted. ${values.runs} cold runs follow, about 10 to 60 s each ...`)
+  const result = await measureCanvasLoad({ baseUrl: base, canvasId, cookie, runs: Number(values.runs) })
   console.log(JSON.stringify({ baseUrl, canvasId, viewport: '1440x900', ...result }, null, 2))
 }
 
