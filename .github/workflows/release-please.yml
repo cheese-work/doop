@@ -1,3 +1,4 @@
+# ci-policy: class=deploy
 # Cuts releases from conventional commits on main.
 #
 # On every push to main, release-please opens (or refreshes) a "chore(main):
