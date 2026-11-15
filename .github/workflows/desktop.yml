@@ -1,3 +1,4 @@
+# ci-policy: class=pr-validation
 # Builds the desktop shell (unsigned) so shell changes are validated in CI.
 # Product changes never require a desktop build — the shell loads the hosted
 # site — so this only runs when desktop/ itself changes, or on demand. It
@@ -17,6 +18,10 @@ on:
       - 'desktop/**'
       - '.github/actions/setup-desktop/**'
       - '.github/workflows/desktop.yml'
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-macos:
