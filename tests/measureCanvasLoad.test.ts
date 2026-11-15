@@ -111,4 +111,21 @@ describe.skipIf(!chromiumPresent)('measureCanvasLoad against a fixture server', 
     expect(out.htmlBytes).toBe(Buffer.byteLength(allHtml, 'utf8'))
     expect(hits.noCookie).toBe(0)
   }, 60_000)
+
+  it('reports where the run is while it waits, so a slow page is not silent', async () => {
+    const lines: string[] = []
+    await measureCanvasLoad({
+      baseUrl,
+      canvasId: 'fx',
+      cookie: 'sid=abc',
+      runs: 1,
+      heartbeatMs: 100,
+      onProgress: (m) => lines.push(m),
+    })
+    const text = lines.join('\n')
+    expect(text).toMatch(/browser started/)
+    expect(text).toMatch(/page loaded/)
+    expect(text).toMatch(/canvas JSON \d+ bytes/)
+    expect(text).toMatch(/iframes ready \d+\/\d+/)
+  }, 60_000)
 })
