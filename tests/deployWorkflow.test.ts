@@ -1,154 +1,168 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
-/* Text assertions (`yaml` is only transitive). Each names a property CHE-4585
-   requires of the C00 deploy: security controls first. */
-const wf = readFileSync('.github/workflows/image.yml', 'utf8')
+/* Text assertions (`yaml` is only transitive). CHE-5544 (train S2, plan CHE-5474 C-2, C-3, C-5, C-6):
+   D1 (`image.yml`) builds and records the candidate manifest and holds no deploy power; D2
+   (`cd-deploy.yml`) is the only workflow that touches C00. */
+const d1 = readFileSync('.github/workflows/image.yml', 'utf8')
+const d2 = readFileSync('.github/workflows/cd-deploy.yml', 'utf8')
 
 /* The text of one top-level job, up to the next job or end of file. */
-function job(name: string): string {
+function job(wf: string, name: string): string {
   const m = new RegExp(`^  ${name}:\\n([\\s\\S]*?)(?=^  [a-z][a-z0-9-]*:\\n|(?![\\s\\S]))`, 'm').exec(wf)
   if (!m?.[1]) throw new Error(`no job ${name}`)
   return m[1]
 }
+const hasJob = (wf: string, name: string) => new RegExp(`^  ${name}:\\n`, 'm').test(wf)
 
-describe('deploy chain lives in image.yml', () => {
-  it('has gate and deploy jobs behind the image job, so it only ever runs from cheese/main', () => {
-    expect(job('gate')).toMatch(/needs:.*\bimage\b/)
-    expect(job('deploy')).toMatch(/needs:.*\bgate\b/)
-    expect(wf).toMatch(/push:\s*\n\s*branches: \[cheese\/main\]/)
+describe('D1 image.yml: build and manifest only', () => {
+  it('keeps ci and image, and has no gate or deploy job', () => {
+    expect(hasJob(d1, 'ci')).toBe(true)
+    expect(hasJob(d1, 'image')).toBe(true)
+    expect(hasJob(d1, 'gate')).toBe(false)
+    expect(hasJob(d1, 'deploy')).toBe(false)
   })
 
-  it('exposes the image digest as a job output', () => {
-    expect(job('image')).toMatch(/outputs:\s*\n\s*digest: \$\{\{ steps\.build\.outputs\.digest \}\}/)
+  it('holds no C00 runner and no deploy secret', () => {
+    expect(d1).not.toMatch(/self-hosted|cheese-c00-deploy|c00-deploy-doop/)
+    expect(d1.replace(/secrets\.GITHUB_TOKEN/g, '')).not.toContain('secrets.')
+    expect(d1).not.toMatch(/c00\.sh|deploy-gate/)
   })
 
-  it('labels the image with the source SHA, which the readback checks', () => {
-    expect(job('image')).toContain('org.opencontainers.image.revision=${{ github.sha }}')
+  it('records the candidate manifest: SHA, digest, inventory sha and D1 run id', () => {
+    const image = job(d1, 'image')
+    expect(image).toContain('scripts/migration-inventory.mjs')
+    for (const v of ['DIGEST', 'SHA', 'INVENTORY_SHA', 'D1_RUN_ID']) expect(image).toContain(`${v}:`)
+    expect(image).toContain('github.run_id')
+    expect(image).toMatch(/name: candidate-manifest/)
+    expect(image).toContain('retention-days')
   })
 
-  it('keeps the build on a GitHub runner; only deploy touches the C00 runner', () => {
-    expect(job('image')).toContain('runs-on: ubuntu-latest')
-    expect(job('image')).not.toMatch(/runs-on:.*(self-hosted|c00)/i)
-    expect(job('gate')).toContain('runs-on: ubuntu-latest')
-    expect(job('deploy')).toContain('cheese-c00-deploy')
-  })
-})
-
-describe('gate job (merge-actor allowlist, MAIN_RED_PAUSED)', () => {
-  const gate = job('gate')
-
-  it('decides with scripts/deploy-gate.mjs and publishes the verdict as a job output', () => {
-    expect(gate).toContain('scripts/deploy-gate.mjs')
-    expect(gate).toMatch(/outputs:\s*\n\s*authorized: \$\{\{ steps\.\w+\.outputs\.authorized \}\}/)
-  })
-
-  it('reads only; it holds no write permission and no deploy secret', () => {
-    expect(gate).toMatch(/permissions:\s*\n\s*contents: read\s*\n\s*actions: read\s*\n\s*pull-requests: read/)
-    expect(gate).not.toMatch(/: write/)
-    expect(gate).not.toContain('secrets.')
-  })
-
-  it('passes event data through env, never inlined into the script', () => {
-    for (const v of ['C00_DEPLOY_AUTHORIZERS', 'MAIN_RED_PAUSED']) expect(gate).toContain(`vars.${v}`)
-    expect(gate).toContain('github.actor')
-    expect(gate).not.toMatch(/run:[^\n]*\$\{\{/)
+  it('still labels the image with the source SHA, which the pin and the readback check', () => {
+    expect(job(d1, 'image')).toContain('org.opencontainers.image.revision=${{ github.sha }}')
   })
 })
 
-describe('deploy job', () => {
-  const deploy = job('deploy')
-
-  it('runs only when the gate authorized, never on a fork', () => {
-    expect(deploy).toContain("needs.gate.outputs.authorized == 'true'")
-    expect(deploy).toContain("github.repository == 'cheese-work/doop'")
+describe('D2 cd-deploy.yml: triggers (C-2, C-3)', () => {
+  it('is classed deploy, and runs on the 8-hour schedule and on dispatch only', () => {
+    expect(d2).toMatch(/^# ci-policy: class=deploy$/m)
+    expect(d2).toMatch(/schedule:\s*\n\s*- cron: '17 23,7,15 \* \* \*'/)
+    expect(d2).toContain('workflow_dispatch:')
+    expect(d2).not.toMatch(/^\s+push:/m)
+    expect(d2).not.toContain('pull_request')
   })
 
-  it('deploys the digest from this run, never a tag', () => {
-    expect(deploy).toContain('needs.image.outputs.digest')
-    expect(deploy).toContain('DEPLOY_REF')
-    expect(deploy).not.toMatch(/:latest|ghcr\.io[^\n]*:\$\{\{ github\.sha/)
+  it('takes mode, candidate_sha, schedule_backup and fault as dispatch inputs', () => {
+    const inputs = d2.slice(d2.indexOf('inputs:'), d2.indexOf('\npermissions:'))
+    for (const i of ['mode', 'candidate_sha', 'schedule_backup', 'fault'])
+      expect(inputs).toMatch(new RegExp(`^ {6}${i}:`, 'm'))
+    for (const m of ['train', 'recovery', 'drill']) expect(inputs).toContain(`- ${m}`)
   })
 
-  it('never builds on C00', () => {
-    expect(deploy).not.toMatch(/docker\/build-push-action|docker build|buildx/)
-    expect(deploy).not.toMatch(/uses: \.\/\.github\/workflows/)
+  it('has no workflow-level concurrency; the lock is per C00 job', () => {
+    expect(d2).not.toMatch(/^concurrency:/m)
   })
+})
 
-  it('applies, reads back, and on failure rolls back by digest then fails the run', () => {
-    expect(deploy).toMatch(/c00\.sh apply/)
-    expect(deploy).toMatch(/c00\.sh readback/)
-    const rollback = deploy.indexOf('c00.sh rollback')
-    expect(rollback).toBeGreaterThan(deploy.indexOf('c00.sh readback'))
-    expect(deploy.slice(rollback - 400, rollback)).toMatch(/if: .*failure\(\)/)
-  })
-
-  it('rechecks suspension after the lock is held, before anything touches C00', () => {
-    const recheck = deploy.indexOf('deploy-gate.mjs recheck')
-    expect(recheck).toBeGreaterThan(deploy.indexOf('uses: actions/checkout@v4'))
-    expect(recheck).toBeLessThan(deploy.indexOf('c00.sh apply'))
-    expect(recheck).toBeLessThan(deploy.indexOf('docker login'))
-    expect(deploy).toMatch(/actions: read/)
-    expect(deploy).toMatch(/uses: actions\/setup-node@v4/)
-    expect(deploy.slice(recheck - 500, recheck)).not.toMatch(/run:[^\n]*\$\{\{/)
-  })
-
-  it('passes the attempt number, rerun initiator and allowlist to the gate and to the recheck', () => {
-    for (const j of [job('gate'), deploy]) {
-      expect(j).toContain('ATTEMPT: ${{ github.run_attempt }}')
-      expect(j).toContain('TRIGGER: ${{ github.triggering_actor }}')
-      expect(j).toContain('EXTRA: ${{ vars.C00_DEPLOY_AUTHORIZERS }}')
+describe('D2 hosted jobs: resolve and admit', () => {
+  it('run on GitHub runners, read only, with nothing from the deploy host', () => {
+    for (const name of ['resolve', 'admit']) {
+      const j = job(d2, name)
+      expect(j).toContain('runs-on: ubuntu-latest')
+      expect(j).not.toMatch(/self-hosted|cheese-c00-deploy/)
+      expect(j).not.toMatch(/: write/)
     }
   })
 
-  it('gives the recheck the dispatching actor too, so it can judge a dispatch', () => {
-    expect(deploy.slice(deploy.indexOf('Recheck suspension'), deploy.indexOf('deploy-gate.mjs recheck'))).toContain(
-      'ACTOR: ${{ github.actor }}',
+  it('resolve decides with deploy-gate.mjs and downloads the manifest of the chosen D1 run', () => {
+    const j = job(d2, 'resolve')
+    expect(j).toContain('scripts/deploy-gate.mjs decide')
+    expect(j).toContain('scripts/deploy-gate.mjs resolve')
+    expect(j).toContain('candidate-manifest')
+    expect(j).toMatch(/outputs:[\s\S]*candidate:/)
+  })
+
+  it('admit pins manifest, run, image label and inventory to the candidate', () => {
+    const j = job(d2, 'admit')
+    expect(j).toMatch(/needs: resolve/)
+    expect(j).toContain('scripts/deploy-gate.mjs admit')
+    expect(j).toContain('scripts/migration-inventory.mjs')
+    expect(j).toMatch(/ref: \$\{\{ needs\.resolve\.outputs\.candidate \}\}/)
+    expect(j).toMatch(/outputs:[\s\S]*go:[\s\S]*digest:/)
+  })
+
+  it('never inlines event data or inputs into a script', () => {
+    for (const name of ['resolve', 'admit']) expect(job(d2, name)).not.toMatch(/run:[^\n]*\$\{\{/)
+  })
+})
+
+describe('D2 C00 jobs: deploy, readback-confirm, rollback', () => {
+  const c00jobs = ['deploy', 'readback-confirm', 'rollback']
+
+  it.each(c00jobs)('%s runs on the C00 runner under one non-cancelling lock group', (name) => {
+    const j = job(d2, name)
+    expect(j).toContain('[self-hosted, cheese-c00-deploy]')
+    expect(j).toMatch(/concurrency:\s*\n\s*group: c00-deploy-doop\s*\n\s*cancel-in-progress: false/)
+    expect(j).toContain("github.repository == 'cheese-work/doop'")
+  })
+
+  it('only the C00 jobs name the C00 runner', () => {
+    expect(job(d2, 'resolve')).not.toContain('cheese-c00-deploy')
+    expect(job(d2, 'admit')).not.toContain('cheese-c00-deploy')
+  })
+
+  it('deploy runs only when admit said go, and deploys the admitted digest, never a tag or a build', () => {
+    const j = job(d2, 'deploy')
+    expect(j).toContain("needs.admit.outputs.go == 'true'")
+    expect(j).toContain('needs.admit.outputs.digest')
+    expect(j).toContain('DEPLOY_REF')
+    expect(j).not.toMatch(/:latest|docker\/build-push-action|docker build|buildx/)
+  })
+
+  it('deploy step 1 is the pre-arm recheck, before login, apply or any docker call', () => {
+    const j = job(d2, 'deploy')
+    const recheck = j.indexOf('deploy-gate.mjs recheck')
+    expect(recheck).toBeGreaterThan(-1)
+    expect(j.slice(recheck, recheck + 80)).toContain('--op pre-arm')
+    expect(recheck).toBeGreaterThan(j.indexOf('uses: actions/checkout@v4'))
+    for (const later of ['docker login', 'c00.sh apply', 'c00.sh readback'])
+      expect(j.indexOf(later), later).toBeGreaterThan(recheck)
+    expect(j).toMatch(
+      /uses: actions\/checkout@v4\s*\n\s*with:\s*\n\s*ref: \$\{\{ needs\.admit\.outputs\.candidate \}\}/,
     )
   })
 
-  it('rolls back only after this run captured its rollback target and tried the change', () => {
-    expect(deploy).toMatch(/- name: Apply\n\s+id: apply\n/)
-    const rollback = deploy.indexOf('c00.sh rollback')
-    expect(deploy.slice(rollback - 400, rollback)).toMatch(
-      /if: \$\{\{ failure\(\) && steps\.apply\.outputs\.attempted == 'true' \}\}/,
-    )
+  it('apply gets the mode and the run-own marker value, so pre-apply runs inside the flock', () => {
+    const j = job(d2, 'deploy')
+    expect(j).toContain('DEPLOY_MODE:')
+    expect(j).toContain('MARKER_EXPECT:')
   })
 
-  it('serializes deploys and never cancels one midway', () => {
-    expect(deploy).toMatch(/concurrency:\s*\n\s*group: c00-deploy-doop\s*\n\s*cancel-in-progress: false/)
+  it('the deploy job reports the facts the later jobs need', () => {
+    expect(job(d2, 'deploy')).toMatch(/outputs:[\s\S]*predecessor_digest:/)
   })
 
-  it('pulls from GHCR with the job token and logs out afterwards, even on failure', () => {
-    expect(deploy).toMatch(/packages: read/)
-    expect(deploy).toContain('secrets.GITHUB_TOKEN')
-    expect(deploy).toMatch(/if: always\(\)[\s\S]*docker logout ghcr\.io/)
+  it('confirm runs the confirm check; rollback runs the rollback check before any change', () => {
+    const confirm = job(d2, 'readback-confirm')
+    expect(confirm).toMatch(/needs: \[admit, deploy\]/)
+    expect(confirm).toContain('--op confirm')
+    const rb = job(d2, 'rollback')
+    expect(rb).toContain('--op rollback')
+    expect(rb.indexOf('--op rollback')).toBeLessThan(rb.indexOf('c00.sh rollback'))
+    expect(rb).toMatch(/if: \$\{\{ always\(\) && /)
   })
 
-  it('has no checkout of untrusted code: it uses the SHA that was gated', () => {
-    expect(deploy).toMatch(/uses: actions\/checkout@v4\s*\n\s*with:\s*\n\s*ref: \$\{\{ github\.sha \}\}/)
+  it('set no job-level timeout past the age bound and never swallow a failure', () => {
+    for (const name of c00jobs) {
+      const j = job(d2, name)
+      expect(j).toMatch(/timeout-minutes: (\d|[1-5]\d)\b/)
+      expect(j).not.toMatch(/continue-on-error|nohup|setsid|disown/)
+    }
   })
 
-  it('defaults the C00 compose dir to the real path, a repo variable still overrides', () => {
-    expect(deploy).toContain("C00_COMPOSE_DIR: ${{ vars.C00_DOOP_COMPOSE_DIR || '/home/congvc/.local/share/doop' }}")
-  })
-
-  it('holds a hard timeout above the 15 minute readback window, and at most 30 minutes', () => {
-    expect(deploy).toMatch(/^ {4}timeout-minutes: (1[6-9]|2\d|30)$/m)
-  })
-
-  // The recheck refuses a run 30 days old; this bound is what makes that refusal cover the whole deploy
-  // (a run created at T finishes before T + 30 days + 30 minutes). The lock is taken before the job
-  // starts, so no wait follows the recheck.
-  it('enforces the run-age bound: job-level lock, a 30 minute cap, recheck before every C00 step', () => {
-    const header = deploy.slice(0, deploy.indexOf('    steps:'))
-    expect(header).toMatch(/^ {4}concurrency:\n\s+group: c00-deploy-doop\n\s+cancel-in-progress: false$/m)
-    expect(header).toMatch(/^ {4}timeout-minutes: (\d|1\d|2\d|30)$/m)
-    const recheck = deploy.indexOf('deploy-gate.mjs recheck')
-    for (const c00 of ['Log in to GHCR', 'name: Apply', 'c00.sh apply', 'c00.sh readback', 'docker login'])
-      expect(deploy.indexOf(c00), c00).toBeGreaterThan(recheck)
-    const steps = deploy.slice(deploy.indexOf('    steps:'))
-    expect(steps).not.toMatch(/timeout-minutes|continue-on-error|nohup|setsid|disown/)
+  it('passes event data through env, and logs out of GHCR even on failure', () => {
+    for (const name of c00jobs) expect(job(d2, name)).not.toMatch(/run:[^\n]*\$\{\{/)
+    expect(job(d2, 'deploy')).toMatch(/if: always\(\)[\s\S]*docker logout ghcr\.io/)
   })
 })
 
@@ -159,12 +173,5 @@ describe('compose overlay', () => {
     expect(overlay).toMatch(/^services:\n {2}app:\n/m)
     expect(overlay).not.toMatch(/^ {2}doop:/m)
     expect(overlay).toContain('pull_policy: never')
-  })
-})
-
-describe('dispatch', () => {
-  it('manual dispatch also passes the gate and the allowlist', () => {
-    expect(wf).toContain('workflow_dispatch')
-    expect(job('deploy')).toContain('needs.gate.outputs.authorized')
   })
 })

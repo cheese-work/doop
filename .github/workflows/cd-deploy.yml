@@ -1,0 +1,259 @@
+# ci-policy: class=deploy
+name: CD deploy
+
+# D2 of the deploy train (CHE-5544, plan CHE-5474 C-2, C-3, C-5, C-6): the only workflow that touches C00.
+# It deploys a candidate that D1 (`image.yml`) already built and recorded. Nothing builds here.
+#
+#   resolve (hosted)   enter the run, pick the candidate, read the D1 manifest
+#   admit (hosted)     pin: manifest, D1 run, image label and migration inventory all name the candidate
+#   deploy (C00)       pre-arm check, then apply (flock + pre-apply check) and readback
+#   readback-confirm   confirm check on C00 that the candidate is what runs
+#   rollback           rollback check, then roll back by digest only if C00 still runs the candidate
+#
+# The train ships OFF: the repository variable DOOP_DEPLOY_TRAIN is absent or not 'on', so a scheduled run
+# ends at `resolve` as a clean skip. Arming, restoring and lifting the suspension marker are S3a.
+# Schedule: 23:17, 07:17 and 15:17 UTC = 06:17, 14:17 and 22:17 ICT.
+on:
+  schedule:
+    - cron: '17 23,7,15 * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: train runs the schedule path; recovery and drill need an allowlisted login
+        type: choice
+        options:
+          - train
+          - recovery
+          - drill
+        default: train
+      candidate_sha:
+        description: Full commit SHA of the candidate (recovery and drill only)
+        type: string
+        default: ''
+      schedule_backup:
+        description: Set only by the schedule backup (github-actions[bot])
+        type: boolean
+        default: false
+      fault:
+        description: Drill fault to inject (used from slice S6)
+        type: string
+        default: none
+
+permissions:
+  contents: read
+
+# No workflow-level concurrency: a group keeps one pending run and would drop the middle of three.
+# The lock is the group `c00-deploy-doop` on each C00 job below, which is never cancelled.
+
+jobs:
+  resolve:
+    if: github.repository == 'cheese-work/doop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      go: ${{ steps.pick.outputs.go || 'false' }}
+      mode: ${{ steps.decide.outputs.mode }}
+      candidate: ${{ steps.pick.outputs.candidate }}
+      run_id: ${{ steps.pick.outputs.run_id }}
+      manifest: ${{ steps.manifest.outputs.json }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # Via env, never inlined into a script. A refusal fails the job; a skip ends the run green.
+      - id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          ACTOR: ${{ github.actor }}
+          TRIGGER: ${{ github.triggering_actor }}
+          ATTEMPT: ${{ github.run_attempt }}
+          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_SCHEDULE_BACKUP: ${{ inputs.schedule_backup }}
+          EXTRA: ${{ vars.C00_DEPLOY_AUTHORIZERS }}
+        run: node scripts/deploy-gate.mjs decide
+      - id: pick
+        if: ${{ steps.decide.outputs.go == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          MODE: ${{ steps.decide.outputs.mode }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: node scripts/deploy-gate.mjs resolve
+      # The manifest of the chosen D1 run, passed on as a one-line job output for `admit`.
+      - id: manifest
+        if: ${{ steps.pick.outputs.go == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          D1_RUN: ${{ steps.pick.outputs.run_id }}
+        run: |
+          gh run download "$D1_RUN" --repo "$REPO" --name candidate-manifest --dir manifest
+          echo "json=$(jq -c . manifest/candidate-manifest.json)" >> "$GITHUB_OUTPUT"
+
+  admit:
+    needs: resolve
+    if: ${{ needs.resolve.outputs.go == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      packages: read
+    outputs:
+      go: ${{ steps.admit.outputs.go }}
+      digest: ${{ steps.admit.outputs.digest }}
+      candidate: ${{ needs.resolve.outputs.candidate }}
+      mode: ${{ needs.resolve.outputs.mode }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.candidate }}
+          persist-credentials: false
+      # Recomputed from the checked-out candidate, never read from the manifest (C-6).
+      - id: inventory
+        run: echo "sha=$(node scripts/migration-inventory.mjs)" >> "$GITHUB_OUTPUT"
+      - name: Log in to GHCR
+        env:
+          TOKEN: ${{ github.token }}
+        run: echo "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - id: admit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          MODE: ${{ needs.resolve.outputs.mode }}
+          CANDIDATE: ${{ needs.resolve.outputs.candidate }}
+          RUN_ID: ${{ needs.resolve.outputs.run_id }}
+          MANIFEST_JSON: ${{ needs.resolve.outputs.manifest }}
+          INVENTORY_SHA: ${{ steps.inventory.outputs.sha }}
+        run: |
+          printf '%s' "$MANIFEST_JSON" > manifest.json
+          MANIFEST=manifest.json node scripts/deploy-gate.mjs admit
+      - name: Log out of GHCR
+        if: always()
+        run: docker logout ghcr.io
+
+  deploy:
+    needs: admit
+    if: ${{ needs.admit.outputs.go == 'true' && github.repository == 'cheese-work/doop' }}
+    runs-on: [self-hosted, cheese-c00-deploy]
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    # One C00 job at a time; a started deploy is never cancelled midway.
+    concurrency:
+      group: c00-deploy-doop
+      cancel-in-progress: false
+    outputs:
+      go: ${{ steps.prearm.outputs.go }}
+      predecessor_digest: ${{ steps.prearm.outputs.predecessor_digest }}
+      attempted: ${{ steps.apply.outputs.attempted }}
+    env:
+      DEPLOY_REF: ${{ format('ghcr.io/{0}@{1}', github.repository, needs.admit.outputs.digest) }}
+      DEPLOY_SHA: ${{ needs.admit.outputs.candidate }}
+      DEPLOY_MODE: ${{ needs.admit.outputs.mode }}
+      # This run's own marker value; S3a writes it to DOOP_DEPLOY_SUSPENDED before the first change.
+      MARKER_EXPECT: ${{ format('armed:n{0}:{1}:{2}', github.run_attempt, github.run_id, needs.admit.outputs.candidate) }}
+      C00_COMPOSE_DIR: ${{ vars.C00_DOOP_COMPOSE_DIR || '/home/congvc/.local/share/doop' }}
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      EXTRA: ${{ vars.C00_DEPLOY_AUTHORIZERS }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.admit.outputs.candidate }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Step 1 (C-5): nothing below runs on a skip, and nothing on C00 has changed yet.
+      - name: Pre-arm check
+        id: prearm
+        run: node scripts/deploy-gate.mjs recheck "$DEPLOY_MODE" --op pre-arm
+      - name: Log in to GHCR
+        if: ${{ steps.prearm.outputs.go == 'true' }}
+        env:
+          TOKEN: ${{ github.token }}
+        run: echo "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      # Takes the flock and runs the pre-apply check inside it, then pulls and starts.
+      - name: Apply
+        id: apply
+        if: ${{ steps.prearm.outputs.go == 'true' }}
+        run: bash deploy/cd/c00.sh apply
+      - name: Read back (digest, SHA, health)
+        if: ${{ steps.prearm.outputs.go == 'true' }}
+        run: bash deploy/cd/c00.sh readback
+      - name: Log out of GHCR
+        if: always()
+        run: docker logout ghcr.io
+
+  readback-confirm:
+    needs: [admit, deploy]
+    if: ${{ needs.deploy.result == 'success' && needs.deploy.outputs.attempted == 'true' && github.repository == 'cheese-work/doop' }}
+    runs-on: [self-hosted, cheese-c00-deploy]
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    concurrency:
+      group: c00-deploy-doop
+      cancel-in-progress: false
+    env:
+      DEPLOY_REF: ${{ format('ghcr.io/{0}@{1}', github.repository, needs.admit.outputs.digest) }}
+      DEPLOY_SHA: ${{ needs.admit.outputs.candidate }}
+      DEPLOY_MODE: ${{ needs.admit.outputs.mode }}
+      MARKER_EXPECT: ${{ format('armed:n{0}:{1}:{2}', github.run_attempt, github.run_id, needs.admit.outputs.candidate) }}
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      EXTRA: ${{ vars.C00_DEPLOY_AUTHORIZERS }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.admit.outputs.candidate }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Restoring the marker after a pass is S3a; this job proves the candidate is what runs.
+      - name: Confirm check
+        run: node scripts/deploy-gate.mjs recheck "$DEPLOY_MODE" --op confirm --expect "$MARKER_EXPECT"
+
+  rollback:
+    needs: [admit, deploy, readback-confirm]
+    if: ${{ always() && needs.deploy.outputs.attempted == 'true' && (needs.deploy.result == 'failure' || needs.readback-confirm.result == 'failure') && github.repository == 'cheese-work/doop' }}
+    runs-on: [self-hosted, cheese-c00-deploy]
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    concurrency:
+      group: c00-deploy-doop
+      cancel-in-progress: false
+    env:
+      DEPLOY_REF: ${{ format('ghcr.io/{0}@{1}', github.repository, needs.admit.outputs.digest) }}
+      DEPLOY_SHA: ${{ needs.admit.outputs.candidate }}
+      DEPLOY_MODE: ${{ needs.admit.outputs.mode }}
+      MARKER_EXPECT: ${{ format('armed:n{0}:{1}:{2}', github.run_attempt, github.run_id, needs.admit.outputs.candidate) }}
+      PREDECESSOR_DIGEST: ${{ needs.deploy.outputs.predecessor_digest }}
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      EXTRA: ${{ vars.C00_DEPLOY_AUTHORIZERS }}
+      C00_COMPOSE_DIR: ${{ vars.C00_DOOP_COMPOSE_DIR || '/home/congvc/.local/share/doop' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.admit.outputs.candidate }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Acts on what C00 runs: the candidate rolls back; the predecessor or a newer deploy is left alone.
+      - name: Rollback check
+        id: check
+        run: node scripts/deploy-gate.mjs recheck "$DEPLOY_MODE" --op rollback --expect "$MARKER_EXPECT"
+      - name: Roll back by digest
+        if: ${{ steps.check.outputs.action == 'rollback' }}
+        run: bash deploy/cd/c00.sh rollback
