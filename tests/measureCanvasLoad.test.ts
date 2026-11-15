@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net'
 import { existsSync } from 'node:fs'
 import { chromium } from 'playwright-core'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { measureCanvasLoad, median, summarizeCanvas } from '../scripts/perf/measure-canvas-load.ts'
+import { checkSession, measureCanvasLoad, median, summarizeCanvas } from '../scripts/perf/measure-canvas-load.ts'
 
 /* CHE-5849: the load-time baseline for the big doop file. The summary counts
    what the canvas JSON carries; the measurement waits for every mounted frame
@@ -34,6 +34,26 @@ describe('median', () => {
   it('takes the middle of an odd list and the mean of the middle two of an even list', () => {
     expect(median([5, 1, 3])).toBe(3)
     expect(median([4, 1, 3, 2])).toBe(2.5)
+  })
+})
+
+describe('checkSession', () => {
+  let server: Server
+  let baseUrl = ''
+  beforeAll(async () => {
+    server = createServer((req, res) => {
+      res.writeHead(req.headers.cookie === 'sid=abc' ? 200 : 401).end('{}')
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+  })
+  afterAll(() => new Promise<void>((r) => server.close(() => r())))
+
+  it('passes for a cookie the API accepts', async () => {
+    await expect(checkSession(baseUrl, 'fx', 'sid=abc')).resolves.toBeUndefined()
+  })
+  it('fails at once with the status and a hint to copy a fresh cookie', async () => {
+    await expect(checkSession(baseUrl, 'fx', 'sid=stale')).rejects.toThrow(/401.*fresh cookie/s)
   })
 })
 
