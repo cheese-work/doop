@@ -132,6 +132,16 @@ describe('D2 C00 jobs: deploy, readback-confirm, rollback', () => {
     )
   })
 
+  it.each(c00jobs)('%s checks out full history, so the ancestry and range checks see the running revision', (name) => {
+    expect(job(d2, name)).toMatch(/uses: actions\/checkout@v4\s*\n\s*with:[\s\S]*?fetch-depth: 0/)
+  })
+
+  it('deploy passes the entry facts to the pre-arm and pre-apply checks', () => {
+    const j = job(d2, 'deploy')
+    for (const v of ['EVENT:', 'ACTOR:', 'TRIGGER:', 'ATTEMPT:', 'INPUT_MODE:', 'INPUT_SCHEDULE_BACKUP:'])
+      expect(j, v).toContain(v)
+  })
+
   it('apply gets the mode and the run-own marker value, so pre-apply runs inside the flock', () => {
     const j = job(d2, 'deploy')
     expect(j).toContain('DEPLOY_MODE:')

@@ -174,8 +174,15 @@ describe('pickCandidate (C-2 resolve)', () => {
 
 const goodAdmit = (over: Record<string, unknown> = {}) => ({
   mode: 'train',
+  repo: REPO,
   candidate: CAND,
-  manifest: { sha: CAND, digest: D_CAND, migration_inventory_sha: 'i'.repeat(64), d1_run_id: '5' },
+  manifest: {
+    sha: CAND,
+    digest: D_CAND,
+    ref: `ghcr.io/${REPO}@${D_CAND}`,
+    migration_inventory_sha: 'i'.repeat(64),
+    d1_run_id: '5',
+  },
   run: { conclusion: 'success', head_sha: CAND },
   label: CAND,
   inventorySha: 'i'.repeat(64),
@@ -189,6 +196,29 @@ describe('admit: the pin (C-6, Done when 11)', () => {
   it.each([
     ['manifest SHA', { manifest: { sha: MID, digest: D_CAND, migration_inventory_sha: 'i'.repeat(64) } }],
     ['manifest digest', { manifest: { sha: CAND, digest: 'latest', migration_inventory_sha: 'i'.repeat(64) } }],
+    [
+      'manifest ref digest (the label would be read from another image)',
+      {
+        manifest: {
+          sha: CAND,
+          digest: D_CAND,
+          ref: `ghcr.io/${REPO}@${D_PRED}`,
+          migration_inventory_sha: 'i'.repeat(64),
+        },
+      },
+    ],
+    [
+      'manifest ref repository',
+      {
+        manifest: {
+          sha: CAND,
+          digest: D_CAND,
+          ref: `ghcr.io/other/doop@${D_CAND}`,
+          migration_inventory_sha: 'i'.repeat(64),
+        },
+      },
+    ],
+    ['manifest ref missing', { manifest: { sha: CAND, digest: D_CAND, migration_inventory_sha: 'i'.repeat(64) } }],
     ['inventory sha', { inventorySha: 'j'.repeat(64) }],
     ['image label', { label: MID }],
     ['run head sha', { run: { conclusion: 'success', head_sha: MID } }],
@@ -203,6 +233,13 @@ describe('admit: the pin (C-6, Done when 11)', () => {
 })
 
 const cand = { sha: CAND, digest: D_CAND }
+/* A recovery or drill run enters by dispatch from an allowlisted human. */
+const dispatched = (mode: string) => ({
+  event: 'workflow_dispatch',
+  actor: 'congvc-dev',
+  trigger: 'congvc-dev',
+  inputs: { mode },
+})
 function ops(vars: Vars = {}, over: Record<string, unknown> = {}) {
   const base = {
     mode: 'train',
@@ -210,6 +247,12 @@ function ops(vars: Vars = {}, over: Record<string, unknown> = {}) {
     extra: '',
     candidate: cand,
     predecessorDigest: D_PRED,
+    // The run's entry facts, revalidated on this attempt (a rerun reuses resolve and admit).
+    event: 'schedule',
+    actor: BOT,
+    trigger: BOT,
+    attempt: '1',
+    inputs: {},
     ghApi: api(vars),
     running: async () => ({ digest: D_PRED, label: RUNNING }),
     isAncestor: async (a: string, b: string) => a === RUNNING && b === CAND,
@@ -255,8 +298,52 @@ describe('recheckOp pre-arm (deploy step 1)', () => {
     })
   })
   it('recovery pre-arm ignores marker, switch and pause', async () => {
-    const r = await ops({ sw: 'off', paused: 'x', marker: 'suspended:z' }, { mode: 'recovery' })('pre-arm')
+    const r = await ops(
+      { sw: 'off', paused: 'x', marker: 'suspended:z' },
+      { mode: 'recovery', ...dispatched('recovery') },
+    )('pre-arm')
     expect(r).toMatchObject({ go: true })
+  })
+})
+
+describe('recheckOp revalidates the entry on this attempt (Done when 1, rerun of failed jobs)', () => {
+  it.each(['pre-arm', 'pre-apply'])(
+    '%s refuses a train rerun (attempt 2) that reuses resolve and admit',
+    async (op) => {
+      const vars: Vars = { marker: op === 'pre-arm' ? 'clear:n0:restore' : ARMED }
+      const r = await ops(vars)(op, ARMED, { attempt: '2', trigger: 'congvc-dev' })
+      expect(r).toMatchObject({ go: false, skip: false })
+    },
+  )
+  it.each(['pre-arm', 'pre-apply'])('%s refuses a push event', async (op) => {
+    const vars: Vars = { marker: op === 'pre-arm' ? 'clear:n0:restore' : ARMED }
+    expect(await ops(vars)(op, ARMED, { event: 'push' })).toMatchObject({ go: false, skip: false })
+  })
+  it('pre-arm refuses a train dispatch by a human, and recovery by a stranger or a bot', async () => {
+    const d = { event: 'workflow_dispatch', actor: 'congvc-dev', trigger: 'congvc-dev' }
+    const op = ops({ marker: 'clear:n0:restore' })
+    expect(await op('pre-arm', undefined, { ...d, inputs: { mode: 'train' } })).toMatchObject({
+      go: false,
+      skip: false,
+    })
+    const rec = { ...d, inputs: { mode: 'recovery' } }
+    expect(await op('pre-arm', undefined, { ...rec, mode: 'recovery', trigger: 'someone' })).toMatchObject({
+      go: false,
+      skip: false,
+    })
+    expect(await op('pre-arm', undefined, { ...rec, mode: 'recovery' })).toMatchObject({ go: true })
+  })
+  it('the mode the run entered with must be the mode being checked', async () => {
+    const r = await ops({ marker: 'clear:n0:restore' })('pre-arm', undefined, {
+      event: 'workflow_dispatch',
+      actor: 'congvc-dev',
+      trigger: 'congvc-dev',
+      inputs: { mode: 'recovery' },
+    })
+    expect(r).toMatchObject({ go: false, skip: false })
+  })
+  it('confirm and rollback do not need the entry (they must still run on a rerun)', async () => {
+    expect(await ops({ marker: ARMED })('rollback', ARMED, { attempt: '2' })).toMatchObject({ go: true })
   })
 })
 
@@ -343,10 +430,11 @@ describe('recheckOp after the arm write (Done when 3)', () => {
     expect(await ops({ marker: ARMED })('confirm', undefined)).toMatchObject({ go: false, skip: false })
   })
 
-  it('recovery and drill pass only with their own suspended value', async () => {
+  // Drill cannot enter until S6 (the entry rules refuse it), so only recovery reaches these checks now.
+  it('recovery passes only with its own suspended value', async () => {
     const own = 'suspended:n5:7:' + CAND + ':recovery'
-    for (const mode of ['recovery', 'drill']) {
-      const base = { mode, running: async () => ({ digest: D_PRED, label: RUNNING }) }
+    for (const mode of ['recovery']) {
+      const base = { mode, ...dispatched(mode), running: async () => ({ digest: D_PRED, label: RUNNING }) }
       const sw = mode === 'drill' ? 'off' : 'on'
       expect(await ops({ marker: own, sw }, base)('pre-apply', own)).toMatchObject({ go: true })
       expect(await ops({ marker: 'suspended:n6:8:' + CAND + ':recovery', sw }, base)('pre-apply', own)).toMatchObject({

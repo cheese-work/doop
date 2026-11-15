@@ -163,10 +163,20 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
       EXTRA: ${{ vars.C00_DEPLOY_AUTHORIZERS }}
+      # This attempt's entry facts, revalidated by pre-arm and pre-apply: a rerun of failed jobs reuses
+      # resolve and admit, so their entry check is not repeated.
+      EVENT: ${{ github.event_name }}
+      ACTOR: ${{ github.actor }}
+      TRIGGER: ${{ github.triggering_actor }}
+      ATTEMPT: ${{ github.run_attempt }}
+      INPUT_MODE: ${{ inputs.mode }}
+      INPUT_SCHEDULE_BACKUP: ${{ inputs.schedule_backup }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.admit.outputs.candidate }}
+          # Full history: the ancestry and range checks need the running revision, which a depth-1 clone lacks.
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -214,6 +224,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.admit.outputs.candidate }}
+          # Full history: the ancestry and range checks need the running revision, which a depth-1 clone lacks.
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -246,6 +258,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.admit.outputs.candidate }}
+          # Full history: the ancestry and range checks need the running revision, which a depth-1 clone lacks.
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:

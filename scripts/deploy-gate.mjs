@@ -244,8 +244,10 @@ function switchProblem(mode, { sw, paused }) {
   return null
 }
 
-// Who started this run, and which mode it asks for. Throws nothing: a refusal is a result.
-export async function decideRun({ event, actor, trigger, attempt, inputs = {}, extra, repo, ghApi }) {
+// Who started this attempt, and which mode it asks for: the entry rules, as a mode or a refusal. Used by
+// `decideRun` at the top of the run and by `recheckOp` before the arm and the apply, because rerunning
+// failed jobs reuses the output of resolve and admit and so skips the first call.
+function entryOf({ event, actor, trigger, attempt, inputs = {}, extra }) {
   const who = lower(trigger || actor)
   let mode
   if (event === 'schedule') mode = 'train'
@@ -264,6 +266,13 @@ export async function decideRun({ event, actor, trigger, attempt, inputs = {}, e
       return refuse(`${who || 'an unknown login'} may not dispatch ${mode}`)
     if (mode === 'drill') return refuse('drill mode lands in slice S6')
   }
+  return go({ mode })
+}
+
+export async function decideRun({ event, actor, trigger, attempt, inputs = {}, extra, repo, ghApi }) {
+  const entered = entryOf({ event, actor, trigger, attempt, inputs, extra })
+  if (!entered.go) return entered
+  const { mode } = entered
 
   const state = await readState(ghApi, repo)
   const problem = switchProblem(mode, state)
@@ -281,10 +290,13 @@ const markerWords = (m) =>
 
 // Pins the candidate (C-6): the manifest, the D1 run, the image label and the migration inventory
 // all name the same commit. A red D1 run skips a train run; every other mismatch is a refusal.
-export function admit({ mode, candidate, manifest, run, label, inventorySha }) {
+export function admit({ mode, repo, candidate, manifest, run, label, inventorySha }) {
   if (!SHA40.test(candidate ?? '')) return refuse(`candidate is not a full SHA: '${candidate}'`)
   if (manifest?.sha !== candidate) return refuse(`manifest names ${manifest?.sha}, not ${candidate}`)
   if (!DIGEST.test(manifest.digest ?? '')) return refuse(`manifest digest is not a sha256 digest: '${manifest.digest}'`)
+  // The image label is read from `manifest.ref`, and D2 deploys `repo@digest`: they must be the same image.
+  if (manifest.ref !== `ghcr.io/${repo}@${manifest.digest}`)
+    return refuse(`manifest ref '${manifest.ref}' is not ghcr.io/${repo}@${manifest.digest}`)
   if (run?.head_sha !== candidate) return refuse(`the D1 run is for ${run?.head_sha}, not ${candidate}`)
   if (run.conclusion !== 'success') {
     const why = `D1 run concluded '${run.conclusion}' on ${candidate.slice(0, 7)}`
@@ -318,11 +330,24 @@ export async function recheckOp({
   isAncestor,
   firstParent,
   quiescent,
+  event,
+  actor,
+  trigger,
+  attempt,
+  inputs = {},
 }) {
   if (!(mode in MODES)) throw new Error(`unknown mode '${mode}'`)
   if (!OPS.includes(op)) throw new Error(`unknown operation '${op}'`)
   const armed = op !== 'pre-arm'
   const no = armed ? refuse : skip
+
+  // Before a change, this attempt's own entry facts must pass the entry rules again. Confirm and
+  // rollback skip this: they must still run on a rerun to undo or confirm what an earlier attempt did.
+  if (op === 'pre-arm' || op === 'pre-apply') {
+    const entered = entryOf({ event, actor, trigger, attempt, inputs, extra })
+    if (!entered.go) return entered
+    if (entered.mode !== mode) return refuse(`this run entered as ${entered.mode}, not ${mode}`)
+  }
 
   const q = await quiescent()
   if (!q.ok) return refuse(`migration quiescence not proven: ${q.reason ?? 'unknown'}`)
@@ -477,10 +502,14 @@ async function cli(argv, env) {
       return settle(refuse(`manifest is from D1 run ${manifest.d1_run_id}, not ${env.RUN_ID}`))
     }
     const run = await gh(`repos/${repo}/actions/runs/${manifest.d1_run_id}`)
-    const label = dockerLabel(manifest.ref)
+    // The label is read from the image the deploy will pull; a manifest ref that differs is refused by admit
+    // before the label matters, so it is never pulled.
+    const ref = `ghcr.io/${repo}@${manifest.digest}`
+    const label = manifest.ref === ref ? dockerLabel(ref) : ''
     return settle(
       admit({
         mode: env.MODE,
+        repo,
         candidate: env.CANDIDATE,
         manifest,
         run,
@@ -502,6 +531,11 @@ async function cli(argv, env) {
       repo,
       extra: env.EXTRA,
       ghApi: gh,
+      event: env.EVENT,
+      actor: env.ACTOR,
+      trigger: env.TRIGGER,
+      attempt: env.ATTEMPT,
+      inputs: { mode: env.INPUT_MODE, schedule_backup: env.INPUT_SCHEDULE_BACKUP },
       candidate: { sha: env.DEPLOY_SHA, digest: String(env.DEPLOY_REF ?? '').split('@')[1] },
       predecessorDigest: env.PREDECESSOR_DIGEST,
       running: () => dockerRunning(),
