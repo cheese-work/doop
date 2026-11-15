@@ -36,6 +36,10 @@ export interface MeasureOptions {
   runs?: number
   timeoutMs?: number
   viewport?: { width: number; height: number }
+  /** progress lines; the CLI sends them to stderr */
+  onProgress?: (message: string) => void
+  /** how often a waiting run says where it is (default 10 s) */
+  heartbeatMs?: number
 }
 
 const DATA_IMAGE_URI = /data:image\/[a-z0-9.+-]+[;,]/gi
@@ -80,9 +84,22 @@ export async function checkSession(baseUrl: string, canvasId: string, cookie: st
     )
 }
 
+function within<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout
+  const limit = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} did not answer within ${ms} ms`)), ms)
+  })
+  return Promise.race([p, limit]).finally(() => clearTimeout(timer))
+}
+
 async function measureOnce(opts: MeasureOptions): Promise<RunResult> {
   const { baseUrl, canvasId, cookie, timeoutMs = 120_000, viewport = { width: 1440, height: 900 } } = opts
+  const say = opts.onProgress ?? (() => {})
+  const started = Date.now()
+  const t = () => `${((Date.now() - started) / 1000).toFixed(0)} s`
   const browser = await chromium.launch()
+  say(`  browser started`)
+  let beat: NodeJS.Timeout | undefined
   try {
     const context = await browser.newContext({ viewport })
     if (cookie) await context.addCookies(parseCookie(cookie, baseUrl))
@@ -99,11 +116,30 @@ async function measureOnce(opts: MeasureOptions): Promise<RunResult> {
       page.on('response', (res) => {
         if (new URL(res.url()).pathname !== apiPath) return
         if (!res.ok()) return reject(new Error(`${apiPath} answered ${res.status()}`))
-        res.body().then(resolve, reject)
+        res.body().then((b) => {
+          say(`  [${t()}] canvas JSON ${b.length} bytes`)
+          resolve(b)
+        }, reject)
       })
     })
     canvasBody.catch(() => {}) // surfaced below; a rejection before the await must not crash the run
+    beat = setInterval(() => {
+      // the page may be too busy to answer, so the probe has its own short limit
+      within(
+        page.evaluate(() => {
+          const w = window as unknown as { __ready?: Set<unknown> }
+          return `${w.__ready?.size ?? 0}/${document.querySelectorAll('[data-frame-surface] iframe').length}`
+        }),
+        3000,
+        'page',
+      ).then(
+        (n) => say(`  [${t()}] iframes ready ${n}`),
+        (e: unknown) => say(`  [${t()}] ${e instanceof Error ? e.message : e}`),
+      )
+    }, opts.heartbeatMs ?? 10_000)
+    say(`  [${t()}] opening /c/${canvasId} ...`)
     await page.goto(`${baseUrl}/c/${canvasId}`, { timeout: timeoutMs })
+    say(`  [${t()}] page loaded`)
     const wait = page.waitForFunction(
       (settle) => {
         const w = window as unknown as { __ready: Set<unknown>; __since: number | null }
@@ -136,16 +172,23 @@ async function measureOnce(opts: MeasureOptions): Promise<RunResult> {
       dataUriCount: summary.dataUriCount,
     }
   } finally {
-    await browser.close()
+    clearInterval(beat)
+    // a frozen renderer can make a plain close() wait forever
+    await within(browser.close(), 15_000, 'browser.close').catch((e: unknown) =>
+      say(`  ${e instanceof Error ? e.message : e}`),
+    )
   }
 }
 
 export async function measureCanvasLoad(opts: MeasureOptions) {
   const runs: RunResult[] = []
   const total = opts.runs ?? 5
+  const say = opts.onProgress ?? (() => {})
   for (let i = 0; i < total; i++) {
-    runs.push(await measureOnce(opts))
-    console.error(`run ${i + 1}/${total}: ${Math.round(runs[i]?.ms ?? Number.NaN)} ms`) // stderr keeps stdout the JSON result
+    say(`run ${i + 1}/${total} ...`)
+    // goto and the ready-wait each get timeoutMs; this stops a run stuck beyond both
+    runs.push(await within(measureOnce(opts), 2 * (opts.timeoutMs ?? 120_000) + 30_000, `run ${i + 1}`))
+    say(`run ${i + 1}/${total} done: ${Math.round(runs[i]?.ms ?? Number.NaN)} ms`)
   }
   const last = runs.at(-1)
   if (!last) throw new Error('runs must be at least 1')
@@ -176,8 +219,14 @@ async function main() {
   const base = baseUrl.replace(/\/$/, '')
   console.error('checking the cookie ...')
   await checkSession(base, canvasId, cookie)
-  console.error(`cookie accepted. ${values.runs} cold runs follow, about 10 to 60 s each ...`)
-  const result = await measureCanvasLoad({ baseUrl: base, canvasId, cookie, runs: Number(values.runs) })
+  console.error(`cookie accepted. ${values.runs} cold runs follow, each prints a line every 10 s ...`)
+  const result = await measureCanvasLoad({
+    baseUrl: base,
+    canvasId,
+    cookie,
+    runs: Number(values.runs),
+    onProgress: (m) => console.error(m), // stderr keeps stdout the JSON result
+  })
   console.log(JSON.stringify({ baseUrl, canvasId, viewport: '1440x900', ...result }, null, 2))
 }
 
