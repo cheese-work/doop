@@ -727,6 +727,26 @@ class Store {
     return token
   }
 
+  /** A copy of the canvas's tokens and theme list, to put back with `restoreTokens`. */
+  snapshotTokens(canvasId: string): { tokens: DesignToken[]; themes: string[] | undefined } | undefined {
+    const c = this.canvases.get(canvasId)
+    if (!c) return undefined
+    return { tokens: structuredClone(c.tokens ?? []), themes: c.tokenThemes ? [...c.tokenThemes] : undefined }
+  }
+
+  /** Put the tokens and themes back as `snapshotTokens` found them, memory and persistence alike:
+   *  a token write that cannot finish (a locked frame refused the restyle) leaves nothing behind. */
+  restoreTokens(canvasId: string, snapshot: { tokens: DesignToken[]; themes: string[] | undefined }): void {
+    const c = this.canvases.get(canvasId)
+    if (!c) return
+    const kept = new Set(snapshot.tokens.map((t) => t.name))
+    for (const token of c.tokens ?? []) if (!kept.has(token.name)) persist.deleteToken(canvasId, token.name)
+    c.tokens = structuredClone(snapshot.tokens)
+    c.tokenThemes = snapshot.themes ? [...snapshot.themes] : undefined
+    for (const token of c.tokens) persist.saveToken(canvasId, token)
+    persist.saveCanvas(c)
+  }
+
   getTokenThemes(canvasId: string): string[] {
     return this.canvases.get(canvasId)?.tokenThemes ?? []
   }

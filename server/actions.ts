@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { nanoid } from 'nanoid'
-import { MAX_PAGES, PageLimitError, store } from './store.ts'
+import { FrameLockedError, MAX_PAGES, PageLimitError, store } from './store.ts'
 import * as persist from './db/persist.ts'
 import * as thumbs from './thumbs.ts'
 import { colorFor } from '../shared/types.ts'
@@ -2596,20 +2596,30 @@ function applyRename(html: string, rename: TokenRename): string {
     : renameThemeAttrs(html, rename.from, rename.to)
 }
 
-function restyleTokenFrames(canvasId: string, actor: Actor, rename?: TokenRename): number {
+function restyleTokenFrames(canvasId: string, actor: Actor, renames: TokenRename[] = []): number {
   const canvas = store.getCanvas(canvasId)
   if (!canvas) return 0
-  let changed = 0
+  /* plan every frame first: a locked frame that would change refuses the whole
+     restyle before any frame is written, so the caller can undo its token write */
+  const plan: { frame: Frame; html: string }[] = []
+  const deferred: Frame[] = []
   for (const frame of [...canvas.frames]) {
     /* an open append stream gets its block, and any rename, with its done chunk */
     if (streams.has(frame.id)) {
-      if (rename) pendingRenames.set(frame.id, [...(pendingRenames.get(frame.id) ?? []), rename])
+      deferred.push(frame)
       continue
     }
     let html = frame.html
-    if (rename) html = applyRename(html, rename)
+    for (const rename of renames) html = applyRename(html, rename)
     html = withLibraryFaces(canvasId, html)
     if (html === frame.html) continue
+    if (frame.locked) throw new FrameLockedError(frame)
+    plan.push({ frame, html })
+  }
+  for (const frame of deferred)
+    if (renames.length) pendingRenames.set(frame.id, [...(pendingRenames.get(frame.id) ?? []), ...renames])
+  let changed = 0
+  for (const { frame, html } of plan) {
     const prevHtml = frame.html
     const updated = store.updateFrame(frame.id, { html }, actor.name, { annotation: true })
     if (!updated) continue
@@ -2623,6 +2633,22 @@ function restyleTokenFrames(canvasId: string, actor: Actor, rename?: TokenRename
     changed++
   }
   return changed
+}
+
+/** Restyle after a token write; if a locked frame refuses, put the tokens and themes back
+ *  as `before` held them and rethrow, so a refused edit changes nothing. */
+function restyleOrRollback(
+  canvasId: string,
+  actor: Actor,
+  before: ReturnType<typeof store.snapshotTokens>,
+  renames: TokenRename[] = [],
+): number {
+  try {
+    return restyleTokenFrames(canvasId, actor, renames)
+  } catch (e) {
+    if (before) store.restoreTokens(canvasId, before)
+    throw e
+  }
 }
 
 function renameTokenRefs(html: string, from: string, to: string): string {
@@ -2643,6 +2669,7 @@ function tokenSummary(results: TokenResult[], verb: string): string {
 export function createTokens(canvasId: string, inputs: unknown[], actor: Actor): TokenResult[] | undefined {
   const canvas = store.getCanvas(canvasId)
   if (!canvas) return undefined
+  const before = store.snapshotTokens(canvasId)
   const results: TokenResult[] = []
   const accepted: {
     name: string
@@ -2712,7 +2739,7 @@ export function createTokens(canvasId: string, inputs: unknown[], actor: Actor):
     store.setTokens(canvasId, accepted, actor.name)
     /* frames that already name the token (a recreate, an agent that wrote
        var() first) start resolving it now */
-    const restyled = restyleTokenFrames(canvasId, actor)
+    const restyled = restyleOrRollback(canvasId, actor, before)
     broadcast(canvasId, {
       type: 'tokens',
       tokens: store.getTokens(canvasId),
@@ -2734,6 +2761,7 @@ export function createTokens(canvasId: string, inputs: unknown[], actor: Actor):
  *  Every frame naming a changed token is restyled before this returns. */
 export function setTokens(canvasId: string, edits: TokenEdit[], actor: Actor): TokenResult[] | undefined {
   if (!store.getCanvas(canvasId)) return undefined
+  const before = store.snapshotTokens(canvasId)
   const results: TokenResult[] = []
   const renames: TokenRename[] = []
   let touched = 0
@@ -2840,9 +2868,7 @@ export function setTokens(canvasId: string, edits: TokenEdit[], actor: Actor): T
     touched++
   }
   if (touched) {
-    let restyled = 0
-    for (const rename of renames) restyled += restyleTokenFrames(canvasId, actor, rename)
-    restyled += restyleTokenFrames(canvasId, actor)
+    const restyled = restyleOrRollback(canvasId, actor, before, renames)
     broadcast(canvasId, {
       type: 'tokens',
       tokens: store.getTokens(canvasId),
@@ -2898,13 +2924,15 @@ export function setTokenThemes(
   const same = simulated.length === names.length && simulated.every((theme, i) => theme === names[i])
   if (same && !moves.length) return names
 
-  let restyled = 0
-  for (const move of moves) {
-    store.renameTokenTheme(canvasId, move.from, move.to, actor.name)
-    restyled += restyleTokenFrames(canvasId, actor, { kind: 'theme', ...move })
-  }
+  const snapshot = store.snapshotTokens(canvasId)
+  for (const move of moves) store.renameTokenTheme(canvasId, move.from, move.to, actor.name)
   if (!same) store.setTokenThemes(canvasId, names, actor.name)
-  restyled += restyleTokenFrames(canvasId, actor)
+  const restyled = restyleOrRollback(
+    canvasId,
+    actor,
+    snapshot,
+    moves.map((move) => ({ kind: 'theme' as const, ...move })),
+  )
   broadcast(canvasId, { type: 'tokens', tokens: store.getTokens(canvasId), themes: names, actor })
   logActivity(
     canvasId,
