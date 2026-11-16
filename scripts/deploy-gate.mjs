@@ -13,7 +13,7 @@
 import { spawnSync } from 'node:child_process'
 import { appendFileSync, readFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
-import { inventorySha } from './migration-inventory.mjs'
+import { inventory } from './migration-inventory.mjs'
 
 const OWNER = 'congvc-dev'
 const BRANCH = 'cheese/main'
@@ -514,7 +514,7 @@ async function cli(argv, env) {
         manifest,
         run,
         label,
-        inventorySha: env.INVENTORY_SHA ?? inventorySha('.'),
+        inventorySha: env.INVENTORY_SHA ?? (await inventory('server/db/migrations')).sha256,
       }),
       {
         digest: manifest.digest,

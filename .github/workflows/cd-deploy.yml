@@ -116,7 +116,7 @@ jobs:
           persist-credentials: false
       # Recomputed from the checked-out candidate, never read from the manifest (C-6).
       - id: inventory
-        run: echo "sha=$(node scripts/migration-inventory.mjs)" >> "$GITHUB_OUTPUT"
+        run: echo "sha=$(node scripts/migration-inventory.mjs | jq -r .sha256)" >> "$GITHUB_OUTPUT"
       - name: Log in to GHCR
         env:
           TOKEN: ${{ github.token }}

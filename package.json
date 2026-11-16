@@ -97,6 +97,7 @@
     "eslint": "^10.8.1",
     "happy-dom": "^20.14.5",
     "husky": "^9.1.7",
+    "libpg-query": "^18.2.4",
     "lint-staged": "^17.3.0",
     "mcp-remote": "0.15.1",
     "oxlint": "^1.87.0",

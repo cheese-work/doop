@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest'
 // @ts-expect-error plain .mjs script, no type declarations
 import { admit, decideRun, pickCandidate, recheckOp } from '../scripts/deploy-gate.mjs'
 // @ts-expect-error plain .mjs script, no type declarations
-import { inventorySha } from '../scripts/migration-inventory.mjs'
+import { inventory } from '../scripts/migration-inventory.mjs'
 
 /* CHE-5544 (train S2, plan CHE-5474 C-2, C-5, C-6). The decider runs in two places: `decideRun` at the
    top of a D2 run (entry rules and the cheap gates) and `recheckOp` inside the C00 jobs, once per
@@ -468,24 +468,25 @@ describe('migration inventory sha (C-8.1, used by the manifest)', () => {
     for (const [name, text] of Object.entries(files)) writeFileSync(join(root, 'server/db/migrations', name), text)
     return root
   }
-  it('is stable, and changes with a migration byte, a name or the journal', () => {
+  it('is stable, and changes with a migration byte, a name or the journal', async () => {
     const a = make({ '0001_a.sql': 'select 1', 'meta/_journal.json': '{}' })
     const same = make({ 'meta/_journal.json': '{}', '0001_a.sql': 'select 1' })
     const byte = make({ '0001_a.sql': 'select 2', 'meta/_journal.json': '{}' })
     const name = make({ '0001_b.sql': 'select 1', 'meta/_journal.json': '{}' })
     const journal = make({ '0001_a.sql': 'select 1', 'meta/_journal.json': '{"v":1}' })
     try {
-      expect(inventorySha(a)).toMatch(/^[0-9a-f]{64}$/)
-      expect(inventorySha(same)).toBe(inventorySha(a))
-      for (const other of [byte, name, journal]) expect(inventorySha(other)).not.toBe(inventorySha(a))
+      const sha = async (root: string) => (await inventory(join(root, 'server/db/migrations'))).sha256
+      expect(await sha(a)).toMatch(/^[0-9a-f]{64}$/)
+      expect(await sha(same)).toBe(await sha(a))
+      for (const other of [byte, name, journal]) expect(await sha(other)).not.toBe(await sha(a))
     } finally {
       for (const d of [a, same, byte, name, journal]) rmSync(d, { recursive: true, force: true })
     }
   })
-  it('fails when the journal is missing', () => {
+  it('fails when the journal is missing', async () => {
     const root = make({ '0001_a.sql': 'select 1' })
     try {
-      expect(() => inventorySha(root)).toThrow()
+      await expect(inventory(join(root, 'server/db/migrations'))).rejects.toThrow()
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

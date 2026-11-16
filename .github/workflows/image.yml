@@ -60,7 +60,7 @@ jobs:
           cache-to: type=gha,mode=max
       # The migration inventory D2's `admit` recomputes from the checked-out candidate (C-6).
       - id: inventory
-        run: echo "sha=$(node scripts/migration-inventory.mjs)" >> "$GITHUB_OUTPUT"
+        run: echo "sha=$(node scripts/migration-inventory.mjs | jq -r .sha256)" >> "$GITHUB_OUTPUT"
       # Via env, never inlined into the script.
       - name: Record the candidate manifest
         env:

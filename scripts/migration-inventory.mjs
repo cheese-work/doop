@@ -1,25 +1,22 @@
-#!/usr/bin/env node
-// The migration inventory sha (CHE-5544, plan CHE-5474 C-6): sha256 over every `*.sql` file name and bytes
-// in the migrations directory, in name order, then the drizzle journal. D1 records it in the candidate
-// manifest; D2's `admit` recomputes it from the checked-out candidate and refuses a difference.
-// Usage: node scripts/migration-inventory.mjs [repo-root]   (default: the current directory)
+// Migration inventory (C-8.1, CHE-5474 S4a): the ordered `*.sql` files (name and bytes) plus
+// `meta/_journal.json`, hashed into one manifest sha. D1 writes it into the candidate manifest; the
+// deploy run recomputes it at the candidate SHA and stops on a mismatch.
+// Fails closed: an unreadable directory or a missing journal throws.
 import { createHash } from 'node:crypto'
-import { readdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { readdir, readFile } from 'node:fs/promises'
+import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-export function inventorySha(root = '.') {
-  const dir = join(root, 'server/db/migrations')
-  const hash = createHash('sha256')
-  const part = (label, bytes) => hash.update(`${label}\0${bytes.length}\0`).update(bytes)
-  const names = readdirSync(dir)
-    .filter((n) => n.endsWith('.sql'))
-    .sort()
-  for (const name of names) part(name, readFileSync(join(dir, name)))
-  part('meta/_journal.json', readFileSync(join(dir, 'meta', '_journal.json'))) // throws when missing
-  return hash.digest('hex')
+const sha256 = (buf) => createHash('sha256').update(buf).digest('hex')
+
+export async function inventory(dir) {
+  const names = (await readdir(dir)).filter((n) => n.endsWith('.sql')).sort()
+  const migrations = []
+  for (const name of names) migrations.push({ name, sha256: sha256(await readFile(path.join(dir, name))) })
+  const journalSha256 = sha256(await readFile(path.join(dir, 'meta/_journal.json')))
+  return { migrations, journalSha256, sha256: sha256(JSON.stringify({ migrations, journalSha256 })) }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  console.log(inventorySha(process.argv[2]))
+if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+  console.log(JSON.stringify(await inventory(process.argv[2] ?? 'server/db/migrations'), null, 2))
 }
