@@ -1100,6 +1100,17 @@ data-doop-webfonts>` for the roster families the frame names and does not load i
   bound issue's runs from Multica (`MULTICA_API_URL`, `MULTICA_API_TOKEN`, `MULTICA_WORKSPACE_ID`,
   `MULTICA_WEB_URL`; 503 when unset), each with a hop-in URL.
 
+- Write policy (`server/writePolicy.ts`, CHE-6624): every `store` mutator (`createFrame`, `updateFrame`,
+  `deleteFrame`, `deleteCanvas`, `setPages`, `duplicatePage`, `bindProject`) takes a required `WriteContext`
+  first and calls `assertWritable` in the same synchronous tick as the change; a refusal throws
+  `PolicyRefused` (`policy_refused`), distinct from the `undefined` of "not found". A canvas carries a
+  server-owned `projectId` (`canvases.project_id`). An agent with an `X-Multica-Task-Id` writes only when
+  Multica vouched for the task (`setTaskIdentityVerifier` + `warmTaskIdentity`, cached 5 min; the header alone
+  is never trusted), the canvas is bound to the task's project and the page to its issue. With no verifier
+  plugged in every such write is refused. An agent with no task may write to unbound canvases only; no agent binds
+  or deletes a canvas. Users and the system pass. `tests/writePolicy.test.ts` also scans `server/` so a new
+  writer outside `store.ts` and `db/persist.ts` fails CI.
+
 ## 6. Build and Dependency Management
 
 - Canvas access: `canvasRole` in `server/access.ts` gives owners, members and workspace members
