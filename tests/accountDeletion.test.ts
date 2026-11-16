@@ -37,12 +37,13 @@ vi.mock('../server/workspaces.ts', () => ({
 vi.mock('../server/slack/jobs.ts', () => ({ disconnectAgent: vi.fn() }))
 vi.mock('../server/linear/jobs.ts', () => ({ disconnectAgent: vi.fn() }))
 import { store } from '../server/store.ts'
+import { systemContext } from '../server/writePolicy.ts'
 import { purgeUserData } from '../server/accountDeletion.ts'
 import { disconnectAgent as disconnectSlack } from '../server/slack/jobs.ts'
 import { disconnectAgent as disconnectLinear } from '../server/linear/jobs.ts'
 
 beforeEach(() => {
-  for (const canvas of store.allCanvases()) store.deleteCanvas(canvas.id)
+  for (const canvas of store.allCanvases()) store.deleteCanvas(systemContext(), canvas.id)
   rig.workspaces.clear()
   rig.dbDeletes = 0
   vi.clearAllMocks()

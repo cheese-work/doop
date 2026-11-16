@@ -1,4 +1,5 @@
 import { store } from './store.ts'
+import { systemContext } from './writePolicy.ts'
 
 /** Create a demo canvas on first run so the app isn't empty. */
 export function seed() {
@@ -7,6 +8,7 @@ export function seed() {
   const canvas = store.createCanvas('Welcome Canvas')
 
   store.createFrame(
+    systemContext(),
     canvas.id,
     {
       name: 'Hero — Terrarium',
@@ -38,6 +40,7 @@ export function seed() {
   )
 
   store.createFrame(
+    systemContext(),
     canvas.id,
     {
       name: 'Pricing card',

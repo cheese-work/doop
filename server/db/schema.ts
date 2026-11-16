@@ -66,6 +66,8 @@ export const canvases = pgTable('canvases', {
   /** the shared workspace this canvas lives in; null = the owner's personal
    *  space. Every workspace member can open a workspace canvas. */
   workspaceId: text('workspace_id'),
+  /** the Multica project this canvas is bound to; null = unbound */
+  projectId: text('project_id'),
   createdAt: bigint('created_at', { mode: 'number' }).notNull(),
   updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
 })

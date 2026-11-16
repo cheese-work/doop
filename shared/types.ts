@@ -161,6 +161,9 @@ export interface Canvas {
    *  can open it, on top of the owner and invited members. Unset = the
    *  owner's personal space. */
   workspaceId?: string
+  /** the Multica project this canvas is bound to (server-owned; agents cannot
+   *  set it). A Multica-run agent may write only to its own project's canvas. */
+  projectId?: string
   /** set while the owner lists this canvas in the community gallery. The
    *  gallery shows previews and hands out copies — it never opens the
    *  canvas itself, so publishing does not change who can edit it. */
