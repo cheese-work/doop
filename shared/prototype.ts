@@ -234,7 +234,7 @@ function decodeEntities(value: string): string {
 const ATTR_RE = /\s*([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/y
 
 /** Parse one start tag's attributes, starting just after the tag name. */
-function readAttributes(html: string, from: number): { attrs: Map<string, string>; end: number } {
+export function readAttributes(html: string, from: number): { attrs: Map<string, string>; end: number } {
   const attrs = new Map<string, string>()
   let at = from
   while (at < html.length) {

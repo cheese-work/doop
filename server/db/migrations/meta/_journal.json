@@ -274,6 +274,13 @@
       "when": 1794600167628,
       "tag": "0039_multica_task_id",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1794852703492,
+      "tag": "0040_design_attestations",
+      "breakpoints": true
     }
   ]
 }

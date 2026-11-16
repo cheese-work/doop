@@ -6,6 +6,7 @@ import { db } from './index.ts'
 import * as t from './schema.ts'
 import { extractAssetIds } from '../assets.ts'
 import { roleByAgentName } from '../../shared/agents.ts'
+import type { AttestationRow } from '../../shared/designCompleteness.ts'
 import { isCommunityCategory } from '../../shared/types.ts'
 import { storedLinkAccess } from '../../shared/canvasRole.ts'
 import type {
@@ -498,6 +499,19 @@ async function syncAssetRefs(frameId: string, html: string) {
   }
 }
 
+/** Store one run of check_design_completeness. Awaited by the caller: an
+ *  attestation id is only handed out once its rows are in the database. */
+export async function saveAttestationRows(rows: AttestationRow[]): Promise<void> {
+  if (!rows.length) return
+  await db.insert(t.designAttestations).values(rows.map((r) => ({ id: nanoid(), ...r })))
+}
+
+/** Every row of one run, oldest frame first; empty when there is no such run. */
+export async function listAttestationRun(runId: string): Promise<AttestationRow[]> {
+  const rows = await db.select().from(t.designAttestations).where(eq(t.designAttestations.runId, runId))
+  return rows.map(({ id: _id, ...row }) => ({ ...row, result: row.result === 'complete' ? 'complete' : 'incomplete' }))
+}
+
 export function deleteCanvas(canvasId: string) {
   /* refs must go before the frames rows the subquery reads */
   swallow(
@@ -512,6 +526,7 @@ export function deleteCanvas(canvasId: string) {
       .then(() => db.delete(t.frames).where(eq(t.frames.canvasId, canvasId))),
   )
   swallow(db.delete(t.tasks).where(eq(t.tasks.canvasId, canvasId)))
+  swallow(db.delete(t.designAttestations).where(eq(t.designAttestations.canvasId, canvasId)))
   swallow(db.delete(t.feedback).where(eq(t.feedback.canvasId, canvasId)))
   swallow(db.delete(t.comments).where(eq(t.comments.canvasId, canvasId)))
   swallow(db.delete(t.activity).where(eq(t.activity.canvasId, canvasId)))
