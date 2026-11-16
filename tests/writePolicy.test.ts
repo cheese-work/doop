@@ -362,7 +362,7 @@ describe('G1 through the actions layer and MCP', () => {
 
   it('MCP delete_frame with a forged X-Multica-Task-Id is refused and the frame survives', async () => {
     const f = bound()
-    const server = buildMcpServer('Owner', 'owner-1', 'forged-task')
+    const server = buildMcpServer('Owner', 'alice', 'forged-task')
     const client = new Client({ name: 'g1', version: '1.0.0' })
     const [a, b] = InMemoryTransport.createLinkedPair()
     await server.connect(b)
