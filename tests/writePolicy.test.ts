@@ -6,20 +6,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
    task writes only to its own project's canvas, on its own issue's page, and
    only once Multica has vouched for the task). */
 const db = vi.hoisted(() => ({
-  savePageCopy: vi.fn(async (_canvas: unknown, _frames: unknown[]) => undefined as void),
-  deleteFrame: vi.fn((_id: string) => undefined),
-  saveCanvas: vi.fn((_canvas: unknown) => undefined),
+  savePageCopy: vi.fn(async (_canvas: unknown, _frames: unknown[], beforeCommit?: () => void) => beforeCommit?.()),
 }))
 vi.mock('../server/db/persist.ts', () => {
   const noop = () => undefined
   return {
     deleteCanvas: noop,
-    deleteFrame: db.deleteFrame,
+    deleteFrame: noop,
     deleteGuideline: noop,
     deleteMember: noop,
     deleteReference: noop,
     saveActivity: noop,
-    saveCanvas: db.saveCanvas,
+    saveCanvas: noop,
     saveCanvasCopy: noop,
     saveFeedback: noop,
     saveFrame: noop,
@@ -474,28 +472,58 @@ describe('review findings (CHE-6624 round 2)', () => {
     expect(actions.updateFrame(free.frame.id, { html: '<p>sync</p>' }, syncKey())).toBeTruthy()
   })
 
-  it('page copy: a binding change during the durable write leaves no copy in the database or memory', async () => {
+  it('page copy: the policy is judged inside the database transaction, and a rebind during it is held off', async () => {
     const f = bound()
-    setTaskIdentityVerifier(async () => ({ running: true, agentId: 'a', issueId: ISSUE_A, projectId: PROJECT_A }))
-    await warmTaskIdentity('task-a')
     let release!: () => void
-    db.savePageCopy.mockImplementationOnce(() => new Promise<void>((resolve) => (release = resolve)))
-    db.deleteFrame.mockClear()
-    db.saveCanvas.mockClear()
+    db.savePageCopy.mockImplementationOnce(
+      (_canvas, _frames, beforeCommit) =>
+        new Promise<void>((resolve, reject) => {
+          release = () => {
+            try {
+              beforeCommit?.()
+              resolve()
+            } catch (err) {
+              reject(err)
+            }
+          }
+        }),
+    )
     const pending = store.duplicatePage(agentA, f.canvas.id, f.pa, 'a')
-    const settled = pending.then(
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'))
+    expect(() => store.bindProject(sys, f.canvas.id, PROJECT_B)).toThrow(/policy_refused/)
+    release()
+    expect((await pending)?.frames).toHaveLength(1)
+    expect(f.canvas.projectId).toBe(PROJECT_A)
+  })
+
+  it('page copy: a page that loses its issue during the write is refused in the transaction, memory untouched', async () => {
+    const f = bound()
+    let release!: () => void
+    db.savePageCopy.mockImplementationOnce(
+      (_canvas, _frames, beforeCommit) =>
+        new Promise<void>((resolve, reject) => {
+          release = () => {
+            try {
+              beforeCommit?.()
+              resolve()
+            } catch (err) {
+              reject(err)
+            }
+          }
+        }),
+    )
+    const pages = canvasPages(f.canvas).length
+    const frames = f.canvas.frames.length
+    const pending = store.duplicatePage(agentA, f.canvas.id, f.pa, 'a')
+    const outcome = pending.then(
       () => 'ok',
       (e: unknown) => (e instanceof PolicyRefused ? 'refused' : 'other'),
     )
-    await vi.waitFor(() => expect(db.savePageCopy).toHaveBeenCalled())
-    const copiedIds = (db.savePageCopy.mock.calls.at(-1)![1] as { id: string }[]).map((frame) => frame.id)
-    store.bindProject(sys, f.canvas.id, PROJECT_B)
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'))
+    store.setPageIssue(f.canvas.id, f.pa, ISSUE_B, 'member')
     release()
-    expect(await settled).toBe('refused')
-    expect(copiedIds.length).toBeGreaterThan(0)
-    expect(db.deleteFrame.mock.calls.map((call) => call[0]).sort()).toEqual([...copiedIds].sort())
-    const saved = db.saveCanvas.mock.calls.at(-1)![0] as { pages?: { id: string }[] }
-    expect(saved.pages?.length).toBe(canvasPages(f.canvas).length)
-    expect(f.canvas.frames.map((frame) => frame.id)).not.toEqual(expect.arrayContaining(copiedIds))
+    expect(await outcome).toBe('refused')
+    expect(canvasPages(f.canvas)).toHaveLength(pages)
+    expect(f.canvas.frames).toHaveLength(frames)
   })
 })

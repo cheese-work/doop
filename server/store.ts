@@ -1,7 +1,7 @@
 import { nanoid } from 'nanoid'
 import { canvasPages, copyPageName, framePageId, pageFrames, samePages } from '../shared/pages.ts'
 import * as persist from './db/persist.ts'
-import { assertWritable, type WriteContext } from './writePolicy.ts'
+import { assertWritable, PolicyRefused, type WriteContext } from './writePolicy.ts'
 import type { LinkAccess } from '../shared/canvasRole.ts'
 import { MAX_GUIDES } from '../shared/guides.ts'
 import { deriveDesignLinks, isUuid, type DesignIssue } from '../shared/pageIssue.ts'
@@ -253,20 +253,16 @@ class Store {
     if ((canvas.guides?.length ?? 0) + guides.length > MAX_GUIDES) throw new GuideLimitError()
     const next = [...pages]
     next.splice(pages.indexOf(source) + 1, 0, page)
+    /* the copy is async: judge again at the commit, not only at the start. The check runs inside the
+       database transaction, before it commits, so a refusal rolls the copy back and nothing becomes durable. */
     await persist.savePageCopy(
       { ...canvas, pages: next, guides: [...(canvas.guides ?? []), ...guides], updatedAt: now },
       frames,
+      () => {
+        if (this.canvases.get(canvasId) === canvas) assertWritable(ctx, 'copy_page', { canvas, pageIds: [pageId] })
+      },
     )
     if (this.canvases.get(canvasId) !== canvas) return undefined
-    /* the copy is async: judge again at the commit, not only at the start. The rows are already
-       durable, so a refusal here takes them back out: the database must not hold a copy memory refused. */
-    try {
-      assertWritable(ctx, 'copy_page', { canvas, pageIds: [pageId] })
-    } catch (err) {
-      for (const frame of frames) persist.deleteFrame(frame.id)
-      persist.saveCanvas(canvas)
-      throw err
-    }
     /* a page save may have landed during the write: slot the copy after the
        source wherever it is now (or last, if the source is gone), under a
        name the live list does not use */
@@ -334,6 +330,8 @@ class Store {
     const canvas = this.canvases.get(canvasId)
     if (!canvas) return undefined
     assertWritable(ctx, 'bind_project', { canvas })
+    /* a page copy judged its binding at the start and commits later: a rebind in between is held off */
+    if (this.pageCopies.has(canvasId)) throw new PolicyRefused('bind_project', 'a page copy is in progress')
     if (projectId) canvas.projectId = projectId
     else delete canvas.projectId
     persist.saveCanvas(canvas)

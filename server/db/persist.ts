@@ -286,10 +286,10 @@ const FRAME_DEBOUNCE_MS = 400
 /** Persist a duplicated page as one unit: the canvas's new page list and
  * every copied frame land together or not at all, so a copy is never half
  * there after a crash. Like saveCanvasCopy, success means durable. */
-export async function savePageCopy(c: Canvas, frames: Frame[]): Promise<void> {
+export async function savePageCopy(c: Canvas, frames: Frame[], beforeCommit?: () => void): Promise<void> {
   await db.transaction(async (tx) => {
     await tx.update(t.canvases).set(canvasColumns(c)).where(eq(t.canvases.id, c.id))
-    if (!frames.length) return
+    if (!frames.length) return beforeCommit?.()
     await tx.insert(t.frames).values(
       frames.map((frame) => ({
         id: frame.id,
@@ -313,6 +313,8 @@ export async function savePageCopy(c: Canvas, frames: Frame[]): Promise<void> {
       [...extractAssetIds(frame.html)].map((assetId) => ({ assetId, frameId: frame.id })),
     )
     if (refs.length) await tx.insert(t.assetRefs).values(refs)
+    /* the last word before the rows become durable: a throw here rolls the whole copy back */
+    beforeCommit?.()
   })
 }
 
