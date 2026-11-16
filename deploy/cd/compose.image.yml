@@ -1,7 +1,13 @@
 # Overlay for the C00 compose project (CHE-4585): run an image that already exists
 # instead of building one. DOOP_IMAGE is always a digest ref or the rollback tag;
 # `deploy/cd/c00.sh` sets it and refuses to start without it.
+#
+# DOOP_SKIP_MIGRATIONS (CHE-5474 C-8.8): c00.sh applies the migrations in its own
+# supervised one-shot container before it recreates the app, so the app never
+# migrates at boot on C00.
 services:
   app:
     image: ${DOOP_IMAGE:?set by deploy/cd/c00.sh}
     pull_policy: never
+    environment:
+      DOOP_SKIP_MIGRATIONS: '1'

@@ -77,3 +77,13 @@ Pure checks the deploy train calls before it changes C00; none runs yet (the tra
 - `scripts/migration-classify.mjs`: Postgres parser (`libpg-query`); additive is `CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS` (nullable or constant default), `CREATE INDEX IF NOT EXISTS` (not unique, not concurrent). Anything else fails.
 - `scripts/migration-snapshot.mjs`: static drizzle-snapshot diff (new tables, new nullable or constant-default columns, new non-unique indexes only).
 - `tests/migrationSnapshots.test.ts`: every journal entry needs `meta/<idx>_snapshot.json`; run `npx drizzle-kit generate` and keep the snapshot with the migration.
+
+## Supervised migration apply (CHE-5474 S4b)
+
+Rules C-8.7 and C-8.8. `c00.sh apply` no longer lets the app migrate at boot.
+
+- `apply` first proves quiescence, then pulls, then runs `node server/db/migrate.ts` once in a one-shot container `doop-migrate-<DEPLOY_RUN_ID>` of the candidate image (`docker compose run`, label `doop.migrate.run`). The runner sets `application_name=doop-migrate-<run id>`, holds `pg_advisory_lock(1685025648, 1)` for the whole run, and fails at 120 s (`C00_MIGRATE_SECONDS`). The app is then recreated with `DOOP_SKIP_MIGRATIONS=1` (`compose.image.yml`).
+- Timeout or non-zero exit: no app start. `docker kill`, `docker wait`, `pg_terminate_backend` on every session with that name, then within 30 s (`C00_QUIESCE_SECONDS`) the container is `exited`, `pg_stat_activity` has no such session (`(pid, backend_start)` logged before and after) and `pg_locks` shows the key free. The ledger is compared with the pre-apply ledger (`ledger_changed=`). Proven: outcome `migrate_failed`, the running app is untouched. Not proven: outcome `needs_operator`. Both go to `$GITHUB_OUTPUT` as `outcome=`.
+- `apply`, `rollback` and `quiescence` (for the compat and lift jobs) first check the same facts: no migrate container running, no session named `doop-migrate-%`, advisory key free. Any read that fails counts as not proven and refuses with `needs_operator`.
+- All database reads go through `docker exec` into `C00_PG_CONTAINER` (local socket, `default_transaction_read_only=on`); the only write is `pg_terminate_backend`, and only on the failed run's own name.
+- Not in this slice: the workflow wiring (`DEPLOY_RUN_ID`, `C00_PG_CONTAINER`, the marker write on `migrate_failed`), the compat sandbox (S4c) and rollback sequencing (S5). The switch stays off.
