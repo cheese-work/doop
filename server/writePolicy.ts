@@ -51,3 +51,9 @@ export function writeContextFor(actor: Actor): WriteContext {
 }
 
 export function assertWritable(_ctx: WriteContext, _op: WriteOp, _target: WriteTarget): void {}
+
+export type TaskIdentity = { running: boolean; agentId?: string; issueId?: string; projectId?: string }
+export function setTaskIdentityVerifier(
+  _verify: ((taskId: string) => Promise<TaskIdentity | undefined>) | undefined,
+): void {}
+export async function warmTaskIdentity(_taskId: string): Promise<void> {}
