@@ -7,6 +7,7 @@ CREATE TABLE "design_attestations" (
 	"frame_updated_at" bigint NOT NULL,
 	"ruleset" text NOT NULL,
 	"scan_hash" text,
+	"inputs" jsonb NOT NULL,
 	"result" text NOT NULL,
 	"missing" jsonb NOT NULL,
 	"created_at" bigint NOT NULL,

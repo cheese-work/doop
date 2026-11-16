@@ -1,5 +1,5 @@
 {
-  "id": "e8b4f153-c12d-469a-9cbd-15356632e8ee",
+  "id": "077edd1e-6cf2-4bb6-a2f3-e75d1c9e6282",
   "prevId": "1ff48913-1694-40b6-8e20-fa0b4da57aa9",
   "version": "7",
   "dialect": "postgresql",
@@ -1086,6 +1086,12 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "inputs": {
+          "name": "inputs",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
         },
         "result": {
           "name": "result",

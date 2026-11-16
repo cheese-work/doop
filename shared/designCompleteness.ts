@@ -37,7 +37,14 @@ export interface CompletenessReport {
   missing: Missing[]
   /** the frames this run looked at, with the version it saw */
   frames: { id: string; updatedAt: number }[]
+  /** the other inputs the verdict depends on: the recon frame(s) at their version and the page's flow start */
+  inputs: AttestedInputs
   reviewerNotes: string[]
+}
+
+export interface AttestedInputs {
+  recon: { id: string; updatedAt: number }[]
+  start: string | null
 }
 
 /** One stored row: a frame at a version, inside one run of the check. */
@@ -49,6 +56,7 @@ export interface AttestationRow {
   frameUpdatedAt: number
   ruleset: string
   scanHash: string | null
+  inputs: AttestedInputs
   result: 'complete' | 'incomplete'
   missing: Missing[]
   createdAt: number
@@ -124,6 +132,20 @@ export function designFrames(canvas: Canvas, pageId: string): Frame[] {
     .map((s) => s.frame)
 }
 
+/** Everything besides the design frames that a verdict reads: recon frames (any, hidden or not) and the flow start. */
+function attestedInputs(canvas: Canvas, pageId: string, scanned = scanPage(canvas, pageId)): AttestedInputs {
+  const recon = scanned
+    .filter((s) => s.isRecon)
+    .map((s) => ({ id: s.frame.id, updatedAt: s.frame.updatedAt }))
+    .sort((a, b) => a.id.localeCompare(b.id))
+  return { recon, start: canvasPages(canvas).find((p) => p.id === pageId)?.startFrameId ?? null }
+}
+
+const sameInputs = (a: AttestedInputs, b: AttestedInputs) =>
+  a.start === b.start &&
+  a.recon.length === b.recon.length &&
+  a.recon.every((r, i) => r.id === b.recon[i]?.id && r.updatedAt === b.recon[i]?.updatedAt)
+
 /* ---- the check ---- */
 
 const str = (v: unknown) => (typeof v === 'string' ? v.trim() : typeof v === 'number' ? String(v) : '')
@@ -140,6 +162,7 @@ export function checkPageCompleteness(canvas: Canvas, pageId: string, opts: Chec
     complete: missing.length === 0,
     missing,
     frames,
+    inputs: attestedInputs(canvas, pageId, scanned),
     reviewerNotes: [REVIEWER_NOTE],
   })
 
@@ -335,6 +358,7 @@ export function attestationRowsFor(
     frameUpdatedAt: f.updatedAt,
     ruleset: report.ruleset,
     scanHash: report.scanHash,
+    inputs: report.inputs,
     result: report.complete ? 'complete' : 'incomplete',
     missing: report.missing,
     createdAt: at,
@@ -345,11 +369,12 @@ export function attestationRowsFor(
 /**
  * The newest complete run that still describes the page: same ruleset, and
  * exactly the page's current design frames, each at the version the run saw.
- * An edit, an added frame or a removed frame ends it. Null means "attest again".
+ * An edit, an added frame or a removed frame ends it, and so does any change to the recon frame or the flow start. Null means "attest again".
  * G4 reads this from the stored rows, never from comment text.
  */
 export function currentAttestation(canvas: Canvas, pageId: string, rows: AttestationRow[]): AttestationRow | null {
   const now = new Map(designFrames(canvas, pageId).map((f) => [f.id, f.updatedAt]))
+  const inputsNow = attestedInputs(canvas, pageId)
   const runs = new Map<string, AttestationRow[]>()
   for (const row of rows) if (row.pageId === pageId) runs.set(row.runId, [...(runs.get(row.runId) ?? []), row])
   const newestFirst = [...runs.values()].sort((a, b) => b[0]!.createdAt - a[0]!.createdAt)
@@ -357,6 +382,7 @@ export function currentAttestation(canvas: Canvas, pageId: string, rows: Attesta
     const head = run[0]!
     if (head.result !== 'complete' || head.ruleset !== COMPLETENESS_RULESET) continue
     if (run.length !== now.size) continue
+    if (!sameInputs(head.inputs, inputsNow)) continue
     if (run.every((r) => now.get(r.frameId) === r.frameUpdatedAt)) return head
   }
   return null
