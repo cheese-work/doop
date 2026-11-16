@@ -20,11 +20,20 @@ export async function checkAncestry({ label, candidate, isAncestor }) {
   return { ok: true }
 }
 
-// C-8.3: every migration in the C00 ledger keeps its hash and its journal entry, order included.
-// `ledger` rows are { hash, created_at } from drizzle.__drizzle_migrations; `candidateMigrations` is the
-// inventory list { name, sha256 }. A new migration must be newer than the whole ledger: drizzle applies
-// only entries with `when` above the newest ledger row and would silently skip an older one.
-export function checkImmutable({ ledger, predecessorJournal, candidateJournal, candidateMigrations }) {
+// C-8.3: every migration in the C00 ledger keeps its hash and journal entry, order included.
+// `ledger` rows are { hash, created_at } from drizzle.__drizzle_migrations; `predecessorMigrations` and
+// `candidateMigrations` are inventory lists { name, sha256 } at the running revision and the candidate.
+// A ledger hash resolves to exactly one predecessor migration by hash (ambiguous or unknown = stop), and the
+// candidate must hold that same name with the same bytes: the same bytes under another name do not count.
+// A new migration must be newer than the whole ledger: drizzle applies only entries with `when` above the
+// newest ledger row and would silently skip an older one.
+export function checkImmutable({
+  ledger,
+  predecessorJournal,
+  predecessorMigrations,
+  candidateJournal,
+  candidateMigrations,
+}) {
   if (!Array.isArray(ledger) || ledger.length === 0) return no('C00 ledger is empty or unreadable')
   const rows = []
   for (const r of ledger) {
@@ -36,14 +45,20 @@ export function checkImmutable({ ledger, predecessorJournal, candidateJournal, c
   const before = predecessorJournal?.entries
   const after = candidateJournal?.entries
   if (!Array.isArray(before) || !Array.isArray(after)) return no('journal is missing or unreadable')
+  if (!Array.isArray(predecessorMigrations) || !Array.isArray(candidateMigrations))
+    return no('migration list is missing')
 
   const byName = new Map(candidateMigrations.map((m) => [m.name, m.sha256]))
-  const hashes = new Set(byName.values())
+  for (const p of predecessorMigrations) {
+    if (byName.get(p.name) !== p.sha256) return no(`applied migration ${p.name} changed or deleted in the candidate`)
+  }
   for (const r of rows) {
-    const tag = before.find((e) => e.when === r.created)?.tag
-    const label = tag ? `applied migration ${tag}` : `applied migration with ledger hash ${r.hash.slice(0, 12)}`
-    if (tag ? byName.get(`${tag}.sql`) !== r.hash : !hashes.has(r.hash))
-      return no(`${label} changed or deleted in the candidate`)
+    const named = predecessorMigrations.filter((p) => p.sha256 === r.hash)
+    if (named.length !== 1) {
+      return no(
+        `ledger hash ${r.hash.slice(0, 12)} matches ${named.length} predecessor migrations, expected exactly one`,
+      )
+    }
   }
   for (const [i, e] of before.entries()) {
     if (!isDeepStrictEqual(e, after[i])) return no(`journal entry ${e.tag} changed, moved or deleted`)
@@ -68,15 +83,32 @@ export function decide({ ancestry, immutable, classification, snapshot } = {}) {
   const migrations = immutable.newMigrations
   if (migrations.length === 0) return { deploy: true, forwardOnly: false, failed: [] }
   const failed = []
-  if (!classification) failed.push({ part: 'classifier', migrations, reason: 'no classifier result' })
-  else if (classification.additive !== true) {
-    const bad = (classification.migrations ?? []).filter((m) => !m.additive)
-    failed.push({
-      part: 'classifier',
-      migrations: bad.length ? bad.map((m) => m.name) : migrations,
-      reason:
-        bad.flatMap((m) => m.statements.filter((s) => !s.additive).map((s) => s.reason)).join('; ') || 'not additive',
-    })
+  const classifier = (reason, names = migrations) => failed.push({ part: 'classifier', migrations: names, reason })
+  const results = classification?.migrations
+  if (!Array.isArray(results)) classifier('no classifier result')
+  else {
+    // Exactly one well-formed result per new migration: a missing, duplicate or extra result is not evidence.
+    const names = results.map((m) => m?.name)
+    const exact =
+      names.length === migrations.length &&
+      new Set(names).size === names.length &&
+      migrations.every((n) => names.includes(n))
+    if (!exact)
+      classifier(`classifier results [${names.join(', ')}] do not match the new migrations [${migrations.join(', ')}]`)
+    else {
+      const bad = results.filter(
+        (m) => m.additive !== true || !Array.isArray(m.statements) || !m.statements.every((s) => s?.additive === true),
+      )
+      if (bad.length) {
+        classifier(
+          bad
+            .flatMap((m) => (m.statements ?? []).filter((s) => s?.additive !== true).map((s) => s?.reason))
+            .filter(Boolean)
+            .join('; ') || 'not additive',
+          bad.map((m) => m.name),
+        )
+      }
+    }
   }
   if (snapshot?.ok !== true)
     failed.push({ part: 'snapshot', migrations, reason: snapshot?.reason ?? 'no snapshot diff result' })

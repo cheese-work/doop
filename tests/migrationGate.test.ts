@@ -173,7 +173,7 @@ describe('immutable applied migrations', () => {
     { hash: sha('sql0'), created_at: 100 },
     { hash: sha('sql1'), created_at: 200 },
   ]
-  const base = { predecessorJournal: prev, ledger }
+  const base = { predecessorJournal: prev, predecessorMigrations: [m(0), m(1)], ledger }
 
   it('passes when applied migrations are unchanged and new ones are newer', () => {
     const r = checkImmutable({
@@ -252,6 +252,51 @@ describe('immutable applied migrations', () => {
       candidateMigrations: [m(0), m(1)],
     })
     expect(r.ok).toBe(true)
+  })
+  it('stops when a deleted applied migration is replaced by a new file with the same bytes', () => {
+    const r = checkImmutable({
+      ...base,
+      candidateJournal: prev,
+      candidateMigrations: [m(0), { name: '0009_copy.sql', sha256: sha('sql1') }],
+    })
+    expect(r.ok).toBe(false)
+    expect(r.reason).toMatch(/0001_m/)
+  })
+  it('stops when a re-whened ledger row only matches a file under another name', () => {
+    const r = checkImmutable({
+      ...base,
+      ledger: [ledger[0], { hash: sha('sql1'), created_at: 90 }],
+      candidateJournal: prev,
+      candidateMigrations: [m(0), { name: '0009_copy.sql', sha256: sha('sql1') }],
+    })
+    expect(r.ok).toBe(false)
+  })
+  it('stops when a ledger hash is ambiguous among predecessor migrations', () => {
+    const r = checkImmutable({
+      ...base,
+      predecessorMigrations: [m(0), m(1), { name: '0005_dup.sql', sha256: sha('sql1') }],
+      candidateJournal: prev,
+      candidateMigrations: [m(0), m(1), { name: '0005_dup.sql', sha256: sha('sql1') }],
+    })
+    expect(r.ok).toBe(false)
+  })
+  it('stops when a predecessor migration the ledger does not list is changed', () => {
+    const r = checkImmutable({
+      ...base,
+      ledger: [ledger[0]],
+      candidateJournal: prev,
+      candidateMigrations: [m(0), m(1, 'edited')],
+    })
+    expect(r.ok).toBe(false)
+  })
+  it('stops without the predecessor migration list', () => {
+    const r = checkImmutable({
+      ...base,
+      predecessorMigrations: undefined,
+      candidateJournal: prev,
+      candidateMigrations: [m(0), m(1)],
+    })
+    expect(r.ok).toBe(false)
   })
   it.each([
     ['empty ledger', []],
@@ -396,12 +441,13 @@ describe('every journal entry has a snapshot', () => {
 
 describe('decide', () => {
   const pass = { ok: true }
+  const okMig = (name: string) => ({ name, additive: true, statements: [{ additive: true }] })
   it('deploys when every part passes', () => {
     expect(
       decide({
         ancestry: pass,
         immutable: { ok: true, newMigrations: ['0046_x.sql'] },
-        classification: { additive: true, migrations: [] },
+        classification: { additive: true, migrations: [okMig('0046_x.sql')] },
         snapshot: pass,
       }),
     ).toMatchObject({ deploy: true, forwardOnly: false })
@@ -427,7 +473,7 @@ describe('decide', () => {
     const v = decide({
       ancestry: pass,
       immutable: { ok: true, newMigrations: ['0046_x.sql'] },
-      classification: { additive: true, migrations: [] },
+      classification: { additive: true, migrations: [okMig('0046_x.sql')] },
       snapshot: { ok: false, reason: 'missing snapshot 0046' },
     })
     expect(v.forwardOnly).toBe(true)
@@ -444,6 +490,43 @@ describe('decide', () => {
       forwardOnly: false,
       failed: [expect.objectContaining({ part: 'immutable' })],
     })
+  })
+  it.each([
+    ['no results', { additive: true, migrations: [] }],
+    ['a result for another migration', { additive: true, migrations: [okMig('0099_other.sql')] }],
+    ['an extra result', { additive: true, migrations: [okMig('0046_x.sql'), okMig('0047_y.sql')] }],
+    ['a duplicate result', { additive: true, migrations: [okMig('0046_x.sql'), okMig('0046_x.sql')] }],
+    [
+      'a result that is not additive under an additive flag',
+      {
+        additive: true,
+        migrations: [{ name: '0046_x.sql', additive: false, statements: [{ additive: false, reason: 'DROP' }] }],
+      },
+    ],
+    ['a result with no statements array', { additive: true, migrations: [{ name: '0046_x.sql', additive: true }] }],
+    ['no migrations list', { additive: true }],
+  ])('forward-only unless every new migration has exactly one additive result: %s', (_n, classification) => {
+    const v = decide({
+      ancestry: pass,
+      immutable: { ok: true, newMigrations: ['0046_x.sql'] },
+      classification,
+      snapshot: pass,
+    })
+    expect(v).toMatchObject({ deploy: false, forwardOnly: true })
+    expect(v.failed[0]).toMatchObject({ part: 'classifier', migrations: ['0046_x.sql'] })
+  })
+  it('requires one result per new migration when there are several', () => {
+    const imm = { ok: true, newMigrations: ['0046_x.sql', '0047_y.sql'] }
+    const both = { additive: true, migrations: [okMig('0046_x.sql'), okMig('0047_y.sql')] }
+    expect(decide({ ancestry: pass, immutable: imm, classification: both, snapshot: pass }).deploy).toBe(true)
+    expect(
+      decide({
+        ancestry: pass,
+        immutable: imm,
+        classification: { additive: true, migrations: [okMig('0046_x.sql')] },
+        snapshot: pass,
+      }).deploy,
+    ).toBe(false)
   })
   it('fails closed on a missing part', () => {
     expect(decide({ ancestry: pass, immutable: { ok: true, newMigrations: ['0046_x.sql'] } }).deploy).toBe(false)
