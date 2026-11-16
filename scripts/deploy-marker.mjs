@@ -8,8 +8,8 @@
 //
 // arm       train, before the first change: clear -> armed (this run's own value)
 // restore   train, after a passing confirm only: this run's own armed -> a new clear
-// suspend   recovery, drill, rollback, adoption: -> suspended. Never clear. Over this run's own armed
-//           (--expect from MARKER_EXPECT) or over whatever stands (--any).
+// suspend   recovery, drill, rollback, adoption: -> suspended. Never clear. Over this run's own value
+//           (armed for a train run, suspended for recovery and drill; MARKER_EXPECT) or over whatever stands (--any).
 // Absent or unreadable reads as suspended everywhere else, so every failure here leaves the train stopped.
 //
 // CLI: node scripts/deploy-marker.mjs arm | restore | suspend --reason <word> (--any)
@@ -77,7 +77,8 @@ export async function suspend({ ghApi, repo, runId, sha, reason, expected, any =
   if (!WORD.test(reason ?? '')) throw new Error('the suspension reason must be one word of letters, digits, _ or -')
   let over = expected
   if (any) over = await read(ghApi, repo)
-  else if (kindOf(expected) !== 'armed') throw new Error('suspend needs this run’s own armed value, or any')
+  else if (!['armed', 'suspended'].includes(kindOf(expected) ?? ''))
+    throw new Error('suspend needs this run’s own armed or suspended value, or any')
   return writeMarker({ ghApi, repo, expected: over, next: `suspended:${nonce()}:${runId}:${sha}:${reason}` })
 }
 

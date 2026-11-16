@@ -199,6 +199,28 @@ describe('suspend: recovery, drill, rollback, adoption (C-10.3, C-10.5)', () => 
       expect(g.state.writes).toEqual([])
     }
   })
+  it('a recovery or drill rollback suspends over this run’s own suspended value, and over no other', async () => {
+    const own = 'suspended:' + '4'.repeat(32) + ':78:' + SHA + ':recovery'
+    const f = fake(own)
+    const value = await suspend({
+      ghApi: f.ghApi,
+      repo: REPO,
+      runId: '78',
+      sha: SHA,
+      reason: 'rollback-rollback',
+      expected: own,
+    })
+    expect(kindOf(value)).toBe('suspended')
+    expect(f.state.value).toBe(value)
+    const elsewhere = 'suspended:' + '5'.repeat(32) + ':79:' + SHA + ':recovery'
+    for (const other of [OTHER_ARMED, elsewhere, CLEAR, null]) {
+      const g = fake(other)
+      await expect(
+        suspend({ ghApi: g.ghApi, repo: REPO, runId: '78', sha: SHA, reason: 'rollback-none', expected: own }),
+      ).rejects.toThrow()
+      expect(g.state.writes).toEqual([])
+    }
+  })
   it('needs either an expected value or an explicit "any"', async () => {
     const f = fake(CLEAR)
     await expect(suspend({ ghApi: f.ghApi, repo: REPO, runId: '5', sha: SHA, reason: 'x' })).rejects.toThrow()
