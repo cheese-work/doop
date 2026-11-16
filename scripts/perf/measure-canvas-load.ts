@@ -2,7 +2,7 @@
  *
  *   DOOP_SESSION_COOKIE='name=value; ...' \
  *     npx tsx scripts/perf/measure-canvas-load.ts \
- *       --base-url https://congvc-c00.taila6fa8a.ts.net:34443 --canvas mRAnnjvGod --runs 5
+ *       --base-url https://congvc-c00.taila6fa8a.ts.net:34443 --canvas mRAnnjvGod --runs 5 [--viewport 1440x900]
  *
  * Per run: a fresh browser (so a cold cache), open /c/<canvas>, wait until every mounted
  * frame iframe has posted `doop:frame-ready` and the set has held for 500 ms, and report the
@@ -68,6 +68,13 @@ export function summarizeCanvas(canvas: {
     (f) => framePageId({ id: canvas.id ?? '', pages: canvas.pages }, f as never) === first,
   ).length
   return { frames: frames.length, firstPageFrames, htmlBytes, dataUriCount }
+}
+
+export function parseViewport(value: string | undefined): { width: number; height: number } {
+  if (value === undefined) return { width: 1440, height: 900 }
+  const m = /^(\d+)x(\d+)$/.exec(value)
+  if (!m || !Number(m[1]) || !Number(m[2])) throw new Error(`viewport must be WIDTHxHEIGHT, got "${value}"`)
+  return { width: Number(m[1]), height: Number(m[2]) }
 }
 
 export function median(values: number[]): number {
@@ -227,6 +234,7 @@ async function main() {
       'base-url': { type: 'string' },
       canvas: { type: 'string' },
       runs: { type: 'string', default: '5' },
+      viewport: { type: 'string' },
     },
   })
   const baseUrl = values['base-url']
@@ -236,6 +244,7 @@ async function main() {
   const cookie = process.env.DOOP_SESSION_COOKIE
   // doop answers 401 to an anonymous API call and the SPA then never requests the canvas
   if (!cookie) throw new Error('set DOOP_SESSION_COOKIE to a session cookie of an account that can view the canvas')
+  const viewport = parseViewport(values.viewport)
   const base = baseUrl.replace(/\/$/, '')
   console.error(`fetching the canvas JSON, then ${values.runs} cold runs, each prints a line every 10 s ...`)
   const result = await measureCanvasLoad({
@@ -243,9 +252,12 @@ async function main() {
     canvasId,
     cookie,
     runs: Number(values.runs),
+    viewport,
     onProgress: (m) => console.error(m), // stderr keeps stdout the JSON result
   })
-  console.log(JSON.stringify({ baseUrl, canvasId, viewport: '1440x900', ...result }, null, 2))
+  console.log(
+    JSON.stringify({ baseUrl, canvasId, viewport: `${viewport.width}x${viewport.height}`, ...result }, null, 2),
+  )
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
