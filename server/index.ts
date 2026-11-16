@@ -1663,7 +1663,7 @@ app.delete('/api/canvases/:id', (req, res) => {
      before they can be destroyed */
   if (!c.ownerId) return res.status(403).json({ error: 'claim it first' })
   if (!canManageCanvas(req.user!.id, c)) return res.status(403).json({ error: 'not yours' })
-  actions.deleteCanvas(c.id)
+  actions.deleteCanvas(c.id, actions.resolveActor({ name: req.user!.name, kind: 'user' }))
   res.json({ ok: true })
 })
 

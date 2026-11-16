@@ -11,6 +11,7 @@ import {
 } from '../shared/pages.ts'
 import { defaultSpot } from './frameLayout.ts'
 import * as persist from './db/persist.ts'
+import { assertWritable, type WriteContext } from './writePolicy.ts'
 import type { LinkAccess } from '../shared/canvasRole.ts'
 import { MAX_GUIDES } from '../shared/guides.ts'
 import { remapFrameTargets } from '../shared/prototype.ts'
@@ -533,11 +534,11 @@ class Store {
    * another so two at once cannot pick the same name or overshoot the page
    * limit; memory changes only once the copy is durable, as with
    * duplicateCanvas. Rejects with PageLimitError when the canvas is full. */
-  duplicatePage(canvasId: string, pageId: string, by: string): Promise<PageCopy | undefined> {
+  duplicatePage(ctx: WriteContext, canvasId: string, pageId: string, by: string): Promise<PageCopy | undefined> {
     const previous = this.pageCopies.get(canvasId) ?? Promise.resolve()
     const task = previous.then(
-      () => this.copyPage(canvasId, pageId, by),
-      () => this.copyPage(canvasId, pageId, by),
+      () => this.copyPage(ctx, canvasId, pageId, by),
+      () => this.copyPage(ctx, canvasId, pageId, by),
     )
     this.pageCopies.set(canvasId, task)
     const release = () => {
@@ -547,12 +548,18 @@ class Store {
     return task
   }
 
-  private async copyPage(canvasId: string, pageId: string, by: string): Promise<PageCopy | undefined> {
+  private async copyPage(
+    ctx: WriteContext,
+    canvasId: string,
+    pageId: string,
+    by: string,
+  ): Promise<PageCopy | undefined> {
     const canvas = await this.load(canvasId)
     if (!canvas) return undefined
     const pages = canvasPages(canvas)
     const source = pages.find((page) => page.id === pageId)
     if (!source) return undefined
+    assertWritable(ctx, 'copy_page', { canvas, pageIds: [pageId] })
     if (pages.length >= MAX_PAGES) throw new PageLimitError()
     const now = Date.now()
     const sourceFrames = pageFrames(canvas, pageId)
@@ -588,6 +595,8 @@ class Store {
       frames,
     )
     if (this.canvases.get(canvasId) !== canvas) return undefined
+    /* the copy is async: judge again at the commit, not only at the start */
+    assertWritable(ctx, 'copy_page', { canvas, pageIds: [pageId] })
     /* a page save may have landed during the write: slot the copy after the
        source wherever it is now (or last, if the source is gone), under a
        name the live list does not use */
@@ -614,12 +623,14 @@ class Store {
    *  the guides that went with deleted pages, so peers can drop them;
    *  undefined when the canvas is gone. */
   setPages(
+    ctx: WriteContext,
     canvasId: string,
     pages: import('../shared/types.ts').CanvasPageInfo[],
   ): { pages: import('../shared/types.ts').CanvasPageInfo[]; dropped: CanvasGuide[] } | undefined {
     const canvas = this.canvases.get(canvasId)
     if (!canvas) return undefined
     requireBoundary('store.setPages')
+    assertWritable(ctx, 'set_pages', { canvas, nextPages: pages })
     this.remember(canvas, ['pages', 'guides', 'updatedAt'])
     const firstId = canvasPages(canvas)[0]!.id
     for (const frame of canvas.frames) {
@@ -669,6 +680,19 @@ class Store {
     canvas.updatedAt = Date.now()
     this.saveCanvasLater(canvas)
     return { pages: ordered, dropped }
+  }
+
+  /** Bind (projectId) or unbind (null) the Multica project this canvas belongs to.
+   *  Server-owned like a page's issueId: only a user or the system may change it,
+   *  never an agent (assertWritable). Undefined for an unknown canvas. */
+  bindProject(ctx: WriteContext, canvasId: string, projectId: string | null): Canvas | undefined {
+    const canvas = this.canvases.get(canvasId)
+    if (!canvas) return undefined
+    assertWritable(ctx, 'bind_project', { canvas })
+    if (projectId) canvas.projectId = projectId
+    else delete canvas.projectId
+    persist.saveCanvas(canvas)
+    return canvas
   }
 
   /** Set (frameId) or clear (null) the frame a page's prototype starts on. */
@@ -783,10 +807,11 @@ class Store {
   }
 
   /** Remove a canvas and its frames from memory + database. */
-  deleteCanvas(id: string): Canvas | undefined {
+  deleteCanvas(ctx: WriteContext, id: string): Canvas | undefined {
     const c = this.canvases.get(id)
     if (!c) return undefined
     requireBoundary('store.deleteCanvas')
+    assertWritable(ctx, 'delete_canvas', { canvas: c })
     const loadedAt = this.loaded.get(id)
     for (const f of c.frames) this.frameIndex.delete(f.id)
     for (const f of this.trash.get(id)?.frames ?? []) this.deletedIndex.delete(f.id)
@@ -1287,6 +1312,7 @@ class Store {
   }
 
   createFrame(
+    ctx: WriteContext,
     canvasId: string,
     input: {
       name: string
@@ -1310,6 +1336,7 @@ class Store {
     if (!c) return undefined
     const pageId = input.pageId ?? canvasPages(c)[0]!.id
     if (!canvasPages(c).some((page) => page.id === pageId)) return undefined
+    assertWritable(ctx, 'create_frame', { canvas: c, pageIds: [pageId] })
     const frames = pageFrames(c, pageId)
     const now = Date.now()
     // auto-place: to the right of the right-most frame
@@ -1351,6 +1378,7 @@ class Store {
   }
 
   updateFrame(
+    ctx: WriteContext,
     frameId: string,
     patch: Partial<
       Pick<
@@ -1393,9 +1421,14 @@ class Store {
       !canvasPages(this.canvases.get(frame.canvasId)!).some((p) => p.id === patch.pageId)
     )
       return undefined
+    const c = this.canvases.get(frame.canvasId)!
+    assertWritable(ctx, 'update_frame', {
+      canvas: c,
+      frame,
+      pageIds: patch.pageId !== undefined ? [framePageId(c, frame), patch.pageId] : [framePageId(c, frame)],
+    })
     const designChanged =
       !opts.annotation && DESIGN_KEYS.some((key) => patch[key] !== undefined && patch[key] !== frame[key])
-    const c = this.canvases.get(frame.canvasId)!
     requireBoundary('store.updateFrame')
     const before = inTransaction() ? frameState(frame) : undefined
     /* a frame moved to another page lands in front there, as Figma does */
@@ -1454,7 +1487,7 @@ class Store {
 
   /** Soft delete: the frame leaves the canvas and waits in the trash with
    *  its version rows; nothing is removed from the database. */
-  deleteFrame(frameId: string): Frame | undefined {
+  deleteFrame(ctx: WriteContext, frameId: string): Frame | undefined {
     const canvasId = this.frameIndex.get(frameId)
     if (!canvasId) return undefined
     const c = this.canvases.get(canvasId)
@@ -1462,6 +1495,7 @@ class Store {
     const idx = c.frames.findIndex((f) => f.id === frameId)
     if (idx === -1) return undefined
     requireBoundary('store.deleteFrame')
+    assertWritable(ctx, 'delete_frame', { canvas: c, frame: c.frames[idx]!, pageIds: [framePageId(c, c.frames[idx]!)] })
     const [frame] = c.frames.splice(idx, 1)
     const deletedAt = Date.now()
     frame!.deletedAt = deletedAt

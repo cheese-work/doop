@@ -65,6 +65,7 @@ import {
   type TokenType,
 } from '../shared/designTokens.ts'
 import { emitCanvasEvent } from './events.ts'
+import { writeContextFor } from './writePolicy.ts'
 import type {
   Actor,
   Canvas,
@@ -1932,7 +1933,7 @@ export const restoreFrameVersion = atomic(async function restoreFrameVersion(
   finishReveal(frameId)
   const prior = priorState(before)
   const patch = { html: prepared.html, width: version.width, height: version.height }
-  const frame = store.updateFrame(frameId, patch, actor.name)
+  const frame = store.updateFrame(writeContextFor(actor), frameId, patch, actor.name)
   if (!frame) return undefined
   noteHtmlChange(prior, actor, false)
   broadcast(frame.canvasId, { type: 'frame:updated', frame, actor })
@@ -2561,7 +2562,9 @@ export const appendFrameHtml = atomic(function appendFrameHtml(
   if (opts.done) dropKey(streamIssues, frameId)
   else setKey(streamIssues, frameId, carried)
   const prior = priorState(before)
-  const frame = store.updateFrame(frameId, { html }, actor.name, { expectedUpdatedAt: opts.expectedUpdatedAt })!
+  const frame = store.updateFrame(writeContextFor(actor), frameId, { html }, actor.name, {
+    expectedUpdatedAt: opts.expectedUpdatedAt,
+  })!
   /* the opening chunk replaces the design; every later one extends this burst */
   noteHtmlChange(prior, actor, !starting)
   announceAdopted(before.canvasId, chunked.adopted, actor, true)
@@ -2791,7 +2794,7 @@ export const setCanvasPages = atomic(function setCanvasPages(
   pages: import('../shared/types.ts').CanvasPageInfo[],
   actor: Actor,
 ) {
-  const saved = store.setPages(canvasId, pages)
+  const saved = store.setPages(writeContextFor(actor), canvasId, pages)
   const next = saved?.pages ?? pages
   broadcast(canvasId, { type: 'canvas:pages', pages: next, actor })
   for (const guide of saved?.dropped ?? []) broadcast(canvasId, { type: 'guide', id: guide.id, guide: null, actor })
@@ -2845,7 +2848,7 @@ export function deleteGuide(canvasId: string, guideId: string, actor: Actor) {
 
 /** Copy a page with its frames; peers get the page list and each new frame. */
 export async function duplicatePage(canvasId: string, pageId: string, actor: Actor) {
-  const copy = await store.duplicatePage(canvasId, pageId, actor.name)
+  const copy = await store.duplicatePage(writeContextFor(actor), canvasId, pageId, actor.name)
   if (!copy) return undefined
   broadcast(canvasId, { type: 'canvas:pages', pages: copy.pages, actor })
   for (const guide of copy.guides) broadcast(canvasId, { type: 'guide', id: guide.id, guide, actor })
@@ -2912,7 +2915,7 @@ export const createFrame = atomic(function createFrame(
   }
   let moved = false
   if (actor.kind === 'agent') ({ input, moved } = clearOfOverlap(canvasId, input))
-  const frame = store.createFrame(canvasId, input, actor.name)
+  const frame = store.createFrame(writeContextFor(actor), canvasId, input, actor.name)
   if (!frame) return undefined
   if (moved) relocated.add(frame)
   const createIssues = takeComponentIssues('')
@@ -2957,7 +2960,9 @@ export const updateFrame = atomic(function updateFrame(
   const prevHidden = !!before.hidden
   const prevLocked = !!before.locked
   const prior = priorState(before)
-  const frame = store.updateFrame(frameId, patch, actor.name, { expectedUpdatedAt: opts.expectedUpdatedAt })
+  const frame = store.updateFrame(writeContextFor(actor), frameId, patch, actor.name, {
+    expectedUpdatedAt: opts.expectedUpdatedAt,
+  })
   if (!frame) return undefined
 
   const htmlChanged = patch.html !== undefined && patch.html !== prevHtml
@@ -3049,7 +3054,7 @@ export const setFrameApproval = atomic(function setFrameApproval(
         ...(agent ? { approvedVia: agent.name } : {}),
       }
     : null
-  const frame = store.updateFrame(frameId, { approval }, actor.name)!
+  const frame = store.updateFrame(writeContextFor(actor), frameId, { approval }, actor.name)!
   broadcast(frame.canvasId, { type: 'frame:updated', frame, actor })
   logActivity(
     frame.canvasId,
@@ -3101,7 +3106,7 @@ export const deleteFrame = atomic(function deleteFrame(frameId: string, actor: A
      so their auto “Designing…” tasks end with it */
   finishStream(frameId, false)
   finishReveal(frameId)
-  const frame = store.deleteFrame(frameId)
+  const frame = store.deleteFrame(writeContextFor(actor), frameId)
   if (!frame) return undefined
   dropKey(unsavedStamps, frameId)
   dropKey(bursts, frameId)
@@ -3158,8 +3163,8 @@ export function archiveFrames(canvasId: string, frameIds: string[], actor: Actor
 }
 
 /** Remove a canvas with everything attached to it; viewers are told to leave. */
-export const deleteCanvas = atomic(function deleteCanvas(canvasId: string): boolean {
-  const c = store.deleteCanvas(canvasId)
+export const deleteCanvas = atomic(function deleteCanvas(canvasId: string, actor: Actor): boolean {
+  const c = store.deleteCanvas(writeContextFor(actor), canvasId)
   forgetLibrary(canvasId)
   if (!c) return false
   for (const f of c.frames) {

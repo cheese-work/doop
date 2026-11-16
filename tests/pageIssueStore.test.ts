@@ -19,6 +19,7 @@ vi.mock('../server/db/persist.ts', () => {
   }
 })
 import { store } from '../server/store.ts'
+import { systemContext } from '../server/writePolicy.ts'
 import { canvasPages } from '../shared/pages.ts'
 import { resolvePageIssue } from '../shared/pageIssue.ts'
 
@@ -26,13 +27,13 @@ const ISSUE_A = '01a1d642-a8dd-75cd-886c-97d80b9e0048'
 const ISSUE_B = '01a1d675-5861-786e-8567-3a074a37c386'
 
 beforeEach(() => {
-  for (const canvas of store.allCanvases()) store.deleteCanvas(canvas.id)
+  for (const canvas of store.allCanvases()) store.deleteCanvas(systemContext(), canvas.id)
 })
 
 function twoPages() {
   const canvas = store.createCanvas('Bound', 'alice')
   const first = canvasPages(canvas)[0]!
-  store.setPages(canvas.id, [first, { id: 'p2', name: 'Two' }])
+  store.setPages(systemContext(), canvas.id, [first, { id: 'p2', name: 'Two' }])
   return { canvas, first, second: 'p2' }
 }
 const issueOf = (canvasId: string, pageId: string) =>
@@ -58,14 +59,14 @@ it('a page-list save can neither forge nor drop a link', () => {
   const { canvas, first } = twoPages()
   store.setPageIssue(canvas.id, first.id, ISSUE_A, 'member')
   /* forged: client names an issue on page 2 and a different one on page 1 */
-  store.setPages(canvas.id, [
+  store.setPages(systemContext(), canvas.id, [
     { ...first, issueId: ISSUE_B, issueSource: 'member' },
     { id: 'p2', name: 'Two', issueId: ISSUE_B, issueSource: 'member' },
   ])
   expect(issueOf(canvas.id, first.id)).toBe(ISSUE_A)
   expect(issueOf(canvas.id, 'p2')).toBeNull()
   /* a rename that omits the link keeps it */
-  store.setPages(canvas.id, [
+  store.setPages(systemContext(), canvas.id, [
     { id: first.id, name: 'Renamed' },
     { id: 'p2', name: 'Two' },
   ])
@@ -75,7 +76,7 @@ it('a page-list save can neither forge nor drop a link', () => {
 it('a duplicated page and a copied canvas start unbound', async () => {
   const { canvas, first } = twoPages()
   store.setPageIssue(canvas.id, first.id, ISSUE_A, 'member')
-  const dup = await store.duplicatePage(canvas.id, first.id, 'alice')
+  const dup = await store.duplicatePage(systemContext(), canvas.id, first.id, 'alice')
   expect(issueOf(canvas.id, dup!.page.id)).toBeNull()
   const copy = await store.duplicateCanvas(canvas.id, 'alice', 'alice')
   for (const page of canvasPages(copy!)) expect(resolvePageIssue(page)).toBeNull()
@@ -85,8 +86,8 @@ it('a duplicated page and a copied canvas start unbound', async () => {
 it('deleting a page takes its link along; a new page with that id starts unbound', () => {
   const { canvas, first } = twoPages()
   store.setPageIssue(canvas.id, 'p2', ISSUE_A, 'member')
-  store.setPages(canvas.id, [first])
-  store.setPages(canvas.id, [first, { id: 'p2', name: 'Two again' }])
+  store.setPages(systemContext(), canvas.id, [first])
+  store.setPages(systemContext(), canvas.id, [first, { id: 'p2', name: 'Two again' }])
   expect(issueOf(canvas.id, 'p2')).toBeNull()
 })
 
