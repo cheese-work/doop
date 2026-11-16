@@ -2,6 +2,8 @@
 # Runs on the C00 deploy runner (CHE-4585). Never builds: it pulls and runs an
 # image that already exists in GHCR, named by digest.
 #
+#   Everything below that mentions migration supervision applies only when DOOP_DEPLOY_TRAIN=on. Absent or
+#   off, apply and rollback behave as before the train (no quiescence check, the app migrates at boot).
 #   c00.sh apply      prove migration quiescence, pin the running image as the rollback target, pull
 #                     DEPLOY_REF, run its migrations once in a supervised one-shot container (C-8.8),
 #                     then start it with DOOP_SKIP_MIGRATIONS=1
@@ -13,7 +15,7 @@
 # Env: DEPLOY_REF (image@sha256:...), DEPLOY_SHA, C00_COMPOSE_DIR (compose project on C00),
 #      C00_PG_CONTAINER (the live Postgres container; read through `docker exec`, read-only; default: the
 #      compose project's `db` service, C00_PG_SERVICE),
-#      DEPLOY_RUN_ID (apply only: [a-z0-9-], names the one-shot container and its DB sessions).
+#      DEPLOY_RUN_ID (apply with DOOP_DEPLOY_TRAIN=on only: [a-z0-9-], names the one-shot container and its DB sessions).
 # Optional: C00_COMPOSE_FILE, C00_CONTAINER, C00_READBACK_SECONDS (900), C00_ROLLBACK_SECONDS (300),
 #           C00_POLL_SECONDS (10), C00_STABLE_CHECKS (3), C00_PG_USER (doop), C00_PG_DB (doop),
 #           C00_MIGRATE_SECONDS (120), C00_QUIESCE_SECONDS (30), C00_QUIESCE_POLL_SECONDS (2).
@@ -29,10 +31,16 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 die() { echo "c00.sh: $*" >&2; exit 1; }
 need_dir() { [ -n "${C00_COMPOSE_DIR:-}" ] || die "C00_COMPOSE_DIR is not set"; }
 
+# The supervised migration path is the train's. Absent, off or anything but `on` keeps the
+# deploy exactly as it was before the train (the app migrates at boot); CHE-6526.
+train_on() { [ "${DOOP_DEPLOY_TRAIN:-}" = on ]; }
+
 compose_up() { # $1 = image to run
   need_dir
+  local extra=()
+  ! train_on || extra=(-f "$here/compose.supervised.yml")
   DOOP_IMAGE=$1 docker compose --project-directory "$C00_COMPOSE_DIR" \
-    -f "$C00_COMPOSE_DIR/${C00_COMPOSE_FILE:-compose.yaml}" -f "$here/compose.image.yml" \
+    -f "$C00_COMPOSE_DIR/${C00_COMPOSE_FILE:-compose.yaml}" -f "$here/compose.image.yml" ${extra[@]+"${extra[@]}"} \
     up -d --no-build --pull never --force-recreate app
 }
 
@@ -191,16 +199,20 @@ case $cmd in
     ref=${DEPLOY_REF:-}
     [[ $ref =~ ^[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]] || die "DEPLOY_REF must be image@sha256:<64 hex>, got '$ref'"
     need_dir
-    need_run_id
-    need_pg
-    require_quiescent
-    ledger_before=$(ledger) || die "cannot read the migration ledger"
+    if train_on; then
+      need_run_id
+      need_pg
+      require_quiescent
+      ledger_before=$(ledger) || die "cannot read the migration ledger"
+    fi
     docker rmi "$rollback_tag" >/dev/null 2>&1 || true # a stale target must never be mistaken for this deploy's
     if prev=$(docker inspect --format '{{.Image}}' "$container" 2>/dev/null) && [ -n "$prev" ]; then
       docker tag "$prev" "$rollback_tag"
     fi
     docker pull "$ref"
-    migrate_supervised "$ref" # a failure stops here: the running app is untouched, no rollback is meaningful
+    if train_on; then
+      migrate_supervised "$ref" # a failure stops here: the running app is untouched, no rollback is meaningful
+    fi
     # From here the running service may change; only then is a rollback meaningful.
     [ -z "${GITHUB_OUTPUT:-}" ] || echo "attempted=true" >> "$GITHUB_OUTPUT"
     compose_up "$ref"
@@ -220,7 +232,7 @@ case $cmd in
     ;;
 
   rollback)
-    require_quiescent
+    ! train_on || require_quiescent
     docker image inspect "$rollback_tag" >/dev/null 2>&1 || die "no previous image to roll back to (first deploy?)"
     compose_up "$rollback_tag"
     wait_healthy "${C00_ROLLBACK_SECONDS:-300}"

@@ -13,7 +13,7 @@ const SHA = 'c'.repeat(40)
 
 const STUB = `#!/usr/bin/env bash
 echo "docker $*" >> "$STUB_DIR/log"
-case "$1" in wait) echo 0; exit 0 ;; exec) case "\${@: -1}" in *pg_locks*) echo 0 ;; esac; exit 0 ;; compose) echo "DOOP_IMAGE=\${DOOP_IMAGE:-}" >> "$STUB_DIR/log"; exit 0 ;; esac
+case "$1" in compose) echo "DOOP_IMAGE=\${DOOP_IMAGE:-}" >> "$STUB_DIR/log"; exit 0 ;; esac
 say() { [ -f "$STUB_DIR/$1" ] && cat "$STUB_DIR/$1" || exit 1; }
 case "$*" in
   "image inspect doop-rollback:previous") [ -f "$STUB_DIR/rollback_tag" ] || exit 1 ;;
@@ -54,9 +54,6 @@ function c00(cmd: string, env: Record<string, string> = {}) {
       PATH: `${join(dir, 'bin')}:${process.env.PATH}`,
       STUB_DIR: dir,
       C00_COMPOSE_DIR: '/srv/doop',
-      C00_PG_CONTAINER: 'doop-db',
-      DEPLOY_RUN_ID: '4242-1',
-      C00_QUIESCE_POLL_SECONDS: '0',
       C00_READBACK_SECONDS: '2',
       C00_ROLLBACK_SECONDS: '2',
       C00_POLL_SECONDS: '0',
@@ -113,7 +110,7 @@ describe('c00.sh apply', () => {
     it('is not set when the pull fails: the running deployment was never touched', () => {
       writeFileSync(
         join(dir, 'bin', 'docker'),
-        STUB.replace('case "$1" in wait)', 'case "$1" in pull) exit 1 ;; wait)'),
+        STUB.replace('case "$1" in compose)', 'case "$1" in pull) exit 1 ;; compose)'),
       )
       expect(run().status).not.toBe(0)
       expect(flag()).toBe('')

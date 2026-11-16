@@ -105,6 +105,7 @@ function c00(cmd: string, env: Record<string, string> = {}) {
       DEPLOY_REF: REF,
       DEPLOY_SHA: 'c'.repeat(40),
       DEPLOY_RUN_ID: RUN,
+      DOOP_DEPLOY_TRAIN: 'on', // the supervised path is the train's; the legacy tests are below
       ...env,
     },
   })
@@ -152,9 +153,13 @@ describe('supervised apply (C-8.8)', () => {
     expect(log()).toContain(`docker rm -f ${NAME}`)
   })
 
-  it('app starts with DOOP_SKIP_MIGRATIONS=1 (compose overlay)', () => {
-    const overlay = readFileSync(resolve('deploy/cd/compose.image.yml'), 'utf8')
+  it('app starts with DOOP_SKIP_MIGRATIONS=1 (the supervised overlay, added only in train mode)', () => {
+    const overlay = readFileSync(resolve('deploy/cd/compose.supervised.yml'), 'utf8')
     expect(overlay).toMatch(/DOOP_SKIP_MIGRATIONS:\s*['"]?1['"]?/)
+    expect(readFileSync(resolve('deploy/cd/compose.image.yml'), 'utf8')).not.toMatch(/SKIP_MIGRATIONS/)
+    c00('apply')
+    expect(log()).toMatch(/up -d[^\n]*app/)
+    expect(log()).toMatch(/docker compose [^\n]*compose\.supervised\.yml[^\n]* up -d/)
   })
 })
 
@@ -350,7 +355,7 @@ describe('inputs fail closed', () => {
 
 /* The deploy job's own env (`.github/workflows/image.yml`) is what c00.sh really gets. Resolve the few
    expressions it uses, then run `apply` and `rollback` with exactly that env. */
-function workflowDeployEnv(): Record<string, string> {
+function workflowDeployEnv(vars: Record<string, string> = {}): Record<string, string> {
   const wf = readFileSync(resolve('.github/workflows/image.yml'), 'utf8')
   const job = /^ {2}deploy:\n([\s\S]*?)(?=^ {2}[a-z][a-z0-9-]*:\n|(?![\s\S]))/m.exec(wf)?.[1] ?? ''
   const block = /^ {4}env:\n((?: {6}.*\n)+)/m.exec(job)?.[1] ?? ''
@@ -361,7 +366,7 @@ function workflowDeployEnv(): Record<string, string> {
     out[m[1]] = m[2]
       .replace(/\$\{\{\s*format\('\{0\}-\{1\}', github\.run_id, github\.run_attempt\)\s*\}\}/g, '9001-2')
       .replace(/\$\{\{\s*vars\.\w+\s*\|\|\s*'([^']*)'\s*\}\}/g, '$1')
-      .replace(/\$\{\{\s*vars\.\w+\s*\}\}/g, '')
+      .replace(/\$\{\{\s*vars\.(\w+)\s*\}\}/g, (_m, name: string) => vars[name] ?? '')
       .replace(/\$\{\{\s*format\('ghcr\.io\/\{0\}@\{1\}'[^}]*\)\s*\}\}/g, REF)
       .replace(/\$\{\{\s*github\.sha\s*\}\}/g, 'c'.repeat(40))
     if (out[m[1]]!.includes('${{')) throw new Error(`unresolved expression in deploy env ${m[1]}: ${m[2]}`)
@@ -370,8 +375,13 @@ function workflowDeployEnv(): Record<string, string> {
 }
 
 describe('the real deploy workflow environment', () => {
-  const run = (cmd: string, env: Record<string, string> = {}) => {
-    const wf = workflowDeployEnv()
+  // `vars` stands for the repository variables the deploy job reads; DOOP_DEPLOY_TRAIN is one of them.
+  const run = (
+    cmd: string,
+    env: Record<string, string> = {},
+    vars: Record<string, string> = { DOOP_DEPLOY_TRAIN: 'on' },
+  ) => {
+    const wf = workflowDeployEnv(vars)
     return spawnSync('bash', [SCRIPT, cmd], {
       encoding: 'utf8',
       env: {
@@ -415,5 +425,56 @@ describe('the real deploy workflow environment', () => {
     const r = run('apply')
     expect(r.status).not.toBe(0)
     expect(log()).not.toMatch(/docker (pull|tag|rmi)|up -d/)
+  })
+
+  describe('train switch absent or off (CHE-6526): the deploy is what it was before the train', () => {
+    const legacyApply = (vars: Record<string, string>) => {
+      put('migrate', 'fail') // a supervised run would fail; the legacy path never starts one
+      return run('apply', {}, vars)
+    }
+
+    it.each([
+      ['absent', {}],
+      ['off', { DOOP_DEPLOY_TRAIN: 'off' }],
+      ['not exactly on', { DOOP_DEPLOY_TRAIN: 'ON' }],
+    ])('apply with the switch %s: no quiescence read, no migrate container, app not told to skip', (_n, vars) => {
+      const r = legacyApply(vars)
+      expect(r.status, r.stderr).toBe(0)
+      const l = log()
+      expect(l).not.toMatch(/docker exec|doop-migrate|migrate\.ts|doop\.migrate\.run/)
+      expect(l).toMatch(/docker pull /)
+      expect(l).toMatch(/up -d/)
+      expect(l).not.toContain('compose.supervised.yml')
+      expect(ghOut()).toContain('attempted=true')
+      expect(ghOut()).not.toContain('outcome=')
+    })
+
+    it('apply with the switch off needs no run id and no Postgres container', () => {
+      put('no_db_service', '1')
+      const r = run('apply', { DEPLOY_RUN_ID: '' }, { DOOP_DEPLOY_TRAIN: 'off' })
+      expect(r.status, r.stderr).toBe(0)
+    })
+
+    it('rollback with the switch off does not read the database', () => {
+      put('rollback_tag', 'x')
+      put('sessions', '1|2026-11-16 06:00:01+00\n') // a survivor would refuse under the train
+      const r = run('rollback', {}, { DOOP_DEPLOY_TRAIN: 'off' })
+      expect(r.status, r.stderr).toBe(0)
+      expect(log()).not.toMatch(/docker exec/)
+      expect(log()).toMatch(/up -d/)
+    })
+
+    it('the same deploy with the switch on takes the supervised path', () => {
+      const r = run('apply', {}, { DOOP_DEPLOY_TRAIN: 'on' })
+      expect(r.status, r.stderr).toBe(0)
+      expect(log()).toContain('doop-migrate-9001-2')
+      expect(log()).toContain('compose.supervised.yml')
+    })
+
+    it('image.yml hands the repository variable to c00.sh', () => {
+      expect(readFileSync(resolve('.github/workflows/image.yml'), 'utf8')).toMatch(
+        /DOOP_DEPLOY_TRAIN: \$\{\{ vars\.DOOP_DEPLOY_TRAIN \}\}/,
+      )
+    })
   })
 })
