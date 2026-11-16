@@ -237,7 +237,7 @@ function frameSummary(f: {
  *  same isolation the web UI gets. */
 export function buildMcpServer(owner?: string, ownerId?: string, multicaTaskId?: string): McpServer {
   const actorFrom = (agent_name?: string) =>
-    actions.resolveActor({ name: agent_name, kind: 'agent', owner, multicaTaskId })
+    actions.resolveActor({ name: agent_name, kind: 'agent', owner, multicaTaskId, origin: 'mcp' })
   /* Canvas access for agents mirrors the web UI: the OAuth user's id runs
      through the same canvasRole gate as browser sessions, so an agent
      connected by someone holding a view or comment link reads but cannot

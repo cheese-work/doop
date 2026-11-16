@@ -336,6 +336,8 @@ export interface Actor {
   owner?: string
   /** for agents run by Multica: the Multica task (run) id from X-Multica-Task-Id */
   multicaTaskId?: string
+  /** who is behind the write: an MCP client with a user key, or a design-sync snippet key (CHE-6624 G1) */
+  origin?: 'mcp' | 'sync'
 }
 
 export interface Presence {

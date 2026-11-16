@@ -258,8 +258,15 @@ class Store {
       frames,
     )
     if (this.canvases.get(canvasId) !== canvas) return undefined
-    /* the copy is async: judge again at the commit, not only at the start */
-    assertWritable(ctx, 'copy_page', { canvas, pageIds: [pageId] })
+    /* the copy is async: judge again at the commit, not only at the start. The rows are already
+       durable, so a refusal here takes them back out: the database must not hold a copy memory refused. */
+    try {
+      assertWritable(ctx, 'copy_page', { canvas, pageIds: [pageId] })
+    } catch (err) {
+      for (const frame of frames) persist.deleteFrame(frame.id)
+      persist.saveCanvas(canvas)
+      throw err
+    }
     /* a page save may have landed during the write: slot the copy after the
        source wherever it is now (or last, if the source is gone), under a
        name the live list does not use */

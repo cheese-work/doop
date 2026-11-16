@@ -134,7 +134,16 @@ function logActivity(canvasId: string, actor: Actor, message: string, frameId?: 
 }
 
 export function resolveActor(
-  raw: { name?: string; kind?: string; clientId?: string; owner?: string; multicaTaskId?: string } | undefined,
+  raw:
+    | {
+        name?: string
+        kind?: string
+        clientId?: string
+        owner?: string
+        multicaTaskId?: string
+        origin?: 'mcp' | 'sync'
+      }
+    | undefined,
 ): Actor {
   const kind = raw?.kind === 'agent' ? 'agent' : raw?.kind === 'user' ? 'user' : 'agent'
   const name = raw?.name?.trim() || (kind === 'agent' ? 'AI Agent' : 'Anonymous')
@@ -144,6 +153,7 @@ export function resolveActor(
     color: colorFor(name),
     clientId: raw?.clientId,
     owner: raw?.owner,
+    ...(raw?.origin ? { origin: raw.origin } : {}),
     ...(kind === 'agent' && raw?.multicaTaskId ? { multicaTaskId: raw.multicaTaskId } : {}),
   }
 }
