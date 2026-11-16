@@ -13,20 +13,35 @@ const PNG = 'data:image/png;base64,AAAA'
 const frames = [
   { id: 'f1', html: `<p>héllo</p><img src="${PNG}"><div style="background:url(${PNG})"></div>`, delay: 150 },
   { id: 'f2', html: '<p>plain</p>', delay: 500 },
+  // culled like frames far from the camera: the fixture mounts them only after the fit-all key (⇧1)
+  { id: 'f3', html: '<p>far</p>', delay: 900, culled: true },
+  { id: 'f4', html: '<p>farther</p>', delay: 1200, culled: true },
 ]
+const MOUNTED = frames.filter((f) => !f.culled).length
 
 const allHtml = frames.map((f) => f.html).join('')
 
 describe('summarizeCanvas', () => {
   it('counts frames, UTF-8 html bytes and data: image URIs', () => {
     const s = summarizeCanvas({ frames: frames.map(({ id, html }) => ({ id, html })) })
-    expect(s.frames).toBe(2)
+    expect(s.frames).toBe(frames.length)
     expect(s.htmlBytes).toBe(Buffer.byteLength(allHtml, 'utf8'))
     expect(s.htmlBytes).toBeGreaterThan(allHtml.length) // é is 2 bytes
     expect(s.dataUriCount).toBe(2)
   })
   it('treats missing html as empty', () => {
-    expect(summarizeCanvas({ frames: [{}, { html: 'x' }] })).toEqual({ frames: 2, htmlBytes: 1, dataUriCount: 0 })
+    expect(summarizeCanvas({ frames: [{}, { html: 'x' }] })).toMatchObject({ frames: 2, htmlBytes: 1, dataUriCount: 0 })
+  })
+  it('counts the frames of the page the file opens on (the first page), not of every page', () => {
+    const canvas = {
+      id: 'c',
+      pages: [
+        { id: 'p1', name: 'One' },
+        { id: 'p2', name: 'Two' },
+      ],
+      frames: [{ pageId: 'p1' }, {}, { pageId: 'p2' }, { pageId: 'p2' }],
+    }
+    expect(summarizeCanvas(canvas)).toMatchObject({ frames: 4, firstPageFrames: 2 })
   })
 })
 
@@ -81,15 +96,21 @@ describe.skipIf(!chromiumPresent)('measureCanvasLoad against a fixture server', 
       res.writeHead(200, { 'content-type': 'text/html' })
       res.end(`<!doctype html><body><script>
         const delays = ${JSON.stringify(Object.fromEntries(frames.map((f) => [f.id, f.delay])))}
-        fetch('/api/canvases/fx').then((r) => r.json()).then((c) => {
-          for (const f of c.frames) {
+        const isCulled = ${JSON.stringify(Object.fromEntries(frames.map((f) => [f.id, !!f.culled])))}
+        const mount = (f) => {
             const surface = document.createElement('div')
             surface.setAttribute('data-frame-surface', '')
             const ifr = document.createElement('iframe')
             ifr.srcdoc = '<script>setTimeout(() => parent.postMessage({ type: "doop:frame-ready" }, "*"), ' + delays[f.id] + ')<\\/script>'
             surface.append(ifr)
             document.body.append(surface)
-          }
+        }
+        const culled = []
+        fetch('/api/canvases/fx').then((r) => r.json()).then((c) => {
+          for (const f of c.frames) isCulled[f.id] ? culled.push(f) : mount(f)
+        })
+        addEventListener('keydown', (e) => {
+          if (e.shiftKey && e.code === 'Digit1') for (const f of culled.splice(0)) mount(f)
         })
       </script></body>`)
     })
@@ -103,13 +124,18 @@ describe.skipIf(!chromiumPresent)('measureCanvasLoad against a fixture server', 
     expect(out.runs).toHaveLength(3)
     for (const r of out.runs) {
       expect(r.ms).toBeGreaterThanOrEqual(500)
-      expect(r.iframesMounted).toBe(2)
+      expect(r.iframesMounted).toBe(MOUNTED)
+      // culled frames count too: the all-frames time waits for the frames that mount only after fit-all
+      expect(r.iframesMountedAll).toBe(frames.length)
+      expect(r.allFramesMs).toBeGreaterThanOrEqual(r.ms + 1200)
     }
     // payload numbers come from one request made outside the browser, so a slow
     // browser-side response body cannot stall a run (CHE-5849 baseline hang)
     expect(out.canvasJsonBytes).toBeGreaterThan(allHtml.length)
     expect(out.medianMs).toBe(median(out.runs.map((r) => r.ms)))
-    expect(out.frames).toBe(2)
+    expect(out.medianAllFramesMs).toBe(median(out.runs.map((r) => r.allFramesMs)))
+    expect(out.medianAllFramesMs).toBeGreaterThan(out.medianMs)
+    expect(out.frames).toBe(frames.length)
     expect(out.dataUriCount).toBe(2)
     expect(out.htmlBytes).toBe(Buffer.byteLength(allHtml, 'utf8'))
     expect(hits.noCookie).toBe(0)
@@ -129,7 +155,8 @@ describe.skipIf(!chromiumPresent)('measureCanvasLoad against a fixture server', 
     expect(text).toMatch(/browser started/)
     expect(text).toMatch(/page loaded/)
     expect(text).toMatch(/canvas JSON \d+ bytes/)
-    expect(text).toMatch(/all frames ready after \d+ ms/)
+    expect(text).toMatch(/first view ready after \d+ ms/)
+    expect(text).toMatch(/all 4 frames ready after \d+ ms/)
     expect(text).toMatch(/iframes ready \d+\/\d+/)
   }, 60_000)
 })
