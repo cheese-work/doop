@@ -1,0 +1,506 @@
+{
+  "source": "cheese/main 7d5d03c (the revision C00 runs)",
+  "migrations": [
+    {
+      "name": "0000_init.sql",
+      "sha256": "a78b0e789239a273a2a5797e9d374baacc364fe8fa06561aeb825d42f32b1db5"
+    },
+    {
+      "name": "0001_previous_master_mold.sql",
+      "sha256": "0db3178f0a7dcebb746bfbd3c4de4b58c0162d8c8c5278c095c897e005a9c53a"
+    },
+    {
+      "name": "0002_model_accounts.sql",
+      "sha256": "96c82604de70e671de96bee8b9e2539163463b2d155fc7c82644c463ad284988"
+    },
+    {
+      "name": "0003_motionless_colossus.sql",
+      "sha256": "a9fa169a8f89c9c61f182d4f5a26c0618e822adb30d4770833d69992a0bc98d2"
+    },
+    {
+      "name": "0004_design_sync_keys.sql",
+      "sha256": "b07923f74dfd9b423f96242477a588e5597934df673f9376f74bc3083892dd26"
+    },
+    {
+      "name": "0005_sync_flow.sql",
+      "sha256": "00603728cce461f44f6674e687388e67f9d164966518ebb2d429651e497944e7"
+    },
+    {
+      "name": "0006_known_nightshade.sql",
+      "sha256": "b740d141a124fdff06c421d7f094062bbd40b7cb1c240812742fe6bff03ee4f0"
+    },
+    {
+      "name": "0007_colorful_firedrake.sql",
+      "sha256": "7c299cd4cf0fedf2034f06e4e004493426916e4842eab6ae003a2ec4a7cf3c3a"
+    },
+    {
+      "name": "0008_comment_replies.sql",
+      "sha256": "ab2f5e862e290d517128b794102eb8bd9982b59e830eab1811bd5a8c5e18b591"
+    },
+    {
+      "name": "0009_repo_cards.sql",
+      "sha256": "0a96802917700aaa2a2579b5f52eeb9e27c0b5634605198bedf47561562a1f55"
+    },
+    {
+      "name": "0010_community.sql",
+      "sha256": "d9f407530e5268da8eb68ac3cf1c42cf21167c9b945c5e95a655a6a3f8746933"
+    },
+    {
+      "name": "0011_backgrounds.sql",
+      "sha256": "d1aade1f15202d7597c53b06bb8c0a4bc9f880b5c29aebca2bfa4270b682243f"
+    },
+    {
+      "name": "0012_automations.sql",
+      "sha256": "4dee4a4e0338f709db6169dec214b7e76a9d734ef192dac695e1de7528a548a2"
+    },
+    {
+      "name": "0013_integrations_unique.sql",
+      "sha256": "006ac403e20ccf5aec71c5b5de5a86999641d80fa6f63ad97e1c921943430d93"
+    },
+    {
+      "name": "0014_workspaces.sql",
+      "sha256": "340d185f45310dc94514c29699aa66e9481ddc61565e794577096e1eaa922d42"
+    },
+    {
+      "name": "0015_card_scope.sql",
+      "sha256": "6aede0a64d6db240a067d47c83d33fb2f6d8448c5650b68a7842bf450a76446e"
+    },
+    {
+      "name": "0016_task_frames.sql",
+      "sha256": "07518522ebbf0a4b37938b5958a1af43f47f1c0b04810879ab3111241a62d74e"
+    },
+    {
+      "name": "0017_local_agent.sql",
+      "sha256": "0bc531e1f563b33824d03122da799751b729e6759e659ad1a8820d42a031081b"
+    },
+    {
+      "name": "0018_chat.sql",
+      "sha256": "7f827079562a74dcd42a37e2d2aa3424027a1c4eec11bcace1772f57d2326d70"
+    },
+    {
+      "name": "0020_image_prefs.sql",
+      "sha256": "16e160e7dab5cdc13f70bd996c71be178cbdf02d9e5f8d173960dd6ea1d9096f"
+    },
+    {
+      "name": "0021_agent_keys.sql",
+      "sha256": "cafe1ccf8a00e5be0d1f774dfe55d61a0f0e9cef381979047101f8216c59feb2"
+    },
+    {
+      "name": "0022_linear_agent.sql",
+      "sha256": "7233b2959844cc7ea385e4fc21ae551b38517ee7eea1cd8e600250cdc7b0a5b7"
+    },
+    {
+      "name": "0023_notification_prefs.sql",
+      "sha256": "cea15dd935a7491f8f960af61649ca173820d10ef5129f9931081754c5c981ef"
+    },
+    {
+      "name": "0024_webhooks.sql",
+      "sha256": "75adbd08b50bf2012522bb55c1c0c7e25dc6d9a17c4a1ed1310b07d02fb6a375"
+    },
+    {
+      "name": "0025_live_activities.sql",
+      "sha256": "ca0764f90bcdd548c128445da8f0e45a00d534ff72a771c9aec055f76bb1aef3"
+    },
+    {
+      "name": "0026_canvas_pages.sql",
+      "sha256": "10a61ca73e33c6d1afe64651c0d9ad08bb84368d613eab8959f3047eaddcc2b6"
+    },
+    {
+      "name": "0027_persist_legacy_page_membership.sql",
+      "sha256": "09969a8bc3c19bc2ea04ee08537507ce09fceaae510f25cfcabdf3c27aae3b1c"
+    },
+    {
+      "name": "0028_slack_agent.sql",
+      "sha256": "a9cd703b9d9632f155b8e6c7e699623f8c07456e197cda491b7c47b58b2dad07"
+    },
+    {
+      "name": "0029_frame_hidden.sql",
+      "sha256": "25ca6ab934db904b1124ec923192bbd1578b8e5b8ea76059d762dca1fcfe1a8a"
+    },
+    {
+      "name": "0030_drop_chat_messages.sql",
+      "sha256": "555ac6476cc97db8f5356f491261e18afc0e76063501ff0bbe4d24bc1b5fd2cb"
+    },
+    {
+      "name": "0031_frame_locked.sql",
+      "sha256": "f83a342d2496662fde4a683f08613493a88aa98a5cfde5686d95e179b6b8e89a"
+    },
+    {
+      "name": "0032_frame_versions.sql",
+      "sha256": "64fee70e06253dc64196d2cd2f6f939b45e018c74e8fd42ebb7431a57e2b3394"
+    },
+    {
+      "name": "0033_canvas_comments.sql",
+      "sha256": "4c8aec2a2fcfb41220fa8ebf4ddd4455be63c3ed5320609a8b379216623f8b6d"
+    },
+    {
+      "name": "0034_frame_approval.sql",
+      "sha256": "485665c3018ffff22654cb0449fab96ca9aa40a70af72774f362e0f0477cc129"
+    },
+    {
+      "name": "0035_approval_automations.sql",
+      "sha256": "ffb565652b344fe2dfb7e7edad207f22a9622a7c8e402b4c76dc52148d16f846"
+    },
+    {
+      "name": "0036_canvas_guides.sql",
+      "sha256": "7301d33d6276673fa9dcd45e543960467b3c5eaf44f01591e67a89bdb22d4c3f"
+    },
+    {
+      "name": "0037_local_agent_effort.sql",
+      "sha256": "1bb436bd21c51132f900b7deacc1c8beab3227f26fb1423dbcf647a75f41a252"
+    },
+    {
+      "name": "0038_reasoning_effort.sql",
+      "sha256": "7f4c5dbb6ff18c390c1500fc5c62ad07842d7c6b4a85072994974a4bbe333b11"
+    },
+    {
+      "name": "0039_comment_element_ids.sql",
+      "sha256": "96fb7c8aade7b347862b78d526f4d349e18594ddaf05a57f5ae28a5bd205c4ba"
+    },
+    {
+      "name": "0040_comment_events.sql",
+      "sha256": "5e93de4e7db80234aa1442f74a5b60bd83905d1fae1c810cc1469ee389f6a3b8"
+    },
+    {
+      "name": "0041_canvas_bridge.sql",
+      "sha256": "f824c83b7432b768c1f567113e5893f4c2686ce93db060f8606f09f7189b123f"
+    },
+    {
+      "name": "0042_soft_delete.sql",
+      "sha256": "19513bbc6cee16989856b476b422fa4933c5979ba47a65781eae868775fb6aff"
+    },
+    {
+      "name": "0043_comment_client_request_id.sql",
+      "sha256": "13da3795c160dbd602be95f9abf7b8e3557515b2a55c13db8784f4f297639625"
+    },
+    {
+      "name": "0044_page_snapshots.sql",
+      "sha256": "277c3332516b8a91ca67f54a48624c3519393940da8877056ec71028bea22e3c"
+    },
+    {
+      "name": "0045_frame_write_keys.sql",
+      "sha256": "3d35556efe13e2cc50066fb2a1ed4cfb7eab50d6097974e133e299b7e66410da"
+    }
+  ],
+  "journal": {
+    "version": "7",
+    "dialect": "postgresql",
+    "entries": [
+      {
+        "idx": 0,
+        "version": "7",
+        "when": 1787419244554,
+        "tag": "0000_init",
+        "breakpoints": true
+      },
+      {
+        "idx": 1,
+        "version": "7",
+        "when": 1787617484118,
+        "tag": "0001_previous_master_mold",
+        "breakpoints": true
+      },
+      {
+        "idx": 2,
+        "version": "7",
+        "when": 1787630801452,
+        "tag": "0002_model_accounts",
+        "breakpoints": true
+      },
+      {
+        "idx": 3,
+        "version": "7",
+        "when": 1787637526171,
+        "tag": "0003_motionless_colossus",
+        "breakpoints": true
+      },
+      {
+        "idx": 4,
+        "version": "7",
+        "when": 1787764855067,
+        "tag": "0004_design_sync_keys",
+        "breakpoints": true
+      },
+      {
+        "idx": 5,
+        "version": "7",
+        "when": 1787770420646,
+        "tag": "0005_sync_flow",
+        "breakpoints": true
+      },
+      {
+        "idx": 6,
+        "version": "7",
+        "when": 1788136083709,
+        "tag": "0006_known_nightshade",
+        "breakpoints": true
+      },
+      {
+        "idx": 7,
+        "version": "7",
+        "when": 1788139127832,
+        "tag": "0007_colorful_firedrake",
+        "breakpoints": true
+      },
+      {
+        "idx": 8,
+        "version": "7",
+        "when": 1788474703764,
+        "tag": "0008_comment_replies",
+        "breakpoints": true
+      },
+      {
+        "idx": 9,
+        "version": "7",
+        "when": 1788474725138,
+        "tag": "0009_repo_cards",
+        "breakpoints": true
+      },
+      {
+        "idx": 10,
+        "version": "7",
+        "when": 1788992898395,
+        "tag": "0010_community",
+        "breakpoints": true
+      },
+      {
+        "idx": 11,
+        "version": "7",
+        "when": 1788994279174,
+        "tag": "0011_backgrounds",
+        "breakpoints": true
+      },
+      {
+        "idx": 12,
+        "version": "7",
+        "when": 1789160600561,
+        "tag": "0012_automations",
+        "breakpoints": true
+      },
+      {
+        "idx": 13,
+        "version": "7",
+        "when": 1789165950163,
+        "tag": "0013_integrations_unique",
+        "breakpoints": true
+      },
+      {
+        "idx": 14,
+        "version": "7",
+        "when": 1789193130109,
+        "tag": "0014_workspaces",
+        "breakpoints": true
+      },
+      {
+        "idx": 15,
+        "version": "7",
+        "when": 1789280000000,
+        "tag": "0015_card_scope",
+        "breakpoints": true
+      },
+      {
+        "idx": 16,
+        "version": "7",
+        "when": 1789783411083,
+        "tag": "0016_task_frames",
+        "breakpoints": true
+      },
+      {
+        "idx": 17,
+        "version": "7",
+        "when": 1789786843578,
+        "tag": "0017_local_agent",
+        "breakpoints": true
+      },
+      {
+        "idx": 18,
+        "version": "7",
+        "when": 1789789243227,
+        "tag": "0018_chat",
+        "breakpoints": true
+      },
+      {
+        "idx": 19,
+        "version": "7",
+        "when": 1790153504847,
+        "tag": "0020_image_prefs",
+        "breakpoints": true
+      },
+      {
+        "idx": 20,
+        "version": "7",
+        "when": 1790243905493,
+        "tag": "0021_agent_keys",
+        "breakpoints": true
+      },
+      {
+        "idx": 21,
+        "version": "7",
+        "when": 1790243905494,
+        "tag": "0022_linear_agent",
+        "breakpoints": true
+      },
+      {
+        "idx": 23,
+        "version": "7",
+        "when": 1791215906582,
+        "tag": "0023_notification_prefs",
+        "breakpoints": true
+      },
+      {
+        "idx": 24,
+        "version": "7",
+        "when": 1791216598941,
+        "tag": "0024_webhooks",
+        "breakpoints": true
+      },
+      {
+        "idx": 25,
+        "version": "7",
+        "when": 1791371888951,
+        "tag": "0025_live_activities",
+        "breakpoints": true
+      },
+      {
+        "idx": 26,
+        "version": "7",
+        "when": 1791388595515,
+        "tag": "0026_canvas_pages",
+        "breakpoints": true
+      },
+      {
+        "idx": 27,
+        "version": "7",
+        "when": 1791419435419,
+        "tag": "0027_persist_legacy_page_membership",
+        "breakpoints": true
+      },
+      {
+        "idx": 28,
+        "version": "7",
+        "when": 1791579850954,
+        "tag": "0028_slack_agent",
+        "breakpoints": true
+      },
+      {
+        "idx": 29,
+        "version": "7",
+        "when": 1792114589970,
+        "tag": "0029_frame_hidden",
+        "breakpoints": true
+      },
+      {
+        "idx": 30,
+        "version": "7",
+        "when": 1792195710192,
+        "tag": "0030_drop_chat_messages",
+        "breakpoints": true
+      },
+      {
+        "idx": 31,
+        "version": "7",
+        "when": 1792196134568,
+        "tag": "0031_frame_locked",
+        "breakpoints": true
+      },
+      {
+        "idx": 32,
+        "version": "7",
+        "when": 1792196538603,
+        "tag": "0032_frame_versions",
+        "breakpoints": true
+      },
+      {
+        "idx": 33,
+        "version": "7",
+        "when": 1792198605115,
+        "tag": "0033_canvas_comments",
+        "breakpoints": true
+      },
+      {
+        "idx": 34,
+        "version": "7",
+        "when": 1793458475242,
+        "tag": "0034_frame_approval",
+        "breakpoints": true
+      },
+      {
+        "idx": 35,
+        "version": "7",
+        "when": 1793458475243,
+        "tag": "0035_approval_automations",
+        "breakpoints": true
+      },
+      {
+        "idx": 36,
+        "version": "7",
+        "when": 1793458475244,
+        "tag": "0036_canvas_guides",
+        "breakpoints": true
+      },
+      {
+        "idx": 37,
+        "version": "7",
+        "when": 1793458475245,
+        "tag": "0037_local_agent_effort",
+        "breakpoints": true
+      },
+      {
+        "idx": 38,
+        "version": "7",
+        "when": 1793458475246,
+        "tag": "0038_reasoning_effort",
+        "breakpoints": true
+      },
+      {
+        "idx": 39,
+        "version": "7",
+        "when": 1793458475247,
+        "tag": "0039_comment_element_ids",
+        "breakpoints": true
+      },
+      {
+        "idx": 40,
+        "version": "7",
+        "when": 1793092053628,
+        "tag": "0040_comment_events",
+        "breakpoints": true
+      },
+      {
+        "idx": 41,
+        "version": "7",
+        "when": 1793458475241,
+        "tag": "0041_canvas_bridge",
+        "breakpoints": true
+      },
+      {
+        "idx": 42,
+        "version": "7",
+        "when": 1794482262681,
+        "tag": "0042_soft_delete",
+        "breakpoints": true
+      },
+      {
+        "idx": 43,
+        "version": "7",
+        "when": 1794486620716,
+        "tag": "0043_comment_client_request_id",
+        "breakpoints": true
+      },
+      {
+        "idx": 44,
+        "version": "7",
+        "when": 1794488857028,
+        "tag": "0044_page_snapshots",
+        "breakpoints": true
+      },
+      {
+        "idx": 45,
+        "version": "7",
+        "when": 1794488857029,
+        "tag": "0045_frame_write_keys",
+        "breakpoints": true
+      }
+    ]
+  }
+}

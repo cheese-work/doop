@@ -25,11 +25,11 @@ it('every journal entry has a drizzle snapshot', async () => {
   expect(missingSnapshots(await entries(), files)).toEqual(LEGACY_MISSING)
 })
 
-it('0054 is additive over 0053, by sql and by snapshot', async () => {
+it('0045 is additive over 0044, by sql and by snapshot', async () => {
   const read = async (f: string) => JSON.parse(await readFile(path.join(dir, f), 'utf8')) as unknown
-  expect(diffSnapshots(await read('meta/0053_snapshot.json'), await read('meta/0054_snapshot.json'))).toEqual({
+  expect(diffSnapshots(await read('meta/0044_snapshot.json'), await read('meta/0045_snapshot.json'))).toEqual({
     ok: true,
   })
-  const sql = await readFile(path.join(dir, '0054_frame_write_keys.sql'), 'utf8')
+  const sql = await readFile(path.join(dir, '0045_frame_write_keys.sql'), 'utf8')
   expect((await classifyMigration(sql)).additive).toBe(true)
 })
