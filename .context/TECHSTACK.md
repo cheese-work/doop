@@ -1107,8 +1107,9 @@ data-doop-webfonts>` for the roster families the frame names and does not load i
   server-owned `projectId` (`canvases.project_id`). An agent with an `X-Multica-Task-Id` writes only when
   Multica vouched for the task (`setTaskIdentityVerifier` + `warmTaskIdentity`, cached 5 min; the header alone
   is never trusted), the canvas is bound to the task's project and the page to its issue. With no verifier
-  plugged in every such write is refused. An agent with no task may write to unbound canvases only; no agent binds
-  or deletes a canvas. Users and the system pass. `tests/writePolicy.test.ts` also scans `server/` so a new
+  plugged in every such write is refused. An agent with no task may write to unbound canvases only, and once a verifier is plugged in an MCP agent
+  without a task is refused everywhere; a design-sync (ingest) key is held to the binding like an agent; no agent binds
+  or deletes a canvas. A page copy that loses the binding race at its commit deletes the rows it had saved. Users and the system pass. `tests/writePolicy.test.ts` also scans `server/` so a new
   writer outside `store.ts` and `db/persist.ts` fails CI.
 
 ## 6. Build and Dependency Management

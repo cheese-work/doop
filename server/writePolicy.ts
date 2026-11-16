@@ -18,6 +18,8 @@ export type WriteContext = {
   sessionId?: string
   /** Multica confirmed `taskId` is a live task, and the three ids above are its */
   verified?: boolean
+  /** an MCP client with a user key, or a design-sync key: not a task run, not the server itself */
+  origin?: 'mcp' | 'sync'
 }
 
 export type WriteOp =
@@ -82,9 +84,11 @@ export async function warmTaskIdentity(taskId: string): Promise<void> {
 /** The write context for an actor. Only a task Multica vouched for, and still running, yields
  *  `verified` and the ids; the id the client sent is never trusted on its own. */
 export function writeContextFor(actor: Actor): WriteContext {
+  /* a sync key is a snippet on a foreign origin, not a person: it is held to the canvas binding like an agent */
+  if (actor.origin === 'sync') return { kind: 'agent', origin: 'sync' }
   if (actor.kind !== 'agent') return { kind: 'user' }
   const taskId = actor.multicaTaskId
-  if (!taskId) return { kind: 'agent' }
+  if (!taskId) return actor.origin === 'mcp' ? { kind: 'agent', origin: 'mcp' } : { kind: 'agent' }
   const hit = verified.get(taskId)
   if (!hit || Date.now() - hit.at >= TASK_IDENTITY_TTL_MS || !hit.identity.running) return { kind: 'agent', taskId }
   const { agentId, issueId, projectId } = hit.identity
@@ -107,7 +111,8 @@ const OPS: ReadonlySet<string> = new Set<WriteOp>([
  * separate issue); an agent is held to the project binding:
  *  - an agent with a Multica task must be verified, and write only to the canvas bound to its
  *    project, on pages bound to its issue;
- *  - an agent with no task is a non-Multica agent: it may write to canvases nobody bound, never to a bound one;
+ *  - an agent with no task may write to canvases nobody bound, never to a bound one; once a Multica
+ *    verifier is plugged in, an MCP agent without a task is refused everywhere (omitting the header is no bypass);
  *  - no agent binds, unbinds or deletes a canvas.
  */
 export function assertWritable(ctx: WriteContext, op: WriteOp, target: WriteTarget): void {
@@ -118,6 +123,8 @@ export function assertWritable(ctx: WriteContext, op: WriteOp, target: WriteTarg
   if (op === 'delete_canvas') throw new PolicyRefused(op, 'an agent cannot delete a canvas')
   if (!ctx.taskId) {
     if (canvas.projectId) throw new PolicyRefused(op, 'canvas is bound to a project and the agent has no Multica task')
+    /* Multica identity is on (a verifier is plugged in): the missing header is no way around it */
+    if (verifier && ctx.origin === 'mcp') throw new PolicyRefused(op, 'an MCP agent must present a Multica task')
     return
   }
   if (!ctx.verified || !ctx.projectId || !ctx.issueId)

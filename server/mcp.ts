@@ -444,6 +444,7 @@ export function buildMcpServer(
       owner,
       brand: resolveAgentBrand(clientName, agent_name),
       multicaTaskId,
+      origin: 'mcp',
     })
   /* Canvas access for agents mirrors the web UI: the OAuth user's id runs
      through the same canvasRole gate as browser sessions, so an agent

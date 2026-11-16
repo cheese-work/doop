@@ -5,22 +5,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 /* CHE-6624: N0 (WriteContext + assertWritable at the store) and G1 (a Multica
    task writes only to its own project's canvas, on its own issue's page, and
    only once Multica has vouched for the task). */
+const db = vi.hoisted(() => ({
+  savePageCopy: vi.fn(async (_canvas: unknown, _frames: unknown[]) => undefined as void),
+  deleteFrame: vi.fn((_id: string) => undefined),
+  saveCanvas: vi.fn((_canvas: unknown) => undefined),
+}))
 vi.mock('../server/db/persist.ts', () => {
   const noop = () => undefined
   return {
     deleteCanvas: noop,
-    deleteFrame: noop,
+    deleteFrame: db.deleteFrame,
     deleteGuideline: noop,
     deleteMember: noop,
     deleteReference: noop,
     saveActivity: noop,
-    saveCanvas: noop,
+    saveCanvas: db.saveCanvas,
     saveCanvasCopy: noop,
     saveFeedback: noop,
     saveFrame: noop,
+    saveFrameVersion: noop,
     saveGuideline: noop,
     saveMember: noop,
-    savePageCopy: async () => undefined,
+    savePageCopy: db.savePageCopy,
     saveReference: noop,
     saveTask: noop,
   }
@@ -417,5 +423,79 @@ describe('N0: the compiler and a source scan keep new writers inside the store',
     expect(/\bpersist\.saveFrame\b/.test(text)).toBe(true)
     expect(/\bc\.frames\.push\b/.test(text)).toBe(true)
     expect(/\bcanvases\.delete\(/.test(text)).toBe(true)
+  })
+})
+
+describe('review findings (CHE-6624 round 2)', () => {
+  const mcpAgent = () => ({
+    ...actions.resolveActor({ name: 'designer', kind: 'agent', owner: 'Owner', origin: 'mcp' }),
+  })
+  const residentAgent = () => actions.resolveActor({ name: 'Doop', kind: 'agent' })
+  const syncKey = () => actions.resolveActor({ name: 'Admin app', kind: 'user', origin: 'sync' })
+  const verifierDown: Parameters<typeof setTaskIdentityVerifier>[0] = async () => undefined
+
+  it('once Multica identity is on, an MCP agent that omits the task header is refused on an unbound canvas', () => {
+    setTaskIdentityVerifier(verifierDown)
+    const { canvas, frame } = unbound()
+    expect(() => actions.updateFrame(frame.id, { html: '<p>y</p>' }, mcpAgent())).toThrow(/policy_refused/)
+    expect(() => actions.createFrame(canvas.id, { name: 'n' }, mcpAgent())).toThrow(/policy_refused/)
+    expect(store.getFrame(frame.id)?.html).toBe('<p>x</p>')
+  })
+
+  it('with no Multica identity configured, an MCP agent keeps unbound canvases; in-process agents are never held to it', () => {
+    const { frame } = unbound()
+    expect(actions.updateFrame(frame.id, { html: '<p>y</p>' }, mcpAgent())).toBeTruthy()
+    setTaskIdentityVerifier(verifierDown)
+    expect(actions.updateFrame(frame.id, { html: '<p>z</p>' }, residentAgent())).toBeTruthy()
+  })
+
+  it('an MCP tool call without the header is refused once identity is on', async () => {
+    setTaskIdentityVerifier(verifierDown)
+    const { canvas, frame } = unbound()
+    const server = buildMcpServer('Owner', 'alice')
+    const client = new Client({ name: 't', version: '1' })
+    const [a, b] = InMemoryTransport.createLinkedPair()
+    await Promise.all([server.connect(a), client.connect(b)])
+    const res = (await client.callTool({
+      name: 'delete_frame',
+      arguments: { canvas_id: canvas.id, frame_id: frame.id, agent_name: 'Designer' },
+    })) as { isError?: boolean; content: { text: string }[] }
+    expect(res.isError).toBe(true)
+    expect(res.content[0]!.text).toMatch(/policy_refused/)
+    expect(store.getFrame(frame.id)).toBeTruthy()
+    expect(canvas.frames).toHaveLength(1)
+  })
+
+  it('an ingest (sync key) write to a project-bound canvas is refused, to an unbound one allowed', () => {
+    const { canvas, fa } = bound()
+    expect(() => actions.updateFrame(fa.id, { html: '<p>sync</p>' }, syncKey())).toThrow(/policy_refused/)
+    expect(() => actions.createFrame(canvas.id, { name: 'n' }, syncKey())).toThrow(/policy_refused/)
+    const free = unbound()
+    expect(actions.updateFrame(free.frame.id, { html: '<p>sync</p>' }, syncKey())).toBeTruthy()
+  })
+
+  it('page copy: a binding change during the durable write leaves no copy in the database or memory', async () => {
+    const f = bound()
+    setTaskIdentityVerifier(async () => ({ running: true, agentId: 'a', issueId: ISSUE_A, projectId: PROJECT_A }))
+    await warmTaskIdentity('task-a')
+    let release!: () => void
+    db.savePageCopy.mockImplementationOnce(() => new Promise<void>((resolve) => (release = resolve)))
+    db.deleteFrame.mockClear()
+    db.saveCanvas.mockClear()
+    const pending = store.duplicatePage(agentA, f.canvas.id, f.pa, 'a')
+    const settled = pending.then(
+      () => 'ok',
+      (e: unknown) => (e instanceof PolicyRefused ? 'refused' : 'other'),
+    )
+    await vi.waitFor(() => expect(db.savePageCopy).toHaveBeenCalled())
+    const copiedIds = (db.savePageCopy.mock.calls.at(-1)![1] as { id: string }[]).map((frame) => frame.id)
+    store.bindProject(sys, f.canvas.id, PROJECT_B)
+    release()
+    expect(await settled).toBe('refused')
+    expect(copiedIds.length).toBeGreaterThan(0)
+    expect(db.deleteFrame.mock.calls.map((call) => call[0]).sort()).toEqual([...copiedIds].sort())
+    const saved = db.saveCanvas.mock.calls.at(-1)![0] as { pages?: { id: string }[] }
+    expect(saved.pages?.length).toBe(canvasPages(f.canvas).length)
+    expect(f.canvas.frames.map((frame) => frame.id)).not.toEqual(expect.arrayContaining(copiedIds))
   })
 })
