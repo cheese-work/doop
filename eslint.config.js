@@ -165,7 +165,12 @@ export default tseslint.config(
        validated at boot; the rest of the server reads `env.X` from there. The
        Gemini cloud worker is its own process with its own three variables. */
     files: ['server/**/*.ts'],
-    ignores: ['server/env.ts', 'server/geminiCloudWorker.ts', 'server/geminiCloudWorkerMain.ts'],
+    ignores: [
+      'server/env.ts',
+      'server/geminiCloudWorker.ts',
+      'server/geminiCloudWorkerMain.ts',
+      'server/db/migrate.ts',
+    ],
     languageOptions: { parser: tseslint.parser },
     rules: {
       'no-restricted-syntax': [

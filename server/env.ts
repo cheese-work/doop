@@ -71,6 +71,8 @@ const schema = {
   DEFAULT_LOCALE: str({ choices: LOCALES, default: FALLBACK_LOCALE }),
   /* unset = embedded Postgres (PGlite) under ./data/pg */
   DATABASE_URL: str({ default: undefined }),
+  /* set by deploy/cd/compose.image.yml: the deploy ran the migrations already (server/db/migrate.ts) */
+  DOOP_SKIP_MIGRATIONS: bool({ default: false }),
 
   /* ---------------------------------------------------------- auth */
   BETTER_AUTH_SECRET: str({
