@@ -3,7 +3,13 @@ import type { AddressInfo } from 'node:net'
 import { existsSync } from 'node:fs'
 import { chromium } from 'playwright-core'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { fetchCanvasJson, measureCanvasLoad, median, summarizeCanvas } from '../scripts/perf/measure-canvas-load.ts'
+import {
+  fetchCanvasJson,
+  measureCanvasLoad,
+  median,
+  parseViewport,
+  summarizeCanvas,
+} from '../scripts/perf/measure-canvas-load.ts'
 
 /* CHE-5849: the load-time baseline for the big doop file. The summary counts
    what the canvas JSON carries; the measurement waits for every mounted frame
@@ -42,6 +48,17 @@ describe('summarizeCanvas', () => {
       frames: [{ pageId: 'p1' }, {}, { pageId: 'p2' }, { pageId: 'p2' }],
     }
     expect(summarizeCanvas(canvas)).toMatchObject({ frames: 4, firstPageFrames: 2 })
+  })
+})
+
+describe('parseViewport', () => {
+  it('reads WIDTHxHEIGHT and defaults to 1440x900', () => {
+    expect(parseViewport('2560x1440')).toEqual({ width: 2560, height: 1440 })
+    expect(parseViewport(undefined)).toEqual({ width: 1440, height: 900 })
+  })
+  it('rejects anything else, naming the value', () => {
+    expect(() => parseViewport('wide')).toThrow(/wide/)
+    expect(() => parseViewport('0x900')).toThrow(/0x900/)
   })
 })
 
