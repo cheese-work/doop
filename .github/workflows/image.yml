@@ -122,6 +122,10 @@ jobs:
       DEPLOY_REF: ${{ format('ghcr.io/{0}@{1}', github.repository, needs.image.outputs.digest) }}
       DEPLOY_SHA: ${{ github.sha }}
       C00_COMPOSE_DIR: ${{ vars.C00_DOOP_COMPOSE_DIR || '/home/congvc/.local/share/doop' }}
+      # Names the one-shot migrate container and its database sessions (CHE-5474 C-8.8).
+      DEPLOY_RUN_ID: ${{ format('{0}-{1}', github.run_id, github.run_attempt) }}
+      # Empty: c00.sh finds the compose project's `db` service. Set it to name the live Postgres container.
+      C00_PG_CONTAINER: ${{ vars.C00_DOOP_PG_CONTAINER }}
     steps:
       - uses: actions/checkout@v4
         with:

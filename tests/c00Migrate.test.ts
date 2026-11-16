@@ -29,6 +29,7 @@ f() { # $1 = file; reads <file>_after once terminated
 case "$1" in
   compose)
     echo "DOOP_IMAGE=\${DOOP_IMAGE:-}" >> "$STUB_DIR/log"
+    case "$*" in *" ps -q "*) [ -f "$STUB_DIR/no_db_service" ] || echo "doop-db-1"; exit 0 ;; esac
     case "$*" in *" run "*) touch "$STUB_DIR/started" ;; esac
     [ -f "$STUB_DIR/compose_fail" ] && exit 1
     exit 0 ;;
@@ -333,10 +334,86 @@ describe('inputs fail closed', () => {
     ['no run id', { DEPLOY_RUN_ID: '' }],
     ['a run id with shell characters', { DEPLOY_RUN_ID: '1; rm -rf /' }],
     ['a run id with an underscore (LIKE wildcard)', { DEPLOY_RUN_ID: 'a_b' }],
-    ['no postgres container', { C00_PG_CONTAINER: '' }],
   ])('apply refuses %s before touching docker', (_n, env) => {
     const r = c00('apply', env)
     expect(r.status).not.toBe(0)
     expect(log()).toBe('')
+  })
+
+  it('apply refuses when no Postgres container is named and the compose project has no db service', () => {
+    put('no_db_service', '1')
+    const r = c00('apply', { C00_PG_CONTAINER: '' })
+    expect(r.status).not.toBe(0)
+    expect(log()).not.toMatch(/docker (pull|tag|rmi)|up -d|compose[^\n]* run /)
+  })
+})
+
+/* The deploy job's own env (`.github/workflows/image.yml`) is what c00.sh really gets. Resolve the few
+   expressions it uses, then run `apply` and `rollback` with exactly that env. */
+function workflowDeployEnv(): Record<string, string> {
+  const wf = readFileSync(resolve('.github/workflows/image.yml'), 'utf8')
+  const job = /^ {2}deploy:\n([\s\S]*?)(?=^ {2}[a-z][a-z0-9-]*:\n|(?![\s\S]))/m.exec(wf)?.[1] ?? ''
+  const block = /^ {4}env:\n((?: {6}.*\n)+)/m.exec(job)?.[1] ?? ''
+  const out: Record<string, string> = {}
+  for (const line of block.split('\n')) {
+    const m = /^ {6}([A-Z0-9_]+): (.*)$/.exec(line)
+    if (!m?.[1] || m[2] === undefined) continue
+    out[m[1]] = m[2]
+      .replace(/\$\{\{\s*format\('\{0\}-\{1\}', github\.run_id, github\.run_attempt\)\s*\}\}/g, '9001-2')
+      .replace(/\$\{\{\s*vars\.\w+\s*\|\|\s*'([^']*)'\s*\}\}/g, '$1')
+      .replace(/\$\{\{\s*vars\.\w+\s*\}\}/g, '')
+      .replace(/\$\{\{\s*format\('ghcr\.io\/\{0\}@\{1\}'[^}]*\)\s*\}\}/g, REF)
+      .replace(/\$\{\{\s*github\.sha\s*\}\}/g, 'c'.repeat(40))
+    if (out[m[1]]!.includes('${{')) throw new Error(`unresolved expression in deploy env ${m[1]}: ${m[2]}`)
+  }
+  return out
+}
+
+describe('the real deploy workflow environment', () => {
+  const run = (cmd: string, env: Record<string, string> = {}) => {
+    const wf = workflowDeployEnv()
+    return spawnSync('bash', [SCRIPT, cmd], {
+      encoding: 'utf8',
+      env: {
+        PATH: `${join(dir, 'bin')}:${process.env.PATH}`,
+        STUB_DIR: dir,
+        GITHUB_OUTPUT: out(),
+        C00_POLL_SECONDS: '0',
+        C00_STABLE_CHECKS: '1',
+        ...wf,
+        ...env,
+      },
+    })
+  }
+
+  it('gives apply a valid run id that is unique per attempt', () => {
+    const e = workflowDeployEnv()
+    expect(e.DEPLOY_RUN_ID).toBe('9001-2')
+  })
+
+  it('apply runs end to end with only what image.yml provides (no extra inputs)', () => {
+    const r = run('apply')
+    expect(r.status, r.stderr).toBe(0)
+    expect(log()).toContain('doop-migrate-9001-2')
+    expect(log()).toMatch(/docker exec [^\n]* doop-db-1 psql/)
+  })
+
+  it('rollback runs with only what image.yml provides', () => {
+    put('rollback_tag', 'x')
+    const r = run('rollback')
+    expect(r.status, r.stderr).toBe(0)
+  })
+
+  it('an explicit C00_PG_CONTAINER wins over the compose lookup', () => {
+    const r = run('quiescence', { C00_PG_CONTAINER: 'my-pg' })
+    expect(r.status, r.stderr).toBe(0)
+    expect(log()).toMatch(/docker exec [^\n]* my-pg psql/)
+  })
+
+  it('with no database container to be found, it refuses closed before any change', () => {
+    put('no_db_service', '1')
+    const r = run('apply')
+    expect(r.status).not.toBe(0)
+    expect(log()).not.toMatch(/docker (pull|tag|rmi)|up -d/)
   })
 })

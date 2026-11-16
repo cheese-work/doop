@@ -11,7 +11,8 @@
 #   c00.sh quiescence prove migration quiescence and nothing else (compat and lift jobs call this first)
 #
 # Env: DEPLOY_REF (image@sha256:...), DEPLOY_SHA, C00_COMPOSE_DIR (compose project on C00),
-#      C00_PG_CONTAINER (the live Postgres container; read through `docker exec`, read-only),
+#      C00_PG_CONTAINER (the live Postgres container; read through `docker exec`, read-only; default: the
+#      compose project's `db` service, C00_PG_SERVICE),
 #      DEPLOY_RUN_ID (apply only: [a-z0-9-], names the one-shot container and its DB sessions).
 # Optional: C00_COMPOSE_FILE, C00_CONTAINER, C00_READBACK_SECONDS (900), C00_ROLLBACK_SECONDS (300),
 #           C00_POLL_SECONDS (10), C00_STABLE_CHECKS (3), C00_PG_USER (doop), C00_PG_DB (doop),
@@ -62,7 +63,16 @@ why=
 
 set_output() { [ -z "${GITHUB_OUTPUT:-}" ] || echo "$1=$2" >> "$GITHUB_OUTPUT"; }
 
-need_pg() { [ -n "${C00_PG_CONTAINER:-}" ] || die "C00_PG_CONTAINER is not set"; }
+# C00_PG_CONTAINER, else the container of the compose project's database service (C00_PG_SERVICE, `db`).
+# Neither found: refuse. Read-only: `compose ps` changes nothing.
+need_pg() {
+  if [ -z "${C00_PG_CONTAINER:-}" ]; then
+    need_dir
+    C00_PG_CONTAINER=$(docker compose --project-directory "$C00_COMPOSE_DIR" \
+      -f "$C00_COMPOSE_DIR/${C00_COMPOSE_FILE:-compose.yaml}" ps -q "${C00_PG_SERVICE:-db}" 2>/dev/null | head -n 1) || C00_PG_CONTAINER=
+  fi
+  [ -n "$C00_PG_CONTAINER" ] || die "no Postgres container: set C00_PG_CONTAINER or run a compose service ${C00_PG_SERVICE:-db}"
+}
 
 need_run_id() {
   run_id=${DEPLOY_RUN_ID:-}
