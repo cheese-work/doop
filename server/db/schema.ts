@@ -200,6 +200,36 @@ export const frameVersions = pgTable(
   (t) => [index('frame_versions_frame_idx').on(t.frameId), index('frame_versions_canvas_idx').on(t.canvasId)],
 )
 
+/** G3 attestations (CHE-6078): one row per design frame per run of
+ *  check_design_completeness, carrying the page-level result. Append-only, and
+ *  written only by the server's own check run: no route or tool edits or
+ *  deletes a row, so what a UX verdict cites cannot be rewritten afterwards.
+ *  `frame_updated_at` is the frame version the run saw. */
+export const designAttestations = pgTable(
+  'design_attestations',
+  {
+    id: text('id').primaryKey(),
+    runId: text('run_id').notNull(),
+    canvasId: text('canvas_id').notNull(),
+    pageId: text('page_id').notNull(),
+    frameId: text('frame_id').notNull(),
+    frameUpdatedAt: bigint('frame_updated_at', { mode: 'number' }).notNull(),
+    ruleset: text('ruleset').notNull(),
+    scanHash: text('scan_hash'),
+    /** recon frame(s) at their version and the page's flow start, as the run saw them */
+    inputs: jsonb('inputs').$type<{ recon: { id: string; updatedAt: number }[]; start: string | null }>().notNull(),
+    /** 'complete' | 'incomplete' */
+    result: text('result').notNull(),
+    missing: jsonb('missing').$type<{ code: string; frameId?: string; detail: string }[]>().notNull(),
+    createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+    createdBy: text('created_by').notNull(),
+  },
+  (t) => [
+    index('design_attestations_run_idx').on(t.runId),
+    index('design_attestations_page_idx').on(t.canvasId, t.pageId),
+  ],
+)
+
 /** Design-sync keys: the write-only capability behind the /ingest endpoint.
  *  An app embeds the doop-sync snippet with a key's secret, and its live
  *  screens land on ONE canvas as frames — the secret grants no reads and no

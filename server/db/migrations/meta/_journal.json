@@ -278,8 +278,15 @@
     {
       "idx": 40,
       "version": "7",
-      "when": 1794852848982,
-      "tag": "0040_canvas_project_id",
+      "when": 1794854399081,
+      "tag": "0040_design_attestations",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1794857821619,
+      "tag": "0041_canvas_project_id",
       "breakpoints": true
     }
   ]
