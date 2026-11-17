@@ -52,7 +52,7 @@ function bound() {
 }
 
 const rows = async (canvasId: string, pageId?: string) => {
-  await persist.settlePageAuthors()
+  await persist.flush((id) => store.getFrame(id))
   // Rows written in the same millisecond tie on first_at, so pin an order the tests can rely on.
   const list = await persist.listPageAuthors(canvasId, pageId)
   return [...list].sort((a, b) => `${a.kind}/${a.taskId}`.localeCompare(`${b.kind}/${b.taskId}`))
@@ -194,7 +194,7 @@ describe('boot backfill', () => {
     const [p1] = canvasPages(c)
     store.createFrame(sys, c.id, { name: 'a', pageId: p1!.id, html: '<p/>' }, 'x')
     store.createFrame(sys, c.id, { name: 'b', pageId: 'p2', html: '<p/>' }, 'x')
-    await persist.settlePageAuthors()
+    await persist.flush((id) => store.getFrame(id))
     // the pre-ledger state: p1 has no row, p2 keeps its own, p3 is empty
     await dbm.db.delete(t.pageAuthors).where(eq(t.pageAuthors.pageId, p1!.id))
 
@@ -212,7 +212,7 @@ describe('boot backfill', () => {
   it('a frame with no page id counts for the first page', async () => {
     const c = store.createCanvas('Legacy', 'alice')
     const frame = store.createFrame(sys, c.id, { name: 'a', html: '<p/>' }, 'x')!
-    await persist.settlePageAuthors()
+    await persist.flush((id) => store.getFrame(id))
     await dbm.db.delete(t.pageAuthors).where(eq(t.pageAuthors.canvasId, c.id))
     delete (frame as { pageId?: string }).pageId
     expect(await persist.backfillPageAuthors([c])).toBe(1)

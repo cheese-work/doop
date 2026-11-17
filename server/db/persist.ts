@@ -337,29 +337,66 @@ export function saveFrame(f: Frame, immediate = false) {
   )
 }
 
-async function writeFrame(f: Frame) {
-  await settlePageAuthors() // the writer's ledger row lands no later than the frame
-  const row = {
-    id: f.id,
-    canvasId: f.canvasId,
-    pageId: f.pageId ?? null,
-    name: f.name,
-    x: f.x,
-    y: f.y,
-    width: f.width,
-    height: f.height,
-    html: f.html,
-    createdAt: f.createdAt,
-    updatedAt: f.updatedAt,
-    updatedBy: f.updatedBy,
-    demo: f.demo ?? null,
-    hidden: f.hidden ?? null,
-    locked: f.locked ?? null,
-    approval: f.approval ?? null,
+/* Frame rows and their ledger rows (page_authors) become durable together. Every frame write and
+   delete runs on one serial queue; each job takes the ledger rows pending for its frame in the same
+   tick it reads the frame, and commits them in one transaction with the frame. A failed commit puts
+   the rows back and leaves the frame row as it was, so the next write or flush retries both and a
+   frame state is never durable without the writers that produced it. */
+let frameQueue: Promise<unknown> = Promise.resolve()
+const pendingAuthors = new Map<string, (typeof t.pageAuthors.$inferInsert)[]>()
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0]
+
+function serial(job: () => Promise<unknown>) {
+  const run = frameQueue.then(job)
+  frameQueue = run.catch(() => undefined)
+  return run
+}
+
+function takeAuthors(frameId: string) {
+  const taken = pendingAuthors.get(frameId) ?? []
+  pendingAuthors.delete(frameId)
+  return taken
+}
+
+/** Run `work` with the frame's pending ledger rows inserted in the same transaction; keep the rows on failure. */
+async function withAuthors(frameId: string, work: (tx: Tx) => Promise<unknown>) {
+  const authors = takeAuthors(frameId)
+  try {
+    await db.transaction(async (tx) => {
+      if (authors.length) await tx.insert(t.pageAuthors).values(authors).onConflictDoNothing()
+      await work(tx)
+    })
+  } catch (err) {
+    pendingAuthors.set(frameId, [...authors, ...(pendingAuthors.get(frameId) ?? [])])
+    throw err
   }
-  const { id, createdAt, ...set } = row
-  await db.insert(t.frames).values(row).onConflictDoUpdate({ target: t.frames.id, set })
-  await syncAssetRefs(f.id, f.html)
+}
+
+function writeFrame(f: Frame) {
+  return serial(async () => {
+    const row = {
+      id: f.id,
+      canvasId: f.canvasId,
+      pageId: f.pageId ?? null,
+      name: f.name,
+      x: f.x,
+      y: f.y,
+      width: f.width,
+      height: f.height,
+      html: f.html,
+      createdAt: f.createdAt,
+      updatedAt: f.updatedAt,
+      updatedBy: f.updatedBy,
+      demo: f.demo ?? null,
+      hidden: f.hidden ?? null,
+      locked: f.locked ?? null,
+      approval: f.approval ?? null,
+    }
+    const { id, createdAt, ...set } = row
+    await withAuthors(f.id, (tx) => tx.insert(t.frames).values(row).onConflictDoUpdate({ target: t.frames.id, set }))
+    await syncAssetRefs(f.id, f.html)
+  })
 }
 
 /* Frame design history: one row per burst boundary (see actions.ts), newest
@@ -555,8 +592,12 @@ export function deleteFrame(frameId: string) {
     clearTimeout(timer)
     frameTimers.delete(frameId)
   }
-  swallow(db.delete(t.frames).where(eq(t.frames.id, frameId)))
-  swallow(db.delete(t.assetRefs).where(eq(t.assetRefs.frameId, frameId)))
+  swallow(
+    serial(async () => {
+      await withAuthors(frameId, (tx) => tx.delete(t.frames).where(eq(t.frames.id, frameId)))
+      await db.delete(t.assetRefs).where(eq(t.assetRefs.frameId, frameId))
+    }),
+  )
   queueVersionWrite(frameId, versionWrites.get(frameId)?.canvasId ?? '', () =>
     db.delete(t.frameVersions).where(eq(t.frameVersions.frameId, frameId)),
   )
@@ -609,29 +650,18 @@ function pageAuthorValues(input: PageAuthorInput, firstAt: number): typeof t.pag
   }
 }
 
-/* Ledger appends run one after another, and a frame row is never written before the
-   appends queued ahead of it have landed (writeFrame, flush): the row is persisted no
-   later than the frame it describes. Append-only: this module has no update or delete
-   of page_authors. The unique key makes a repeat of the same writer a no-op. */
-let authorWrites: Promise<unknown> = Promise.resolve()
-
-/** Queue one ledger row. Called by the store in the same tick as the write it records. */
+/** Queue one ledger row for its frame. Called by the store in the same tick as the write it records; the
+ *  row commits with that frame's next save, delete or flush. Append-only: this module has no update or
+ *  delete of page_authors. The unique key makes a repeat of the same writer a no-op. */
 export function appendPageAuthor(input: PageAuthorInput) {
-  const values = pageAuthorValues(input, Date.now())
-  const work = () => db.insert(t.pageAuthors).values(values).onConflictDoNothing()
-  authorWrites = authorWrites.then(work, work)
-  swallow(authorWrites)
-}
-
-/** Settles once every queued ledger append has landed. */
-export async function settlePageAuthors(): Promise<void> {
-  await authorWrites.catch(() => undefined)
+  const key = input.frameId ?? ''
+  pendingAuthors.set(key, [...(pendingAuthors.get(key) ?? []), pageAuthorValues(input, Date.now())])
 }
 
 /** One `legacy` `unknown` row for every page that holds frames and has no row yet. Returns how many it wrote.
  *  Idempotent: a page with any row, and a page the first run already filled, is skipped. */
 export async function backfillPageAuthors(canvases: Canvas[]): Promise<number> {
-  await settlePageAuthors()
+  await frameQueue
   const have = new Set(
     (
       await db.selectDistinct({ canvasId: t.pageAuthors.canvasId, pageId: t.pageAuthors.pageId }).from(t.pageAuthors)
@@ -829,16 +859,16 @@ export function saveActivity(canvasId: string, item: ActivityItem) {
 /** Flush pending debounced frame writes and queued version writes (called
  *  on shutdown): a design must not survive a restart without its history. */
 export async function flush(getFrame: (id: string) => Frame | undefined): Promise<void> {
-  const ids = [...frameTimers.keys()]
+  const ids = new Set([...frameTimers.keys(), ...pendingAuthors.keys()])
   for (const [, timer] of frameTimers) clearTimeout(timer)
   frameTimers.clear()
   await Promise.allSettled(
-    ids.map((id) => {
+    [...ids].map((id) => {
       const f = getFrame(id)
-      return f ? writeFrame(f) : Promise.resolve()
+      /* no live frame: a deleted one whose delete failed, so retry the delete with its ledger rows */
+      return f ? writeFrame(f) : serial(() => withAuthors(id, (tx) => tx.delete(t.frames).where(eq(t.frames.id, id))))
     }),
   )
-  await settlePageAuthors()
   await pendingVersionWrites(() => true)
 }
 
