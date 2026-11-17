@@ -28,7 +28,13 @@ declare global {
   }
 }
 
-describe.skipIf(!findBrowserPath())('drawing on the canvas', { timeout: 30_000 }, () => {
+/* Waits are 30s, not 10s: CI shares a 2-vCPU runner with other Chromium and
+   Docker files, and under that load a different drag wait overran 10s on each
+   rerun (CHE-6913). The test timeout stays above the wait so a stuck wait still
+   reports its own TimeoutError. */
+const WAIT_MS = 30_000
+
+describe.skipIf(!findBrowserPath())('drawing on the canvas', { timeout: 60_000 }, () => {
   let vite: ViteDevServer
   let browser: Browser
   let page: Page
@@ -42,7 +48,7 @@ describe.skipIf(!findBrowserPath())('drawing on the canvas', { timeout: 30_000 }
     await vite.listen()
     browser = await getBrowser()
     page = await browser.newPage()
-    page.setDefaultTimeout(10_000)
+    page.setDefaultTimeout(WAIT_MS)
     page.on('pageerror', (err) => errors.push(String(err)))
     await page.setRequestInterception(true)
     page.on('request', async (req) => {
@@ -166,7 +172,7 @@ describe.skipIf(!findBrowserPath())('drawing on the canvas', { timeout: 30_000 }
           }
           return true
         },
-        { timeout: 10_000 },
+        { timeout: WAIT_MS },
       )
       .toBe(true)
     return result!
