@@ -189,6 +189,10 @@
   the `Components` page (tokens frame, components, `component_unknown`, variants and states, motion per micro-interaction)) and stores the result in
   `design_attestations`, one row per design frame at its `updatedAt`, append-only. The route
   `/api/design-attestations/:id` reads a run with `current` (false once any frame changed).
+  `GET /api/service/design-attestations/:id` (G4, CHE-7080) serves the same JSON plus `pageIssueId` (the attested
+  page's current Multica issue, or null) to Multica: it sits before the `/api` session gate, wants
+  `Authorization: Bearer <DOOP_ATTESTATION_READ_TOKEN>` (compared as SHA-256 digests with `timingSafeEqual`; 401 if
+  missing or wrong, 503 while the variable is unset, at least 32 characters), is GET only, and 404s an unknown id.
   `extraChecks` is the plug-in point for the requirement ledger. Tests: `designCompleteness.test.ts`,
   `designAttestation.test.ts`.
 
