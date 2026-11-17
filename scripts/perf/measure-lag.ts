@@ -1,25 +1,30 @@
 /* Zoomed-out lag on a big file (CHE-7019; load method of CHE-6196). Local, no human credential.
  *
  *   bun run build
- *   npx tsx scripts/perf/measure-lag.ts [--export <canvas.json> | --erus-like] [--runs 3] [--viewport 1440x900] [--max-live 24]
+ *   npx tsx scripts/perf/measure-lag.ts [--export <canvas.json> | --erus-like] [--sizes <[[w,h],...].json>] [--runs 3] [--viewport 1440x900] [--max-live 24] [--shots <dir>]
  *
  * Starts the production server from this checkout (withLocalDoop), imports the file, opens it, presses
  * Shift+1 (fit all) and reports, per run:
  *   - iframes mounted at fit-all (the done-when 1 browser check: exits 1 when above --max-live)
  *   - long tasks (count, total ms) and frame time (rAF delta p50, p95, max) while panning and zooming for 6 s
+ *   - paintedMs: first zoom-in wheel to a live frame whose screenshot is at least 5% non-white pixels
  *   - gestureMs: first zoom-in wheel on one frame until it is 300 px wide; zoomInMs: from then to its iframe being ready with no preview over it
  * --erus-like builds a stand-in with the reported size mix of the erus file (645 frames; 207 390x844,
  * 154 1440x900, 87 390x867, 18 1440x1800, the other 179 split between 1440x1024 and 390x800). */
 import { pathToFileURL } from 'node:url'
 import { readFileSync } from 'node:fs'
 import { parseArgs } from 'node:util'
+import { mkdirSync } from 'node:fs'
+import path from 'node:path'
 import { chromium } from 'playwright-core'
+import sharp from 'sharp'
 import { importCanvasExport, type CanvasExport } from './import-canvas-export.ts'
 import { withLocalDoop } from './measure-local.ts'
 import { median, parseViewport } from './measure-canvas-load.ts'
 
-export function erusLike(): CanvasExport {
-  const sizes: [number, number, number][] = [
+/** `sizes`: one `[width, height]` per frame (the real file's size list); default is the reported mix plus a guess */
+export function erusLike(sizes?: [number, number][]): CanvasExport {
+  const mix: [number, number, number][] = [
     [390, 844, 207],
     [1440, 900, 154],
     [390, 867, 87],
@@ -27,30 +32,37 @@ export function erusLike(): CanvasExport {
     [1440, 1024, 100],
     [390, 800, 79],
   ]
+  const list = sizes ?? mix.flatMap(([w, h, n]) => Array.from({ length: n }, (): [number, number] => [w, h]))
   const frames: CanvasExport['frames'] = []
   const COLS = 30
   const GAP = 80
   let i = 0
-  for (const [width, height, n] of sizes)
-    for (let k = 0; k < n; k++, i++) {
-      const row = Math.floor(i / COLS)
-      const col = i % COLS
-      frames.push({
-        name: `f${i}`,
-        x: col * (1440 + GAP),
-        y: row * (1800 + GAP),
-        width,
-        height,
-        html: `<!doctype html><body style="margin:0;font:16px sans-serif"><h1>Frame ${i}</h1>${'<p style="padding:8px;background:#eef">lorem ipsum dolor sit amet</p>'.repeat(20)}</body>`,
-      })
-    }
+  for (const [width, height] of list) {
+    const row = Math.floor(i / COLS)
+    const col = i % COLS
+    frames.push({
+      name: `f${i}`,
+      x: col * (1440 + GAP),
+      y: row * (1800 + GAP),
+      width,
+      height,
+      html: `<!doctype html><body style="margin:0;font:16px sans-serif"><h1>Frame ${i}</h1>${'<p style="padding:8px;background:#eef">lorem ipsum dolor sit amet</p>'.repeat(20)}</body>`,
+    })
+    i++
+  }
   return { id: 'erus', name: 'erus-like', pages: [{ id: 'erus:page1', name: 'Page 1' }], frames }
 }
 
 const pct = (xs: number[], p: number) =>
   [...xs].sort((a, b) => a - b)[Math.min(xs.length - 1, Math.floor(xs.length * p))] ?? NaN
 
-async function once(base: string, canvasId: string, cookie: string, viewport: { width: number; height: number }) {
+async function once(
+  base: string,
+  canvasId: string,
+  cookie: string,
+  viewport: { width: number; height: number },
+  shots?: { dir: string; run: number },
+) {
   const browser = await chromium.launch()
   try {
     const context = await browser.newContext({ viewport })
@@ -127,28 +139,51 @@ async function once(base: string, canvasId: string, cookie: string, viewport: { 
         ([x, y]) => {
           const ready = (window as never as { __ready: Set<unknown> }).__ready
           const el = document.elementFromPoint(x!, y!)?.closest('[data-frame-surface]')
-          if (!el) return { width: 0, live: false }
+          if (!el) return { width: 0, live: false, rect: null }
           const iframe = el.querySelector('iframe')
-          // live and painted: its runtime posted frame-ready and no preview image covers it
+          const r = el.getBoundingClientRect()
+          // live: its runtime posted frame-ready and no preview image covers it
           return {
-            width: el.getBoundingClientRect().width,
+            width: r.width,
             live: !!iframe && ready.has(iframe.contentWindow) && !el.querySelector('img'),
+            rect: { x: Math.max(0, r.left), y: Math.max(0, r.top), width: r.width, height: r.height },
           }
         },
         [cx, cy] as const,
       )
+    /** pixels, not signals: a screenshot of the frame's visible box where at least 5% of the pixels are not white
+     * (the fixture page is mostly tinted blocks and text; a blank or loading frame is white) */
+    const painted = async (rect: { x: number; y: number; width: number; height: number }) => {
+      const w = Math.floor(Math.min(rect.width, viewport.width - rect.x))
+      const h = Math.floor(Math.min(rect.height, viewport.height - rect.y))
+      if (w < 50 || h < 50) return { ok: false, png: undefined }
+      const png = await page.screenshot({ clip: { x: rect.x, y: rect.y, width: w, height: h } })
+      const { data } = await sharp(png).removeAlpha().raw().toBuffer({ resolveWithObject: true })
+      let ink = 0
+      for (let k = 0; k < data.length; k += 3) if (data[k]! < 245 || data[k + 1]! < 245 || data[k + 2]! < 245) ink++
+      return { ok: ink / (data.length / 3) >= 0.05, png }
+    }
     const t0 = Date.now()
     let gestureMs = NaN
     let zoomInMs = NaN
+    let paintedMs = NaN
     await page.mouse.move(target.x, target.y)
     await page.keyboard.down('Control')
     for (const deadline = t0 + 20_000; Date.now() < deadline;) {
       await page.mouse.wheel(0, -40)
       const s = await probe(target.x, target.y)
       if (Number.isNaN(gestureMs) && s.width >= 300) gestureMs = Date.now() - t0 // the frame is big enough to read
-      if (!Number.isNaN(gestureMs) && s.live) {
-        zoomInMs = Date.now() - t0 - gestureMs // from "big enough" to the live, painted frame
-        break
+      if (s.live && s.rect && !Number.isNaN(gestureMs)) {
+        const px = await painted(s.rect)
+        if (px.ok) {
+          paintedMs = Date.now() - t0 // first wheel to a live frame with painted pixels
+          zoomInMs = paintedMs - gestureMs
+          if (shots && px.png) {
+            mkdirSync(shots.dir, { recursive: true })
+            await page.screenshot({ path: path.join(shots.dir, `zoom-in-run${shots.run}.png`) })
+          }
+          break
+        }
       }
       await page.waitForTimeout(16)
     }
@@ -163,6 +198,7 @@ async function once(base: string, canvasId: string, cookie: string, viewport: { 
       framesSampled: lag.frames.length,
       gestureMs,
       zoomInMs,
+      paintedMs,
     }
   } finally {
     await browser.close()
@@ -177,16 +213,20 @@ async function main() {
       runs: { type: 'string', default: '3' },
       viewport: { type: 'string' },
       'max-live': { type: 'string', default: '24' },
+      sizes: { type: 'string' },
+      shots: { type: 'string' },
     },
   })
-  const exported = values.export ? (JSON.parse(readFileSync(values.export, 'utf8')) as CanvasExport) : erusLike()
+  const exported = values.export
+    ? (JSON.parse(readFileSync(values.export, 'utf8')) as CanvasExport)
+    : erusLike(values.sizes ? (JSON.parse(readFileSync(values.sizes, 'utf8')) as [number, number][]) : undefined)
   const viewport = parseViewport(values.viewport)
   const runs = await withLocalDoop(async (base, cookie) => {
     const id = await importCanvasExport(base, cookie, exported)
     console.error(`imported ${exported.frames.length} frames as ${id}`)
     const out = []
     for (let i = 0; i < Number(values.runs); i++) {
-      out.push(await once(base, id, cookie, viewport))
+      out.push(await once(base, id, cookie, viewport, values.shots ? { dir: values.shots, run: i + 1 } : undefined))
       console.error(`run ${i + 1}: ${JSON.stringify(out[i])}`)
     }
     return out
