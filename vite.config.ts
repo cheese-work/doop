@@ -22,6 +22,8 @@ export default defineConfig({
     /* seven files drive a real Chromium; closing one under a full parallel
        run can outlast the 10s default */
     hookTimeout: 30_000,
+    /* expect.poll defaults to 1s; a loaded runner stalls browser state longer */
+    expect: { poll: { timeout: 30_000 } },
   },
   /* Error tracking resolves minified stack frames through the .map next to
      each bundle. The source is public (AGPL), so the maps are too; browsers
