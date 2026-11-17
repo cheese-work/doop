@@ -241,6 +241,10 @@ describe.skipIf(!findBrowserPath())('page camera and snapping', { timeout: 30_00
     await page.waitForSelector('button[aria-label="Copy link to element"]')
     await page.evaluate(() => history.back())
     await page.waitForFunction(() => window.pageState().selectedElement?.selector === '#one')
+    /* the store picks #one before FrameView's own probe effect re-picks it; navigating away in
+       between lets that late effect resurrect the cleared selection. The toolbar names the probe
+       (h1), so wait until the probe has landed. */
+    await page.waitForFunction(() => [...document.querySelectorAll('span')].some((s) => s.textContent === 'h1'))
     await page.evaluate(() => {
       history.pushState(null, '', '?frame=target')
       window.dispatchEvent(new PopStateEvent('popstate'))
