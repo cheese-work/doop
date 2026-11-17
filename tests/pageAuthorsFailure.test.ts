@@ -128,3 +128,50 @@ describe('an update during an in-flight save', () => {
     expect(await userRows(canvas.id)).toEqual(expect.arrayContaining(['u-u', 'u-d']))
   })
 })
+
+/* pglite runs on the main thread, so a SQL sleep would freeze the test too: delay the transaction in JS. */
+const delayTransaction = (ms: number, failFirst = false) => {
+  const real = dbm.db.transaction.bind(dbm.db)
+  let failed = !failFirst
+  return vi.spyOn(dbm.db, 'transaction').mockImplementation(async (...args: Parameters<typeof real>) => {
+    await new Promise((resolve) => setTimeout(resolve, ms))
+    if (!failed) {
+      failed = true
+      throw new Error('commit failed')
+    }
+    return real(...args)
+  })
+}
+
+describe('shutdown flush with a save already in flight', () => {
+  it('does not return before an in-flight transaction commits', async () => {
+    const { canvas, frame } = fresh()
+    await flush()
+    const spy = delayTransaction(300)
+    store.updateFrame(who('u-inflight'), frame.id, { html: 'v1' }, 'x')
+    const pending = flush() // starts the save: its job has taken the rows, no timer is left
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    let finished = false
+    await flush().then(() => (finished = true)) // a second flush (SIGTERM during a save)
+    spy.mockRestore()
+    expect(await userRows(canvas.id)).toContain('u-inflight') // it returned only after the commit
+    expect(await frameHtml(frame.id)).toEqual(['v1'])
+    expect(finished).toBe(true)
+    await pending
+  })
+
+  it('retries a job that fails after the flush started', async () => {
+    const { canvas, frame } = fresh()
+    await flush()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const spy = delayTransaction(100, true)
+    store.updateFrame(who('u-late-fail'), frame.id, { html: 'v1' }, 'x')
+    const first = flush()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const second = flush() // snapshots while the first job is still running, then fails
+    await Promise.all([first, second])
+    spy.mockRestore()
+    expect(await userRows(canvas.id)).toContain('u-late-fail')
+    expect(await frameHtml(frame.id)).toEqual(['v1'])
+  })
+})

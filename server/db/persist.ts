@@ -859,16 +859,21 @@ export function saveActivity(canvasId: string, item: ActivityItem) {
 /** Flush pending debounced frame writes and queued version writes (called
  *  on shutdown): a design must not survive a restart without its history. */
 export async function flush(getFrame: (id: string) => Frame | undefined): Promise<void> {
+  /* drain the saves already running first: a job that fails puts its ledger rows back, and the
+     snapshot below must see them so this flush retries them */
+  await frameQueue
   const ids = new Set([...frameTimers.keys(), ...pendingAuthors.keys()])
   for (const [, timer] of frameTimers) clearTimeout(timer)
   frameTimers.clear()
-  await Promise.allSettled(
+  const results = await Promise.allSettled(
     [...ids].map((id) => {
       const f = getFrame(id)
       /* no live frame: a deleted one whose delete failed, so retry the delete with its ledger rows */
       return f ? writeFrame(f) : serial(() => withAuthors(id, (tx) => tx.delete(t.frames).where(eq(t.frames.id, id))))
     }),
   )
+  for (const result of results)
+    if (result.status === 'rejected') console.error('[db] flush write failed', result.reason)
   await pendingVersionWrites(() => true)
 }
 
