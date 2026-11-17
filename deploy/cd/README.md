@@ -77,3 +77,13 @@ Pure checks the deploy train calls before it changes C00; none runs yet (the tra
 - `scripts/migration-classify.mjs`: Postgres parser (`libpg-query`); additive is `CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS` (nullable or constant default), `CREATE INDEX IF NOT EXISTS` (not unique, not concurrent). Anything else fails.
 - `scripts/migration-snapshot.mjs`: static drizzle-snapshot diff (new tables, new nullable or constant-default columns, new non-unique indexes only).
 - `tests/migrationSnapshots.test.ts`: every journal entry needs `meta/<idx>_snapshot.json`; run `npx drizzle-kit generate` and keep the snapshot with the migration.
+
+## Compat sandbox and smoke suite (CHE-5474 S4c)
+
+Nothing runs yet: the train switch is off and no workflow calls these. Rules C-8.5b to C-8.5d.
+
+- `scripts/compat-sandbox.mjs`: `runCompat` clones the live database into an `--internal` Docker network (`pg_dump | pg_restore`, no pull, no build, no published port, no mount), runs the candidate migration on the clone, probes isolation (TCP to `1.1.1.1:443`, the host gateway and the live Postgres, DNS for `api.github.com`; any success blocks startup), boots the predecessor with the seven-key env in `scripts/compat-env.mjs`, then runs the smoke suite from the candidate image. It writes `compat-evidence.json` (candidate SHA, predecessor digest, ledger hash, static / clone / behavior results, `df` before and after). `verifyEvidence` (CLI `verify`) is deploy step 1: evidence for another predecessor digest, ledger hash or candidate SHA is refused.
+- `scripts/deploy-smoke.mjs` + `deploy/cd/smoke-routes.json`: one read and one write per route group, against a booted server. `tests/compatSmoke.test.ts` fails CI when a route group in `server/` has no entry (or an entry has no route).
+- `c00.sh sweep`: removes every `doop.compat.run` container, network and volume, reads back zero, prints `df` before and after. Every C00 compat job runs it first and last; a failed sweep fails the job.
+- To add a production key to the predecessor env you must edit `ALLOWED_KEYS` and `tests/compatSandbox.test.ts`; CI fails if a key from `server/env.ts` outside the seven is added.
+- `tests/compatIsolationDocker.test.ts` runs the same probe script on a real internal network (needs Docker; skips without it).

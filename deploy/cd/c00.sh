@@ -6,10 +6,12 @@
 #   c00.sh readback   running digest == DEPLOY_REF's, image revision label == DEPLOY_SHA,
 #                     then healthy on consecutive checks inside the window
 #   c00.sh rollback   start the pinned previous image and wait for it to be healthy
+#   c00.sh sweep      remove every doop.compat.run resource (containers, networks, volumes), read back
+#                     zero, print df before and after. Needs no compose dir and no deploy ref (CHE-5474 C-8.5d).
 #
 # Env: DEPLOY_REF (image@sha256:...), DEPLOY_SHA, C00_COMPOSE_DIR (compose project on C00).
 # Optional: C00_COMPOSE_FILE, C00_CONTAINER, C00_READBACK_SECONDS (900), C00_ROLLBACK_SECONDS (300),
-#           C00_POLL_SECONDS (10), C00_STABLE_CHECKS (3).
+#           C00_POLL_SECONDS (10), C00_STABLE_CHECKS (3), C00_DF_PATH (sweep df path, /var/lib/docker).
 set -euo pipefail
 
 cmd=${1:-}
@@ -80,5 +82,26 @@ case $cmd in
     echo "rollback ok: $container runs the previous image again"
     ;;
 
-  *) die "usage: c00.sh apply|readback|rollback" ;;
+  sweep)
+    label=doop.compat.run
+    df_bytes() { df -B1 --output=avail "${C00_DF_PATH:-/var/lib/docker}" 2>/dev/null | tail -n 1 | tr -d ' ' || true; }
+    echo "df_before_bytes=$(df_bytes)"
+    ids=$(docker ps -aq --filter "label=$label") || die "sweep: cannot list containers"
+    # shellcheck disable=SC2086
+    [ -z "$ids" ] || docker rm -f -v $ids >/dev/null || die "sweep: removing containers failed"
+    ids=$(docker network ls -q --filter "label=$label") || die "sweep: cannot list networks"
+    # shellcheck disable=SC2086
+    [ -z "$ids" ] || docker network rm $ids >/dev/null || die "sweep: removing networks failed"
+    ids=$(docker volume ls -q --filter "label=$label") || die "sweep: cannot list volumes"
+    # shellcheck disable=SC2086
+    [ -z "$ids" ] || docker volume rm -f $ids >/dev/null || die "sweep: removing volumes failed"
+    left_c=$(docker ps -aq --filter "label=$label" | wc -l | tr -d ' ')
+    left_n=$(docker network ls -q --filter "label=$label" | wc -l | tr -d ' ')
+    left_v=$(docker volume ls -q --filter "label=$label" | wc -l | tr -d ' ')
+    [ "$left_c$left_n$left_v" = "000" ] || die "sweep: left containers=$left_c networks=$left_n volumes=$left_v"
+    echo "df_after_bytes=$(df_bytes)"
+    echo "sweep ok: containers=0 networks=0 volumes=0"
+    ;;
+
+  *) die "usage: c00.sh apply|readback|rollback|sweep" ;;
 esac

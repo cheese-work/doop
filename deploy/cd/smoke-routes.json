@@ -1,0 +1,671 @@
+{
+  "groups": [
+    {
+      "group": "/.well-known",
+      "read": {
+        "method": "GET",
+        "path": "/.well-known/oauth-authorization-server",
+        "expect": [200],
+        "auth": false
+      },
+      "write": {
+        "method": "POST",
+        "path": "/.well-known/oauth-authorization-server",
+        "expect": [404, 405],
+        "body": {},
+        "auth": false
+      }
+    },
+    {
+      "group": "/a",
+      "read": {
+        "method": "GET",
+        "path": "/a/none.png",
+        "expect": [404],
+        "auth": false
+      },
+      "write": {
+        "method": "PUT",
+        "path": "/a/none.png",
+        "expect": [404],
+        "body": {},
+        "auth": false
+      }
+    },
+    {
+      "group": "/api",
+      "read": {
+        "method": "GET",
+        "path": "/api/not-a-route",
+        "expect": [404]
+      },
+      "write": {
+        "method": "POST",
+        "path": "/api/not-a-route",
+        "expect": [404],
+        "body": {}
+      }
+    },
+    {
+      "group": "/api/account-exists",
+      "read": {
+        "method": "GET",
+        "path": "/api/account-exists",
+        "expect": [401],
+        "auth": false
+      },
+      "write": {
+        "method": "POST",
+        "path": "/api/account-exists",
+        "expect": [200],
+        "body": {
+          "email": "nobody@compat.invalid"
+        },
+        "auth": false
+      }
+    },
+    {
+      "group": "/api/admin",
+      "read": {
+        "method": "GET",
+        "path": "/api/admin/stats",
+        "expect": [404]
+      },
+      "write": {
+        "method": "POST",
+        "path": "/api/admin/stats",
+        "expect": [404],
+        "body": {}
+      }
+    },
+    {
+      "group": "/api/agent-allowance",
+      "read": {
+        "method": "GET",
+        "path": "/api/agent-allowance",
+        "expect": [200]
+      },
+      "write": {
+        "method": "POST",
+        "path": "/api/agent-allowance",
+        "expect": [404],
+        "body": {}
+      }
+    },
+    {
+      "group": "/api/agent-keys",
+      "read": {
+        "method": "GET",
+        "path": "/api/agent-keys",
+        "expect": [200]
+      },
+      "write": {
+        "method": "POST",
+        "path": "/api/agent-keys",
+        "expect": [200],
+        "body": {
+          "name": "deploy-smoke"
+        }
+      }
+    },
+    {
+      "group": "/api/auth",
+      "read": {
+        "method": "GET",
+        "path": "/api/auth/get-session",
+        "expect": [200],
+        "auth": false
+      },
+      "write": {
+        "method": "POST",
+        "path": "/api/auth/sign-in/email",
+        "expect": [401],
+        "body": {
+          "email": "nobody@compat.invalid",
+          "password": "wrong-password-1"
+        },
+        "auth": false
+      }
+    },
+    {
+      "group": "/api/automations",
+      "read": {
+        "method": "GET",
+        "path": "/api/automations",
+        "expect": [200]
+      },
+      "write": {
+        "method": "POST",
+        "path": "/api/automations",
+        "expect": [200],
+        "body": {}
+      }
+    },
+    {
+      "group": "/api/billing",
+      "read": {
+        "method": "GET",
+        "path": "/api/billing/plans",
+        "expect": [200]
+      },
+      "write": {
+        "method": "POST",
+        "path": "/api/billing/plans",
+        "expect": [404],
+        "body": {}
+      }
+    },
+    {
+      "group": "/api/canvases",
+      "read": {
+        "method": "GET",
+        "path": "/api/canvases/{canvasId}",
+        "expect": [200]
+      },
+      "write": {
+        "method": "POST",
+        "path": "/api/canvases",
+        "expect": [200, 201],
+        "body": {},
+        "save": {
+          "canvasId": "id"
+        }
+      }
+    },
+    {
+      "group": "/api/comments",
+      "read": {
+        "method": "GET",
+        "path": "/api/comments/none",
+        "expect": [404]
+      },
+      "write": {
+        "method": "POST",
+        "path": "/api/comments/none/resolve",
+        "expect": [404],
+        "body": {}
+      }
+    },
+    {
+      "group": "/api/community",
+      "read": {
+        "method": "GET",
+        "path": "/api/community",
+        "expect": [200]
+      },
+      "write": {
+        "method": "POST",
+        "path": "/api/community/none/copy",
+        "expect": [404],
+        "body": {}
+      }
+    },
+    {
+      "group": "/api/feedback",
+      "read": {
+        "method": "GET",
+        "path": "/api/feedback/none",
+        "expect": [404]
+      },
+      "write": {
+        "method": "POST",
+        "path": "/api/feedback/none/retry",
+        "expect": [404],
+        "body": {}
+      }
+    },
+    {
+      "group": "/api/frames",
+      "read": {
+        "method": "GET",
+        "path": "/api/frames/none",
+        "expect": [404]
+      },
+      "write": {
+        "method": "PATCH",
+        "path": "/api/frames/none",
+        "expect": [404],
+        "body": {}
+      }
+    },
+    {
+      "group": "/api/github",
+      "read": {
+        "method": "GET",
+        "path": "/api/github/app",
+        "expect": [200]
+      },
+      "write": {
+        "method": "POST",
+        "path": "/api/github/app",
+        "expect": [404],
+        "body": {}
+      }
+    },
+    {
+      "group": "/api/home",
+      "read": {
+        "method": "GET",
+        "path": "/api/home/activity",
+        "expect": [200]
+      },
+      "write": {
+        "method": "POST",
+        "path": "/api/home/activity",
+        "expect": [404],
+        "body": {}
+      }
+    },
+    {
+      "group": "/api/image-model",
+      "read": {
+        "method": "GET",
+        "path": "/api/image-model",
+        "expect": [200]
+      },
+      "write": {
+        "method": "PUT",
+        "path": "/api/image-model",
+        "expect": [400],
+        "body": {}
+      }
+    },
+    {
+      "group": "/api/integrations",
+      "read": {
+        "method": "GET",
+        "path": "/api/integrations",
+        "expect": [200]
+      },
+      "write": {
+        "method": "DELETE",
+        "path": "/api/integrations/meta",
+        "expect": [200]
+      }
+    },
+    {
+      "group": "/api/live-activities",
+      "read": {
+        "method": "GET",
+        "path": "/api/live-activities/config",
+        "expect": [200]
+      },
+      "write": {
+        "method": "PUT",
+        "path": "/api/live-activities/none",
+        "expect": [400, 404],
+        "body": {}
+      }
+    },
+    {
+      "group": "/api/local-agent",
+      "read": {
+        "method": "GET",
+        "path": "/api/local-agent",
+        "expect": [200]
+      },
+      "write": {
+        "method": "PUT",
+        "path": "/api/local-agent",
+        "expect": [200, 400],
+        "body": {}
+      }
+    },
+    {
+      "group": "/api/locale-config",
+      "read": {
+        "method": "GET",
+        "path": "/api/locale-config",
+        "expect": [200],
+        "auth": false
+      },
+      "write": {
+        "method": "POST",
+        "path": "/api/locale-config",
+        "expect": [401],
+        "body": {},
+        "auth": false
+      }
+    },
+    {
+      "group": "/api/mcp-consent",
+      "read": {
+        "method": "GET",
+        "path": "/api/mcp-consent/none",
+        "expect": [404]
+      },
+      "write": {
+        "method": "POST",
+        "path": "/api/mcp-consent/none",
+        "expect": [400],
+        "body": {}
+      }
+    },
+    {
+      "group": "/api/me",
+      "read": {
+        "method": "GET",
+        "path": "/api/me",
+        "expect": [200]
+      },
+      "write": {
+        "method": "POST",
+        "path": "/api/me",
+        "expect": [404],
+        "body": {}
+      }
+    },
+    {
+      "group": "/api/model-account",
+      "read": {
+        "method": "GET",
+        "path": "/api/model-account",
+        "expect": [200]
+      },
+      "write": {
+        "method": "PATCH",
+        "path": "/api/model-account",
+        "expect": [400],
+        "body": {}
+      }
+    },
+    {
+      "group": "/api/notifications",
+      "read": {
+        "method": "GET",
+        "path": "/api/notifications",
+        "expect": [200]
+      },
+      "write": {
+        "method": "PUT",
+        "path": "/api/notifications",
+        "expect": [200, 400],
+        "body": {}
+      }
+    },
+    {
+      "group": "/api/oidc-config",
+      "read": {
+        "method": "GET",
+        "path": "/api/oidc-config",
+        "expect": [200],
+        "auth": false
+      },
+      "write": {
+        "method": "POST",
+        "path": "/api/oidc-config",
+        "expect": [401],
+        "body": {},
+        "auth": false
+      }
+    },
+    {
+      "group": "/api/tasks",
+      "read": {
+        "method": "GET",
+        "path": "/api/tasks/none",
+        "expect": [404]
+      },
+      "write": {
+        "method": "POST",
+        "path": "/api/tasks/none/feedback",
+        "expect": [404],
+        "body": {}
+      }
+    },
+    {
+      "group": "/api/webhooks",
+      "read": {
+        "method": "GET",
+        "path": "/api/webhooks",
+        "expect": [200]
+      },
+      "write": {
+        "method": "POST",
+        "path": "/api/webhooks",
+        "expect": [400],
+        "body": {}
+      }
+    },
+    {
+      "group": "/api/workspaces",
+      "read": {
+        "method": "GET",
+        "path": "/api/workspaces",
+        "expect": [200]
+      },
+      "write": {
+        "method": "POST",
+        "path": "/api/workspaces",
+        "expect": [200, 201],
+        "body": {
+          "name": "Deploy smoke"
+        }
+      }
+    },
+    {
+      "group": "/assets",
+      "read": {
+        "method": "GET",
+        "path": "/assets/none.js",
+        "expect": [404],
+        "auth": false
+      },
+      "write": {
+        "method": "POST",
+        "path": "/assets/none.js",
+        "expect": [404],
+        "body": {},
+        "auth": false
+      }
+    },
+    {
+      "group": "/bg",
+      "read": {
+        "method": "GET",
+        "path": "/bg/none.png",
+        "expect": [404],
+        "auth": false
+      },
+      "write": {
+        "method": "POST",
+        "path": "/bg/none.png",
+        "expect": [404],
+        "body": {},
+        "auth": false
+      }
+    },
+    {
+      "group": "/gemini-cloud",
+      "read": {
+        "method": "GET",
+        "path": "/gemini-cloud/mcp/none",
+        "expect": [403],
+        "auth": false
+      },
+      "write": {
+        "method": "POST",
+        "path": "/gemini-cloud/mcp/none",
+        "expect": [403],
+        "body": {},
+        "auth": false
+      }
+    },
+    {
+      "group": "/healthz",
+      "read": {
+        "method": "GET",
+        "path": "/healthz",
+        "expect": [200],
+        "auth": false
+      },
+      "write": {
+        "method": "POST",
+        "path": "/healthz",
+        "expect": [404],
+        "body": {},
+        "auth": false
+      }
+    },
+    {
+      "group": "/i",
+      "read": {
+        "method": "GET",
+        "path": "/i/none.png",
+        "expect": [404],
+        "auth": false
+      },
+      "write": {
+        "method": "PUT",
+        "path": "/i/none.png",
+        "expect": [404],
+        "body": {},
+        "auth": false
+      }
+    },
+    {
+      "group": "/ingest",
+      "read": {
+        "method": "GET",
+        "path": "/ingest/none",
+        "expect": [404],
+        "auth": false
+      },
+      "write": {
+        "method": "POST",
+        "path": "/ingest/none",
+        "expect": [200, 204, 400, 401, 403, 404],
+        "body": {},
+        "auth": false
+      }
+    },
+    {
+      "group": "/local-agent",
+      "read": {
+        "method": "GET",
+        "path": "/local-agent/mcp/none",
+        "expect": [403],
+        "auth": false
+      },
+      "write": {
+        "method": "POST",
+        "path": "/local-agent/mcp/none",
+        "expect": [403],
+        "body": {},
+        "auth": false
+      }
+    },
+    {
+      "group": "/mcp",
+      "read": {
+        "method": "GET",
+        "path": "/mcp",
+        "expect": [401, 405],
+        "auth": false
+      },
+      "write": {
+        "method": "POST",
+        "path": "/mcp",
+        "expect": [401],
+        "body": {},
+        "auth": false
+      }
+    },
+    {
+      "group": "/relay",
+      "read": {
+        "method": "GET",
+        "path": "/relay/array/none/config.js",
+        "expect": [200, 204, 400, 401, 403, 404, 502, 503, 504],
+        "auth": false
+      },
+      "write": {
+        "method": "POST",
+        "path": "/relay/e",
+        "expect": [200, 204, 400, 401, 403, 404, 502, 503, 504],
+        "body": {},
+        "auth": false
+      }
+    },
+    {
+      "group": "/robots.txt",
+      "read": {
+        "method": "GET",
+        "path": "/robots.txt",
+        "expect": [200],
+        "auth": false
+      },
+      "write": {
+        "method": "POST",
+        "path": "/robots.txt",
+        "expect": [404],
+        "body": {},
+        "auth": false
+      }
+    },
+    {
+      "group": "/sitemap.xml",
+      "read": {
+        "method": "GET",
+        "path": "/sitemap.xml",
+        "expect": [200],
+        "auth": false
+      },
+      "write": {
+        "method": "POST",
+        "path": "/sitemap.xml",
+        "expect": [404],
+        "body": {},
+        "auth": false
+      }
+    },
+    {
+      "group": "/stripe",
+      "read": {
+        "method": "GET",
+        "path": "/stripe/webhook",
+        "expect": [404],
+        "auth": false
+      },
+      "write": {
+        "method": "POST",
+        "path": "/stripe/webhook",
+        "expect": [501],
+        "body": {},
+        "auth": false
+      }
+    },
+    {
+      "group": "/u",
+      "read": {
+        "method": "GET",
+        "path": "/u/none",
+        "expect": [404],
+        "auth": false
+      },
+      "write": {
+        "method": "PUT",
+        "path": "/u/none",
+        "expect": [410],
+        "body": {},
+        "auth": false
+      }
+    },
+    {
+      "group": "/webhooks",
+      "read": {
+        "method": "GET",
+        "path": "/webhooks/none",
+        "expect": [404],
+        "auth": false
+      },
+      "write": {
+        "method": "POST",
+        "path": "/webhooks/none",
+        "expect": [404],
+        "body": {},
+        "auth": false
+      }
+    }
+  ]
+}
