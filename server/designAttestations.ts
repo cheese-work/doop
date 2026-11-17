@@ -1,7 +1,14 @@
 import { nanoid } from 'nanoid'
 import * as persist from './db/persist.ts'
 import { env } from './env.ts'
-import { ledgerReport, requirementsHash, type DeferredLine, type RequirementLine } from './requirementLedger.ts'
+import {
+  ledgerReport,
+  requirementsHash,
+  requirementsStillHold,
+  type DeferredLine,
+  type RequirementLine,
+  type RequirementsNow,
+} from './requirementLedger.ts'
 import { multicaRequirementSource, type RequirementSource } from './requirementSource.ts'
 import { store } from './store.ts'
 import {
@@ -30,11 +37,11 @@ export type AttestedReport = CompletenessReport & {
 }
 
 type RequirementRead =
-  | { kind: 'lines'; lines: RequirementLine[]; hash: string }
+  | { kind: 'lines'; lines: RequirementLine[]; hash: string; issue: string }
   | { kind: 'unavailable'; reason: string }
   | { kind: 'not_checked'; reason: string }
 
-/** The requirement lines for a page. No Multica configured, or a page with no bound issue, means the row cannot run (said so, not a pass by silence). A configured Multica that cannot answer is a failure. */
+/** The requirement lines for a page. No Multica configured, a page with no bound issue, or a Multica that cannot answer means the row cannot run, and the run is blocked: an unchecked ledger never attests. */
 async function readRequirements(
   canvas: Canvas,
   pageId: string,
@@ -48,7 +55,7 @@ async function readRequirements(
   if (!issueId) return { kind: 'not_checked', reason: 'the page is not bound to a Multica issue' }
   try {
     const lines = await source.lines(issueId)
-    return { kind: 'lines', lines, hash: requirementsHash(lines) }
+    return { kind: 'lines', lines, hash: requirementsHash(lines), issue: issueId }
   } catch (error) {
     return {
       kind: 'unavailable',
@@ -70,15 +77,15 @@ export async function attestPage(
       (ctx) => {
         if (requirements.kind === 'unavailable')
           return [{ code: 'req_source_unavailable', detail: `requirement ledger cannot run: ${requirements.reason}` }]
-        if (requirements.kind === 'not_checked') return []
+        if (requirements.kind === 'not_checked')
+          return [{ code: 'req_not_checked', detail: `requirement ledger not checked: ${requirements.reason}` }]
         ledger = ledgerReport(requirements.lines, ctx)
         return ledger.missing
       },
     ],
   })
-  if (requirements.kind === 'lines') report.inputs = { ...report.inputs, requirements: requirements.hash }
-  if (requirements.kind === 'not_checked')
-    report.reviewerNotes.push(`Requirement ledger not checked: ${requirements.reason}.`)
+  if (requirements.kind === 'lines')
+    report.inputs = { ...report.inputs, requirements: requirements.hash, requirementsIssue: requirements.issue }
   report.reviewerNotes.push(...(ledger?.notes ?? []))
   const runId = nanoid()
   const rows = attestationRowsFor(canvas, report, runId, Date.now(), by)
@@ -110,12 +117,13 @@ export async function readAttestation(
   const head = rows[0]
   if (!head) return null
   const canvas = store.getCanvas(head.canvasId)
-  /* a run that read requirement lines stays current only while the issue still hashes the same; unreadable = not current */
-  let requirementsNow: string | null = null
-  if (canvas && typeof head.inputs.requirements === 'string') {
+  /* current needs a run that read the lines of this issue, and the source must still say the same; anything else (legacy, unchecked, rebound, unreadable) is not current */
+  let requirementsNow: RequirementsNow | null = null
+  if (canvas) {
     const now = await readRequirements(canvas, head.pageId, source)
-    if (now.kind === 'lines') requirementsNow = now.hash
+    if (now.kind === 'lines') requirementsNow = { issue: now.issue, hash: now.hash }
   }
+  const requirementsHold = requirementsStillHold(head.inputs, requirementsNow)
   return {
     id: runId,
     canvasId: head.canvasId,
@@ -127,6 +135,9 @@ export async function readAttestation(
     frames: rows.map((r) => ({ frameId: r.frameId, updatedAt: r.frameUpdatedAt })),
     createdAt: head.createdAt,
     createdBy: head.createdBy,
-    current: !!canvas && currentAttestation(canvas, head.pageId, rows, requirementsNow)?.runId === runId,
+    current:
+      !!canvas &&
+      requirementsHold &&
+      currentAttestation(canvas, head.pageId, rows, requirementsNow?.hash ?? null)?.runId === runId,
   }
 }

@@ -47,6 +47,8 @@ export interface AttestedInputs {
   start: string | null
   /** hash of the requirement lines the ledger row read (CHE-6373); absent when that row did not run */
   requirements?: string | null
+  /** the Multica issue those lines came from; a rebind to another issue ends the attestation */
+  requirementsIssue?: string | null
 }
 
 /** One stored row: a frame at a version, inside one run of the check. */

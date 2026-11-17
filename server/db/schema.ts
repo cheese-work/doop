@@ -306,7 +306,12 @@ export const designAttestations = pgTable(
     scanHash: text('scan_hash'),
     /** recon frame(s) at their version and the page's flow start, as the run saw them */
     inputs: jsonb('inputs')
-      .$type<{ recon: { id: string; updatedAt: number }[]; start: string | null; requirements?: string | null }>()
+      .$type<{
+        recon: { id: string; updatedAt: number }[]
+        start: string | null
+        requirements?: string | null
+        requirementsIssue?: string | null
+      }>()
       .notNull(),
     /** 'complete' | 'incomplete' */
     result: text('result').notNull(),

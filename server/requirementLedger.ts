@@ -163,3 +163,22 @@ export function ledgerReport(lines: RequirementLine[], ctx: CheckContext): Ledge
 export function requirementLedgerCheck(lines: RequirementLine[]): (ctx: CheckContext) => Missing[] {
   return (ctx) => ledgerReport(lines, ctx).missing
 }
+
+export interface RequirementsNow {
+  issue: string
+  hash: string
+}
+
+/**
+ * Does a stored run still describe the requirement source? Only a run that read
+ * the lines (hash and issue both recorded) of the same issue at the same hash.
+ * A legacy run, a run that never checked the ledger, a rebind to another issue
+ * with identical lines, and an unreadable source all fail closed (Terra P1, 4585a23).
+ */
+export function requirementsStillHold(
+  inputs: { requirements?: string | null; requirementsIssue?: string | null },
+  now: RequirementsNow | null,
+): boolean {
+  if (typeof inputs.requirements !== 'string' || typeof inputs.requirementsIssue !== 'string') return false
+  return !!now && now.issue === inputs.requirementsIssue && now.hash === inputs.requirements
+}

@@ -11,6 +11,7 @@ import { Client, freePort, startServer, type Server } from './harness.ts'
    Multica's issue and comment routes, and the attestation it stores. */
 
 const ISSUE = '01a1e586-c5e6-71a7-9cae-c5b32b8f2818'
+const OTHER_ISSUE = '01a1e586-c5e6-71a7-9cae-c5b32b8f2819'
 const CHEESE_COMMENT = '01a1e396-a5ea-7267-a4b2-4a888f3297e6'
 const TEXTS = [
   'thiếu kebab menu,',
@@ -48,8 +49,10 @@ beforeAll(async () => {
       res.statusCode = 503
       return void res.end('{}')
     }
-    if (req.url === `/api/issues/${ISSUE}`) return void res.end(JSON.stringify({ id: ISSUE, description: null }))
-    if (req.url === `/api/issues/${ISSUE}/comments`) return void res.end(JSON.stringify(comments))
+    for (const id of [ISSUE, OTHER_ISSUE]) {
+      if (req.url === `/api/issues/${id}`) return void res.end(JSON.stringify({ id, description: null }))
+      if (req.url === `/api/issues/${id}/comments`) return void res.end(JSON.stringify(comments))
+    }
     res.statusCode = 404
     res.end('{}')
   })
@@ -168,16 +171,68 @@ it('blocks a dropped minimap line on the real G3 tool, and the stored attestatio
   multicaDown = false
   expect(await current(deferred.attestation_id)).toBe(true)
 
-  /* a page with no bound issue has no source: the row says it did not run, and does not block */
-  expect(
+  /* rebound to another issue whose lines are identical: the old attestation names the old issue and no longer counts */
+  const bind = async (issueId: string | null) =>
     (
       await owner.req(`/api/canvases/${canvas.id}/pages/${pageId}/issue`, {
         method: 'PUT',
-        body: JSON.stringify({ issueId: null }),
+        body: JSON.stringify({ issueId }),
       })
-    ).status,
-  ).toBe(200)
+    ).status
+  expect(await current(deferred.attestation_id)).toBe(true)
+  expect(await bind(OTHER_ISSUE)).toBe(200)
+  expect(await current(deferred.attestation_id)).toBe(false)
+  const rebound = await check()
+  expect(rebound.complete).toBe(true)
+  expect(await current(rebound.attestation_id)).toBe(true)
+  expect(await bind(ISSUE)).toBe(200)
+  expect(await current(rebound.attestation_id)).toBe(false)
+
+  /* a page with no bound issue has no source: the ledger did not run, so the run is incomplete and never current */
+  expect(await bind(null)).toBe(200)
   const unbound = await check()
-  expect(unbound.complete).toBe(true)
-  expect(unbound.reviewerNotes.join('\n')).toMatch(/requirement ledger.*not checked/i)
+  expect(unbound.complete).toBe(false)
+  expect(codes(unbound)).toContain('req_not_checked')
+  expect(await current(unbound.attestation_id)).toBe(false)
+
+  /* binding an issue afterwards does not turn the unchecked run into a current one */
+  expect(await bind(ISSUE)).toBe(200)
+  expect(await current(unbound.attestation_id)).toBe(false)
+  expect((await check()).complete).toBe(true)
+}, 120_000)
+
+it('a server with no Multica configured cannot produce a complete attestation', async () => {
+  const bare = await startServer()
+  try {
+    const client = await new Client(bare).signUp('bare@test.dev', 'Bare Owner')
+    const { secret } = await (await client.post('/api/agent-keys', { name: 'Designer' })).json()
+    const mcp = new McpClient({ name: 'bare-test', version: '1.0.0' })
+    await mcp.connect(
+      new StreamableHTTPClientTransport(new URL('/mcp', bare.base), {
+        requestInit: { headers: { Authorization: `Bearer ${secret}` } },
+      }),
+    )
+    const canvas: Canvas = await (await client.post('/api/canvases', { name: 'Bare' })).json()
+    const pageId: string = (await (await client.get(`/api/canvases/${canvas.id}`)).json()).pages[0].id
+    await client.req(`/api/canvases/${canvas.id}/pages/${pageId}/issue`, {
+      method: 'PUT',
+      body: JSON.stringify({ issueId: ISSUE }),
+    })
+    await client.post(`/api/canvases/${canvas.id}/frames`, { name: 'Hi-fi', html: hifi([]) })
+    const result = await mcp.callTool({
+      name: 'check_design_completeness',
+      arguments: { canvas_id: canvas.id, agent_name: 'Designer' },
+    })
+    const text = (result.content as { type: string; text?: string }[]).find((i) => i.type === 'text')!.text!
+    const report = JSON.parse(text)
+    expect(report.complete).toBe(false)
+    expect(codes(report)).toContain('req_not_checked')
+    if (report.attestation_id) {
+      const stored = await (await client.get(`/api/design-attestations/${report.attestation_id}`)).json()
+      expect(stored).toMatchObject({ complete: false, current: false })
+    }
+    await mcp.close()
+  } finally {
+    bare.stop()
+  }
 }, 120_000)
