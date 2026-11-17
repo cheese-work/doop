@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import type { Page } from 'puppeteer-core'
 import { findBrowserPath } from '../server/screenshot'
 import { fixtureUrl, openBrowser, type TestBrowser } from './browser'
+import { loadWithRetry, step } from './stepStall'
 import type { Canvas, ElementComment, Frame } from '../shared/types'
 
 declare global {
@@ -35,25 +36,6 @@ declare global {
    reports its own TimeoutError. */
 const WAIT_MS = 30_000
 
-/* Names the beforeEach step that stalls, so a CI timeout says which one
-   (CHE-6913). 20s per step, under the 60s hook timeout. */
-const STEP_MS = 20_000
-async function step<T>(label: string, run: () => Promise<T>): Promise<T> {
-  const started = Date.now()
-  let timer: ReturnType<typeof setTimeout> | undefined
-  try {
-    return await Promise.race([
-      run(),
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`beforeEach step "${label}" stalled > ${STEP_MS} ms`)), STEP_MS)
-      }),
-    ])
-  } finally {
-    clearTimeout(timer)
-    console.log(`beforeEach step "${label}" took ${Date.now() - started} ms`)
-  }
-}
-
 describe.skipIf(!findBrowserPath())('drawing on the canvas', { timeout: 60_000 }, () => {
   let browser: TestBrowser
   let page: Page
@@ -63,12 +45,28 @@ describe.skipIf(!findBrowserPath())('drawing on the canvas', { timeout: 60_000 }
   /* the anchors sent by PATCH /api/comments/:id/anchor, in order */
   let commentMoves: Record<string, unknown>[] = []
   const errors: string[] = []
+  /* what the page reported since the last navigation, printed when the
+     harness never appears (CHE-7020) */
+  let pageLog: string[] = []
 
   beforeAll(async () => {
     browser = await openBrowser()
     page = await browser.newPage()
     page.setDefaultTimeout(WAIT_MS)
-    page.on('pageerror', (err) => errors.push(String(err)))
+    page.on('pageerror', (err) => {
+      errors.push(String(err))
+      pageLog.push(`pageerror: ${String(err)}`)
+    })
+    page.on('requestfailed', (req) => pageLog.push(`requestfailed: ${req.url()} ${req.failure()?.errorText}`))
+    page.on('response', (res) => {
+      if (res.status() >= 400) pageLog.push(`response ${res.status()}: ${res.url()}`)
+    })
+    page.on('console', (msg) => {
+      if (msg.type() === 'error' || msg.type() === 'warn') pageLog.push(`console.${msg.type()}: ${msg.text()}`)
+    })
+    page.on('framenavigated', (frame) => {
+      if (frame === page.mainFrame()) pageLog.push(`navigated: ${frame.url()}`)
+    })
     /* holds the frames' hit-test answers while a test sets heldMoveHits; it
        must listen before the app does, since a window's own listeners run in
        the order they were added */
@@ -118,9 +116,17 @@ describe.skipIf(!findBrowserPath())('drawing on the canvas', { timeout: 60_000 }
     nextId = 0
     patchRequests = 0
     commentMoves = []
+    pageLog = []
     await step('setViewport', () => page.setViewport({ width: 1200, height: 800 }))
-    await step('page.goto', () => page.goto(fixtureUrl('drawing.html')))
-    await step('waitForFunction', () => page.waitForFunction(() => !!window.drawingHarness))
+    await loadWithRetry({
+      load: () => {
+        pageLog = []
+        return step('page.goto', () => page.goto(fixtureUrl('drawing.html')))
+      },
+      ready: () =>
+        step('waitForFunction', () => page.waitForFunction(() => !!window.drawingHarness, { timeout: 8_000 })),
+      diagnose: async () => [`readyState: ${await page.evaluate(() => document.readyState)}`, ...pageLog].join('\n'),
+    })
     await page.evaluate(() =>
       window.drawingHarness.seed({
         id: 'c',
