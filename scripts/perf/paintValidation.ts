@@ -42,15 +42,16 @@ export function solid(width: number, height: number, rgb: [number, number, numbe
   return { width, height, data }
 }
 
-/** pixels in `region` (default: all) where any channel of `a` and `b` differs by more than 16 */
+/** pixels in `region` (default: all; whole pixels inside it when fractional) where any channel of `a` and `b` differs by more than 16 */
 export function changedPixels(a: Raster, b: Raster, region?: Region): number {
   if (a.width !== b.width || a.height !== b.height) {
     throw new Error(`raster size mismatch: ${a.width}x${a.height} vs ${b.width}x${b.height}`)
   }
-  const x0 = Math.max(0, region?.x ?? 0)
-  const y0 = Math.max(0, region?.y ?? 0)
-  const x1 = Math.min(a.width, region ? region.x + region.w : a.width)
-  const y1 = Math.min(a.height, region ? region.y + region.h : a.height)
+  // a region may be fractional (zoomed, positioned boxes): count the whole pixels inside it
+  const x0 = Math.max(0, Math.ceil(region?.x ?? 0))
+  const y0 = Math.max(0, Math.ceil(region?.y ?? 0))
+  const x1 = Math.min(a.width, Math.floor(region ? region.x + region.w : a.width))
+  const y1 = Math.min(a.height, Math.floor(region ? region.y + region.h : a.height))
   let n = 0
   for (let y = y0; y < y1; y++) {
     for (let x = x0; x < x1; x++) {
