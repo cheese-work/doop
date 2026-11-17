@@ -172,7 +172,7 @@ it('exposes approval to agents, filters implementation candidates, and invalidat
   expect(ready.frames).toHaveLength(1)
   expect(ready.frames[0]).toMatchObject({ id: frame.id, approvalStatus: 'ready_for_dev', approval: approved.approval })
   expect((await callTool('get_frame', { frame_id: frame.id })).approval).toEqual(approved.approval)
-  await callTool('update_frame', { frame_id: frame.id, width: 900, agent_name: 'Implementer' })
+  await callTool('update_frame', { frame_id: frame.id, height: 900, agent_name: 'Implementer' })
   expect((await callTool('get_canvas', { canvas_id: canvas.id, approval_status: 'ready_for_dev' })).frames).toEqual([])
   expect((await callTool('get_frame', { frame_id: frame.id })).approvalStatus).toBe('needs_review')
   expect((await callTool('get_canvas', { canvas_id: canvas.id, approval_status: 'draft' })).frames).toHaveLength(1)

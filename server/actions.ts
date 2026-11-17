@@ -4,7 +4,8 @@ import * as persist from './db/persist.ts'
 import * as thumbs from './thumbs.ts'
 import { colorFor } from '../shared/types.ts'
 import { DEFAULT_ROLE_ID, mentionedRole, normalizePipeline, roleByAgentName, roleName } from '../shared/agents.ts'
-import { canvasPages } from '../shared/pages.ts'
+import { canvasPages, pageFrames } from '../shared/pages.ts'
+import { conflicts, freeSpot } from './frameLayout.ts'
 import { isCanvasComment } from '../shared/comments.ts'
 import { decodeEscapedHtml, looksEscapedHtml, repairEscapedHtml } from './escapedHtml.ts'
 import { emitCanvasEvent } from './events.ts'
@@ -1371,6 +1372,20 @@ export async function duplicatePage(canvasId: string, pageId: string, actor: Act
   return copy
 }
 
+/** CHE-6119: an agent's frame at an explicit x/y that would sit on another frame goes to free space instead. */
+function clearOfOverlap<T extends { pageId?: string; x?: number; y?: number; width?: number; height?: number }>(
+  canvasId: string,
+  input: T,
+): T {
+  const canvas = store.getCanvas(canvasId)
+  if (!canvas || input.x === undefined || input.y === undefined) return input
+  const pageId = input.pageId ?? canvasPages(canvas)[0]?.id
+  if (!pageId) return input
+  const frames = pageFrames(canvas, pageId)
+  const box = { x: input.x, y: input.y, width: input.width ?? 640, height: input.height ?? 480 }
+  return conflicts(box, frames).length ? { ...input, ...freeSpot(frames) } : input
+}
+
 export function createFrame(
   canvasId: string,
   input: {
@@ -1388,6 +1403,7 @@ export function createFrame(
   actor: Actor,
 ): Frame | undefined {
   if (input.html !== undefined) input = { ...input, html: repairEscapedHtml(input.html) }
+  if (actor.kind === 'agent') input = clearOfOverlap(canvasId, input)
   const frame = store.createFrame(canvasId, input, actor.name)
   if (!frame) return undefined
   bursts.set(frame.id, { actor, lastAt: frame.createdAt })
