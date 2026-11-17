@@ -9,7 +9,7 @@ import { handleGeminiCloudMcp } from './geminiCloudMcp.ts'
 import { serveClient } from './clientStatic.ts'
 import { geminiCloudWorkerFor } from './geminiCloudRuns.ts'
 import http from 'node:http'
-import { createHash } from 'node:crypto'
+import { createHash, timingSafeEqual } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import express from 'express'
@@ -48,7 +48,7 @@ import * as demo from './demo.ts'
 import { db, initDb } from './db/index.ts'
 import * as authSchema from './db/auth-schema.ts'
 import * as persist from './db/persist.ts'
-import { readAttestation } from './designAttestations.ts'
+import { readAttestation, readServiceAttestation } from './designAttestations.ts'
 import { handleMcpRequest } from './mcp.ts'
 import {
   getAsset,
@@ -656,6 +656,18 @@ declare global {
    the gate looks at that session (shared/desktopConnect.ts) */
 app.get('/api/integrations/:provider/callback', relayDesktopCallback)
 app.use('/api/live-activities', logLiveActivityRequests)
+/* G4 (CHE-7080): Multica reads an attestation with one shared bearer token, not a session. Registered
+   before the /api session gate; GET only; SHA-256 digests are compared so the token's length leaks nothing. */
+const sha256 = (value: string) => createHash('sha256').update(value).digest()
+app.get('/api/service/design-attestations/:id', async (req, res) => {
+  const expected = env.DOOP_ATTESTATION_READ_TOKEN
+  if (!expected) return res.status(503).json({ error: 'attestation read token not configured' })
+  const presented = /^Bearer (.+)$/.exec(req.headers.authorization ?? '')?.[1] ?? ''
+  if (!timingSafeEqual(sha256(presented), sha256(expected))) return res.status(401).json({ error: 'unauthorized' })
+  const view = await readServiceAttestation(req.params.id)
+  if (!view) return res.status(404).json({ error: 'attestation not found' })
+  res.json(view)
+})
 app.use('/api', async (req, res, next) => {
   try {
     const session = await auth.api.getSession({ headers: fromNodeHeaders(req.headers) })
