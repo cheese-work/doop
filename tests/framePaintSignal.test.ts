@@ -97,8 +97,10 @@ describe.skipIf(!findBrowserPath())('frame paint signals (real bootstrap)', { ti
     )
     const first = paints(r).find((m) => m.name === 'first-paint')
     expect(first).toBeTruthy()
-    // sentAt precedes the apply, so the 800 ms animation cannot finish before sentAt + 800
-    expect(first!.time! - r.origin).toBeGreaterThanOrEqual(r.sentAt + 800)
+    // the plan's bound: paint at or after the doop:html-result + 800 ms (host clock)
+    const result = r.msgs.find((m) => m.type === 'doop:html-result')
+    expect(result).toBeTruthy()
+    expect(first!.time! - r.origin).toBeGreaterThanOrEqual(result!.at + 800)
   })
 
   it('doop:frame-ready carries paintTiming', async () => {
