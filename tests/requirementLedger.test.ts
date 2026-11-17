@@ -6,6 +6,7 @@ import {
   requirementLedgerCheck,
   requirementLines,
   requirementsHash,
+  requirementsStillHold,
   type SourceComment,
 } from '../server/requirementLedger.ts'
 import type { Canvas, Frame } from '../shared/types.ts'
@@ -265,5 +266,35 @@ describe('G3 row: Cheese requirement ledger (replay of the CHE-5452 minimap omis
   it('no source lines, no ledger needed', () => {
     const r = checkPageCompleteness(canvasWith(undefined, ''), PAGE, { extraChecks: [requirementLedgerCheck([])] })
     expect(codes(r)).not.toContain('req_ledger_missing')
+  })
+})
+
+/* Terra P1 on 4585a23: a run that never read the requirement lines must not stay current. */
+describe('requirementsStillHold: only a checked run for the same issue and the same lines counts', () => {
+  const now = { issue: 'issue-a', hash: 'h1' }
+  it('is true for a run that read this issue at this hash', () => {
+    expect(requirementsStillHold({ requirements: 'h1', requirementsIssue: 'issue-a' }, now)).toBe(true)
+  })
+  it('is false for a legacy run with no requirement inputs', () => {
+    expect(requirementsStillHold({}, now)).toBe(false)
+  })
+  it('is false for a run that recorded no lines (unchecked)', () => {
+    expect(requirementsStillHold({ requirements: null, requirementsIssue: null }, now)).toBe(false)
+  })
+  it('is false for a hash without an issue identity', () => {
+    expect(requirementsStillHold({ requirements: 'h1' }, now)).toBe(false)
+  })
+  it('is false when the page is rebound to another issue with identical lines', () => {
+    expect(
+      requirementsStillHold({ requirements: 'h1', requirementsIssue: 'issue-a' }, { issue: 'issue-b', hash: 'h1' }),
+    ).toBe(false)
+  })
+  it('is false when the lines changed', () => {
+    expect(
+      requirementsStillHold({ requirements: 'h1', requirementsIssue: 'issue-a' }, { issue: 'issue-a', hash: 'h2' }),
+    ).toBe(false)
+  })
+  it('is false when the source cannot be read now', () => {
+    expect(requirementsStillHold({ requirements: 'h1', requirementsIssue: 'issue-a' }, null)).toBe(false)
   })
 })
