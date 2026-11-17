@@ -96,7 +96,17 @@ afterEach(() => vi.useRealTimers())
 
 /** every store mutation path of the N0 table, run as `ctx` against a canvas fixture */
 const PATHS: { name: string; run: (ctx: WriteContext, f: ReturnType<typeof bound>) => unknown }[] = [
-  { name: 'createFrame', run: (ctx, f) => store.createFrame(ctx, f.canvas.id, { name: 'n', pageId: f.pa }, 'a') },
+  {
+    /* a recon frame: the one frame G2 (tests/reconGuard.test.ts) lets an agent create before the recon is done */
+    name: 'createFrame',
+    run: (ctx, f) =>
+      store.createFrame(
+        ctx,
+        f.canvas.id,
+        { name: 'n', pageId: f.pa, html: '<script type="application/json" id="doop-recon">{}</script>' },
+        'a',
+      ),
+  },
   { name: 'updateFrame (html)', run: (ctx, f) => store.updateFrame(ctx, f.fa.id, { html: '<p>new</p>' }, 'a') },
   {
     name: 'updateFrame (append stream)',

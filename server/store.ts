@@ -691,7 +691,7 @@ class Store {
     if (!c) return undefined
     const pageId = input.pageId ?? canvasPages(c)[0]!.id
     if (!canvasPages(c).some((page) => page.id === pageId)) return undefined
-    assertWritable(ctx, 'create_frame', { canvas: c, pageIds: [pageId] })
+    assertWritable(ctx, 'create_frame', { canvas: c, pageIds: [pageId], html: input.html })
     const frames = pageFrames(c, pageId)
     const now = Date.now()
     // auto-place: to the right of the right-most frame
