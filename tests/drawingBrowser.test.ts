@@ -35,6 +35,25 @@ declare global {
    reports its own TimeoutError. */
 const WAIT_MS = 30_000
 
+/* Names the beforeEach step that stalls, so a CI timeout says which one
+   (CHE-6913). 20s per step, under the 60s hook timeout. */
+const STEP_MS = 20_000
+async function step<T>(label: string, run: () => Promise<T>): Promise<T> {
+  const started = Date.now()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      run(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`beforeEach step "${label}" stalled > ${STEP_MS} ms`)), STEP_MS)
+      }),
+    ])
+  } finally {
+    clearTimeout(timer)
+    console.log(`beforeEach step "${label}" took ${Date.now() - started} ms`)
+  }
+}
+
 describe.skipIf(!findBrowserPath())('drawing on the canvas', { timeout: 60_000 }, () => {
   let browser: TestBrowser
   let page: Page
@@ -93,15 +112,15 @@ describe.skipIf(!findBrowserPath())('drawing on the canvas', { timeout: 60_000 }
   }, 60_000)
 
   beforeEach(async () => {
-    await page.mouse.reset()
+    await step('mouse.reset', () => page.mouse.reset())
     await page.keyboard.up('Shift')
     saved = []
     nextId = 0
     patchRequests = 0
     commentMoves = []
-    await page.setViewport({ width: 1200, height: 800 })
-    await page.goto(fixtureUrl('drawing.html'))
-    await page.waitForFunction(() => !!window.drawingHarness)
+    await step('setViewport', () => page.setViewport({ width: 1200, height: 800 }))
+    await step('page.goto', () => page.goto(fixtureUrl('drawing.html')))
+    await step('waitForFunction', () => page.waitForFunction(() => !!window.drawingHarness))
     await page.evaluate(() =>
       window.drawingHarness.seed({
         id: 'c',
@@ -115,7 +134,7 @@ describe.skipIf(!findBrowserPath())('drawing on the canvas', { timeout: 60_000 }
         updatedAt: 0,
       }),
     )
-    await page.waitForSelector('[aria-label="Canvas tools"]')
+    await step('waitForSelector', () => page.waitForSelector('[aria-label="Canvas tools"]'))
     await page.evaluate(() => window.drawingHarness.viewport({ x: 40, y: 20, zoom: 2 }))
   })
 
