@@ -1039,13 +1039,13 @@ data-doop-webfonts>` for the roster families the frame names and does not load i
   `designAttestation.test.ts`.
 
 - Recon guard (G2, CHE-6627, `server/reconGuard.ts`, `server/reconScan.ts`): `assertWritable` refuses an agent's
-  `create_frame` on a page bound to an issue (the recon frame itself, HTML with `doop-recon`, is exempt) until the
+  `create_frame` on a page bound to an issue (only a frame that is nothing but the `doop-recon` script, `isReconOnly`, is exempt; design markup beside it is gated) until the
   page has one recon frame whose scan-derived matrix (screen x state x device 1440/390) has a real image per cell
   (uploaded, non-empty, PNG width = device, no image reused; `n/a` only with scan proof), every scan candidate has a
   decision, the issue holds this agent's earlier comment with `recon-manifest: sha256=` of the recon JSON, `main-sha:`,
   `recon-images:` and the frame id, and the frame is locked. Images and comments reach the synchronous store through a
   cache `warmReconEvidence` fills (MCP `create_frame` calls it); `setReconSources` plugs them in and, with no
-  comment source, every such write is refused. `scripts/recon-scan.ts` prints the scan; it is a read-only heuristic
+  comment source, every such write is refused. Production wires `httpCommentsSource` (`server/multicaRuns.ts`, `GET /api/issues/:id/comments`, agent-authored comments only, Multica's own author and time) at boot when the four `MULTICA_*` settings exist. `scripts/recon-scan.ts` prints the scan; it is a read-only heuristic
   (relative imports, line regexes), a floor and not proof of completeness. Tests: `reconScan.test.ts`, `reconGuard.test.ts`.
 
 ## 5. Security and Secrets
