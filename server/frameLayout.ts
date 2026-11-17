@@ -35,3 +35,9 @@ export function freeSpot(frames: Placed[]): { x: number; y: number } {
     y: Math.max(...visible.map((f) => f.y + f.height)) + PLACE_GAP,
   }
 }
+
+/** Where the store puts a frame with no x/y: right of the right-most frame, or the page origin when empty. */
+export function defaultSpot(frames: Pick<Frame, 'x' | 'width'>[]): { x: number; y: number } {
+  const rightmost = frames.reduce((mx, f) => Math.max(mx, f.x + f.width), 0)
+  return { x: frames.length ? rightmost + 80 : 120, y: 120 }
+}

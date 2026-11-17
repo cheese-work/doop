@@ -1018,7 +1018,7 @@ export function buildMcpServer(owner?: string, ownerId?: string, multicaTaskId?:
          has no card either). The review screenshot after the stream is the
          first card the person sees. */
       description:
-        'Create a new frame on a canvas with an HTML design. A frame is a rectangular artboard that renders a full HTML document (inline <style> and <script> allowed, no external network access needed). If x/y are omitted the frame is auto-placed to the right of existing frames; an explicit x/y that would overlap another frame is replaced by free space (see `placement` in the result). Everyone viewing the canvas sees it appear live.',
+        'Create a new frame on a canvas with an HTML design. A frame is a rectangular artboard that renders a full HTML document (inline <style> and <script> allowed, no external network access needed). If x/y are omitted the frame is auto-placed to the right of existing frames; an requested position (explicit or defaulted x/y) that would overlap another frame is replaced by free space (see `placement` in the result). Everyone viewing the canvas sees it appear live.',
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       inputSchema: {
         canvas_id: z.string(),
@@ -1040,12 +1040,14 @@ export function buildMcpServer(owner?: string, ownerId?: string, multicaTaskId?:
       if (!canvasFor(canvas_id, 'edit')) return noCanvas(canvas_id)
       const frame = actions.createFrame(canvas_id, { name, pageId, html, x, y, width, height }, actorFrom(agent_name))
       if (!frame) return noCanvas(canvas_id)
-      const moved = x !== undefined && y !== undefined && (frame.x !== x || frame.y !== y)
+      const moved = actions.wasRelocated(frame)
       const body = {
         ok: true,
         frame: frameSummary(frame),
         ...(moved
-          ? { placement: `x/y ${x},${y} would overlap another frame; placed in free space at ${frame.x},${frame.y}` }
+          ? {
+              placement: `the requested position would overlap another frame; placed in free space at ${frame.x},${frame.y}`,
+            }
           : {}),
       }
       const result = withEscapeNote(frame.html.length > 0 ? textWithNudge(body, REVIEW_NUDGE) : text(body), html)

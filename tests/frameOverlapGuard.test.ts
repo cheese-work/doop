@@ -70,6 +70,16 @@ describe('agent writes through MCP', () => {
     expect(overlapping(await frames(canvas.id))).toEqual([])
   })
 
+  it('create_frame with only x or only y is checked after the defaults are filled in', async () => {
+    const canvas: Canvas = await (await owner.post('/api/canvases', { name: 'Partial' })).json()
+    await call('create_frame', { canvas_id: canvas.id, name: 'A', html: '', x: 0, y: 0 })
+    const onlyX = JSON.parse((await call('create_frame', { canvas_id: canvas.id, name: 'B', html: '', x: 0 })).text)
+    const onlyY = JSON.parse((await call('create_frame', { canvas_id: canvas.id, name: 'C', html: '', y: 0 })).text)
+    expect(onlyX.placement).toMatch(/placed in free space/)
+    expect(onlyY.frame.id).toBeTruthy()
+    expect(overlapping(await frames(canvas.id))).toEqual([])
+  })
+
   it('update_frame refuses a move or resize onto another frame, accepts a clear one, and a rename always passes', async () => {
     const canvas: Canvas = await (await owner.post('/api/canvases', { name: 'Move' })).json()
     const ids: string[] = []
