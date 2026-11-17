@@ -252,39 +252,110 @@ const lastJson = (s) => {
 
 /* ---------- supervised migration ---------- */
 
-const quiesceSql = (app) =>
-  `select (select count(*) from pg_stat_activity where application_name='${app}' and pid<>pg_backend_pid())` +
-  ` || ' ' || (select count(*) from pg_locks where locktype='advisory' and classid=${ADVISORY.classid}` +
-  ` and objid=${ADVISORY.objid} and objsubid=2)`
+const sessionsSql = (app) =>
+  `select pid || '|' || backend_start from pg_stat_activity where application_name='${app}'` +
+  ` and pid<>pg_backend_pid() order by pid`
+const locksSql = () =>
+  `select count(*) from pg_locks where locktype='advisory' and classid=${ADVISORY.classid}` +
+  ` and objid=${ADVISORY.objid} and objsubid=2`
 const terminateSql = (app) =>
   `select count(pg_terminate_backend(pid)) from pg_stat_activity where application_name='${app}' and pid<>pg_backend_pid()`
+const ledgerSql = () => `select hash || '|' || created_at from drizzle.__drizzle_migrations order by created_at, hash`
 
-/** C-8.8 quiescence: the migration container has exited, no session of the run is left, the advisory lock is
- *  free. Anything else is `needs_operator`: the sandbox is left for a person, never assumed clean. */
-export async function proveQuiescence({ runner, containerName, dbName, liveDb }) {
-  const psql = (sql) => runner.docker(['exec', dbName, 'psql', '-U', liveDb.user, '-d', liveDb.db, '-tAc', sql])
-  const state = { containerExited: false, sessions: null, advisoryLocks: null }
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const running = await runner.docker(['inspect', '--format', '{{.State.Running}}', containerName])
-    state.containerExited = running.code === 0 && running.stdout.trim() === 'false'
-    const r = await psql(quiesceSql(containerName))
-    const m = /^(\d+) (\d+)$/.exec(r.code === 0 ? String(r.stdout).trim() : '')
-    state.sessions = m ? Number(m[1]) : null
-    state.advisoryLocks = m ? Number(m[2]) : null
-    if (state.containerExited && state.sessions === 0 && state.advisoryLocks === 0) return { ok: true, ...state }
-    if (attempt === 0) {
-      await runner.docker(['kill', containerName])
-      await psql(terminateSql(containerName))
-      await runner.sleep(1000)
+/** C-8.8 bounds the whole proof: kill, wait, terminate, read, all inside 30 s. */
+export const QUIESCE_MS = 30_000
+
+const GONE = /no such (object|container)/i
+const lines = (r) =>
+  r.code === 0 && r.timedOut !== true
+    ? String(r.stdout ?? '')
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean)
+    : null
+
+/** The clone's migration ledger as one comparable string, or null when it cannot be read. */
+export async function readLedger({ runner, dbName, liveDb, timeoutMs = QUIESCE_MS }) {
+  let r
+  try {
+    r = await runner.docker(['exec', dbName, 'psql', '-U', liveDb.user, '-d', liveDb.db, '-tAc', ledgerSql()], {
+      timeoutMs,
+    })
+  } catch {
+    return null
+  }
+  const l = lines(r)
+  return l ? createHash('sha256').update(l.join('\n')).digest('hex') : null
+}
+
+/** C-8.8 quiescence, within 30 s of the first step. After a timeout or a failure: `docker kill`, `docker wait`,
+ *  record the run's sessions as `(pid, backend_start)`, `pg_terminate_backend` them, then prove three facts: the
+ *  container exited, none of those sessions is left, the advisory key is free. With `ledgerBefore`, the ledger must
+ *  also equal the pre-apply ledger. Every step is bounded; a step that times out, errors or runs past the budget
+ *  leaves its fact unproven. Anything unproven is `needs_operator`: the sandbox is left for a person. */
+export async function proveQuiescence({ runner, containerName, dbName, liveDb, ledgerBefore, budgetMs = QUIESCE_MS }) {
+  const t0 = runner.now().getTime()
+  const spent = () => runner.now().getTime() - t0
+  const step = async (args) => {
+    const left = budgetMs - spent()
+    if (left <= 0) return { code: 124, timedOut: true, stderr: 'the 30 s quiescence budget is spent' }
+    try {
+      return await runner.docker(args, { timeoutMs: left })
+    } catch (e) {
+      return { code: 1, stderr: String(e?.message ?? e) }
     }
   }
-  return {
-    ok: false,
-    ...state,
-    reason:
-      `needs_operator: the migration did not quiesce (container exited: ${state.containerExited}, ` +
-      `sessions: ${state.sessions ?? 'unknown'}, advisory locks: ${state.advisoryLocks ?? 'unknown'})`,
+  const psql = (sql) => step(['exec', dbName, 'psql', '-U', liveDb.user, '-d', liveDb.db, '-tAc', sql])
+  const proof = {
+    containerExited: false,
+    waited: false,
+    sessionsBefore: null,
+    sessionsAfter: null,
+    sessions: null,
+    advisoryLocks: null,
+    ledger: null,
+    timedOut: false,
   }
+  const note = (r) => {
+    if (r?.timedOut === true) proof.timedOut = true
+    return r
+  }
+
+  note(await step(['kill', containerName])) // already exited is fine; a hung CLI is bounded
+  const waited = note(await step(['wait', containerName]))
+  proof.waited = waited.code === 0 && waited.timedOut !== true
+  proof.sessionsBefore = lines(note(await psql(sessionsSql(containerName))))
+  if (proof.sessionsBefore === null || proof.sessionsBefore.length > 0) note(await psql(terminateSql(containerName)))
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const running = note(await step(['inspect', '--format', '{{.State.Running}}', containerName]))
+    proof.containerExited =
+      (running.code === 0 && String(running.stdout).trim() === 'false') ||
+      (running.code !== 0 && running.timedOut !== true && GONE.test(String(running.stderr ?? '')))
+    proof.sessionsAfter = lines(note(await psql(sessionsSql(containerName))))
+    proof.sessions = proof.sessionsAfter ? proof.sessionsAfter.length : null
+    const lock = lines(note(await psql(locksSql())))
+    proof.advisoryLocks = lock && /^\d+$/.test(lock[0] ?? '') ? Number(lock[0]) : null
+    if (proof.containerExited && proof.sessions === 0 && proof.advisoryLocks === 0) break
+    if (spent() >= budgetMs - 1000) break
+    if (proof.sessions !== 0) note(await psql(terminateSql(containerName)))
+    await runner.sleep(1000)
+  }
+  if (ledgerBefore !== undefined) {
+    const after = await readLedger({ runner, dbName, liveDb, timeoutMs: Math.max(1, budgetMs - spent()) })
+    proof.ledger = { before: ledgerBefore, after, unchanged: after !== null && after === ledgerBefore }
+  }
+  const bad = []
+  if (!proof.containerExited) bad.push('container not shown exited')
+  if (proof.sessions !== 0) bad.push(`sessions: ${proof.sessions ?? 'unknown'}`)
+  if (proof.advisoryLocks !== 0) bad.push(`advisory locks: ${proof.advisoryLocks ?? 'unknown'}`)
+  if (proof.ledger && !proof.ledger.unchanged)
+    bad.push(proof.ledger.after === null ? 'ledger unreadable' : 'ledger differs from the pre-apply ledger')
+  if (proof.timedOut) bad.push('a step timed out')
+  const ok = bad.length === 0
+  const out = { ok, ...proof, elapsedMs: spent() }
+  if (!ok) out.reason = `needs_operator: the migration did not quiesce (${bad.join(', ')})`
+  return out
 }
 
 /* ---------- the run ---------- */
@@ -307,6 +378,10 @@ export async function runCompat({
   probeTargets,
 }) {
   if (typeof runId !== 'string' || !RUN_ID.test(runId)) throw new Error('compat: run id must be a plain token')
+  // C-8.8: an earlier unproven migration refuses every later job until its three facts hold. Before the sweep,
+  // which would erase the evidence.
+  const guard = await runner.guardCheck()
+  if (!guard.ok) throw new Error(`compat: refused, an earlier migration is unresolved: ${guard.message}`)
   const first = await runner.sweep()
   if (!first.ok) throw new Error(`compat: sweep before the run failed: ${first.message}`)
 
@@ -332,6 +407,8 @@ export async function runCompat({
   }
 
   let thrown
+
+  let unresolved = false
   try {
     evidence.disk.beforeBytes = await runner.freeBytes()
     if (!staticResult || staticResult.ok !== true)
@@ -428,6 +505,8 @@ export async function runCompat({
 
     // The candidate's migrations on the cloned data: the supervised runner of C-8.8, in a one-shot container,
     // under a 120 s outer timeout. A timeout or a failure is followed by kill, wait and the quiescence proof.
+    const ledgerBefore = await readLedger({ runner, dbName: n.db, liveDb })
+    if (ledgerBefore === null) throw new Stop('clone', 'cannot read the clone ledger before the migration')
     const migrated = await runner.docker(
       [
         'run',
@@ -451,16 +530,47 @@ export async function runCompat({
       { timeoutMs: MIGRATE_TIMEOUT_MS },
     )
     const migrateFailed = migrated.timedOut === true || migrated.code !== 0
-    if (migrateFailed) await runner.docker(['kill', n.migrate])
-    const quiet = await proveQuiescence({ runner, containerName: n.migrate, dbName: n.db, liveDb })
+    // Kill, wait, terminate and prove, all inside 30 s. After a failure the ledger must also equal the one read
+    // before the migration.
+    const quiet = await proveQuiescence({
+      runner,
+      containerName: n.migrate,
+      dbName: n.db,
+      liveDb,
+      ...(migrateFailed ? { ledgerBefore } : {}),
+    })
     evidence.results.clone = { ok: false, quiescence: quiet }
-    if (migrateFailed) {
-      const what = migrated.timedOut
+    const what = migrateFailed
+      ? migrated.timedOut
         ? `the candidate migration exceeded ${MIGRATE_TIMEOUT_MS / 1000} s and was killed`
         : `the candidate migration on the cloned data failed: ${tail(migrated)}`
-      throw new Stop('clone', quiet.ok ? `${what}; quiescence proven` : `${what}; ${quiet.reason}`)
+      : 'the candidate migration finished'
+    if (!quiet.ok) {
+      // needs_operator: keep the sandbox (no sweep) and persist the refusal for every later job.
+      unresolved = true
+      let kept
+      try {
+        kept = await runner.guardSet({
+          runId,
+          migrateContainer: n.migrate,
+          dbContainer: n.db,
+          dbUser: liveDb.user,
+          dbName: liveDb.db,
+          appName: n.migrate,
+        })
+      } catch (e) {
+        kept = { ok: false, message: String(e?.message ?? e) }
+      }
+      evidence.guard = { ok: kept.ok === true, message: kept.message }
+      throw new Stop(
+        'clone',
+        `${what}; ${quiet.reason}; ` +
+          (kept.ok
+            ? 'guard written, later jobs refuse until it holds'
+            : `the guard could not be written: ${kept.message}`),
+      )
     }
-    if (!quiet.ok) throw new Stop('clone', quiet.reason)
+    if (migrateFailed) throw new Stop('clone', `${what}; quiescence proven`)
     evidence.results.clone = { ok: true, quiescence: quiet }
 
     // Probes first: any one that gets out blocks startup. They aim at the sandbox network's own gateway, and at
@@ -564,10 +674,15 @@ export async function runCompat({
 
   // Always last, success or not: the scratch database goes with the sandbox.
   let last
-  try {
-    last = await runner.sweep()
-  } catch (e) {
-    last = { ok: false, message: String(e?.message ?? e) }
+  if (unresolved) {
+    // Quiescence is unproven: the sandbox and its database are the operator's evidence. c00.sh refuses the sweep too.
+    last = { ok: false, message: 'sweep skipped: quiescence unproven, the sandbox is kept for the operator' }
+  } else {
+    try {
+      last = await runner.sweep()
+    } catch (e) {
+      last = { ok: false, message: String(e?.message ?? e) }
+    }
   }
   try {
     evidence.disk.afterBytes = await runner.freeBytes()
@@ -594,6 +709,7 @@ function lastJsonArray(text) {
 
 const DEFAULT_TIMEOUT_MS = 600_000
 const COPY_TIMEOUT_MS = 1_800_000
+const GUARD_TIMEOUT_MS = 120_000
 
 /** Run a command; at `timeoutMs` the CLI process is killed and the result says so (code 124, timedOut). A docker
  *  CLI kill does not stop the container: the caller kills it by name. */
@@ -634,6 +750,7 @@ const openCanary = () =>
 function realRunner() {
   const here = path.dirname(fileURLToPath(import.meta.url))
   const dfPath = process.env.C00_DF_PATH ?? '/var/lib/docker'
+  const c00 = path.join(here, '..', 'deploy', 'cd', 'c00.sh')
   return {
     docker: (args, o) => run('docker', args, o),
     canary: openCanary,
@@ -666,7 +783,19 @@ function realRunner() {
     freeBytes: async () =>
       Number.parseInt((await run('df', ['-B1', '--output=avail', dfPath])).stdout.split('\n').at(1)?.trim() ?? '', 10),
     sweep: async () => {
-      const r = await run('bash', [path.join(here, '..', 'deploy', 'cd', 'c00.sh'), 'sweep'])
+      const r = await run('bash', [c00, 'sweep'])
+      return { ok: r.code === 0, message: tail(r) }
+    },
+    guardCheck: async () => {
+      const r = await run('bash', [c00, 'guard'], { timeoutMs: GUARD_TIMEOUT_MS })
+      return { ok: r.code === 0, message: tail(r) }
+    },
+    guardSet: async (g) => {
+      const r = await run(
+        'bash',
+        [c00, 'guard-set', g.runId, g.migrateContainer, g.dbContainer, g.dbUser, g.dbName, g.appName],
+        { timeoutMs: GUARD_TIMEOUT_MS },
+      )
       return { ok: r.code === 0, message: tail(r) }
     },
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),

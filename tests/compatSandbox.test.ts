@@ -77,9 +77,10 @@ const goodApp = (extra: Record<string, unknown> = {}) =>
 
 function rig(
   over: (args: string[], calls: Call[]) => Reply | undefined = () => undefined,
-  opts: { sweep?: boolean[] } = {},
+  opts: { sweep?: boolean[]; guardRefuses?: string; guardWrite?: boolean; clock?: () => Date } = {},
 ) {
   const calls: Call[] = []
+  const guards: Record<string, string>[] = []
   const sweeps = [...(opts.sweep ?? [])]
   const events: string[] = []
   const runner = {
@@ -93,7 +94,11 @@ function rig(
       if (j.includes('pg_database_size')) return { code: 0, stdout: '1000\n' }
       if (j.includes('pg_isready')) return { code: 0 }
       if (j.startsWith('inspect --format {{.State.Running}}')) return { code: 0, stdout: 'false\n' }
-      if (j.includes('pg_stat_activity') && j.includes('psql')) return { code: 0, stdout: '0 0\n' }
+      if (j.includes('psql') && j.includes('pg_terminate_backend')) return { code: 0, stdout: '0\n' }
+      if (j.includes('psql') && j.includes('pg_stat_activity')) return { code: 0, stdout: '' }
+      if (j.includes('psql') && j.includes('pg_locks')) return { code: 0, stdout: '0\n' }
+      if (j.includes('psql') && j.includes('__drizzle_migrations')) return { code: 0, stdout: 'h1|1\nh2|2\n' }
+      if (j.startsWith('wait ')) return { code: 0, stdout: '137\n' }
       if (j.startsWith('image inspect'))
         return { code: 0, stdout: JSON.stringify(['PATH=/usr/bin', 'NODE_VERSION=22']) }
       if (j.startsWith('network inspect')) return { code: 0, stdout: goodNetwork }
@@ -124,11 +129,20 @@ function rig(
       const ok = sweeps.length ? sweeps.shift()! : true
       return { ok, message: ok ? 'sweep ok' : 'sweep failed' }
     },
+    guardCheck: async () => {
+      events.push('guard check')
+      return opts.guardRefuses ? { ok: false, message: opts.guardRefuses } : { ok: true, message: '' }
+    },
+    guardSet: async (g: Record<string, string>) => {
+      events.push('guard set')
+      guards.push(g)
+      return opts.guardWrite === false ? { ok: false, message: 'disk full' } : { ok: true, message: 'written' }
+    },
     sleep: async () => {},
-    now: () => new Date('2026-11-17T00:00:00Z'),
+    now: opts.clock ?? (() => new Date('2026-11-17T00:00:00Z')),
     randomSecret: () => 'rnd',
   }
-  return { runner, calls, events }
+  return { runner, calls, events, guards }
 }
 
 const input = (runner: unknown, over: Record<string, unknown> = {}) => ({
@@ -178,7 +192,7 @@ describe('compat sandbox, happy path', () => {
     ]
     expect(order.every((n) => n >= 0)).toBe(true)
     expect([...order].sort((a, b) => a - b)).toEqual(order)
-    expect(events[0]).toBe('sweep')
+    expect(events.slice(0, 2)).toEqual(['guard check', 'sweep'])
     expect(events[events.length - 1]).toBe('sweep')
     expect(events.indexOf('docker start doop-compat-app-r1')).toBeGreaterThan(
       events.findIndex((e) => /network inspect/.test(e)),
@@ -378,9 +392,22 @@ describe('compat sandbox, the sandbox network gateway is probed with a positive 
 
 describe('compat sandbox, the clone migration is supervised and proven quiescent (C-8.8)', () => {
   const isMigrate = (a: string[]) => a[0] === 'run' && a.includes(N.migrate)
-  const isQuiesceSql = (a: string[]) =>
-    a.join(' ').includes('pg_stat_activity') && !a.join(' ').includes('pg_terminate_backend')
+  const sql = (a: string[]) => a.join(' ')
+  const isSessions = (a: string[]) => sql(a).includes('pg_stat_activity') && !sql(a).includes('pg_terminate_backend')
+  const isTerminate = (a: string[]) => sql(a).includes('pg_terminate_backend')
+  const isLocks = (a: string[]) => sql(a).includes('pg_locks')
+  const isLedger = (a: string[]) => sql(a).includes('__drizzle_migrations')
+  const isInspectMigrate = (a: string[]) => sql(a).startsWith('inspect --format {{.State.Running}}')
+  const hung = { code: 124, timedOut: true } as never
   const noStart = (calls: Call[]) => !has(calls, /^start /)
+  const q = (runner: unknown, over: Record<string, unknown> = {}) =>
+    proveQuiescence({
+      runner,
+      containerName: N.migrate,
+      dbName: N.db,
+      liveDb: { user: 'doop', db: 'doop' },
+      ...over,
+    } as never)
 
   it('runs the migration under a 120 s external timeout, with the runner deadline inside it', async () => {
     const { runner, calls } = rig()
@@ -398,103 +425,290 @@ describe('compat sandbox, the clone migration is supervised and proven quiescent
     const ev = await runCompat(input(runner))
     expect(ev.results.clone).toEqual({
       ok: true,
-      quiescence: { ok: true, containerExited: true, sessions: 0, advisoryLocks: 0 },
+      quiescence: expect.objectContaining({
+        ok: true,
+        containerExited: true,
+        sessions: 0,
+        sessionsBefore: [],
+        sessionsAfter: [],
+        advisoryLocks: 0,
+      }),
     })
-    const sql = text(calls).find((l) => l.includes('pg_stat_activity'))!
-    expect(sql).toContain(`application_name='${N.migrate}'`)
-    expect(sql).toContain('pg_locks')
-    expect(sql).toContain('1685025648')
-    expect(sql).toContain(`exec ${N.db} psql`)
+    const read = text(calls).find((l) => l.includes('pg_stat_activity'))!
+    expect(read).toContain(`application_name='${N.migrate}'`)
+    expect(read).toContain('backend_start')
+    expect(read).toContain(`exec ${N.db} psql`)
+    const lock = text(calls).find((l) => l.includes('pg_locks'))!
+    expect(lock).toContain('1685025648')
   })
 
-  it('a hung migration is killed, waited on and proven quiescent, then stops the run before boot', async () => {
-    const { runner, calls } = rig((a) => (isMigrate(a) ? ({ code: 124, timedOut: true } as never) : undefined))
+  it('a hung migration: kill, then wait, then terminate, then prove, then stop the run before boot', async () => {
+    const { runner, calls } = rig((a) => (isMigrate(a) ? hung : undefined))
     const ev = await runCompat(input(runner))
     expect(ev.ok).toBe(false)
     expect(ev.failed.part).toBe('clone')
     expect(ev.failed.reason).toMatch(/exceeded 120 s and was killed/)
     expect(ev.failed.reason).toMatch(/quiescence proven/)
     const l = text(calls)
-    const killAt = l.indexOf(`kill ${N.migrate}`)
-    expect(killAt).toBeGreaterThan(-1)
-    expect(l.findIndex((x) => x.startsWith('inspect --format {{.State.Running}}'))).toBeGreaterThan(killAt)
-    expect(l.findIndex((x) => x.includes('pg_stat_activity'))).toBeGreaterThan(killAt)
+    const at = (re: RegExp, from = 0) => l.findIndex((x, i) => i >= from && re.test(x))
+    const kill = at(new RegExp(`^kill ${N.migrate}$`))
+    const wait = at(new RegExp(`^wait ${N.migrate}$`))
+    const proof = at(new RegExp(`^inspect --format \\{\\{\\.State\\.Running\\}\\} ${N.migrate}$`), wait)
+    expect(kill).toBeGreaterThan(at(/run --name doop-compat-migrate/))
+    expect(wait).toBeGreaterThan(kill)
+    expect(proof).toBeGreaterThan(wait)
     expect(ev.results.clone.quiescence.ok).toBe(true)
     expect(noStart(calls)).toBe(true)
     expect(has(calls, /run --name doop-compat-probe/)).toBe(false)
   })
 
-  it('a hung migration whose session lingers is terminated, and quiescence is re-checked', async () => {
+  it('bounds every post-failure step to 30 s, none at the old 600 s default', async () => {
+    const { runner, calls } = rig((a) => (isMigrate(a) ? hung : undefined))
+    await runCompat(input(runner))
+    const after = calls.slice(calls.findIndex((c) => isMigrate(c.args)) + 1)
+    const steps = after.filter(
+      (c) =>
+        /^(kill|wait|inspect --format \{\{\.State\.Running\}\}) /.test(c.args.join(' ')) ||
+        isSessions(c.args) ||
+        isTerminate(c.args) ||
+        isLocks(c.args) ||
+        isLedger(c.args),
+    )
+    expect(steps.length).toBeGreaterThanOrEqual(6)
+    for (const c of steps) {
+      expect(c.timeoutMs, c.args.join(' ')).toBeDefined()
+      expect(c.timeoutMs!).toBeLessThanOrEqual(30_000)
+    }
+  })
+
+  it('records the sessions as (pid, backend_start) before and after the terminate', async () => {
     let reads = 0
     const { runner, calls } = rig((a) => {
-      if (isMigrate(a)) return { code: 124, timedOut: true } as never
-      if (isQuiesceSql(a)) return { code: 0, stdout: ++reads === 1 ? '1 1\n' : '0 0\n' }
+      if (isMigrate(a)) return hung
+      if (isSessions(a)) return { code: 0, stdout: ++reads === 1 ? '4242|2026-11-17 07:00:00+00\n' : '' }
       return undefined
     })
     const ev = await runCompat(input(runner))
-    expect(has(calls, /pg_terminate_backend/)).toBe(true)
-    expect(reads).toBe(2)
-    expect(ev.ok).toBe(false)
-    expect(ev.failed.reason).toMatch(/quiescence proven/)
-    expect(ev.results.clone.quiescence).toEqual(expect.objectContaining({ ok: true, sessions: 0, advisoryLocks: 0 }))
+    const l = text(calls)
+    expect(l.findIndex((x) => /pg_terminate_backend/.test(x))).toBeGreaterThan(
+      l.findIndex((x) => /backend_start/.test(x)),
+    )
+    expect(ev.results.clone.quiescence).toEqual(
+      expect.objectContaining({
+        ok: true,
+        sessionsBefore: ['4242|2026-11-17 07:00:00+00'],
+        sessionsAfter: [],
+        sessions: 0,
+      }),
+    )
+  })
+
+  it('a session that survives the terminate, same (pid, backend_start), is needs_operator', async () => {
+    const { runner } = rig((a) => {
+      if (isMigrate(a)) return hung
+      if (isSessions(a)) return { code: 0, stdout: '4242|2026-11-17 07:00:00+00\n' }
+      return undefined
+    })
+    const ev = await runCompat(input(runner))
+    const quiet = ev.results.clone.quiescence
+    expect(quiet.ok).toBe(false)
+    expect(quiet.sessionsBefore).toEqual(quiet.sessionsAfter)
+    expect(quiet.reason).toMatch(/needs_operator.*sessions: 1/)
+  })
+
+  it('a ledger that differs from the pre-apply ledger after a failed migration is needs_operator', async () => {
+    let reads = 0
+    const { runner, guards } = rig((a) => {
+      if (isMigrate(a)) return { code: 1, stderr: 'boom' }
+      if (isLedger(a)) return { code: 0, stdout: ++reads === 1 ? 'h1|1\n' : 'h1|1\nh2|2\n' }
+      return undefined
+    })
+    const ev = await runCompat(input(runner))
+    expect(ev.results.clone.quiescence.ledger).toEqual(expect.objectContaining({ unchanged: false }))
+    expect(ev.results.clone.quiescence.reason).toMatch(/ledger differs/)
+    expect(ev.failed.reason).toContain('needs_operator')
+    expect(guards).toHaveLength(1)
+  })
+
+  it('an unreadable ledger after a failed migration is needs_operator', async () => {
+    let reads = 0
+    const { runner } = rig((a) => {
+      if (isMigrate(a)) return { code: 1, stderr: 'boom' }
+      if (isLedger(a)) return ++reads === 1 ? { code: 0, stdout: 'h1|1\n' } : { code: 1, stderr: 'nope' }
+      return undefined
+    })
+    const ev = await runCompat(input(runner))
+    expect(ev.results.clone.quiescence.ledger).toEqual(expect.objectContaining({ after: null, unchanged: false }))
+    expect(ev.failed.reason).toContain('needs_operator')
+  })
+
+  it('a clone ledger that cannot be read before the migration stops the run before it', async () => {
+    const { runner, calls } = rig((a) => (isLedger(a) ? { code: 1, stderr: 'nope' } : undefined))
+    const ev = await runCompat(input(runner))
+    expect(ev.failed.reason).toMatch(/cannot read the clone ledger before the migration/)
+    expect(calls.some((c) => isMigrate(c.args))).toBe(false)
+  })
+
+  it('does not compare the ledger after a successful migration, which changes it on purpose', async () => {
+    let reads = 0
+    const { runner } = rig((a) =>
+      isLedger(a) ? { code: 0, stdout: ++reads === 1 ? 'h1|1\n' : 'h1|1\nh3|3\n' } : undefined,
+    )
+    const ev = await runCompat(input(runner))
+    expect(ev.results.clone.ok).toBe(true)
+    expect(ev.results.clone.quiescence.ledger).toBeNull()
+  })
+
+  it.each([
+    ['docker kill hangs', (a: string[]) => (a[0] === 'kill' ? hung : undefined)],
+    ['docker wait hangs', (a: string[]) => (a[0] === 'wait' ? hung : undefined)],
+    ['docker inspect hangs', (a: string[]) => (isInspectMigrate(a) ? hung : undefined)],
+    ['the sessions psql hangs', (a: string[]) => (isSessions(a) ? hung : undefined)],
+    ['the lock psql hangs', (a: string[]) => (isLocks(a) ? hung : undefined)],
+  ])(
+    'stuck Docker/psql (%s) after a hung migration is unproven: needs_operator, guard written, no sweep',
+    async (_n, extra) => {
+      const { runner, events, guards } = rig((a) => (isMigrate(a) ? hung : extra(a)))
+      const ev = await runCompat(input(runner))
+      expect(ev.ok).toBe(false)
+      expect(ev.failed.reason).toContain('needs_operator')
+      expect(ev.failed.reason).toMatch(/a step timed out/)
+      expect(ev.results.clone.quiescence.ok).toBe(false)
+      expect(guards).toHaveLength(1)
+      expect(events.filter((e) => e === 'sweep')).toHaveLength(1) // the first only
+      expect(events.at(-1)).not.toBe('sweep')
+      expect(ev.cleanup).toEqual({ ok: false, message: expect.stringMatching(/sweep skipped/) })
+    },
+  )
+
+  it('a terminate that hangs, with a session open, is unproven: needs_operator, guard written, no sweep', async () => {
+    const { runner, events, guards } = rig((a) => {
+      if (isMigrate(a)) return hung
+      if (isSessions(a)) return { code: 0, stdout: '4242|2026-11-17 07:00:00+00\n' }
+      if (isTerminate(a)) return hung
+      return undefined
+    })
+    const ev = await runCompat(input(runner))
+    expect(ev.failed.reason).toMatch(/needs_operator.*a step timed out/)
+    expect(guards).toHaveLength(1)
+    expect(events.filter((e) => e === 'sweep')).toHaveLength(1)
+  })
+
+  it('stops at the 30 s budget: a clock that runs past it leaves the proof unproven', async () => {
+    let t = Date.parse('2026-11-17T00:00:00Z')
+    const { runner, calls } = rig((a) => (isMigrate(a) ? hung : undefined), { clock: () => new Date((t += 11_000)) })
+    const quiet = await q(runner)
+    expect(quiet.ok).toBe(false)
+    expect(quiet.timedOut).toBe(true)
+    expect(quiet.reason).toMatch(/needs_operator/)
+    const sent = calls.filter((c) => c.timeoutMs !== undefined)
+    for (const c of sent) expect(c.timeoutMs!).toBeLessThanOrEqual(30_000)
+    expect(calls.length).toBeLessThan(8)
+  })
+
+  it('a runner that throws leaves the fact unproven instead of crashing the run', async () => {
+    const { runner } = rig()
+    const boom = { ...runner, docker: async () => Promise.reject(new Error('docker socket gone')) }
+    const quiet = await q(boom)
+    expect(quiet.ok).toBe(false)
+    expect(quiet.reason).toContain('needs_operator')
   })
 
   it.each([
     [
       'a session of the run is still open',
-      (a: string[]) => (isQuiesceSql(a) ? { code: 0, stdout: '2 0\n' } : undefined),
+      (a: string[]) => (isSessions(a) ? { code: 0, stdout: '1|t\n2|t\n' } : undefined),
     ],
-    ['the advisory lock is still held', (a: string[]) => (isQuiesceSql(a) ? { code: 0, stdout: '0 1\n' } : undefined)],
+    ['the advisory lock is still held', (a: string[]) => (isLocks(a) ? { code: 0, stdout: '1\n' } : undefined)],
     [
       'the container is still running',
-      (a: string[]) =>
-        a.join(' ').startsWith('inspect --format {{.State.Running}}') ? { code: 0, stdout: 'true\n' } : undefined,
+      (a: string[]) => (isInspectMigrate(a) ? { code: 0, stdout: 'true\n' } : undefined),
     ],
     [
-      'the quiescence query fails',
-      (a: string[]) => (isQuiesceSql(a) ? { code: 1, stderr: 'connection refused' } : undefined),
+      'the sessions query fails',
+      (a: string[]) => (isSessions(a) ? { code: 1, stderr: 'connection refused' } : undefined),
     ],
-    [
-      'the quiescence query answers nonsense',
-      (a: string[]) => (isQuiesceSql(a) ? { code: 0, stdout: 'maybe\n' } : undefined),
-    ],
-  ])('failed quiescence (%s) after a hung migration is needs_operator', async (_name, extra) => {
-    const { runner, calls } = rig((a) => (isMigrate(a) ? ({ code: 124, timedOut: true } as never) : extra(a)))
-    const ev = await runCompat(input(runner))
-    expect(ev.ok).toBe(false)
-    expect(ev.failed.part).toBe('clone')
-    expect(ev.failed.reason).toContain('needs_operator')
-    expect(ev.results.clone.quiescence.ok).toBe(false)
-    expect(noStart(calls)).toBe(true)
-  })
+    ['the lock query answers nonsense', (a: string[]) => (isLocks(a) ? { code: 0, stdout: 'maybe\n' } : undefined)],
+  ])(
+    'failed quiescence (%s) after a hung migration is needs_operator, with a guard and no sweep',
+    async (_name, extra) => {
+      const { runner, calls, events, guards } = rig((a) => (isMigrate(a) ? hung : extra(a)))
+      const ev = await runCompat(input(runner))
+      expect(ev.ok).toBe(false)
+      expect(ev.failed.part).toBe('clone')
+      expect(ev.failed.reason).toContain('needs_operator')
+      expect(ev.results.clone.quiescence.ok).toBe(false)
+      expect(noStart(calls)).toBe(true)
+      expect(guards).toEqual([
+        {
+          runId: RUN,
+          migrateContainer: N.migrate,
+          dbContainer: N.db,
+          dbUser: 'doop',
+          dbName: 'doop',
+          appName: N.migrate,
+        },
+      ])
+      expect(events.filter((e) => e === 'sweep')).toHaveLength(1)
+    },
+  )
 
   it('a migration that exits 0 but leaves the lock held is needs_operator, not a pass', async () => {
-    const { runner, calls } = rig((a) => (isQuiesceSql(a) ? { code: 0, stdout: '0 1\n' } : undefined))
+    const { runner, calls, guards } = rig((a) => (isLocks(a) ? { code: 0, stdout: '1\n' } : undefined))
     const ev = await runCompat(input(runner))
     expect(ev.ok).toBe(false)
     expect(ev.failed.reason).toContain('needs_operator')
     expect(ev.results.clone.ok).toBe(false)
     expect(noStart(calls)).toBe(true)
+    expect(guards).toHaveLength(1)
   })
 
-  it('a migration that fails fast is killed by name and proven quiescent before the run stops', async () => {
-    const { runner, calls } = rig((a) => (isMigrate(a) ? { code: 1, stderr: 'deadline exceeded' } : undefined))
+  it('proven quiescence after a failed migration is migrate_failed: no guard, the sweep still runs', async () => {
+    const { runner, calls, events, guards } = rig((a) =>
+      isMigrate(a) ? { code: 1, stderr: 'deadline exceeded' } : undefined,
+    )
     const ev = await runCompat(input(runner))
     expect(ev.ok).toBe(false)
     expect(ev.failed.reason).toMatch(/migration on the cloned data failed/)
     expect(has(calls, new RegExp(`^kill ${N.migrate}`))).toBe(true)
+    expect(has(calls, new RegExp(`^wait ${N.migrate}`))).toBe(true)
     expect(ev.results.clone.quiescence).toEqual(expect.objectContaining({ ok: true }))
+    expect(guards).toHaveLength(0)
+    expect(events.at(-1)).toBe('sweep')
+  })
+
+  it('says so when the guard cannot be written, and still does not sweep', async () => {
+    const { runner, events } = rig((a) => (isMigrate(a) ? hung : isLocks(a) ? { code: 0, stdout: '1\n' } : undefined), {
+      guardWrite: false,
+    })
+    const ev = await runCompat(input(runner))
+    expect(ev.failed.reason).toMatch(/guard could not be written: disk full/)
+    expect(ev.guard).toEqual({ ok: false, message: 'disk full' })
+    expect(events.filter((e) => e === 'sweep')).toHaveLength(1)
+  })
+
+  it('a later compat run is refused by the guard before it sweeps, clones or starts anything', async () => {
+    const { runner, calls, events } = rig(undefined, {
+      guardRefuses: 'compat run 20261117t0 is unresolved (needs_operator)',
+    })
+    await expect(runCompat(input(runner))).rejects.toThrow(/refused, an earlier migration is unresolved/)
+    expect(events).toEqual(['guard check'])
+    expect(calls).toHaveLength(0)
   })
 
   it('proveQuiescence reports each fact it read', async () => {
-    const { runner } = rig((a) => (isQuiesceSql(a) ? { code: 0, stdout: '3 1\n' } : undefined))
-    const q = await proveQuiescence({
-      runner,
-      containerName: N.migrate,
-      dbName: N.db,
-      liveDb: { user: 'doop', db: 'doop' },
-    })
-    expect(q).toEqual(expect.objectContaining({ ok: false, containerExited: true, sessions: 3, advisoryLocks: 1 }))
+    const { runner } = rig((a) =>
+      isSessions(a) ? { code: 0, stdout: '1|a\n2|b\n3|c\n' } : isLocks(a) ? { code: 0, stdout: '1\n' } : undefined,
+    )
+    const quiet = await q(runner)
+    expect(quiet).toEqual(
+      expect.objectContaining({ ok: false, containerExited: true, sessions: 3, advisoryLocks: 1, waited: true }),
+    )
+  })
+
+  it('a container that no longer exists counts as exited', async () => {
+    const { runner } = rig((a) => (isInspectMigrate(a) ? { code: 1, stderr: 'Error: No such object: x' } : undefined))
+    expect((await q(runner)).containerExited).toBe(true)
   })
 })
 
@@ -679,7 +893,7 @@ describe('compat sandbox, sweep and cleanup', () => {
     const { runner, events } = rig()
     await runCompat(input(runner))
     expect(events.filter((e) => e === 'sweep')).toHaveLength(2)
-    expect(events[0]).toBe('sweep')
+    expect(events.slice(0, 2)).toEqual(['guard check', 'sweep'])
     expect(events.at(-1)).toBe('sweep')
   })
 
