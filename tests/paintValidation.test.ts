@@ -222,6 +222,21 @@ describe('screencast windows (V0, V1, V2)', () => {
     expect(r.sampled).toEqual(['A'])
   })
 
+  it('fractional box coordinates (zoomed, positioned frames) still sample and validate a painted box', () => {
+    const fractional = { id: 'A', x: 8.4, y: 8.6, w: 23.3, h: 23.1, signalMs: 90 }
+    const r = validateScreencast({ frames: cast(96), boxes: [fractional], headlineMs: 90, completeness: complete })
+    expect(r.sampled).toEqual(['A'])
+    expect(r.status).toBe('pass')
+    expect(methodBHeadline({ frames: cast(96), boxes: [fractional], completeness: complete })).toBe(96)
+  })
+
+  it('changedPixels counts the same pixels for a fractional region as for its inward-rounded integer region', () => {
+    const a = solid(10, 10, WHITE)
+    const b = withSquare(10, 10, WHITE, [0, 0, 0], 2, 2, 4)
+    expect(changedPixels(a, b, { x: 2, y: 2, w: 4, h: 4 })).toBe(16)
+    expect(changedPixels(a, b, { x: 2.2, y: 2.2, w: 3.6, h: 3.6 })).toBe(4) // pixels 3 and 4 only: fully inside [2.2, 5.8)
+  })
+
   it('method B: the headline is the first screencast frame in which a sampled box painted; null when incomplete', () => {
     expect(methodBHeadline({ frames: cast(96), boxes: [{ ...box, signalMs: 0 }], completeness: complete })).toBe(96)
     const bad = completeness([obs({ id: 'A', nApp: 0 })])
