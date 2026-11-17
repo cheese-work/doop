@@ -108,6 +108,9 @@ function reconScripts(els: El[]): El[] {
   return els.filter((el) => el.tag === 'script' && el.attrs.get('id') === RECON_ID)
 }
 
+/** The bodies of the `doop-recon` scripts in one piece of frame HTML (empty: it is not a recon frame). */
+export const reconBodies = (html: string): string[] => reconScripts(scanElements(html)).map((el) => el.body ?? '')
+
 /* ---- what is a design frame ---- */
 
 interface ScannedFrame {
