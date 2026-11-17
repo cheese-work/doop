@@ -1,5 +1,6 @@
 import { env } from './env.ts'
-import { canvasPages, samePages } from '../shared/pages.ts'
+import { canvasPages, framePageId, pageFrames, samePages } from '../shared/pages.ts'
+import { conflicts, freeSpot, FRAME_GAP } from './frameLayout.ts'
 import { MULTICA_TASK_HEADER, parseMulticaTaskId } from '../shared/pageIssue.ts'
 import { prototypeReport, prototypeUrl, setPrototypeStart } from './prototypeTools.ts'
 import { attestPage } from './designAttestations.ts'
@@ -194,6 +195,28 @@ const agentName = z
   .describe(
     'Your display name, shown live to everyone on the canvas (e.g. "Claude", "Codex"). Reuse the SAME name on every call so your work is attributed consistently.',
   )
+
+/** CHE-6119: why an update_frame that moves or resizes a frame onto another frame is refused (undefined = fine). */
+function overlapRefusal(
+  frame: Frame,
+  patch: Partial<Pick<Frame, 'x' | 'y' | 'width' | 'height' | 'pageId'>>,
+): string | undefined {
+  if (!(['x', 'y', 'width', 'height', 'pageId'] as const).some((k) => patch[k] !== undefined)) return undefined
+  const canvas = store.getCanvas(frame.canvasId)
+  if (!canvas) return undefined
+  const pageId = patch.pageId ?? framePageId(canvas, frame)
+  const box = {
+    x: patch.x ?? frame.x,
+    y: patch.y ?? frame.y,
+    width: patch.width ?? frame.width,
+    height: patch.height ?? frame.height,
+  }
+  const others = pageFrames(canvas, pageId)
+  const hit = conflicts(box, others, frame.id)
+  if (!hit.length) return undefined
+  const spot = freeSpot(others.filter((f) => f.id !== frame.id))
+  return `frames may not overlap or sit closer than ${FRAME_GAP}px: this ${box.width}x${box.height} box at ${box.x},${box.y} hits ${hit.map((f) => `${f.id} “${f.name}”`).join(', ')}. Free space: x ${spot.x}, y ${spot.y}.`
+}
 
 function frameSummary(f: {
   pageId?: string
@@ -996,7 +1019,7 @@ export function buildMcpServer(owner?: string, ownerId?: string, multicaTaskId?:
          has no card either). The review screenshot after the stream is the
          first card the person sees. */
       description:
-        'Create a new frame on a canvas with an HTML design. A frame is a rectangular artboard that renders a full HTML document (inline <style> and <script> allowed, no external network access needed). If x/y are omitted the frame is auto-placed to the right of existing frames. Everyone viewing the canvas sees it appear live.',
+        'Create a new frame on a canvas with an HTML design. A frame is a rectangular artboard that renders a full HTML document (inline <style> and <script> allowed, no external network access needed). If x/y are omitted the frame is auto-placed to the right of existing frames; an requested position (explicit or defaulted x/y) that would overlap another frame is replaced by free space (see `placement` in the result). Everyone viewing the canvas sees it appear live.',
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       inputSchema: {
         canvas_id: z.string(),
@@ -1018,12 +1041,17 @@ export function buildMcpServer(owner?: string, ownerId?: string, multicaTaskId?:
       if (!canvasFor(canvas_id, 'edit')) return noCanvas(canvas_id)
       const frame = actions.createFrame(canvas_id, { name, pageId, html, x, y, width, height }, actorFrom(agent_name))
       if (!frame) return noCanvas(canvas_id)
-      const result = withEscapeNote(
-        frame.html.length > 0
-          ? textWithNudge({ ok: true, frame: frameSummary(frame) }, REVIEW_NUDGE)
-          : text({ ok: true, frame: frameSummary(frame) }),
-        html,
-      )
+      const moved = actions.wasRelocated(frame)
+      const body = {
+        ok: true,
+        frame: frameSummary(frame),
+        ...(moved
+          ? {
+              placement: `the requested position would overlap another frame; placed in free space at ${frame.x},${frame.y}`,
+            }
+          : {}),
+      }
+      const result = withEscapeNote(frame.html.length > 0 ? textWithNudge(body, REVIEW_NUDGE) : text(body), html)
       return withGuidelinesNudge(
         withStatusNudge(withFeedback(result, canvas_id, actorFrom(agent_name)), canvas_id, actorFrom(agent_name)),
         canvas_id,
@@ -1752,7 +1780,7 @@ export function buildMcpServer(owner?: string, ownerId?: string, multicaTaskId?:
       title: 'Rename, move or resize a frame',
       _meta: previewToolMeta('Updating the frame…', 'Frame updated'),
       description:
-        'Update frame metadata: rename it, move/resize it, or move it to another page using pageId. Set locked to true to lock the frame on the canvas (humans cannot select, move, resize or delete it from the stage until it is unlocked) or false to unlock it.',
+        'Update frame metadata: rename it, move/resize it, or move it to another page using pageId. Set locked to true to lock the frame on the canvas (humans cannot select, move, resize or delete it from the stage until it is unlocked) or false to unlock it. A move or resize that would overlap another frame on the page (or leave less than 40px clear) is refused with the free spot to use.',
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: {
         frame_id: z.string(),
@@ -1769,7 +1797,10 @@ export function buildMcpServer(owner?: string, ownerId?: string, multicaTaskId?:
     async ({ frame_id, agent_name, ...patch }) => {
       const clean = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined))
       if (!Object.keys(clean).length) return err('nothing to update')
-      if (!frameFor(frame_id, 'edit')) return noFrame(frame_id)
+      const current = frameFor(frame_id, 'edit')
+      if (!current) return noFrame(frame_id)
+      const blocked = overlapRefusal(current, clean)
+      if (blocked) return err(blocked)
       const frame = actions.updateFrame(frame_id, clean, actorFrom(agent_name))
       if (!frame) return noFrame(frame_id)
       return withPreview(
