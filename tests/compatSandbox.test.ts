@@ -77,7 +77,13 @@ const goodApp = (extra: Record<string, unknown> = {}) =>
 
 function rig(
   over: (args: string[], calls: Call[]) => Reply | undefined = () => undefined,
-  opts: { sweep?: boolean[]; guardRefuses?: string; guardWrite?: boolean; clock?: () => Date } = {},
+  opts: {
+    sweep?: boolean[]
+    guardRefuses?: string
+    guardWrite?: boolean | 'throw'
+    guardClear?: boolean
+    clock?: () => Date
+  } = {},
 ) {
   const calls: Call[] = []
   const guards: Record<string, string>[] = []
@@ -136,7 +142,14 @@ function rig(
     guardSet: async (g: Record<string, string>) => {
       events.push('guard set')
       guards.push(g)
+      if (opts.guardWrite === 'throw') throw new Error('spawn failed')
       return opts.guardWrite === false ? { ok: false, message: 'disk full' } : { ok: true, message: 'written' }
+    },
+    guardClear: async () => {
+      events.push('guard clear')
+      return opts.guardClear === false
+        ? { ok: false, message: 'guard still unproven' }
+        : { ok: true, message: 'cleared' }
     },
     sleep: async () => {},
     now: opts.clock ?? (() => new Date('2026-11-17T00:00:00Z')),
@@ -663,7 +676,7 @@ describe('compat sandbox, the clone migration is supervised and proven quiescent
     expect(guards).toHaveLength(1)
   })
 
-  it('proven quiescence after a failed migration is migrate_failed: no guard, the sweep still runs', async () => {
+  it('proven quiescence after a failed migration is migrate_failed: the guard is cleared, the sweep still runs', async () => {
     const { runner, calls, events, guards } = rig((a) =>
       isMigrate(a) ? { code: 1, stderr: 'deadline exceeded' } : undefined,
     )
@@ -673,17 +686,69 @@ describe('compat sandbox, the clone migration is supervised and proven quiescent
     expect(has(calls, new RegExp(`^kill ${N.migrate}`))).toBe(true)
     expect(has(calls, new RegExp(`^wait ${N.migrate}`))).toBe(true)
     expect(ev.results.clone.quiescence).toEqual(expect.objectContaining({ ok: true }))
-    expect(guards).toHaveLength(0)
+    expect(guards).toHaveLength(1)
+    expect(events.indexOf('guard clear')).toBeGreaterThan(events.indexOf('guard set'))
     expect(events.at(-1)).toBe('sweep')
   })
 
-  it('says so when the guard cannot be written, and still does not sweep', async () => {
-    const { runner, events } = rig((a) => (isMigrate(a) ? hung : isLocks(a) ? { code: 0, stdout: '1\n' } : undefined), {
-      guardWrite: false,
-    })
+  // C-8.8, round 2 P1: the refusal must exist before the migration can strand anything.
+  const migrateRunIndex = (events: string[]) =>
+    events.findIndex((e) => e.startsWith('docker run') && e.includes(N.migrate))
+
+  it('persists the guard before the migration container starts', async () => {
+    const { runner, events, guards } = rig()
     const ev = await runCompat(input(runner))
-    expect(ev.failed.reason).toMatch(/guard could not be written: disk full/)
-    expect(ev.guard).toEqual({ ok: false, message: 'disk full' })
+    expect(ev.ok).toBe(true)
+    expect(guards).toHaveLength(1)
+    expect(events.indexOf('guard set')).toBeGreaterThan(-1)
+    expect(events.indexOf('guard set')).toBeLessThan(migrateRunIndex(events))
+  })
+
+  it.each([
+    ['reports failure (disk full)', false],
+    ['throws', 'throw'],
+  ] as const)(
+    'refuses to start the migration when the guard write %s, and sweeps what it made',
+    async (_n, guardWrite) => {
+      const { runner, calls, events } = rig(undefined, { guardWrite })
+      const ev = await runCompat(input(runner))
+      expect(ev.ok).toBe(false)
+      expect(ev.failed.part).toBe('clone')
+      expect(ev.failed.reason).toMatch(/guard could not be written/)
+      expect(ev.failed.reason).toMatch(/migration was not started/)
+      expect(ev.guard?.ok).toBe(false)
+      expect(migrateRunIndex(events)).toBe(-1)
+      expect(noStart(calls)).toBe(true)
+      expect(events).not.toContain('guard clear')
+      expect(events.at(-1)).toBe('sweep')
+    },
+  )
+
+  it('a runner that is lost mid-migration leaves the guard armed: nothing clears it before the proof', async () => {
+    const { runner, events } = rig((a) => {
+      if (isMigrate(a)) throw new Error('runner lost')
+      return undefined
+    })
+    await expect(runCompat(input(runner))).rejects.toThrow(/runner lost/)
+    expect(events).toContain('guard set')
+    expect(events).not.toContain('guard clear')
+  })
+
+  it('never clears the guard while quiescence is unproven', async () => {
+    const { runner, events } = rig((a) => (isLocks(a) ? { code: 0, stdout: '1\n' } : undefined))
+    const ev = await runCompat(input(runner))
+    expect(ev.failed.reason).toContain('needs_operator')
+    expect(events).not.toContain('guard clear')
+    expect(events.filter((e) => e === 'sweep')).toHaveLength(1)
+  })
+
+  it('a guard that will not clear after the proof stays: needs_operator, no probes, no sweep', async () => {
+    const { runner, calls, events } = rig(undefined, { guardClear: false })
+    const ev = await runCompat(input(runner))
+    expect(ev.ok).toBe(false)
+    expect(ev.failed.part).toBe('clone')
+    expect(ev.failed.reason).toMatch(/guard could not be cleared: guard still unproven/)
+    expect(noStart(calls)).toBe(true)
     expect(events.filter((e) => e === 'sweep')).toHaveLength(1)
   })
 

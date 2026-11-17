@@ -126,6 +126,16 @@ describe('c00.sh guard', () => {
     }
   })
 
+  it('guard-set that cannot persist exits non-zero and leaves no guard (the caller must not migrate)', () => {
+    mkdirSync(join(dir, 'state'))
+    chmodSync(join(dir, 'state'), 0o555) // the state directory refuses new files, as a full or read-only disk does
+    const r = c00('guard-set', ARGS)
+    chmodSync(join(dir, 'state'), 0o755)
+    expect(r.status).toBe(1)
+    expect(r.stderr).toMatch(/guard-set: cannot write/)
+    expect(existsSync(guardFile)).toBe(false)
+  })
+
   it('refuses a guard file it cannot read as plain tokens', () => {
     mkdirSync(join(dir, 'state'))
     writeFileSync(guardFile, 'run_id=r1\nmigrate_container=$(touch pwned)\n')
@@ -167,6 +177,18 @@ describe('c00.sh refuses every later job while the guard is unproven', () => {
     const r = c00('apply', [], { GITHUB_OUTPUT: out })
     expect(r.status).toBe(1)
     expect(readFileSync(out, 'utf8')).toBe('')
+  })
+
+  it('a guard armed before the migration, whose runner then died, refuses the next job until the container exits', () => {
+    put('migrate_running', 'true')
+    put('sessions', '0')
+    const r = c00('sweep')
+    expect(r.status).toBe(1)
+    expect(r.stderr).toMatch(/migration container doop-compat-migrate-r1 is not exited/)
+    expect(existsSync(guardFile)).toBe(true)
+    put('migrate_running', 'false')
+    expect(c00('sweep').status).toBe(0)
+    expect(existsSync(guardFile)).toBe(false)
   })
 
   it('the sweep, apply and rollback all go through once the facts hold', () => {
