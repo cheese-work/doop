@@ -13,6 +13,7 @@
       import { ElementPanel } from '/src/components/ElementPanel.tsx'
       import { TooltipProvider } from '/src/components/ui/tooltip.tsx'
       import { pickedSelectors, useStore } from '/src/lib/store.ts'
+      useStore.setState({ tool: 'select' }) /* the app opens in Hand; these tests start from Select */
       import { clearHistory, undo, redo } from '/src/lib/history.ts'
       import { editElementGeometry } from '/src/lib/frameBridge.ts'
       import '/src/styles.css'

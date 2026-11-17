@@ -19,6 +19,7 @@
         ContextMenuItem,
       } from '/src/components/ui/context-menu.tsx'
       import { useStore } from '/src/lib/store.ts'
+      useStore.setState({ tool: 'select' }) /* the app opens in Hand; these tests start from Select */
       import { clearHistory, undo } from '/src/lib/history.ts'
       import '/src/styles.css'
 
