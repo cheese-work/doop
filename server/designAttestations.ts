@@ -1,5 +1,8 @@
 import { nanoid } from 'nanoid'
 import * as persist from './db/persist.ts'
+import { env } from './env.ts'
+import { ledgerReport, requirementsHash, type DeferredLine, type RequirementLine } from './requirementLedger.ts'
+import { multicaRequirementSource, type RequirementSource } from './requirementSource.ts'
 import { store } from './store.ts'
 import {
   attestationRowsFor,
@@ -7,24 +10,81 @@ import {
   currentAttestation,
   type CompletenessReport,
 } from '../shared/designCompleteness.ts'
+import { canvasPages } from '../shared/pages.ts'
+import { resolvePageIssue } from '../shared/pageIssue.ts'
 import type { Canvas } from '../shared/types.ts'
 
 /**
  * G3, the server half: run the completeness check on one page and keep the
  * result as an attestation the agent cannot edit (CHE-6078 r5). G4, later,
  * reads attestations through `readAttestation`, never from comment text.
- * The requirement ledger (CHE-6373) plugs in through `extraChecks` below.
+ * The requirement ledger (CHE-6373, CHE-6629) is one more row of the check:
+ * the source lines come from the page's bound Multica issue, and their hash is
+ * stored with the run so a source that changes ends the attestation.
  */
 
-export type AttestedReport = CompletenessReport & { attestation_id: string | null }
+export type AttestedReport = CompletenessReport & {
+  attestation_id: string | null
+  /** lines the designer deferred; the decision card prints them for Cheese */
+  deferred: DeferredLine[]
+}
 
-export async function attestPage(canvas: Canvas, pageId: string, by: string): Promise<AttestedReport> {
-  const report = checkPageCompleteness(canvas, pageId)
+type RequirementRead =
+  | { kind: 'lines'; lines: RequirementLine[]; hash: string }
+  | { kind: 'unavailable'; reason: string }
+  | { kind: 'not_checked'; reason: string }
+
+/** The requirement lines for a page. No Multica configured, or a page with no bound issue, means the row cannot run (said so, not a pass by silence). A configured Multica that cannot answer is a failure. */
+async function readRequirements(
+  canvas: Canvas,
+  pageId: string,
+  source: RequirementSource | undefined,
+): Promise<RequirementRead> {
+  if (!source) return { kind: 'not_checked', reason: 'Multica is not configured on this server' }
+  const page = canvasPages(canvas).find((p) => p.id === pageId)
+  const issueId = resolvePageIssue(page)
+  if (page?.issueId !== undefined && page.issueId !== null && !issueId)
+    return { kind: 'unavailable', reason: 'the page has an invalid issue link; a member must rebind it' }
+  if (!issueId) return { kind: 'not_checked', reason: 'the page is not bound to a Multica issue' }
+  try {
+    const lines = await source.lines(issueId)
+    return { kind: 'lines', lines, hash: requirementsHash(lines) }
+  } catch (error) {
+    return {
+      kind: 'unavailable',
+      reason: `Multica could not be read (${error instanceof Error ? error.message : 'error'})`,
+    }
+  }
+}
+
+export async function attestPage(
+  canvas: Canvas,
+  pageId: string,
+  by: string,
+  source: RequirementSource | undefined = multicaRequirementSource(env),
+): Promise<AttestedReport> {
+  const requirements = await readRequirements(canvas, pageId, source)
+  let ledger: ReturnType<typeof ledgerReport> | undefined
+  const report = checkPageCompleteness(canvas, pageId, {
+    extraChecks: [
+      (ctx) => {
+        if (requirements.kind === 'unavailable')
+          return [{ code: 'req_source_unavailable', detail: `requirement ledger cannot run: ${requirements.reason}` }]
+        if (requirements.kind === 'not_checked') return []
+        ledger = ledgerReport(requirements.lines, ctx)
+        return ledger.missing
+      },
+    ],
+  })
+  if (requirements.kind === 'lines') report.inputs = { ...report.inputs, requirements: requirements.hash }
+  if (requirements.kind === 'not_checked')
+    report.reviewerNotes.push(`Requirement ledger not checked: ${requirements.reason}.`)
+  report.reviewerNotes.push(...(ledger?.notes ?? []))
   const runId = nanoid()
   const rows = attestationRowsFor(canvas, report, runId, Date.now(), by)
   await persist.saveAttestationRows(rows)
   /* an empty page has no frame to attest: nothing stored, nothing to cite */
-  return { ...report, attestation_id: rows.length ? runId : null }
+  return { ...report, attestation_id: rows.length ? runId : null, deferred: ledger?.deferred ?? [] }
 }
 
 export interface AttestationView {
@@ -42,11 +102,20 @@ export interface AttestationView {
   current: boolean
 }
 
-export async function readAttestation(runId: string): Promise<AttestationView | null> {
+export async function readAttestation(
+  runId: string,
+  source: RequirementSource | undefined = multicaRequirementSource(env),
+): Promise<AttestationView | null> {
   const rows = await persist.listAttestationRun(runId)
   const head = rows[0]
   if (!head) return null
   const canvas = store.getCanvas(head.canvasId)
+  /* a run that read requirement lines stays current only while the issue still hashes the same; unreadable = not current */
+  let requirementsNow: string | null = null
+  if (canvas && typeof head.inputs.requirements === 'string') {
+    const now = await readRequirements(canvas, head.pageId, source)
+    if (now.kind === 'lines') requirementsNow = now.hash
+  }
   return {
     id: runId,
     canvasId: head.canvasId,
@@ -58,6 +127,6 @@ export async function readAttestation(runId: string): Promise<AttestationView | 
     frames: rows.map((r) => ({ frameId: r.frameId, updatedAt: r.frameUpdatedAt })),
     createdAt: head.createdAt,
     createdBy: head.createdBy,
-    current: !!canvas && currentAttestation(canvas, head.pageId, rows)?.runId === runId,
+    current: !!canvas && currentAttestation(canvas, head.pageId, rows, requirementsNow)?.runId === runId,
   }
 }
