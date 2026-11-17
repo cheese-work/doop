@@ -183,8 +183,9 @@ it('duplicates a page with its frames right after the source, numbering the name
     height: 200,
     html: '<h1>Hero</h1>',
     hidden: true,
-    locked: true,
   })
+  /* CHE-6626: a lock freezes one published version; the copy is a new draft and starts unlocked */
+  expect(copiedHero.locked).toBeFalsy()
   expect(copiedHero.id).not.toBe(hero.id)
   expect(copy.frames.find((f) => f.name === 'Card')).toMatchObject({
     pageId: copy.page.id,
@@ -225,10 +226,9 @@ it('duplicates a page with its frames right after the source, numbering the name
   expect(onPage(nested.page.id)).toHaveLength(2)
   expect(onPage(second.id)).toHaveLength(1)
   for (const pageId of [copy.page.id, again.page.id, nested.page.id]) {
-    expect(onPage(pageId).find((f: { name: string }) => f.name === 'Hero')).toMatchObject({
-      hidden: true,
-      locked: true,
-    })
+    const hero = onPage(pageId).find((f: { name: string }) => f.name === 'Hero')
+    expect(hero).toMatchObject({ hidden: true })
+    expect(hero.locked).toBeFalsy() // CHE-6626: a copy starts unlocked
     const card = onPage(pageId).find((f: { name: string }) => f.name === 'Card')
     expect(card.hidden).toBeFalsy()
     expect(card.locked).toBeFalsy()

@@ -26,12 +26,17 @@ it('locks and unlocks a frame through the frame update API', async () => {
   const loaded: Canvas = await (await owner.get(`/api/canvases/${canvas.id}`)).json()
   expect(loaded.frames.find((f) => f.id === frame.id)?.locked).toBe(true)
 
-  /* a lock travels alongside other metadata, and other fields still land */
-  const moved: Frame = await (await owner.patch(`/api/frames/${frame.id}`, { x: 40, name: 'Hero v2' })).json()
-  expect(moved).toMatchObject({ x: 40, name: 'Hero v2', locked: true })
+  /* CHE-6626: a lock is real. Every write is refused, the owner's own included (423 Locked), nothing changes */
+  const moved = await owner.patch(`/api/frames/${frame.id}`, { x: 40, name: 'Hero v2' })
+  expect(moved.status).toBe(423)
+  expect(((await moved.json()) as { code: string }).code).toBe('policy_refused')
+  const after: Canvas = await (await owner.get(`/api/canvases/${canvas.id}`)).json()
+  expect(after.frames.find((f) => f.id === frame.id)).toMatchObject({ name: 'Hero', locked: true })
 
-  const unlocked: Frame = await (await owner.patch(`/api/frames/${frame.id}`, { locked: false })).json()
-  expect(unlocked.locked).toBe(false)
+  /* only a configured lock owner unlocks; none is configured here, so even the canvas owner is refused */
+  const unlocked = await owner.patch(`/api/frames/${frame.id}`, { locked: false })
+  expect(unlocked.status).toBe(423)
+  expect((await owner.delete(`/api/frames/${frame.id}`)).status).toBe(423)
 })
 
 it('keeps the lock across a server restart', async () => {

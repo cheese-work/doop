@@ -25,6 +25,10 @@ export interface Frame {
    *  deleted from the stage until it is unlocked (Layers panel, Inspector,
    *  ⌘⇧L, or an agent via update_frame) */
   locked?: boolean
+  /** Unlock count; raised on every unlock, never reused (CHE-6626). */
+  lockEpoch?: number
+  /** The G3 attestation this frame was locked against; dropped on unlock. */
+  lockAttestationId?: string
   /** Human sign-off for implementation. Missing/null means draft. Design
    * edits retain the attribution but change the status to needs_review. */
   approval?: FrameApproval | null

@@ -172,6 +172,10 @@ export const frames = pgTable(
     hidden: boolean('hidden'),
     /** Figma-style lock; null = unlocked */
     locked: boolean('locked'),
+    /** unlocks so far (CHE-6626); raised on every unlock, never reused; null = never unlocked */
+    lockEpoch: integer('lock_epoch'),
+    /** the design attestation the frame was locked against; null = none */
+    lockAttestationId: text('lock_attestation_id'),
     approval: jsonb('approval').$type<FrameApproval>(),
   },
   (t) => [index('frames_canvas_idx').on(t.canvasId)],

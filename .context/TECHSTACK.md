@@ -211,7 +211,18 @@
   is never trusted), the canvas is bound to the task's project and the page to its issue. With no verifier
   plugged in every such write is refused. An agent with no task may write to unbound canvases only, and once a verifier is plugged in an MCP agent
   without a task is refused everywhere; a design-sync (ingest) key is held to the binding like an agent; no agent binds
-  or deletes a canvas. A page copy re-checks the policy inside its database transaction, so one that loses a race rolls back whole; `bind_project` is refused while a copy is in flight. Users and the system pass. `tests/writePolicy.test.ts` also scans `server/` so a new
+  or deletes a canvas. A page copy re-checks the policy inside its database transaction, so one that loses a race rolls back whole; `bind_project` is refused while a copy is in flight. Past the lock rules below, users and the system pass.
+  Frame lock (G5a, CHE-6626): a `locked` frame refuses every write from every actor, the system included
+  (`assertWritable`, `lock_frame`/`unlock_frame` ops); a canvas holding one cannot be deleted (account erasure,
+  `erasureContext()`, is the exception) and `set_pages` cannot drop its page; copies start unlocked. `store.lockIfVersion`
+  (MCP `lock_frame_if_version`, `actions.lockFramesForPublish`) is a compare-and-set against the attested `updatedAt`
+  and does not move it, so the G3 attestation stays current; the frame carries `lockEpoch` (up on every unlock, never
+  reused) and `lockAttestationId` (`frames.lock_epoch`, `frames.lock_attestation_id`, migration 0042). Unlock is
+  `{ locked: false }` alone, from a signed-in user whose account id is in `setLockOwners` (an agent never unlocks; no
+  owners set = nobody unlocks); it raises `lockEpoch`, drops the attestation id and moves `updatedAt`, so the old
+  attestation no longer matches. `expected_updated_at` fences MCP `set_frame_html`, `edit_frame_html`,
+  `append_frame_html` and `update_frame` (`VersionChanged`, `version_changed`). REST answers a refusal 423 and a lost
+  fence 409. `tests/frameLockPolicy.test.ts` covers it. `tests/writePolicy.test.ts` also scans `server/` so a new
   writer outside `store.ts` and `db/persist.ts` fails CI.
 
 ## 6. Build and Dependency Management

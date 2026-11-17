@@ -1,4 +1,4 @@
-import { canvasPages } from '../shared/pages.ts'
+import { canvasPages, framePageId } from '../shared/pages.ts'
 import type { Actor, Canvas, CanvasPageInfo, Frame } from '../shared/types.ts'
 
 /**
@@ -20,10 +20,20 @@ export type WriteContext = {
   verified?: boolean
   /** an MCP client with a user key, or a design-sync key: not a task run, not the server itself */
   origin?: 'mcp' | 'sync'
+  /** account erasure only (`erasureContext`): may delete a canvas that still holds a locked frame */
+  erasure?: boolean
 }
 
 export type WriteOp =
-  'create_frame' | 'update_frame' | 'delete_frame' | 'delete_canvas' | 'set_pages' | 'copy_page' | 'bind_project'
+  | 'create_frame'
+  | 'update_frame'
+  | 'delete_frame'
+  | 'delete_canvas'
+  | 'set_pages'
+  | 'copy_page'
+  | 'bind_project'
+  | 'lock_frame'
+  | 'unlock_frame'
 
 export type WriteTarget = {
   canvas: Canvas
@@ -44,6 +54,26 @@ export class PolicyRefused extends Error {
     super(`policy_refused: ${op}: ${reason}`)
   }
 }
+
+/** A compare-and-set (lock_if_version, or an `expected_updated_at` fence) lost: the frame moved on. */
+export class VersionChanged extends Error {
+  readonly code = 'version_changed'
+  constructor(
+    readonly frameId: string,
+    readonly currentUpdatedAt: number,
+  ) {
+    super(`version_changed: frame ${frameId} is now at ${currentUpdatedAt}`)
+  }
+}
+
+let lockOwners: ReadonlySet<string> = new Set()
+/** Who may unlock a frame (Cheese). Empty or unset = nobody: unlock fails closed. */
+export function setLockOwners(ids: readonly string[] | undefined): void {
+  lockOwners = new Set(ids ?? [])
+}
+
+/** Account erasure: the one caller allowed to delete a canvas that still holds a locked frame. */
+export const erasureContext = (): WriteContext => ({ kind: 'system', erasure: true })
 
 export const systemContext = (): WriteContext => ({ kind: 'system' })
 export const userContext = (userId?: string): WriteContext => ({ kind: 'user', userId })
@@ -83,10 +113,11 @@ export async function warmTaskIdentity(taskId: string): Promise<void> {
 
 /** The write context for an actor. Only a task Multica vouched for, and still running, yields
  *  `verified` and the ids; the id the client sent is never trusted on its own. */
-export function writeContextFor(actor: Actor): WriteContext {
+export function writeContextFor(actor: Actor, userId?: string): WriteContext {
   /* a sync key is a snippet on a foreign origin, not a person: it is held to the canvas binding like an agent */
   if (actor.origin === 'sync') return { kind: 'agent', origin: 'sync' }
-  if (actor.kind !== 'agent') return { kind: 'user' }
+  /* `userId` is the signed-in account id, passed only by a session route; a display name proves nothing */
+  if (actor.kind !== 'agent') return userId ? { kind: 'user', userId } : { kind: 'user' }
   const taskId = actor.multicaTaskId
   if (!taskId) return actor.origin === 'mcp' ? { kind: 'agent', origin: 'mcp' } : { kind: 'agent' }
   const hit = verified.get(taskId)
@@ -103,12 +134,38 @@ const OPS: ReadonlySet<string> = new Set<WriteOp>([
   'set_pages',
   'copy_page',
   'bind_project',
+  'lock_frame',
+  'unlock_frame',
 ])
+
+function assertLockRules(ctx: WriteContext, op: WriteOp, target: WriteTarget): void {
+  const { canvas, frame } = target
+  if (op === 'unlock_frame') {
+    if (ctx.kind !== 'user' || !ctx.userId || !lockOwners.has(ctx.userId))
+      throw new PolicyRefused(op, 'only a lock owner, signed in, may unlock a frame')
+    return
+  }
+  if (op === 'lock_frame') return /* narrows access: any writer allowed past here may lock */
+  if (frame?.locked) throw new PolicyRefused(op, `frame ${frame.id} is locked`)
+  if (op === 'delete_canvas' && !ctx.erasure && canvas.frames.some((f) => f.locked))
+    throw new PolicyRefused(op, 'canvas holds a locked frame')
+  if (op === 'set_pages' && target.nextPages) {
+    const kept = new Set(target.nextPages.map((page) => page.id))
+    const lockedOn = new Set(canvas.frames.filter((f) => f.locked).map((f) => framePageId(canvas, f)))
+    for (const pageId of lockedOn)
+      if (!kept.has(pageId)) throw new PolicyRefused(op, `page ${pageId} holds a locked frame`)
+  }
+}
 
 /**
  * Throws PolicyRefused unless `ctx` may do `op` on `target`. Runs inside the store mutator, in the
- * same synchronous tick as the change. Users and the system pass (G5 and its lock rules are a
- * separate issue); an agent is held to the project binding:
+ * same synchronous tick as the change.
+ *
+ * Frame lock (CHE-6626): a `locked` frame refuses every write from every actor, system included
+ * (a lock the server's own code can bypass is a flag). Exceptions: `unlock_frame` by a user session
+ * whose account id is in `setLockOwners`; account erasure (`erasureContext`) deleting the canvas.
+ * A canvas holding a locked frame cannot be deleted, and `set_pages` cannot drop its page.
+ * Past the lock rules, users and the system pass; an agent is held to the project binding:
  *  - an agent with a Multica task must be verified, and write only to the canvas bound to its
  *    project, on pages bound to its issue;
  *  - an agent with no task may write to canvases nobody bound, never to a bound one; once a Multica
@@ -116,9 +173,10 @@ const OPS: ReadonlySet<string> = new Set<WriteOp>([
  *  - no agent binds, unbinds or deletes a canvas.
  */
 export function assertWritable(ctx: WriteContext, op: WriteOp, target: WriteTarget): void {
+  if (!OPS.has(op)) throw new PolicyRefused(op, 'unknown operation')
+  assertLockRules(ctx, op, target)
   if (ctx.kind !== 'agent') return
   const { canvas } = target
-  if (!OPS.has(op)) throw new PolicyRefused(op, 'unknown operation')
   if (op === 'bind_project') throw new PolicyRefused(op, 'an agent cannot bind a canvas to a project')
   if (op === 'delete_canvas') throw new PolicyRefused(op, 'an agent cannot delete a canvas')
   if (!ctx.taskId) {
