@@ -2,13 +2,16 @@
 # Runs on the C00 deploy runner (CHE-4585). Never builds: it pulls and runs an
 # image that already exists in GHCR, named by digest.
 #
-#   c00.sh apply      pin the running image as the rollback target, pull DEPLOY_REF, start it
+#   c00.sh apply      take the C00 deploy lock, run the pre-apply check, pin the running image as the
+#                     rollback target, pull DEPLOY_REF, start it
 #   c00.sh readback   running digest == DEPLOY_REF's, image revision label == DEPLOY_SHA,
 #                     then healthy on consecutive checks inside the window
 #   c00.sh rollback   start the pinned previous image and wait for it to be healthy
 #
 # Env: DEPLOY_REF (image@sha256:...), DEPLOY_SHA, C00_COMPOSE_DIR (compose project on C00).
-# Optional: C00_COMPOSE_FILE, C00_CONTAINER, C00_READBACK_SECONDS (900), C00_ROLLBACK_SECONDS (300),
+#      apply also needs DEPLOY_MODE (train|recovery|drill) and MARKER_EXPECT (this run's own
+#      DOOP_DEPLOY_SUSPENDED value), plus the GH_TOKEN/REPO/EXTRA env that deploy-gate.mjs reads.
+# Optional: C00_LOCK_FILE (/var/lock/doop-deploy.lock), C00_LOCK_WAIT (600 seconds), C00_COMPOSE_FILE, C00_CONTAINER, C00_READBACK_SECONDS (900), C00_ROLLBACK_SECONDS (300),
 #           C00_POLL_SECONDS (10), C00_STABLE_CHECKS (3).
 set -euo pipefail
 
@@ -50,6 +53,16 @@ case $cmd in
     ref=${DEPLOY_REF:-}
     [[ $ref =~ ^[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]] || die "DEPLOY_REF must be image@sha256:<64 hex>, got '$ref'"
     need_dir
+    mode=${DEPLOY_MODE:-}
+    expect=${MARKER_EXPECT:-}
+    [ -n "$mode" ] && [ -n "$expect" ] || die "DEPLOY_MODE and MARKER_EXPECT are required"
+    # The host-level lock (C-5): no second deploy, and no other tool taking this lock, changes C00 while
+    # this one checks and applies. It is released when this process exits.
+    exec 9>"${C00_LOCK_FILE:-/var/lock/doop-deploy.lock}"
+    flock -w "${C00_LOCK_WAIT:-600}" 9 || die "could not take the deploy lock within ${C00_LOCK_WAIT:-600}s"
+    # Under the lock the answer can no longer change: ask again before anything is tagged, pulled or started.
+    node "$here/../../scripts/deploy-gate.mjs" recheck "$mode" --op pre-apply --expect "$expect" ||
+      die "pre-apply check refused the deploy"
     docker rmi "$rollback_tag" >/dev/null 2>&1 || true # a stale target must never be mistaken for this deploy's
     if prev=$(docker inspect --format '{{.Image}}' "$container" 2>/dev/null) && [ -n "$prev" ]; then
       docker tag "$prev" "$rollback_tag"

@@ -29,12 +29,22 @@ case "$*" in
 esac
 `
 
+/* `node` is stubbed too: `apply` runs the pre-apply gate through it (CHE-5544). The stub records its
+   arguments and fails when `gate_fail` exists. */
+const NODE_STUB = `#!/usr/bin/env bash
+echo "node $*" >> "$STUB_DIR/nodelog"
+[ -f "$STUB_DIR/gate_fail" ] && { echo "gate refused" >&2; exit 1; }
+exit 0
+`
+
 let dir: string
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'c00-'))
   mkdirSync(join(dir, 'bin'))
   writeFileSync(join(dir, 'bin', 'docker'), STUB)
   chmodSync(join(dir, 'bin', 'docker'), 0o755)
+  writeFileSync(join(dir, 'bin', 'node'), NODE_STUB)
+  chmodSync(join(dir, 'bin', 'node'), 0o755)
   put('log', '')
   put('running', 'true\n')
   put('health', 'healthy\n')
@@ -46,6 +56,7 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
 const put = (name: string, text: string) => writeFileSync(join(dir, name), text)
 const log = () => readFileSync(join(dir, 'log'), 'utf8')
+const nodelog = () => (existsSync(join(dir, 'nodelog')) ? readFileSync(join(dir, 'nodelog'), 'utf8') : '')
 
 function c00(cmd: string, env: Record<string, string> = {}) {
   return spawnSync('bash', [SCRIPT, cmd], {
@@ -60,6 +71,10 @@ function c00(cmd: string, env: Record<string, string> = {}) {
       C00_STABLE_CHECKS: '2',
       DEPLOY_REF: REF,
       DEPLOY_SHA: SHA,
+      DEPLOY_MODE: 'train',
+      MARKER_EXPECT: 'armed:n1:99:' + SHA,
+      C00_LOCK_FILE: join(dir, 'lock'),
+      C00_LOCK_WAIT: '2',
       ...env,
     },
   })
@@ -94,6 +109,51 @@ describe('c00.sh apply', () => {
     expect(r.status, r.stderr).toBe(0)
     expect(log()).toContain('docker rmi doop-rollback:previous')
     expect(log()).not.toContain('docker tag')
+  })
+
+  describe('lock and pre-apply check (C-5)', () => {
+    it('runs the pre-apply check for this mode and marker value before the first docker call', () => {
+      const r = c00('apply')
+      expect(r.status, r.stderr).toBe(0)
+      expect(nodelog()).toMatch(/deploy-gate\.mjs recheck train --op pre-apply --expect armed:n1:99:c{40}\n$/)
+      expect(log()).toContain('docker pull')
+    })
+
+    it('a refused check stops before any docker call: nothing is tagged, pulled or started', () => {
+      put('gate_fail', 'x')
+      const r = c00('apply', { GITHUB_OUTPUT: join(dir, 'gh_output') })
+      expect(r.status).not.toBe(0)
+      expect(log()).toBe('')
+      expect(existsSync(join(dir, 'gh_output'))).toBe(false)
+    })
+
+    it.each([['DEPLOY_MODE'], ['MARKER_EXPECT']])('refuses without %s', (name) => {
+      const r = c00('apply', { [name]: '' })
+      expect(r.status).not.toBe(0)
+      expect(log()).toBe('')
+      expect(nodelog()).toBe('')
+    })
+
+    it('waits for the lock, and gives up without touching docker or running the check', () => {
+      const r = spawnSync('flock', [join(dir, 'lock'), '-c', `bash ${SCRIPT} apply`], {
+        encoding: 'utf8',
+        env: {
+          PATH: `${join(dir, 'bin')}:${process.env.PATH}`,
+          STUB_DIR: dir,
+          C00_COMPOSE_DIR: '/srv/doop',
+          DEPLOY_REF: REF,
+          DEPLOY_SHA: SHA,
+          DEPLOY_MODE: 'train',
+          MARKER_EXPECT: 'armed:n1:99:' + SHA,
+          C00_LOCK_FILE: join(dir, 'lock'),
+          C00_LOCK_WAIT: '1',
+        },
+      })
+      expect(r.status).not.toBe(0)
+      expect(r.stderr).toMatch(/lock/)
+      expect(log()).toBe('')
+      expect(nodelog()).toBe('')
+    })
   })
 
   describe('attempted flag (rollback only after a real attempt)', () => {
