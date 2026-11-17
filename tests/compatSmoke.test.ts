@@ -6,11 +6,24 @@ import { runSmoke } from '../scripts/deploy-smoke.mjs'
 import { missingGroups, routeGroups, staleGroups } from '../scripts/route-groups.mjs'
 import { startServer, type Server } from './harness.ts'
 
-/* CHE-5474 S4c, C-8.5c "Smoke": one read and one write per route group in deploy/cd/smoke-routes.json,
-   and a CI failure when a server route group is not listed there. */
-const routes = JSON.parse(readFileSync('deploy/cd/smoke-routes.json', 'utf8')) as {
-  groups: { group: string; read?: unknown; write?: unknown }[]
+/* CHE-5474 S4c, C-8.5c "Smoke": an ordered chain of calls per route group in deploy/cd/smoke-routes.json.
+   Real writes are read back; a `contract` call names the outside service that makes success impossible in the
+   sandbox; a group with no write says why. A CI failure when a server route group is not listed there. */
+interface Call {
+  kind: 'read' | 'write' | 'contract'
+  method: string
+  path: string
+  expect?: number[]
+  contract?: string
+  expectJson?: Record<string, string>
+  body?: unknown
 }
+interface Group {
+  group: string
+  calls: Call[]
+  noWrite?: string
+}
+const routes = JSON.parse(readFileSync('deploy/cd/smoke-routes.json', 'utf8')) as { groups: Group[] }
 
 describe('route groups', () => {
   it('finds the groups the server mounts, and not the Gemini worker process', () => {
@@ -33,12 +46,50 @@ describe('route groups', () => {
     expect(staleGroups(routes, routeGroups('server'))).toEqual([])
   })
 
-  it('gives every listed group one read and one write', () => {
+  it('gives every group a read or contract call, and a real write or a stated reason there is none', () => {
     expect(routes.groups.length).toBeGreaterThan(30)
     for (const g of routes.groups) {
-      expect(g.read, `${g.group} read`).toBeTruthy()
-      expect(g.write, `${g.group} write`).toBeTruthy()
+      const kinds = new Set(g.calls.map((c) => c.kind))
+      expect(kinds.has('read') || kinds.has('contract'), `${g.group} read`).toBe(true)
+      if (!kinds.has('write')) expect(g.noWrite?.length ?? 0, `${g.group} noWrite reason`).toBeGreaterThanOrEqual(20)
     }
+  })
+
+  it('keeps the real operations real: no placeholder 404/405 outside the static groups', () => {
+    const staticGroups = new Set([
+      '/a',
+      '/assets',
+      '/bg',
+      '/i',
+      '/api',
+      '/api/admin',
+      '/api/feedback',
+      '/api/mcp-consent',
+      '/api/tasks',
+    ])
+    for (const g of routes.groups)
+      for (const c of g.calls) {
+        const want = c.expect ?? [200]
+        if (want.every((s) => s === 404 || s === 405))
+          expect(staticGroups.has(g.group), `${g.group} ${c.path} expects only ${want}`).toBe(true)
+        if (c.kind === 'write')
+          expect(
+            want.every((s) => s >= 200 && s < 300),
+            `${g.group} ${c.method} ${c.path} write must succeed`,
+          ).toBe(true)
+        if (c.kind === 'contract')
+          expect((c.contract ?? '').length, `${g.group} ${c.path} contract reason`).toBeGreaterThanOrEqual(20)
+      }
+  })
+
+  it('writes to at least eleven groups and reads at least ten of those writes back', () => {
+    const writers = routes.groups.filter((g) => g.calls.some((c) => c.kind === 'write'))
+    expect(writers.length).toBeGreaterThanOrEqual(11)
+    const readBack = routes.groups.reduce(
+      (n, g) => n + g.calls.filter((c) => c.kind === 'read' && c.expectJson).length,
+      0,
+    )
+    expect(readBack).toBeGreaterThanOrEqual(10)
   })
 })
 
@@ -49,8 +100,10 @@ describe('runSmoke against a scripted fetch', () => {
     groups: [
       {
         group: '/api/x',
-        read: { method: 'GET', path: '/api/x', expect: [200] },
-        write: { method: 'POST', path: '/api/x', body: { a: 1 }, expect: [200, 201] },
+        calls: [
+          { kind: 'read', method: 'GET', path: '/api/x', expect: [200] },
+          { kind: 'write', method: 'POST', path: '/api/x', body: { a: 1 }, expect: [200, 201] },
+        ],
       },
     ],
   }
@@ -125,8 +178,10 @@ describe('runSmoke against a scripted fetch', () => {
       groups: [
         {
           group: '/api/c',
-          read: { method: 'GET', path: '/api/c/{id}', expect: [200] },
-          write: { method: 'POST', path: '/api/c', body: {}, expect: [200], save: { id: 'id' } },
+          calls: [
+            { kind: 'write', method: 'POST', path: '/api/c', body: {}, expect: [200], save: { id: 'id' } },
+            { kind: 'read', method: 'GET', path: '/api/c/{id}', expect: [200] },
+          ],
         },
       ],
     }
@@ -153,14 +208,79 @@ describe('runSmoke against a scripted fetch', () => {
       groups: [
         {
           group: '/api/c',
-          read: { method: 'GET', path: '/api/c/{id}', expect: [200] },
-          write: { method: 'POST', path: '/api/c', body: {}, expect: [200] },
+          calls: [
+            { kind: 'write', method: 'POST', path: '/api/c', body: {}, expect: [200] },
+            { kind: 'read', method: 'GET', path: '/api/c/{id}', expect: [200] },
+          ],
         },
       ],
     }
     const out = await runSmoke({ ...base, routes: routes2, fetchImpl: scripted({ ...ok, 'POST /api/c': reply(200) }) })
     expect(out.ok).toBe(false)
     expect(out.failed[0]).toEqual(expect.objectContaining({ group: '/api/c', kind: 'read' }))
+  })
+
+  it('fails when a real operation answers 200 but the read-back shows the write did not happen', async () => {
+    const chain = {
+      groups: [
+        {
+          group: '/api/c',
+          calls: [
+            { kind: 'write', method: 'POST', path: '/api/c', body: { name: 'a' }, save: { id: 'id' } },
+            { kind: 'read', method: 'GET', path: '/api/c/{id}', expectJson: { name: 'a' } },
+          ],
+        },
+      ],
+    }
+    const table = { ...ok, 'POST /api/c': reply(200, {}, '{"id":"cv1"}') }
+    const good = await runSmoke({
+      ...base,
+      routes: chain,
+      fetchImpl: scripted({ ...table, 'GET /api/c/cv1': reply(200, {}, '{"name":"a"}') }),
+    })
+    expect(good.ok).toBe(true)
+    const bad = await runSmoke({
+      ...base,
+      routes: chain,
+      fetchImpl: scripted({ ...table, 'GET /api/c/cv1': reply(200, {}, '{"name":"b"}') }),
+    })
+    expect(bad.ok).toBe(false)
+    expect(bad.failed[0]).toEqual(
+      expect.objectContaining({ kind: 'read', status: 200, error: expect.stringContaining('name') }),
+    )
+  })
+
+  it('fails a write that answers a 404 placeholder instead of success', async () => {
+    const chain = {
+      groups: [
+        {
+          group: '/api/c',
+          calls: [
+            { kind: 'write', method: 'POST', path: '/api/not-a-route', body: {} },
+            { kind: 'read', method: 'GET', path: '/api/c' },
+          ],
+        },
+      ],
+    }
+    const out = await runSmoke({
+      ...base,
+      routes: chain,
+      fetchImpl: scripted({ ...ok, 'POST /api/not-a-route': reply(404), 'GET /api/c': reply(200) }),
+    })
+    expect(out.ok).toBe(false)
+    expect(out.failed[0]).toEqual(expect.objectContaining({ kind: 'write', status: 404 }))
+  })
+
+  it('fails a group with neither a write nor a noWrite reason, and one with no read', async () => {
+    const noWriteChain = { groups: [{ group: '/api/c', calls: [{ kind: 'read', method: 'GET', path: '/api/c' }] }] }
+    const f = scripted({ ...ok, 'GET /api/c': reply(200) })
+    expect((await runSmoke({ ...base, routes: noWriteChain, fetchImpl: f })).ok).toBe(false)
+    const reasoned = { groups: [{ ...noWriteChain.groups[0], noWrite: 'read-only configuration' }] }
+    expect((await runSmoke({ ...base, routes: reasoned, fetchImpl: f })).ok).toBe(true)
+    const noRead = { groups: [{ group: '/api/c', calls: [{ kind: 'write', method: 'POST', path: '/api/c' }] }] }
+    expect(
+      (await runSmoke({ ...base, routes: noRead, fetchImpl: scripted({ ...ok, 'POST /api/c': reply(200) }) })).ok,
+    ).toBe(false)
   })
 })
 
@@ -179,10 +299,16 @@ describe('the smoke suite against a real server', () => {
   }, 70_000)
   afterAll(() => server?.stop())
 
-  it('passes every listed read and write', async () => {
+  it('passes every listed operation, and a broken real operation fails it', async () => {
     const out = await runSmoke({ baseUrl: server.base, origin: server.base, routes })
     expect(out.failed).toEqual([])
     expect(out.ok).toBe(true)
-    expect(out.results.length).toBe(routes.groups.length * 2 + 0)
+    const broken = JSON.parse(JSON.stringify(routes)) as typeof routes
+    const canvases = broken.groups.find((g) => g.group === '/api/canvases')!
+    canvases.calls.find((c) => c.method === 'PATCH')!.body = { name: 'Other' }
+    const bad = await runSmoke({ baseUrl: server.base, origin: server.base, routes: broken })
+    expect(bad.ok).toBe(false)
+    expect(bad.failed.map((f: { group: string }) => f.group)).toContain('/api/canvases')
+    expect(out.results.length).toBe(routes.groups.reduce((n, g) => n + g.calls.length, 0))
   }, 120_000)
 })

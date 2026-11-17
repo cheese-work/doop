@@ -10,6 +10,7 @@
 // the label `doop.compat.run=<run id>`, so `c00.sh sweep` removes whatever a killed job left behind.
 import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
+import net from 'node:net'
 import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -19,6 +20,14 @@ export const LABEL = 'doop.compat.run'
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9-]{0,39}$/
 const PORT = '4400'
 const DISK_FACTOR = 3
+// C-8.8: the clone migration runs under an external supervisor. 120 s is the outer bound; the runner's own
+// deadline sits inside it, so a healthy runner reports its own failure before the supervisor steps in.
+export const MIGRATE_TIMEOUT_MS = 120_000
+const MIGRATE_DEADLINE_SECONDS = 90
+// The migrate runner (server/db/migrate.ts) holds pg_advisory_lock(1685025648, 1): classid, objid, objsubid 2.
+const ADVISORY = { classid: 1685025648, objid: 1 }
+// Ports a container could use on the host side of its network. The canary is a listener the run opens itself.
+const GATEWAY_PORTS = [22, 53, 80, 443, 2375, 5432]
 const no = (reason) => ({ ok: false, reason })
 
 export const names = (id) => ({
@@ -32,6 +41,55 @@ export const names = (id) => ({
 })
 
 /* ---------- isolation probes ---------- */
+
+/** `--internal` alone leaves the bridge's gateway IP on the host, and a host service bound there is reachable
+ *  from the sandbox (observed on Docker 29.6.2). `inhibit_ipv4` removes the gateway address from the bridge. */
+export const networkCreateArgs = (name, label) => [
+  'network',
+  'create',
+  '--internal',
+  '-o',
+  'com.docker.network.bridge.inhibit_ipv4=true',
+  ...label,
+  name,
+]
+
+const ipToInt = (ip) => ip.split('.').reduce((n, o) => n * 256 + Number(o), 0)
+const intToIp = (n) => [24, 16, 8, 0].map((sh) => Math.floor(n / 2 ** sh) % 256).join('.')
+
+/** The subnet's network address as an int, and its prefix length; undefined unless it is IPv4 and /24 or wider. */
+function subnetOf(inspect) {
+  const cfg = (Array.isArray(inspect) ? inspect[0] : undefined)?.IPAM?.Config?.[0]
+  const m = /^(\d{1,3}(?:\.\d{1,3}){3})\/(\d{1,2})$/.exec(String(cfg?.Subnet ?? ''))
+  const bits = Number(m?.[2])
+  if (!m || bits < 8 || bits > 24) return undefined
+  const ip = ipToInt(String(m[1]))
+  return { base: ip - (ip % 2 ** (32 - bits)), cfg }
+}
+
+/** The address the host would have on this network: the IPAM gateway when Docker reports one, else the
+ *  first host address of the subnet (where the bridge would put it). */
+export function sandboxGateway(inspect) {
+  const sub = subnetOf(inspect)
+  if (!sub) return undefined
+  return sub.cfg.Gateway || intToIp(sub.base + 1)
+}
+
+/** A fixed address for a sandbox container. Docker hands the first free address, the would-be gateway, to the
+ *  first container on a network without one; an explicit --ip keeps that address free to be probed. */
+export function sandboxAddress(inspect, slot) {
+  const sub = subnetOf(inspect)
+  return sub ? intToIp(sub.base + 10 + slot) : undefined
+}
+
+/** What the sandbox must not reach, plus one control it must: the clone database on the same network.
+ *  A probe that cannot reach its control proves nothing, so it fails closed. */
+export const sandboxTargets = ({ base, gateway, canaryPort, controlHost }) => [
+  ...base,
+  ...GATEWAY_PORTS.map((port) => ({ id: `tcp:${gateway}:${port}`, kind: 'tcp', host: gateway, port })),
+  ...(canaryPort ? [{ id: `tcp:${gateway}:${canaryPort}`, kind: 'tcp', host: gateway, port: canaryPort }] : []),
+  { id: `control:${controlHost}:5432`, kind: 'tcp', host: controlHost, port: 5432, control: true },
+]
 
 export const probeTargets = ({ hostGateway, livePgAddress }) => [
   { id: 'tcp:1.1.1.1:443', kind: 'tcp', host: '1.1.1.1', port: 443 },
@@ -49,7 +107,7 @@ export const probeScript = (targets) =>
   `s.on('connect',()=>{s.destroy();d(true)});s.on('timeout',()=>{s.destroy();d(false)});s.on('error',()=>d(false))});` +
   `Promise.all(T.map(one)).then(r=>console.log(JSON.stringify(r)))`
 
-/** Every target must answer, and every answer must be "not reached". */
+/** Every target must answer. A control must be reached (else the probe is blind); every other must not be. */
 export function parseProbeOutput(stdout, targets) {
   const line = String(stdout ?? '')
     .trim()
@@ -67,7 +125,9 @@ export function parseProbeOutput(stdout, targets) {
   const byId = new Map(rows.map((r) => [r?.id, r?.reached]))
   const unanswered = targets.filter((t) => typeof byId.get(t.id) !== 'boolean').map((t) => t.id)
   if (unanswered.length) return no(`probe left ${unanswered.join(', ')} unanswered`)
-  const reached = targets.filter((t) => byId.get(t.id) === true).map((t) => t.id)
+  const blind = targets.filter((t) => t.control && byId.get(t.id) !== true).map((t) => t.id)
+  if (blind.length) return no(`probe could not reach its control ${blind.join(', ')}, so it proves nothing`)
+  const reached = targets.filter((t) => !t.control && byId.get(t.id) === true).map((t) => t.id)
   if (reached.length) return no(`sandbox reached ${reached.join(', ')}`)
   return { ok: true }
 }
@@ -79,6 +139,15 @@ export function checkNetworkInspect(inspect, allowedNames) {
   const net = Array.isArray(inspect) ? inspect[0] : undefined
   if (!net) return no('network inspect is empty')
   if (net.Internal !== true) return no('sandbox network is not Internal')
+  if (net.Options?.['com.docker.network.bridge.inhibit_ipv4'] !== 'true')
+    return no('sandbox network still has a host gateway address (inhibit_ipv4 is not set)')
+  if ((net.IPAM?.Config ?? []).some((c) => c?.Gateway)) return no('sandbox network reports a gateway address')
+  const gateway = sandboxGateway([net])
+  const onGateway = Object.values(net.Containers ?? {})
+    .filter((c) => gateway && String(c?.IPv4Address ?? '').split('/')[0] === gateway)
+    .map((c) => cname(c?.Name))
+  if (onGateway.length)
+    return no(`${onGateway.join(', ')} holds the gateway address ${gateway}, so it cannot be probed`)
   const foreign = Object.values(net.Containers ?? {})
     .map((c) => cname(c?.Name))
     .filter((n) => !allowedNames.includes(n))
@@ -181,6 +250,43 @@ const lastJson = (s) => {
   }
 }
 
+/* ---------- supervised migration ---------- */
+
+const quiesceSql = (app) =>
+  `select (select count(*) from pg_stat_activity where application_name='${app}' and pid<>pg_backend_pid())` +
+  ` || ' ' || (select count(*) from pg_locks where locktype='advisory' and classid=${ADVISORY.classid}` +
+  ` and objid=${ADVISORY.objid} and objsubid=2)`
+const terminateSql = (app) =>
+  `select count(pg_terminate_backend(pid)) from pg_stat_activity where application_name='${app}' and pid<>pg_backend_pid()`
+
+/** C-8.8 quiescence: the migration container has exited, no session of the run is left, the advisory lock is
+ *  free. Anything else is `needs_operator`: the sandbox is left for a person, never assumed clean. */
+export async function proveQuiescence({ runner, containerName, dbName, liveDb }) {
+  const psql = (sql) => runner.docker(['exec', dbName, 'psql', '-U', liveDb.user, '-d', liveDb.db, '-tAc', sql])
+  const state = { containerExited: false, sessions: null, advisoryLocks: null }
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const running = await runner.docker(['inspect', '--format', '{{.State.Running}}', containerName])
+    state.containerExited = running.code === 0 && running.stdout.trim() === 'false'
+    const r = await psql(quiesceSql(containerName))
+    const m = /^(\d+) (\d+)$/.exec(r.code === 0 ? String(r.stdout).trim() : '')
+    state.sessions = m ? Number(m[1]) : null
+    state.advisoryLocks = m ? Number(m[2]) : null
+    if (state.containerExited && state.sessions === 0 && state.advisoryLocks === 0) return { ok: true, ...state }
+    if (attempt === 0) {
+      await runner.docker(['kill', containerName])
+      await psql(terminateSql(containerName))
+      await runner.sleep(1000)
+    }
+  }
+  return {
+    ok: false,
+    ...state,
+    reason:
+      `needs_operator: the migration did not quiesce (container exited: ${state.containerExited}, ` +
+      `sessions: ${state.sessions ?? 'unknown'}, advisory locks: ${state.advisoryLocks ?? 'unknown'})`,
+  }
+}
+
 /* ---------- the run ---------- */
 
 class Stop extends Error {
@@ -198,7 +304,7 @@ export async function runCompat({
   liveDb,
   staticResult,
   ledgerRows,
-  probeTargets: targets,
+  probeTargets,
 }) {
   if (typeof runId !== 'string' || !RUN_ID.test(runId)) throw new Error('compat: run id must be a plain token')
   const first = await runner.sweep()
@@ -257,7 +363,17 @@ export async function runCompat({
     const url = `postgres://${liveDb.user}:${runner.randomSecret()}@${n.db}:5432/${liveDb.db}`
     const password = new URL(url).password
 
-    await must('clone', ['network', 'create', '--internal', ...label, n.network], 'creating the sandbox network')
+    await must('clone', networkCreateArgs(n.network, label), 'creating the sandbox network')
+    const created = lastJsonArray(
+      (await must('clone', ['network', 'inspect', n.network], 'reading the sandbox network')).stdout,
+    )
+    const gateway = sandboxGateway(created)
+    const slots = { db: 0, migrate: 1, probe: 2, app: 3, smoke: 4 }
+    const ip = (who) => {
+      const a = sandboxAddress(created, slots[who])
+      if (!a) throw new Stop('clone', 'cannot read an IPv4 subnet of /24 or wider on the sandbox network')
+      return ['--ip', a]
+    }
     await must('clone', ['volume', 'create', ...label, n.volume], 'creating the sandbox volume')
     await must(
       'clone',
@@ -268,6 +384,7 @@ export async function runCompat({
         n.db,
         ...label,
         ...sandbox,
+        ...ip('db'),
         '-v',
         `${n.volume}:/var/lib/postgresql/data`,
         '-e',
@@ -309,45 +426,73 @@ export async function runCompat({
     )
     if (copy.code !== 0) throw new Stop('clone', `copying the live data failed: ${tail(copy)}`)
 
-    // The candidate's migrations on the cloned data: the supervised runner of C-8.8, in a one-shot container.
-    await must(
-      'clone',
+    // The candidate's migrations on the cloned data: the supervised runner of C-8.8, in a one-shot container,
+    // under a 120 s outer timeout. A timeout or a failure is followed by kill, wait and the quiescence proof.
+    const migrated = await runner.docker(
       [
         'run',
         '--name',
         n.migrate,
         ...label,
         ...sandbox,
+        ...ip('migrate'),
         ...locked,
         '-e',
         `DATABASE_URL=${url}`,
         '-e',
         `DOOP_MIGRATE_APP_NAME=${n.migrate}`,
         '-e',
-        'DOOP_MIGRATE_DEADLINE_SECONDS=300',
+        `DOOP_MIGRATE_DEADLINE_SECONDS=${MIGRATE_DEADLINE_SECONDS}`,
         '--entrypoint',
         'node_modules/.bin/tsx',
         candidate.image,
         'server/db/migrate.ts',
       ],
-      'the candidate migration on the cloned data',
+      { timeoutMs: MIGRATE_TIMEOUT_MS },
     )
-    evidence.results.clone = { ok: true }
+    const migrateFailed = migrated.timedOut === true || migrated.code !== 0
+    if (migrateFailed) await runner.docker(['kill', n.migrate])
+    const quiet = await proveQuiescence({ runner, containerName: n.migrate, dbName: n.db, liveDb })
+    evidence.results.clone = { ok: false, quiescence: quiet }
+    if (migrateFailed) {
+      const what = migrated.timedOut
+        ? `the candidate migration exceeded ${MIGRATE_TIMEOUT_MS / 1000} s and was killed`
+        : `the candidate migration on the cloned data failed: ${tail(migrated)}`
+      throw new Stop('clone', quiet.ok ? `${what}; quiescence proven` : `${what}; ${quiet.reason}`)
+    }
+    if (!quiet.ok) throw new Stop('clone', quiet.reason)
+    evidence.results.clone = { ok: true, quiescence: quiet }
 
-    // Probes first: any one that gets out blocks startup.
-    const probe = await runner.docker([
-      'run',
-      '--name',
-      n.probe,
-      ...label,
-      ...sandbox,
-      ...locked,
-      '--entrypoint',
-      'node',
-      candidate.image,
-      '-e',
-      probeScript(targets),
-    ])
+    // Probes first: any one that gets out blocks startup. They aim at the sandbox network's own gateway, and at
+    // a listener the host opens for the purpose; the clone database is the positive control.
+    if (!gateway) throw new Stop('behavior', 'cannot work out the sandbox gateway address, so it cannot be probed')
+    const canary = await runner.canary()
+    let probe
+    let targets
+    try {
+      targets = sandboxTargets({
+        base: probeTargets,
+        gateway,
+        canaryPort: canary.port,
+        controlHost: n.db,
+      })
+      probe = await runner.docker([
+        'run',
+        '--name',
+        n.probe,
+        ...label,
+        ...sandbox,
+        ...ip('probe'),
+        ...locked,
+        '--entrypoint',
+        'node',
+        candidate.image,
+        '-e',
+        probeScript(targets),
+      ])
+    } finally {
+      await canary.close()
+    }
     if (probe.code !== 0) throw new Stop('behavior', `isolation probe could not run: ${tail(probe)}`)
     const probed = parseProbeOutput(probe.stdout, targets)
     if (!probed.ok) throw new Stop('behavior', `isolation probe: ${probed.reason}`)
@@ -371,6 +516,7 @@ export async function runCompat({
         n.app,
         ...label,
         ...sandbox,
+        ...ip('app'),
         ...locked,
         ...Object.entries(env).flatMap(([k, v]) => ['-e', `${k}=${v}`]),
         predecessor.image,
@@ -389,6 +535,7 @@ export async function runCompat({
       n.smoke,
       ...label,
       ...sandbox,
+      ...ip('smoke'),
       ...locked,
       '-e',
       `SMOKE_BASE_URL=http://${n.app}:${PORT}`,
@@ -445,17 +592,43 @@ function lastJsonArray(text) {
 
 /* ---------- CLI: the real runner ---------- */
 
-const run = (cmd, args, { input } = {}) =>
+const DEFAULT_TIMEOUT_MS = 600_000
+const COPY_TIMEOUT_MS = 1_800_000
+
+/** Run a command; at `timeoutMs` the CLI process is killed and the result says so (code 124, timedOut). A docker
+ *  CLI kill does not stop the container: the caller kills it by name. */
+const run = (cmd, args, { input, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) =>
   new Promise((resolve) => {
     const p = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] })
     let stdout = ''
     let stderr = ''
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      p.kill('SIGKILL')
+    }, timeoutMs)
     p.stdout.on('data', (d) => (stdout += d))
     p.stderr.on('data', (d) => (stderr += d))
-    p.on('error', (e) => resolve({ code: 127, stdout, stderr: String(e) }))
-    p.on('close', (code) => resolve({ code: code ?? 1, stdout, stderr }))
+    p.on('error', (e) => {
+      clearTimeout(timer)
+      resolve({ code: 127, stdout, stderr: String(e) })
+    })
+    p.on('close', (code) => {
+      clearTimeout(timer)
+      resolve(timedOut ? { code: 124, stdout, stderr, timedOut: true } : { code: code ?? 1, stdout, stderr })
+    })
     p.stdin.on('error', () => {})
     p.stdin.end(input)
+  })
+
+/** A listener on every host interface, opened for the probe and closed after it. Nothing in the sandbox may reach it. */
+const openCanary = () =>
+  new Promise((resolve, reject) => {
+    const server = net.createServer((sock) => sock.destroy())
+    server.on('error', reject)
+    server.listen(0, '0.0.0.0', () =>
+      resolve({ port: server.address().port, close: () => new Promise((r) => server.close(() => r())) }),
+    )
   })
 
 function realRunner() {
@@ -463,6 +636,7 @@ function realRunner() {
   const dfPath = process.env.C00_DF_PATH ?? '/var/lib/docker'
   return {
     docker: (args, o) => run('docker', args, o),
+    canary: openCanary,
     pipe: (a, b) =>
       new Promise((resolve) => {
         const left = spawn('docker', a, { stdio: ['ignore', 'pipe', 'pipe'] })
@@ -470,13 +644,21 @@ function realRunner() {
         let err = ''
         let codes = 0
         const codeOf = {}
+        const timer = setTimeout(() => {
+          err += 'copy timed out'
+          left.kill('SIGKILL')
+          right.kill('SIGKILL')
+        }, COPY_TIMEOUT_MS)
         left.stderr.on('data', (d) => (err += d))
         right.stderr.on('data', (d) => (err += d))
         left.stdout.pipe(right.stdin)
         right.stdin.on('error', () => {})
         const done = (who) => (code) => {
           codeOf[who] = code ?? 1
-          if (++codes === 2) resolve({ code: codeOf.left || codeOf.right, stderr: err })
+          if (++codes === 2) {
+            clearTimeout(timer)
+            resolve({ code: codeOf.left || codeOf.right, stderr: err })
+          }
         }
         left.on('close', done('left'))
         right.on('close', done('right'))
