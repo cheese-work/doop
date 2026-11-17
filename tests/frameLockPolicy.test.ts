@@ -276,6 +276,36 @@ describe('lock_if_version, lockEpoch, unlock voids the attestation', () => {
     expect(store.getFrame(f.f.id)).toMatchObject({ locked: true, updatedAt: f.f.updatedAt, lockAttestationId: 'att-1' })
   })
 
+  it('a same-id retry is still a compare-and-set: a stale attested version is version_changed, never ok', () => {
+    const f = locked()
+    /* the owner unlocks (new version), the frame is attested at that version with the same id and locked again */
+    const reopened = store.updateFrame(cheese, f.f.id, { locked: false }, 'c')!
+    expect(reopened.updatedAt).not.toBe(f.f.updatedAt)
+    expect(store.lockIfVersion(agent, f.f.id, reopened.updatedAt, 'att-1')).toMatchObject({ ok: true })
+    db.saveFrame.mockClear()
+    /* a late retry of the FIRST attempt carries the old version */
+    expect(store.lockIfVersion(agent, f.f.id, f.f.updatedAt, 'att-1')).toEqual({
+      ok: false,
+      error: 'version_changed',
+      currentUpdatedAt: reopened.updatedAt,
+    })
+    /* the retry of the current attempt is the no-op */
+    expect(store.lockIfVersion(agent, f.f.id, reopened.updatedAt, 'att-1')).toMatchObject({ ok: true, already: true })
+    expect(db.saveFrame).not.toHaveBeenCalled()
+  })
+
+  it('a stale same-id retry through lockFramesForPublish withholds the card', () => {
+    const f = locked()
+    const reopened = store.updateFrame(cheese, f.f.id, { locked: false }, 'c')!
+    store.lockIfVersion(agent, f.f.id, reopened.updatedAt, 'att-1')
+    const out = actions.lockFramesForPublish(
+      [{ frameId: f.f.id, attestedUpdatedAt: f.f.updatedAt, attestationId: 'att-1' }],
+      agentActor,
+    )
+    expect(out.cardAllowed).toBe(false)
+    expect(out.results[0]).toMatchObject({ ok: false, error: 'version_changed' })
+  })
+
   it('a locked frame keeps its attestation: another id is refused, by anyone, until an owner unlocks', () => {
     const f = locked()
     db.saveFrame.mockClear()
