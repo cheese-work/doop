@@ -6,6 +6,7 @@ import { db } from './index.ts'
 import * as t from './schema.ts'
 import { extractAssetIds } from '../assets.ts'
 import { roleByAgentName } from '../../shared/agents.ts'
+import { framePageId } from '../../shared/pages.ts'
 import type { AttestationRow } from '../../shared/designCompleteness.ts'
 import { isCommunityCategory } from '../../shared/types.ts'
 import { storedLinkAccess } from '../../shared/canvasRole.ts'
@@ -337,6 +338,7 @@ export function saveFrame(f: Frame, immediate = false) {
 }
 
 async function writeFrame(f: Frame) {
+  await settlePageAuthors() // the writer's ledger row lands no later than the frame
   const row = {
     id: f.id,
     canvasId: f.canvasId,
@@ -560,6 +562,102 @@ export function deleteFrame(frameId: string) {
   )
 }
 
+/* ------------------------------------------------------------------ */
+/* G4 author ledger (page_authors), append-only                        */
+/* ------------------------------------------------------------------ */
+
+export type PageAuthorRow = typeof t.pageAuthors.$inferSelect
+
+/** The ledger rows of a canvas (one page when given), oldest first. Read side only. */
+export async function listPageAuthors(canvasId: string, pageId?: string): Promise<PageAuthorRow[]> {
+  const where = pageId
+    ? and(eq(t.pageAuthors.canvasId, canvasId), eq(t.pageAuthors.pageId, pageId))
+    : eq(t.pageAuthors.canvasId, canvasId)
+  return db.select().from(t.pageAuthors).where(where).orderBy(t.pageAuthors.firstAt, t.pageAuthors.id)
+}
+
+export type PageAuthorInput = {
+  canvasId: string
+  pageId: string
+  /** the frame the write touched (audit only) */
+  frameId?: string
+  kind: 'agent' | 'user' | 'system' | 'unknown'
+  agentId?: string
+  taskId?: string
+  provider?: string
+  model?: string
+  userId?: string
+  source: 'write' | 'copy' | 'legacy'
+  sourcePageId?: string
+}
+
+function pageAuthorValues(input: PageAuthorInput, firstAt: number): typeof t.pageAuthors.$inferInsert {
+  return {
+    id: nanoid(),
+    canvasId: input.canvasId,
+    pageId: input.pageId,
+    frameId: input.frameId ?? '',
+    kind: input.kind,
+    agentId: input.agentId ?? '',
+    taskId: input.taskId ?? '',
+    provider: input.provider ?? '',
+    model: input.model ?? '',
+    userId: input.userId ?? '',
+    source: input.source,
+    sourcePageId: input.sourcePageId ?? '',
+    firstAt,
+  }
+}
+
+/* Ledger appends run one after another, and a frame row is never written before the
+   appends queued ahead of it have landed (writeFrame, flush): the row is persisted no
+   later than the frame it describes. Append-only: this module has no update or delete
+   of page_authors. The unique key makes a repeat of the same writer a no-op. */
+let authorWrites: Promise<unknown> = Promise.resolve()
+
+/** Queue one ledger row. Called by the store in the same tick as the write it records. */
+export function appendPageAuthor(input: PageAuthorInput) {
+  const values = pageAuthorValues(input, Date.now())
+  const work = () => db.insert(t.pageAuthors).values(values).onConflictDoNothing()
+  authorWrites = authorWrites.then(work, work)
+  swallow(authorWrites)
+}
+
+/** Settles once every queued ledger append has landed. */
+export async function settlePageAuthors(): Promise<void> {
+  await authorWrites.catch(() => undefined)
+}
+
+/** One `legacy` `unknown` row for every page that holds frames and has no row yet. Returns how many it wrote.
+ *  Idempotent: a page with any row, and a page the first run already filled, is skipped. */
+export async function backfillPageAuthors(canvases: Canvas[]): Promise<number> {
+  await settlePageAuthors()
+  const have = new Set(
+    (
+      await db.selectDistinct({ canvasId: t.pageAuthors.canvasId, pageId: t.pageAuthors.pageId }).from(t.pageAuthors)
+    ).map((row) => `${row.canvasId}\u0000${row.pageId}`),
+  )
+  const missing: PageAuthorInput[] = []
+  for (const canvas of canvases) {
+    for (const pageId of new Set(canvas.frames.map((frame) => framePageId(canvas, frame)))) {
+      if (!have.has(`${canvas.id}\u0000${pageId}`)) {
+        missing.push({ canvasId: canvas.id, pageId, kind: 'unknown', source: 'legacy' })
+      }
+    }
+  }
+  const now = Date.now()
+  let written = 0
+  for (let i = 0; i < missing.length; i += 500) {
+    const inserted = await db
+      .insert(t.pageAuthors)
+      .values(missing.slice(i, i + 500).map((input) => pageAuthorValues(input, now)))
+      .onConflictDoNothing()
+      .returning({ id: t.pageAuthors.id })
+    written += inserted.length
+  }
+  return written
+}
+
 /** The frame/element a prompt card was scoped to, or nothing when the row
  *  carries none or it no longer parses. */
 function scopeField(scope: string | null): Pick<AgentTask, 'scope'> {
@@ -740,6 +838,7 @@ export async function flush(getFrame: (id: string) => Frame | undefined): Promis
       return f ? writeFrame(f) : Promise.resolve()
     }),
   )
+  await settlePageAuthors()
   await pendingVersionWrites(() => true)
 }
 

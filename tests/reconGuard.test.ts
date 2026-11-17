@@ -18,6 +18,7 @@ vi.mock('../server/db/persist.ts', () => {
     saveCanvasCopy: noop,
     saveFeedback: noop,
     saveFrame: noop,
+    appendPageAuthor: noop,
     saveFrameVersion: noop,
     saveGuideline: noop,
     saveMember: noop,

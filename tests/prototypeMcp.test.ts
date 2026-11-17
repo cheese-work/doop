@@ -9,6 +9,7 @@ import type { Canvas, Frame } from '../shared/types.ts'
 vi.mock('../server/db/persist.ts', () => ({
   saveCanvas: () => {},
   saveFrame: () => {},
+  appendPageAuthor: () => {},
   saveActivity: () => {},
 }))
 
