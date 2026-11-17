@@ -50,6 +50,9 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY server ./server
 COPY shared ./shared
+# the contract smoke suite the compat sandbox runs from the candidate image (CHE-5474 C-8.5b)
+COPY scripts/deploy-smoke.mjs ./scripts/deploy-smoke.mjs
+COPY deploy/cd/smoke-routes.json ./deploy/cd/smoke-routes.json
 
 EXPOSE 4400
 HEALTHCHECK --interval=30s --timeout=5s CMD node -e "fetch('http://localhost:'+process.env.PORT+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
