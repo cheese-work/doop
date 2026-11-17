@@ -507,6 +507,25 @@ export async function runCompat({
     // under a 120 s outer timeout. A timeout or a failure is followed by kill, wait and the quiescence proof.
     const ledgerBefore = await readLedger({ runner, dbName: n.db, liveDb })
     if (ledgerBefore === null) throw new Stop('clone', 'cannot read the clone ledger before the migration')
+    // C-8.8: the refusal is durable BEFORE the migration can strand anything. If it cannot be written the
+    // migration does not start; a runner lost from here on leaves the guard for every later job.
+    let armed
+    try {
+      armed = await runner.guardSet({
+        runId,
+        migrateContainer: n.migrate,
+        dbContainer: n.db,
+        dbUser: liveDb.user,
+        dbName: liveDb.db,
+        appName: n.migrate,
+      })
+    } catch (e) {
+      armed = { ok: false, message: String(e?.message ?? e) }
+    }
+    evidence.guard = { ok: armed.ok === true, message: armed.message }
+    if (armed.ok !== true)
+      throw new Stop('clone', `the guard could not be written: ${armed.message}; the migration was not started`)
+    unresolved = true
     const migrated = await runner.docker(
       [
         'run',
@@ -545,31 +564,19 @@ export async function runCompat({
         ? `the candidate migration exceeded ${MIGRATE_TIMEOUT_MS / 1000} s and was killed`
         : `the candidate migration on the cloned data failed: ${tail(migrated)}`
       : 'the candidate migration finished'
-    if (!quiet.ok) {
-      // needs_operator: keep the sandbox (no sweep) and persist the refusal for every later job.
-      unresolved = true
-      let kept
-      try {
-        kept = await runner.guardSet({
-          runId,
-          migrateContainer: n.migrate,
-          dbContainer: n.db,
-          dbUser: liveDb.user,
-          dbName: liveDb.db,
-          appName: n.migrate,
-        })
-      } catch (e) {
-        kept = { ok: false, message: String(e?.message ?? e) }
-      }
-      evidence.guard = { ok: kept.ok === true, message: kept.message }
-      throw new Stop(
-        'clone',
-        `${what}; ${quiet.reason}; ` +
-          (kept.ok
-            ? 'guard written, later jobs refuse until it holds'
-            : `the guard could not be written: ${kept.message}`),
-      )
+    if (!quiet.ok)
+      // needs_operator: keep the sandbox (no sweep); the guard written above stays for every later job.
+      throw new Stop('clone', `${what}; ${quiet.reason}; guard kept, later jobs refuse until it holds`)
+    // Proven. Only now is the guard cleared; the clear re-proves the three facts itself (c00.sh guard).
+    let cleared
+    try {
+      cleared = await runner.guardClear()
+    } catch (e) {
+      cleared = { ok: false, message: String(e?.message ?? e) }
     }
+    if (cleared.ok !== true)
+      throw new Stop('clone', `${what}; quiescence proven but the guard could not be cleared: ${cleared.message}`)
+    unresolved = false
     if (migrateFailed) throw new Stop('clone', `${what}; quiescence proven`)
     evidence.results.clone = { ok: true, quiescence: quiet }
 
@@ -787,6 +794,10 @@ function realRunner() {
       return { ok: r.code === 0, message: tail(r) }
     },
     guardCheck: async () => {
+      const r = await run('bash', [c00, 'guard'], { timeoutMs: GUARD_TIMEOUT_MS })
+      return { ok: r.code === 0, message: tail(r) }
+    },
+    guardClear: async () => {
       const r = await run('bash', [c00, 'guard'], { timeoutMs: GUARD_TIMEOUT_MS })
       return { ok: r.code === 0, message: tail(r) }
     },
