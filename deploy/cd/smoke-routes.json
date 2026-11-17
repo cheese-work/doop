@@ -2,670 +2,835 @@
   "groups": [
     {
       "group": "/.well-known",
-      "read": {
-        "method": "GET",
-        "path": "/.well-known/oauth-authorization-server",
-        "expect": [200],
-        "auth": false
-      },
-      "write": {
-        "method": "POST",
-        "path": "/.well-known/oauth-authorization-server",
-        "expect": [404, 405],
-        "body": {},
-        "auth": false
-      }
+      "calls": [
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/.well-known/oauth-authorization-server",
+          "auth": false
+        }
+      ],
+      "noWrite": "discovery documents are read-only by definition"
     },
     {
       "group": "/a",
-      "read": {
-        "method": "GET",
-        "path": "/a/none.png",
-        "expect": [404],
-        "auth": false
-      },
-      "write": {
-        "method": "PUT",
-        "path": "/a/none.png",
-        "expect": [404],
-        "body": {},
-        "auth": false
-      }
+      "calls": [
+        {
+          "kind": "contract",
+          "method": "GET",
+          "path": "/a/none.png",
+          "expect": [404],
+          "contract": "a missing file answers 404: the route and its store are up",
+          "auth": false
+        }
+      ],
+      "noWrite": "asset routes are read-only; there is nothing to write"
     },
     {
       "group": "/api",
-      "read": {
-        "method": "GET",
-        "path": "/api/not-a-route",
-        "expect": [404]
-      },
-      "write": {
-        "method": "POST",
-        "path": "/api/not-a-route",
-        "expect": [404],
-        "body": {}
-      }
+      "calls": [
+        {
+          "kind": "contract",
+          "method": "GET",
+          "path": "/api/not-a-route",
+          "expect": [404],
+          "contract": "an unknown /api path answers 404 JSON, not the SPA page"
+        }
+      ],
+      "noWrite": "the group has no route of its own; the real /api routes are the other groups"
     },
     {
       "group": "/api/account-exists",
-      "read": {
-        "method": "GET",
-        "path": "/api/account-exists",
-        "expect": [401],
-        "auth": false
-      },
-      "write": {
-        "method": "POST",
-        "path": "/api/account-exists",
-        "expect": [200],
-        "body": {
-          "email": "nobody@compat.invalid"
+      "calls": [
+        {
+          "kind": "read",
+          "method": "POST",
+          "path": "/api/account-exists",
+          "expect": [200],
+          "body": {
+            "email": "{email}"
+          },
+          "expectJson": {
+            "exists": "true"
+          },
+          "auth": false
         },
-        "auth": false
-      }
+        {
+          "kind": "read",
+          "method": "POST",
+          "path": "/api/account-exists",
+          "expect": [200],
+          "body": {
+            "email": "nobody@compat.invalid"
+          },
+          "expectJson": {
+            "exists": "false"
+          },
+          "auth": false
+        }
+      ],
+      "noWrite": "a lookup: it changes no state"
     },
     {
       "group": "/api/admin",
-      "read": {
-        "method": "GET",
-        "path": "/api/admin/stats",
-        "expect": [404]
-      },
-      "write": {
-        "method": "POST",
-        "path": "/api/admin/stats",
-        "expect": [404],
-        "body": {}
-      }
+      "calls": [
+        {
+          "kind": "contract",
+          "method": "GET",
+          "path": "/api/admin/stats",
+          "expect": [404],
+          "contract": "a non-admin gets 404 by design so the surface stays hidden"
+        }
+      ],
+      "noWrite": "admin routes are read-only and hidden from a non-admin"
     },
     {
       "group": "/api/agent-allowance",
-      "read": {
-        "method": "GET",
-        "path": "/api/agent-allowance",
-        "expect": [200]
-      },
-      "write": {
-        "method": "POST",
-        "path": "/api/agent-allowance",
-        "expect": [404],
-        "body": {}
-      }
+      "calls": [
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/agent-allowance"
+        }
+      ],
+      "noWrite": "the allowance is derived from the plan; nothing to write"
     },
     {
       "group": "/api/agent-keys",
-      "read": {
-        "method": "GET",
-        "path": "/api/agent-keys",
-        "expect": [200]
-      },
-      "write": {
-        "method": "POST",
-        "path": "/api/agent-keys",
-        "expect": [200],
-        "body": {
-          "name": "deploy-smoke"
+      "calls": [
+        {
+          "kind": "write",
+          "method": "POST",
+          "path": "/api/agent-keys",
+          "body": {
+            "name": "deploy-smoke"
+          },
+          "save": {
+            "keyId": "id",
+            "agentKey": "secret"
+          }
+        },
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/agent-keys",
+          "expectJson": {
+            "0.id": "{keyId}",
+            "0.name": "deploy-smoke"
+          }
         }
-      }
+      ]
     },
     {
       "group": "/api/auth",
-      "read": {
-        "method": "GET",
-        "path": "/api/auth/get-session",
-        "expect": [200],
-        "auth": false
-      },
-      "write": {
-        "method": "POST",
-        "path": "/api/auth/sign-in/email",
-        "expect": [401],
-        "body": {
-          "email": "nobody@compat.invalid",
-          "password": "wrong-password-1"
+      "calls": [
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/auth/get-session",
+          "auth": false
         },
-        "auth": false
-      }
+        {
+          "kind": "write",
+          "method": "POST",
+          "path": "/api/auth/sign-in/email",
+          "body": {
+            "email": "{email}",
+            "password": "{password}"
+          },
+          "auth": false,
+          "expectJson": {
+            "user.email": "{email}"
+          }
+        },
+        {
+          "kind": "contract",
+          "method": "POST",
+          "path": "/api/auth/sign-in/email",
+          "expect": [401],
+          "contract": "a wrong password must be refused",
+          "body": {
+            "email": "{email}",
+            "password": "not-the-password-1"
+          },
+          "auth": false
+        }
+      ]
     },
     {
       "group": "/api/automations",
-      "read": {
-        "method": "GET",
-        "path": "/api/automations",
-        "expect": [200]
-      },
-      "write": {
-        "method": "POST",
-        "path": "/api/automations",
-        "expect": [200],
-        "body": {}
-      }
+      "calls": [
+        {
+          "kind": "write",
+          "method": "POST",
+          "path": "/api/automations",
+          "body": {},
+          "save": {
+            "automationId": "id"
+          }
+        },
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/automations/{automationId}",
+          "expectJson": {
+            "id": "{automationId}"
+          }
+        },
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/automations"
+        },
+        {
+          "kind": "write",
+          "method": "DELETE",
+          "path": "/api/automations/{automationId}"
+        }
+      ]
     },
     {
       "group": "/api/billing",
-      "read": {
-        "method": "GET",
-        "path": "/api/billing/plans",
-        "expect": [200]
-      },
-      "write": {
-        "method": "POST",
-        "path": "/api/billing/plans",
-        "expect": [404],
-        "body": {}
-      }
+      "calls": [
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/billing/plans"
+        }
+      ],
+      "noWrite": "plans are static; checkout needs Stripe, which the sandbox does not have"
     },
     {
       "group": "/api/canvases",
-      "read": {
-        "method": "GET",
-        "path": "/api/canvases/{canvasId}",
-        "expect": [200]
-      },
-      "write": {
-        "method": "POST",
-        "path": "/api/canvases",
-        "expect": [200, 201],
-        "body": {},
-        "save": {
-          "canvasId": "id"
+      "calls": [
+        {
+          "kind": "write",
+          "method": "POST",
+          "path": "/api/canvases",
+          "body": {
+            "name": "Deploy smoke"
+          },
+          "save": {
+            "canvasId": "id",
+            "pageId": "pages.0.id"
+          }
+        },
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/canvases/{canvasId}",
+          "expectJson": {
+            "id": "{canvasId}",
+            "name": "Deploy smoke"
+          }
+        },
+        {
+          "kind": "write",
+          "method": "PATCH",
+          "path": "/api/canvases/{canvasId}",
+          "body": {
+            "name": "Renamed"
+          },
+          "expectJson": {
+            "ok": "true"
+          }
+        },
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/canvases/{canvasId}",
+          "expectJson": {
+            "name": "Renamed"
+          }
+        },
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/canvases"
         }
-      }
+      ]
     },
     {
       "group": "/api/comments",
-      "read": {
-        "method": "GET",
-        "path": "/api/comments/none",
-        "expect": [404]
-      },
-      "write": {
-        "method": "POST",
-        "path": "/api/comments/none/resolve",
-        "expect": [404],
-        "body": {}
-      }
+      "calls": [
+        {
+          "kind": "write",
+          "method": "POST",
+          "path": "/api/canvases/{canvasId}/comments",
+          "body": {
+            "pageId": "{pageId}",
+            "x": 10,
+            "y": 10,
+            "text": "deploy smoke"
+          },
+          "save": {
+            "commentId": "id"
+          },
+          "expectJson": {
+            "text": "deploy smoke"
+          }
+        },
+        {
+          "kind": "write",
+          "method": "POST",
+          "path": "/api/comments/{commentId}/resolve",
+          "body": {},
+          "expectJson": {
+            "id": "{commentId}"
+          }
+        },
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/home/activity"
+        }
+      ]
     },
     {
       "group": "/api/community",
-      "read": {
-        "method": "GET",
-        "path": "/api/community",
-        "expect": [200]
-      },
-      "write": {
-        "method": "POST",
-        "path": "/api/community/none/copy",
-        "expect": [404],
-        "body": {}
-      }
+      "calls": [
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/community"
+        }
+      ],
+      "noWrite": "copying needs a published canvas from another account"
     },
     {
       "group": "/api/feedback",
-      "read": {
-        "method": "GET",
-        "path": "/api/feedback/none",
-        "expect": [404]
-      },
-      "write": {
-        "method": "POST",
-        "path": "/api/feedback/none/retry",
-        "expect": [404],
-        "body": {}
-      }
+      "calls": [
+        {
+          "kind": "contract",
+          "method": "POST",
+          "path": "/api/feedback/none/retry",
+          "expect": [404],
+          "contract": "an unknown feedback id is refused with 404",
+          "body": {}
+        }
+      ],
+      "noWrite": "feedback is created by an agent run; the sandbox has no agent"
     },
     {
       "group": "/api/frames",
-      "read": {
-        "method": "GET",
-        "path": "/api/frames/none",
-        "expect": [404]
-      },
-      "write": {
-        "method": "PATCH",
-        "path": "/api/frames/none",
-        "expect": [404],
-        "body": {}
-      }
+      "calls": [
+        {
+          "kind": "write",
+          "method": "POST",
+          "path": "/api/canvases/{canvasId}/frames",
+          "body": {
+            "name": "Smoke frame",
+            "html": "<div>smoke</div>"
+          },
+          "save": {
+            "frameId": "id"
+          },
+          "expectJson": {
+            "name": "Smoke frame"
+          }
+        },
+        {
+          "kind": "write",
+          "method": "PATCH",
+          "path": "/api/frames/{frameId}",
+          "body": {
+            "name": "Smoke frame 2"
+          },
+          "expectJson": {
+            "name": "Smoke frame 2"
+          }
+        },
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/frames/{frameId}/versions"
+        }
+      ]
     },
     {
       "group": "/api/github",
-      "read": {
-        "method": "GET",
-        "path": "/api/github/app",
-        "expect": [200]
-      },
-      "write": {
-        "method": "POST",
-        "path": "/api/github/app",
-        "expect": [404],
-        "body": {}
-      }
+      "calls": [
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/github/app"
+        }
+      ],
+      "noWrite": "connect and import need GitHub App credentials, which the sandbox must not hold"
     },
     {
       "group": "/api/home",
-      "read": {
-        "method": "GET",
-        "path": "/api/home/activity",
-        "expect": [200]
-      },
-      "write": {
-        "method": "POST",
-        "path": "/api/home/activity",
-        "expect": [404],
-        "body": {}
-      }
+      "calls": [
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/home/activity"
+        }
+      ],
+      "noWrite": "the activity feed is derived from the writes above"
     },
     {
       "group": "/api/image-model",
-      "read": {
-        "method": "GET",
-        "path": "/api/image-model",
-        "expect": [200]
-      },
-      "write": {
-        "method": "PUT",
-        "path": "/api/image-model",
-        "expect": [400],
-        "body": {}
-      }
+      "calls": [
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/image-model",
+          "expectJson": {
+            "models.0.id": "gpt-image-2"
+          }
+        }
+      ],
+      "noWrite": "no image model is available without provider keys, so a selection cannot succeed"
     },
     {
       "group": "/api/integrations",
-      "read": {
-        "method": "GET",
-        "path": "/api/integrations",
-        "expect": [200]
-      },
-      "write": {
-        "method": "DELETE",
-        "path": "/api/integrations/meta",
-        "expect": [200]
-      }
+      "calls": [
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/integrations"
+        },
+        {
+          "kind": "write",
+          "method": "DELETE",
+          "path": "/api/integrations/meta"
+        }
+      ]
     },
     {
       "group": "/api/live-activities",
-      "read": {
-        "method": "GET",
-        "path": "/api/live-activities/config",
-        "expect": [200]
-      },
-      "write": {
-        "method": "PUT",
-        "path": "/api/live-activities/none",
-        "expect": [400, 404],
-        "body": {}
-      }
+      "calls": [
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/live-activities/config",
+          "expectJson": {
+            "enabled": "false"
+          }
+        },
+        {
+          "kind": "contract",
+          "method": "PUT",
+          "path": "/api/live-activities/push-to-start",
+          "expect": [503],
+          "contract": "APNs is not configured in the sandbox, so 503 is the contract",
+          "body": {
+            "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "environment": "sandbox",
+            "origin": "https://doop.example"
+          }
+        }
+      ],
+      "noWrite": "registering needs APNs"
     },
     {
       "group": "/api/local-agent",
-      "read": {
-        "method": "GET",
-        "path": "/api/local-agent",
-        "expect": [200]
-      },
-      "write": {
-        "method": "PUT",
-        "path": "/api/local-agent",
-        "expect": [200, 400],
-        "body": {}
-      }
+      "calls": [
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/local-agent"
+        },
+        {
+          "kind": "write",
+          "method": "PUT",
+          "path": "/api/local-agent",
+          "body": {
+            "enabled": false,
+            "model": "sonnet"
+          },
+          "expectJson": {
+            "enabled": "false",
+            "model": "sonnet"
+          }
+        },
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/local-agent",
+          "expectJson": {
+            "model": "sonnet"
+          }
+        }
+      ]
     },
     {
       "group": "/api/locale-config",
-      "read": {
-        "method": "GET",
-        "path": "/api/locale-config",
-        "expect": [200],
-        "auth": false
-      },
-      "write": {
-        "method": "POST",
-        "path": "/api/locale-config",
-        "expect": [401],
-        "body": {},
-        "auth": false
-      }
+      "calls": [
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/locale-config",
+          "auth": false
+        }
+      ],
+      "noWrite": "read-only server configuration; there is nothing to write"
     },
     {
       "group": "/api/mcp-consent",
-      "read": {
-        "method": "GET",
-        "path": "/api/mcp-consent/none",
-        "expect": [404]
-      },
-      "write": {
-        "method": "POST",
-        "path": "/api/mcp-consent/none",
-        "expect": [400],
-        "body": {}
-      }
+      "calls": [
+        {
+          "kind": "contract",
+          "method": "GET",
+          "path": "/api/mcp-consent/none",
+          "expect": [404],
+          "contract": "an unknown consent code is refused"
+        },
+        {
+          "kind": "contract",
+          "method": "POST",
+          "path": "/api/mcp-consent/none",
+          "expect": [400],
+          "contract": "an unknown consent code is refused",
+          "body": {}
+        }
+      ],
+      "noWrite": "a consent code only exists mid-OAuth with an MCP client"
     },
     {
       "group": "/api/me",
-      "read": {
-        "method": "GET",
-        "path": "/api/me",
-        "expect": [200]
-      },
-      "write": {
-        "method": "POST",
-        "path": "/api/me",
-        "expect": [404],
-        "body": {}
-      }
+      "calls": [
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/me",
+          "expectJson": {
+            "email": "{email}"
+          }
+        }
+      ],
+      "noWrite": "the profile is written through /api/auth"
     },
     {
       "group": "/api/model-account",
-      "read": {
-        "method": "GET",
-        "path": "/api/model-account",
-        "expect": [200]
-      },
-      "write": {
-        "method": "PATCH",
-        "path": "/api/model-account",
-        "expect": [400],
-        "body": {}
-      }
+      "calls": [
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/model-account",
+          "expectJson": {
+            "connected": "false"
+          }
+        }
+      ],
+      "noWrite": "changing the model needs a connected provider account"
     },
     {
       "group": "/api/notifications",
-      "read": {
-        "method": "GET",
-        "path": "/api/notifications",
-        "expect": [200]
-      },
-      "write": {
-        "method": "PUT",
-        "path": "/api/notifications",
-        "expect": [200, 400],
-        "body": {}
-      }
+      "calls": [
+        {
+          "kind": "write",
+          "method": "PUT",
+          "path": "/api/notifications",
+          "body": {
+            "commentEmails": false
+          },
+          "expectJson": {
+            "commentEmails": "false"
+          }
+        },
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/notifications",
+          "expectJson": {
+            "commentEmails": "false"
+          }
+        }
+      ]
     },
     {
       "group": "/api/oidc-config",
-      "read": {
-        "method": "GET",
-        "path": "/api/oidc-config",
-        "expect": [200],
-        "auth": false
-      },
-      "write": {
-        "method": "POST",
-        "path": "/api/oidc-config",
-        "expect": [401],
-        "body": {},
-        "auth": false
-      }
+      "calls": [
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/oidc-config",
+          "auth": false
+        }
+      ],
+      "noWrite": "read-only server configuration; there is nothing to write"
     },
     {
       "group": "/api/tasks",
-      "read": {
-        "method": "GET",
-        "path": "/api/tasks/none",
-        "expect": [404]
-      },
-      "write": {
-        "method": "POST",
-        "path": "/api/tasks/none/feedback",
-        "expect": [404],
-        "body": {}
-      }
+      "calls": [
+        {
+          "kind": "contract",
+          "method": "POST",
+          "path": "/api/tasks/none/feedback",
+          "expect": [404],
+          "contract": "an unknown task id is refused with 404",
+          "body": {}
+        }
+      ],
+      "noWrite": "a task exists only while an agent runs; the sandbox has no agent"
     },
     {
       "group": "/api/webhooks",
-      "read": {
-        "method": "GET",
-        "path": "/api/webhooks",
-        "expect": [200]
-      },
-      "write": {
-        "method": "POST",
-        "path": "/api/webhooks",
-        "expect": [400],
-        "body": {}
-      }
+      "calls": [
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/webhooks"
+        }
+      ],
+      "noWrite": "webhook endpoints are created by a provider connection the sandbox does not have"
     },
     {
       "group": "/api/workspaces",
-      "read": {
-        "method": "GET",
-        "path": "/api/workspaces",
-        "expect": [200]
-      },
-      "write": {
-        "method": "POST",
-        "path": "/api/workspaces",
-        "expect": [200, 201],
-        "body": {
-          "name": "Deploy smoke"
+      "calls": [
+        {
+          "kind": "write",
+          "method": "POST",
+          "path": "/api/workspaces",
+          "body": {
+            "name": "Deploy smoke"
+          },
+          "save": {
+            "workspaceId": "id"
+          },
+          "expectJson": {
+            "name": "Deploy smoke"
+          }
+        },
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/workspaces/{workspaceId}",
+          "expectJson": {
+            "name": "Deploy smoke",
+            "role": "owner"
+          }
+        },
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/workspaces"
         }
-      }
+      ]
     },
     {
       "group": "/assets",
-      "read": {
-        "method": "GET",
-        "path": "/assets/none.js",
-        "expect": [404],
-        "auth": false
-      },
-      "write": {
-        "method": "POST",
-        "path": "/assets/none.js",
-        "expect": [404],
-        "body": {},
-        "auth": false
-      }
+      "calls": [
+        {
+          "kind": "contract",
+          "method": "GET",
+          "path": "/assets/none.js",
+          "expect": [404],
+          "contract": "a missing file answers 404: the route and its store are up",
+          "auth": false
+        }
+      ],
+      "noWrite": "built assets are read-only; there is nothing to write"
     },
     {
       "group": "/bg",
-      "read": {
-        "method": "GET",
-        "path": "/bg/none.png",
-        "expect": [404],
-        "auth": false
-      },
-      "write": {
-        "method": "POST",
-        "path": "/bg/none.png",
-        "expect": [404],
-        "body": {},
-        "auth": false
-      }
+      "calls": [
+        {
+          "kind": "contract",
+          "method": "GET",
+          "path": "/bg/none.png",
+          "expect": [404],
+          "contract": "a missing file answers 404: the route and its store are up",
+          "auth": false
+        }
+      ],
+      "noWrite": "background images are read-only; there is nothing to write"
     },
     {
       "group": "/gemini-cloud",
-      "read": {
-        "method": "GET",
-        "path": "/gemini-cloud/mcp/none",
-        "expect": [403],
-        "auth": false
-      },
-      "write": {
-        "method": "POST",
-        "path": "/gemini-cloud/mcp/none",
-        "expect": [403],
-        "body": {},
-        "auth": false
-      }
+      "calls": [
+        {
+          "kind": "contract",
+          "method": "GET",
+          "path": "/gemini-cloud/mcp/none",
+          "expect": [403],
+          "contract": "the worker protocol needs a worker token; 403 is the contract",
+          "auth": false
+        }
+      ],
+      "noWrite": "worker protocol; needs a worker token"
     },
     {
       "group": "/healthz",
-      "read": {
-        "method": "GET",
-        "path": "/healthz",
-        "expect": [200],
-        "auth": false
-      },
-      "write": {
-        "method": "POST",
-        "path": "/healthz",
-        "expect": [404],
-        "body": {},
-        "auth": false
-      }
+      "calls": [
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/healthz",
+          "auth": false,
+          "expectJson": {
+            "ok": "true"
+          }
+        }
+      ],
+      "noWrite": "health is a read-only probe; there is nothing to write"
     },
     {
       "group": "/i",
-      "read": {
-        "method": "GET",
-        "path": "/i/none.png",
-        "expect": [404],
-        "auth": false
-      },
-      "write": {
-        "method": "PUT",
-        "path": "/i/none.png",
-        "expect": [404],
-        "body": {},
-        "auth": false
-      }
+      "calls": [
+        {
+          "kind": "contract",
+          "method": "GET",
+          "path": "/i/none.png",
+          "expect": [404],
+          "contract": "a missing file answers 404: the route and its store are up",
+          "auth": false
+        }
+      ],
+      "noWrite": "image routes are read-only; there is nothing to write"
     },
     {
       "group": "/ingest",
-      "read": {
-        "method": "GET",
-        "path": "/ingest/none",
-        "expect": [404],
-        "auth": false
-      },
-      "write": {
-        "method": "POST",
-        "path": "/ingest/none",
-        "expect": [200, 204, 400, 401, 403, 404],
-        "body": {},
-        "auth": false
-      }
+      "calls": [
+        {
+          "kind": "contract",
+          "method": "POST",
+          "path": "/ingest/none",
+          "expect": [200, 204, 400, 401, 403, 404],
+          "contract": "analytics ingest answers by its key, never with 5xx: sandbox has no analytics host",
+          "body": {},
+          "auth": false
+        }
+      ],
+      "noWrite": "fire-and-forget analytics intake; nothing is stored"
     },
     {
       "group": "/local-agent",
-      "read": {
-        "method": "GET",
-        "path": "/local-agent/mcp/none",
-        "expect": [403],
-        "auth": false
-      },
-      "write": {
-        "method": "POST",
-        "path": "/local-agent/mcp/none",
-        "expect": [403],
-        "body": {},
-        "auth": false
-      }
+      "calls": [
+        {
+          "kind": "contract",
+          "method": "GET",
+          "path": "/local-agent/mcp/none",
+          "expect": [403],
+          "contract": "the local agent protocol needs a device token; 403 is the contract",
+          "auth": false
+        }
+      ],
+      "noWrite": "device protocol; needs a registered device"
     },
     {
       "group": "/mcp",
-      "read": {
-        "method": "GET",
-        "path": "/mcp",
-        "expect": [401, 405],
-        "auth": false
-      },
-      "write": {
-        "method": "POST",
-        "path": "/mcp",
-        "expect": [401],
-        "body": {},
-        "auth": false
-      }
+      "calls": [
+        {
+          "kind": "write",
+          "method": "POST",
+          "path": "/mcp",
+          "body": {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": {}
+          },
+          "auth": false,
+          "headers": {
+            "authorization": "Bearer {agentKey}",
+            "accept": "application/json, text/event-stream"
+          }
+        },
+        {
+          "kind": "contract",
+          "method": "POST",
+          "path": "/mcp",
+          "expect": [401],
+          "contract": "a request with no agent key must be refused",
+          "body": {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": {}
+          },
+          "auth": false,
+          "headers": {
+            "accept": "application/json, text/event-stream"
+          }
+        }
+      ]
     },
     {
       "group": "/relay",
-      "read": {
-        "method": "GET",
-        "path": "/relay/array/none/config.js",
-        "expect": [200, 204, 400, 401, 403, 404, 502, 503, 504],
-        "auth": false
-      },
-      "write": {
-        "method": "POST",
-        "path": "/relay/e",
-        "expect": [200, 204, 400, 401, 403, 404, 502, 503, 504],
-        "body": {},
-        "auth": false
-      }
+      "calls": [
+        {
+          "kind": "contract",
+          "method": "POST",
+          "path": "/relay/e",
+          "expect": [200, 204, 400, 401, 403, 404, 502, 503, 504],
+          "contract": "the relay proxies to the analytics host; with no egress any proxy answer is accepted, a crash is not",
+          "body": {},
+          "auth": false
+        }
+      ],
+      "noWrite": "a proxy to an external host; the sandbox has no egress"
     },
     {
       "group": "/robots.txt",
-      "read": {
-        "method": "GET",
-        "path": "/robots.txt",
-        "expect": [200],
-        "auth": false
-      },
-      "write": {
-        "method": "POST",
-        "path": "/robots.txt",
-        "expect": [404],
-        "body": {},
-        "auth": false
-      }
+      "calls": [
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/robots.txt",
+          "auth": false
+        }
+      ],
+      "noWrite": "a static file served as is; there is nothing to write"
     },
     {
       "group": "/sitemap.xml",
-      "read": {
-        "method": "GET",
-        "path": "/sitemap.xml",
-        "expect": [200],
-        "auth": false
-      },
-      "write": {
-        "method": "POST",
-        "path": "/sitemap.xml",
-        "expect": [404],
-        "body": {},
-        "auth": false
-      }
+      "calls": [
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/sitemap.xml",
+          "auth": false
+        }
+      ],
+      "noWrite": "a static file served as is; there is nothing to write"
     },
     {
       "group": "/stripe",
-      "read": {
-        "method": "GET",
-        "path": "/stripe/webhook",
-        "expect": [404],
-        "auth": false
-      },
-      "write": {
-        "method": "POST",
-        "path": "/stripe/webhook",
-        "expect": [501],
-        "body": {},
-        "auth": false
-      }
+      "calls": [
+        {
+          "kind": "contract",
+          "method": "POST",
+          "path": "/stripe/webhook",
+          "expect": [501],
+          "contract": "Stripe is not configured in the sandbox, so 501 is the contract",
+          "body": {},
+          "auth": false
+        }
+      ],
+      "noWrite": "a signed provider webhook; the sandbox holds no provider secret"
     },
     {
       "group": "/u",
-      "read": {
-        "method": "GET",
-        "path": "/u/none",
-        "expect": [404],
-        "auth": false
-      },
-      "write": {
-        "method": "PUT",
-        "path": "/u/none",
-        "expect": [410],
-        "body": {},
-        "auth": false
-      }
+      "calls": [
+        {
+          "kind": "contract",
+          "method": "PUT",
+          "path": "/u/none",
+          "expect": [410],
+          "contract": "the upload-token route is retired and answers 410",
+          "body": {},
+          "auth": false
+        }
+      ],
+      "noWrite": "a retired route that accepts no write"
     },
     {
       "group": "/webhooks",
-      "read": {
-        "method": "GET",
-        "path": "/webhooks/none",
-        "expect": [404],
-        "auth": false
-      },
-      "write": {
-        "method": "POST",
-        "path": "/webhooks/none",
-        "expect": [404],
-        "body": {},
-        "auth": false
-      }
+      "calls": [
+        {
+          "kind": "contract",
+          "method": "POST",
+          "path": "/webhooks/none",
+          "expect": [401, 404],
+          "contract": "an unsigned or unknown provider webhook is refused",
+          "body": {},
+          "auth": false
+        }
+      ],
+      "noWrite": "signed provider webhooks"
     }
   ]
 }

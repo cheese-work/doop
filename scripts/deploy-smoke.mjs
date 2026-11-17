@@ -1,5 +1,6 @@
-// Contract smoke suite for the deploy train (CHE-5474 S4c, C-8.5c): one read and one write per route group
-// in deploy/cd/smoke-routes.json, against a running doop. The compat job runs it from the candidate image,
+// Contract smoke suite for the deploy train (CHE-5474 S4c, C-8.5c): an ordered chain of calls per route group
+// in deploy/cd/smoke-routes.json (real writes that are read back; `contract` calls for routes that need an
+// outside service; `noWrite` states why a group has no write), against a running doop. The compat job runs it from the candidate image,
 // on the sandbox network, against the predecessor on the migrated clone. Health 200 and every call passing
 // are required. Run it only against a sandbox: it signs up a throwaway user and writes.
 //
@@ -42,6 +43,25 @@ function fill(template, saved) {
   return { path: out, missing }
 }
 
+/** Substitute {name} in every string of a body or header set; the value goes in as is, not URL-encoded. */
+function fillDeep(value, saved, state) {
+  if (typeof value === 'string')
+    return value.replace(/\{(\w+)\}/g, (_, name) => {
+      if (saved[name] === undefined) state.missing = name
+      return String(saved[name] ?? '')
+    })
+  if (Array.isArray(value)) return value.map((v) => fillDeep(v, saved, state))
+  if (value && typeof value === 'object')
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, fillDeep(v, saved, state)]))
+  return value
+}
+
+/** "pages.0.id" on a parsed JSON body. */
+const dig = (json, dotted) =>
+  String(dotted)
+    .split('.')
+    .reduce((v, k) => (v == null ? undefined : v[k]), json)
+
 export async function runSmoke({
   baseUrl,
   origin = 'http://localhost',
@@ -60,12 +80,13 @@ export async function runSmoke({
 
   // A throwaway user in the sandbox database; the clone's own accounts are never used.
   const email = `smoke-${randomBytes(6).toString('hex')}@compat.invalid`
+  const password = randomBytes(12).toString('hex')
   let cookie = ''
   try {
     const res = await fetchImpl(`${baseUrl}/api/auth/sign-up/email`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin },
-      body: JSON.stringify({ email, password: randomBytes(12).toString('hex'), name: 'Deploy Smoke' }),
+      body: JSON.stringify({ email, password, name: 'Deploy Smoke' }),
     })
     cookie = cookieHeader(res)
     if (res.status !== 200 || !cookie) throw new Error(`status ${res.status}${cookie ? '' : ', no session cookie'}`)
@@ -74,35 +95,49 @@ export async function runSmoke({
     return { ok: false, results, failed }
   }
 
-  const saved = {}
+  const saved = { email, password }
   for (const g of routes.groups) {
-    // a write that saves a value (a created id) runs first, so the read can use it
-    for (const kind of g.write?.save ? ['write', 'read'] : ['read', 'write']) {
-      const call = g[kind]
-      const row = { group: g.group, kind, method: call?.method, path: call?.path }
+    const calls = g.calls ?? []
+    const kinds = new Set(calls.map((c) => c.kind))
+    if (!kinds.has('read') && !kinds.has('contract'))
+      failed.push({ group: g.group, kind: 'read', error: 'group has no read' })
+    if (!kinds.has('write') && !g.noWrite)
+      failed.push({ group: g.group, kind: 'write', error: 'group has no write and no noWrite reason' })
+    for (const call of calls) {
+      const row = { group: g.group, kind: call.kind, method: call.method, path: call.path }
       let status
       let error
       try {
-        if (!call) throw new Error(`group has no ${kind}`)
         const { path: url, missing } = fill(call.path, saved)
-        if (missing) throw new Error(`needs a captured value "${missing}" that was never saved`)
+        const state = { missing }
+        const body = call.body === undefined ? undefined : fillDeep(call.body, saved, state)
+        const extra = call.headers === undefined ? {} : fillDeep(call.headers, saved, state)
+        const want = call.expectJson === undefined ? undefined : fillDeep(call.expectJson, saved, state)
+        if (state.missing) throw new Error(`needs a captured value "${state.missing}" that was never saved`)
         row.path = url
-        const headers = { origin }
+        const headers = { origin, ...extra }
         if (call.auth !== false) headers.cookie = cookie
-        if (call.body !== undefined) headers['content-type'] = 'application/json'
+        if (body !== undefined) headers['content-type'] = 'application/json'
         const res = await fetchImpl(`${baseUrl}${url}`, {
           method: call.method,
           headers,
-          body: call.body === undefined ? undefined : JSON.stringify(call.body),
+          body: body === undefined ? undefined : JSON.stringify(body),
           redirect: 'manual',
         })
         status = res.status
-        if (call.save && (call.expect ?? [200]).includes(status)) {
-          const json = await res.json().catch(() => ({}))
-          for (const [name, field] of Object.entries(call.save)) saved[name] = json?.[field]
+        const expect = call.expect ?? [200]
+        if (!expect.includes(status)) error = `status ${status}, expected ${expect.join('/')}`
+        else if (call.save || want) {
+          const json = await res.json().catch(() => undefined)
+          for (const [name, field] of Object.entries(call.save ?? {})) {
+            saved[name] = dig(json, field)
+            if (saved[name] === undefined) error = `response has no "${field}" to save as ${name}`
+          }
+          for (const [field, value] of Object.entries(want ?? {})) {
+            if (String(dig(json, field)) !== String(value))
+              error = `${field} is ${JSON.stringify(dig(json, field))}, expected ${JSON.stringify(value)}`
+          }
         }
-        if (!(call.expect ?? [200]).includes(status))
-          error = `status ${status}, expected ${(call.expect ?? [200]).join('/')}`
       } catch (e) {
         error = e.message
       }

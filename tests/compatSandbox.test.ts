@@ -4,15 +4,21 @@ import { describe, expect, it } from 'vitest'
 import { ALLOWED_KEYS, buildPredecessorEnv, checkEnvKeys } from '../scripts/compat-env.mjs'
 import {
   LABEL,
+  MIGRATE_TIMEOUT_MS,
   checkAppInspect,
   checkNetworkInspect,
   diskOk,
   ledgerHash,
   names,
+  networkCreateArgs,
   parseProbeOutput,
   probeScript,
   probeTargets,
+  proveQuiescence,
   runCompat,
+  sandboxAddress,
+  sandboxGateway,
+  sandboxTargets,
   verifyEvidence,
   // @ts-expect-error plain .mjs script, no types
 } from '../scripts/compat-sandbox.mjs'
@@ -35,13 +41,28 @@ const SEVEN = [
   'DOOP_GEMINI_CLOUD_WORKERS',
 ]
 
-type Call = { args: string[]; input?: string }
+type Call = { args: string[]; input?: string; timeoutMs?: number }
 type Reply = { code: number; stdout?: string; stderr?: string }
 
 const TARGETS = probeTargets({ hostGateway: '10.0.0.1', livePgAddress: '172.20.0.5' })
-const goodNetwork = JSON.stringify([
-  { Name: N.network, Internal: true, Containers: { a: { Name: N.db }, b: { Name: N.probe } } },
-])
+const SUBNET = '172.30.0.0/24'
+const GATEWAY = '172.30.0.1'
+const netOf = (over: Record<string, unknown> = {}) => ({
+  Name: N.network,
+  Internal: true,
+  Options: { 'com.docker.network.bridge.inhibit_ipv4': 'true' },
+  IPAM: { Config: [{ Subnet: SUBNET }] },
+  Containers: { a: { Name: N.db }, b: { Name: N.probe } },
+  ...over,
+})
+const goodNetwork = JSON.stringify([netOf()])
+/** The targets the orchestrator put in the probe script: what the sandbox was really asked to reach. */
+const scriptTargets = (args: string[]): { id: string; control?: boolean }[] =>
+  JSON.parse(/const T=(\[.*?\]);const one/.exec(args.at(-1) ?? '')![1]!)
+const answer = (args: string[], reached: (t: { id: string; control?: boolean }) => boolean = (t) => !!t.control) => ({
+  code: 0,
+  stdout: JSON.stringify(scriptTargets(args).map((t) => ({ id: t.id, reached: reached(t) }))) + '\n',
+})
 const goodApp = (extra: Record<string, unknown> = {}) =>
   JSON.stringify([
     {
@@ -62,8 +83,8 @@ function rig(
   const sweeps = [...(opts.sweep ?? [])]
   const events: string[] = []
   const runner = {
-    docker: async (args: string[], o: { input?: string } = {}): Promise<Reply> => {
-      calls.push({ args, input: o.input })
+    docker: async (args: string[], o: { input?: string; timeoutMs?: number } = {}): Promise<Reply> => {
+      calls.push({ args, input: o.input, timeoutMs: o.timeoutMs })
       events.push('docker ' + args.slice(0, 3).join(' '))
       const hit = over(args, calls)
       if (hit) return hit
@@ -71,16 +92,13 @@ function rig(
       if (j.startsWith('inspect --format {{.Image}}')) return { code: 0, stdout: 'sha256:pgimageid\n' }
       if (j.includes('pg_database_size')) return { code: 0, stdout: '1000\n' }
       if (j.includes('pg_isready')) return { code: 0 }
+      if (j.startsWith('inspect --format {{.State.Running}}')) return { code: 0, stdout: 'false\n' }
+      if (j.includes('pg_stat_activity') && j.includes('psql')) return { code: 0, stdout: '0 0\n' }
       if (j.startsWith('image inspect'))
         return { code: 0, stdout: JSON.stringify(['PATH=/usr/bin', 'NODE_VERSION=22']) }
       if (j.startsWith('network inspect')) return { code: 0, stdout: goodNetwork }
       if (j.startsWith('inspect') && j.includes(N.app)) return { code: 0, stdout: goodApp() }
-      if (j.startsWith('run') && j.includes(N.probe)) {
-        return {
-          code: 0,
-          stdout: JSON.stringify(TARGETS.map((t: { id: string }) => ({ id: t.id, reached: false }))) + '\n',
-        }
-      }
+      if (j.startsWith('run') && j.includes(N.probe)) return answer(args)
       if (j.startsWith('run') && j.includes(N.smoke))
         return { code: 0, stdout: JSON.stringify({ ok: true, results: [{ group: '/healthz', status: 200 }] }) + '\n' }
       return { code: 0, stdout: '' }
@@ -90,6 +108,15 @@ function rig(
       events.push('pipe')
       const hit = over(['PIPE'], calls)
       return hit ?? { code: 0 }
+    },
+    canary: async () => {
+      events.push('canary open')
+      return {
+        port: 45678,
+        close: async () => {
+          events.push('canary close')
+        },
+      }
     },
     freeBytes: async () => 10_000,
     sweep: async () => {
@@ -163,6 +190,7 @@ describe('compat sandbox, happy path', () => {
     await runCompat(input(runner))
     const net = text(calls).find((l) => l.startsWith('network create'))!
     expect(net).toContain('--internal')
+    expect(net).toContain('com.docker.network.bridge.inhibit_ipv4=true')
     expect(net).toContain(`--label ${LABEL}=${RUN}`)
     const db = text(calls).find((l) => l.startsWith('run') && l.includes(N.db))!
     expect(db).toContain('sha256:pgimageid')
@@ -219,6 +247,254 @@ describe('compat sandbox, happy path', () => {
     const ids = probeTargets({ hostGateway: '10.0.0.1', livePgAddress: '172.20.0.5' }).map((t: { id: string }) => t.id)
     expect(ids).toEqual(['tcp:1.1.1.1:443', 'tcp:10.0.0.1:443', 'tcp:172.20.0.5:5432', 'dns:api.github.com'])
     expect(probeScript(TARGETS)).toContain('1.1.1.1')
+  })
+})
+
+describe('compat sandbox, the sandbox network gateway is probed with a positive control', () => {
+  const probeCall = (calls: Call[]) => calls.find((c) => c.args[0] === 'run' && c.args.includes(N.probe))!
+
+  it('aims at the sandbox gateway on several ports and at a host canary, with the clone database as control', async () => {
+    const { runner, calls } = rig()
+    await runCompat(input(runner))
+    const ids = scriptTargets(probeCall(calls).args).map((t) => t.id)
+    for (const port of [22, 53, 80, 443, 2375, 5432]) expect(ids).toContain(`tcp:${GATEWAY}:${port}`)
+    expect(ids).toContain(`tcp:${GATEWAY}:45678`)
+    expect(ids).toContain(`control:${N.db}:5432`)
+    expect(ids).toEqual(expect.arrayContaining(['tcp:1.1.1.1:443', 'tcp:10.0.0.1:443', 'dns:api.github.com']))
+    expect(scriptTargets(probeCall(calls).args).filter((t) => t.control)).toHaveLength(1)
+  })
+
+  it('opens the canary for the probe only, and closes it before anything else runs', async () => {
+    const { runner, events } = rig()
+    await runCompat(input(runner))
+    const open = events.indexOf('canary open')
+    const close = events.indexOf('canary close')
+    expect(open).toBeGreaterThan(-1)
+    expect(events.slice(open + 1, close).filter((e) => e.startsWith('docker'))).toEqual([
+      'docker run --name doop-compat-probe-r1',
+    ])
+  })
+
+  it('closes the canary when the probe cannot run', async () => {
+    const { runner, events } = rig((a) =>
+      a[0] === 'run' && a.includes(N.probe) ? { code: 125, stderr: 'no image' } : undefined,
+    )
+    await runCompat(input(runner))
+    expect(events).toContain('canary close')
+  })
+
+  it.each([22, 53, 80, 443, 2375, 5432, 45678])(
+    'a sandbox gateway that answers on port %s blocks boot',
+    async (port) => {
+      const { runner, calls } = rig((a) =>
+        a[0] === 'run' && a.includes(N.probe)
+          ? answer(a, (t) => !!t.control || t.id === `tcp:${GATEWAY}:${port}`)
+          : undefined,
+      )
+      const ev = await runCompat(input(runner))
+      expect(ev.ok).toBe(false)
+      expect(ev.failed.part).toBe('behavior')
+      expect(ev.failed.reason).toContain(`tcp:${GATEWAY}:${port}`)
+      expect(has(calls, /^start /)).toBe(false)
+    },
+  )
+
+  it('a probe that cannot reach its control fails closed, even when nothing else answered', async () => {
+    const { runner, calls } = rig((a) => (a[0] === 'run' && a.includes(N.probe) ? answer(a, () => false) : undefined))
+    const ev = await runCompat(input(runner))
+    expect(ev.ok).toBe(false)
+    expect(ev.failed.reason).toMatch(/control/)
+    expect(has(calls, /^start /)).toBe(false)
+  })
+
+  it('a network with no readable subnet cannot be probed, so nothing starts on it', async () => {
+    const { runner, calls } = rig((a) =>
+      a.join(' ').startsWith('network inspect')
+        ? { code: 0, stdout: JSON.stringify([netOf({ IPAM: { Config: [] } })]) }
+        : undefined,
+    )
+    const ev = await runCompat(input(runner))
+    expect(ev.ok).toBe(false)
+    expect(ev.failed.reason).toMatch(/subnet/)
+    expect(has(calls, /^run /)).toBe(false)
+  })
+
+  it('gives every container on the sandbox an explicit address, so none takes the would-be gateway', async () => {
+    const { runner, calls } = rig()
+    await runCompat(input(runner))
+    const mine = calls.filter((c) => ['run', 'create'].includes(c.args[0]!) && c.args.includes('--network'))
+    expect(mine).toHaveLength(5)
+    const ips = mine.map((c) => c.args[c.args.indexOf('--ip') + 1])
+    expect(ips.every((x) => /^172\.30\.0\.\d+$/.test(String(x)))).toBe(true)
+    expect(new Set(ips).size).toBe(5)
+    expect(ips).not.toContain(GATEWAY)
+  })
+
+  it('a container found on the gateway address blocks boot, whatever put it there', async () => {
+    const holder = netOf({ Containers: { a: { Name: N.db, IPv4Address: `${GATEWAY}/24` } } })
+    expect(checkNetworkInspect([holder], [N.db]).reason).toMatch(/holds the gateway address/)
+    const { runner, calls } = rig((a, seen) =>
+      a.join(' ').startsWith('network inspect') && has(seen, /run --name doop-compat-probe/)
+        ? { code: 0, stdout: JSON.stringify([holder]) }
+        : undefined,
+    )
+    const ev = await runCompat(input(runner))
+    expect(ev.ok).toBe(false)
+    expect(ev.failed.reason).toMatch(/holds the gateway address/)
+    expect(has(calls, /^start /)).toBe(false)
+  })
+
+  it('uses the gateway Docker reports, else the first host of the subnet', () => {
+    expect(sandboxGateway([netOf()])).toBe('172.30.0.1')
+    expect(sandboxGateway([netOf({ IPAM: { Config: [{ Subnet: '10.5.7.9/16' }] } })])).toBe('10.5.0.1')
+    expect(sandboxGateway([netOf({ IPAM: { Config: [{ Subnet: '172.18.0.0/16', Gateway: '172.18.0.254' }] } })])).toBe(
+      '172.18.0.254',
+    )
+    expect(sandboxGateway([netOf({ IPAM: { Config: [{ Subnet: 'fd00::/64' }] } })])).toBeUndefined()
+    expect(sandboxGateway(undefined)).toBeUndefined()
+    expect(sandboxAddress([netOf()], 0)).toBe('172.30.0.10')
+    expect(sandboxAddress([netOf()], 4)).toBe('172.30.0.14')
+    expect(sandboxAddress([netOf({ IPAM: { Config: [{ Subnet: '10.0.0.0/28' }] } })], 0)).toBeUndefined()
+  })
+
+  it('builds sandbox targets: the base list, the gateway ports, the canary, one control', () => {
+    const t = sandboxTargets({ base: TARGETS, gateway: GATEWAY, canaryPort: 1234, controlHost: 'db' })
+    expect(t.map((x: { id: string }) => x.id)).toEqual([
+      ...TARGETS.map((x: { id: string }) => x.id),
+      ...[22, 53, 80, 443, 2375, 5432].map((p) => `tcp:${GATEWAY}:${p}`),
+      `tcp:${GATEWAY}:1234`,
+      'control:db:5432',
+    ])
+    expect(t.filter((x: { control?: boolean }) => x.control)).toHaveLength(1)
+  })
+
+  it('creates the network with inhibit_ipv4, which is what removes the host-side gateway', () => {
+    const args = networkCreateArgs(N.network, ['--label', `${LABEL}=${RUN}`])
+    expect(args.slice(0, 2)).toEqual(['network', 'create'])
+    expect(args).toEqual(expect.arrayContaining(['--internal', '-o', 'com.docker.network.bridge.inhibit_ipv4=true']))
+    expect(args.at(-1)).toBe(N.network)
+  })
+})
+
+describe('compat sandbox, the clone migration is supervised and proven quiescent (C-8.8)', () => {
+  const isMigrate = (a: string[]) => a[0] === 'run' && a.includes(N.migrate)
+  const isQuiesceSql = (a: string[]) =>
+    a.join(' ').includes('pg_stat_activity') && !a.join(' ').includes('pg_terminate_backend')
+  const noStart = (calls: Call[]) => !has(calls, /^start /)
+
+  it('runs the migration under a 120 s external timeout, with the runner deadline inside it', async () => {
+    const { runner, calls } = rig()
+    await runCompat(input(runner))
+    const mig = calls.find((c) => isMigrate(c.args))!
+    expect(MIGRATE_TIMEOUT_MS).toBe(120_000)
+    expect(mig.timeoutMs).toBe(120_000)
+    const deadline = Number(/DOOP_MIGRATE_DEADLINE_SECONDS=(\d+)/.exec(mig.args.join(' '))![1])
+    expect(deadline).toBeGreaterThan(0)
+    expect(deadline).toBeLessThan(120)
+  })
+
+  it('proves quiescence on success and records it in the evidence', async () => {
+    const { runner, calls } = rig()
+    const ev = await runCompat(input(runner))
+    expect(ev.results.clone).toEqual({
+      ok: true,
+      quiescence: { ok: true, containerExited: true, sessions: 0, advisoryLocks: 0 },
+    })
+    const sql = text(calls).find((l) => l.includes('pg_stat_activity'))!
+    expect(sql).toContain(`application_name='${N.migrate}'`)
+    expect(sql).toContain('pg_locks')
+    expect(sql).toContain('1685025648')
+    expect(sql).toContain(`exec ${N.db} psql`)
+  })
+
+  it('a hung migration is killed, waited on and proven quiescent, then stops the run before boot', async () => {
+    const { runner, calls } = rig((a) => (isMigrate(a) ? ({ code: 124, timedOut: true } as never) : undefined))
+    const ev = await runCompat(input(runner))
+    expect(ev.ok).toBe(false)
+    expect(ev.failed.part).toBe('clone')
+    expect(ev.failed.reason).toMatch(/exceeded 120 s and was killed/)
+    expect(ev.failed.reason).toMatch(/quiescence proven/)
+    const l = text(calls)
+    const killAt = l.indexOf(`kill ${N.migrate}`)
+    expect(killAt).toBeGreaterThan(-1)
+    expect(l.findIndex((x) => x.startsWith('inspect --format {{.State.Running}}'))).toBeGreaterThan(killAt)
+    expect(l.findIndex((x) => x.includes('pg_stat_activity'))).toBeGreaterThan(killAt)
+    expect(ev.results.clone.quiescence.ok).toBe(true)
+    expect(noStart(calls)).toBe(true)
+    expect(has(calls, /run --name doop-compat-probe/)).toBe(false)
+  })
+
+  it('a hung migration whose session lingers is terminated, and quiescence is re-checked', async () => {
+    let reads = 0
+    const { runner, calls } = rig((a) => {
+      if (isMigrate(a)) return { code: 124, timedOut: true } as never
+      if (isQuiesceSql(a)) return { code: 0, stdout: ++reads === 1 ? '1 1\n' : '0 0\n' }
+      return undefined
+    })
+    const ev = await runCompat(input(runner))
+    expect(has(calls, /pg_terminate_backend/)).toBe(true)
+    expect(reads).toBe(2)
+    expect(ev.ok).toBe(false)
+    expect(ev.failed.reason).toMatch(/quiescence proven/)
+    expect(ev.results.clone.quiescence).toEqual(expect.objectContaining({ ok: true, sessions: 0, advisoryLocks: 0 }))
+  })
+
+  it.each([
+    [
+      'a session of the run is still open',
+      (a: string[]) => (isQuiesceSql(a) ? { code: 0, stdout: '2 0\n' } : undefined),
+    ],
+    ['the advisory lock is still held', (a: string[]) => (isQuiesceSql(a) ? { code: 0, stdout: '0 1\n' } : undefined)],
+    [
+      'the container is still running',
+      (a: string[]) =>
+        a.join(' ').startsWith('inspect --format {{.State.Running}}') ? { code: 0, stdout: 'true\n' } : undefined,
+    ],
+    [
+      'the quiescence query fails',
+      (a: string[]) => (isQuiesceSql(a) ? { code: 1, stderr: 'connection refused' } : undefined),
+    ],
+    [
+      'the quiescence query answers nonsense',
+      (a: string[]) => (isQuiesceSql(a) ? { code: 0, stdout: 'maybe\n' } : undefined),
+    ],
+  ])('failed quiescence (%s) after a hung migration is needs_operator', async (_name, extra) => {
+    const { runner, calls } = rig((a) => (isMigrate(a) ? ({ code: 124, timedOut: true } as never) : extra(a)))
+    const ev = await runCompat(input(runner))
+    expect(ev.ok).toBe(false)
+    expect(ev.failed.part).toBe('clone')
+    expect(ev.failed.reason).toContain('needs_operator')
+    expect(ev.results.clone.quiescence.ok).toBe(false)
+    expect(noStart(calls)).toBe(true)
+  })
+
+  it('a migration that exits 0 but leaves the lock held is needs_operator, not a pass', async () => {
+    const { runner, calls } = rig((a) => (isQuiesceSql(a) ? { code: 0, stdout: '0 1\n' } : undefined))
+    const ev = await runCompat(input(runner))
+    expect(ev.ok).toBe(false)
+    expect(ev.failed.reason).toContain('needs_operator')
+    expect(ev.results.clone.ok).toBe(false)
+    expect(noStart(calls)).toBe(true)
+  })
+
+  it('a migration that fails fast is killed by name and proven quiescent before the run stops', async () => {
+    const { runner, calls } = rig((a) => (isMigrate(a) ? { code: 1, stderr: 'deadline exceeded' } : undefined))
+    const ev = await runCompat(input(runner))
+    expect(ev.ok).toBe(false)
+    expect(ev.failed.reason).toMatch(/migration on the cloned data failed/)
+    expect(has(calls, new RegExp(`^kill ${N.migrate}`))).toBe(true)
+    expect(ev.results.clone.quiescence).toEqual(expect.objectContaining({ ok: true }))
+  })
+
+  it('proveQuiescence reports each fact it read', async () => {
+    const { runner } = rig((a) => (isQuiesceSql(a) ? { code: 0, stdout: '3 1\n' } : undefined))
+    const q = await proveQuiescence({
+      runner,
+      containerName: N.migrate,
+      dbName: N.db,
+      liveDb: { user: 'doop', db: 'doop' },
+    })
+    expect(q).toEqual(expect.objectContaining({ ok: false, containerExited: true, sessions: 3, advisoryLocks: 1 }))
   })
 })
 
@@ -316,14 +592,7 @@ describe('compat sandbox, isolation probes block startup', () => {
 
   it('a probe that reaches an external address blocks startup', async () => {
     const { runner, calls } = rig((a) =>
-      a[0] === 'run' && a.includes(N.probe)
-        ? {
-            code: 0,
-            stdout: JSON.stringify(
-              TARGETS.map((t: { id: string }) => ({ id: t.id, reached: t.id === 'tcp:1.1.1.1:443' })),
-            ),
-          }
-        : undefined,
+      a[0] === 'run' && a.includes(N.probe) ? answer(a, (t) => !!t.control || t.id === 'tcp:1.1.1.1:443') : undefined,
     )
     const ev = await runCompat(input(runner))
     expect(ev.ok).toBe(false)
@@ -336,12 +605,7 @@ describe('compat sandbox, isolation probes block startup', () => {
     'reaching %s blocks startup',
     async (id) => {
       const { runner, calls } = rig((a) =>
-        a[0] === 'run' && a.includes(N.probe)
-          ? {
-              code: 0,
-              stdout: JSON.stringify(TARGETS.map((t: { id: string }) => ({ id: t.id, reached: t.id === id }))),
-            }
-          : undefined,
+        a[0] === 'run' && a.includes(N.probe) ? answer(a, (t) => !!t.control || t.id === id) : undefined,
       )
       const ev = await runCompat(input(runner))
       expect(ev.ok).toBe(false)
@@ -371,8 +635,10 @@ describe('compat sandbox, isolation probes block startup', () => {
 
   it('a network that is not Internal, or holds a foreign container, blocks startup', async () => {
     for (const net of [
-      [{ Name: N.network, Internal: false, Containers: { a: { Name: N.db } } }],
-      [{ Name: N.network, Internal: true, Containers: { a: { Name: N.db }, b: { Name: 'doop' } } }],
+      [netOf({ Internal: false })],
+      [netOf({ Containers: { a: { Name: N.db }, b: { Name: 'doop' } } })],
+      [netOf({ Options: {} })],
+      [netOf({ IPAM: { Config: [{ Subnet: SUBNET, Gateway: GATEWAY }] } })],
     ]) {
       const { runner, calls } = rig((a) =>
         a.join(' ').startsWith('network inspect') ? { code: 0, stdout: JSON.stringify(net) } : undefined,
@@ -514,6 +780,11 @@ describe('inspect and probe checks', () => {
   it('reads a probe result only when every target answers', () => {
     const ok = JSON.stringify(TARGETS.map((t: { id: string }) => ({ id: t.id, reached: false })))
     expect(parseProbeOutput(ok, TARGETS).ok).toBe(true)
+    const withControl = [...TARGETS, { id: 'control:db:5432', kind: 'tcp', host: 'db', port: 5432, control: true }]
+    const rows = (control: boolean) =>
+      JSON.stringify(withControl.map((t) => ({ id: t.id, reached: t.id.startsWith('control') && control })))
+    expect(parseProbeOutput(rows(true), withControl).ok).toBe(true)
+    expect(parseProbeOutput(rows(false), withControl).reason).toMatch(/control/)
     expect(parseProbeOutput('', TARGETS).ok).toBe(false)
     expect(parseProbeOutput('{}', TARGETS).ok).toBe(false)
   })
