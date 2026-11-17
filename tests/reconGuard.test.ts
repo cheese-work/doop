@@ -260,4 +260,27 @@ describe('G2 recon guard', () => {
     const f = await setup({ comment: false })
     expect(() => draw(f)).toThrow(PolicyRefused)
   })
+
+  /* Terra's P1: the exemption is for a frame that IS the recon, not for any HTML that carries one */
+  it('exempts only a recon-only frame: a design with a doop-recon script is refused', async () => {
+    const canvas = store.createCanvas('Multica', 'alice')
+    const page = canvasPages(canvas)[0]!.id
+    store.setPageIssue(canvas.id, page, ISSUE, 'member')
+    store.bindProject(sys, canvas.id, PROJECT)
+    setReconSources({ assets: async () => undefined, comments: async () => [] })
+    await warmReconEvidence(canvas, page, agent)
+    const RECON = '<script type="application/json" id="doop-recon">{}</script>'
+    const make = (html: string) => () =>
+      store.createFrame(agent, canvas.id, { name: 'x', pageId: page, html }, 'agent-1')
+    for (const html of [
+      `<div>design</div>${RECON}`,
+      `${RECON}<section><h1>Pricing</h1></section>`,
+      `${RECON}Pricing`,
+      `<style>body{color:red}</style>${RECON}`,
+      `${RECON}<script>document.body.append('design')</script>`,
+      `${RECON}${RECON}`,
+    ])
+      expect(make(html), html).toThrow(PolicyRefused)
+    expect(make(`<!doctype html><html><head><meta charset="utf-8"></head><body>${RECON}</body></html>`)).not.toThrow()
+  })
 })

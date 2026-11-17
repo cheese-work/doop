@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { pageFrames } from '../shared/pages.ts'
-import { RECON_DECISIONS, reconBodies } from '../shared/designCompleteness.ts'
+import { RECON_DECISIONS, isReconOnly, reconBodies } from '../shared/designCompleteness.ts'
 import type { Canvas } from '../shared/types.ts'
 import { expectedCells, hashScan, type ReconScan } from './reconScan.ts'
 import type { WriteContext } from './writePolicy.ts'
@@ -34,13 +34,13 @@ export function assetFactsOf(buf: Buffer): AssetFacts {
 }
 
 /* a dynamic import keeps the database out of this module's load: only a real asset lookup needs it */
-const storedAssets: ReconSources['assets'] = async (id) => {
+export const storedReconAssets: ReconSources['assets'] = async (id) => {
   const asset = await (await import('./assets.ts')).getAsset(id)
   return asset ? assetFactsOf(asset.buf) : undefined
 }
 
 /** Comments come from Multica and are not plugged in yet (like the task verifier of G1): none = refused. */
-let sources: ReconSources | undefined = { assets: storedAssets }
+let sources: ReconSources | undefined = { assets: storedReconAssets }
 const assetCache = new Map<string, AssetFacts>()
 const commentCache = new Map<string, ReconComment[]>()
 
@@ -51,7 +51,8 @@ export function setReconSources(next: ReconSources | undefined): void {
 }
 
 export const reconManifestHash = (body: string): string => createHash('sha256').update(body.trim()).digest('hex')
-export const isReconHtml = (html: string): boolean => reconBodies(html).length > 0
+/** The one thing G2 lets an agent draw before the recon is done: a frame that is only the recon inventory. */
+export const isReconHtml = isReconOnly
 
 type Cell = {
   screen?: string

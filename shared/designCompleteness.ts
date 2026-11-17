@@ -111,6 +111,20 @@ function reconScripts(els: El[]): El[] {
 /** The bodies of the `doop-recon` scripts in one piece of frame HTML (empty: it is not a recon frame). */
 export const reconBodies = (html: string): string[] => reconScripts(scanElements(html)).map((el) => el.body ?? '')
 
+const RECON_SHELL = new Set(['html', 'head', 'body', 'meta'])
+
+/** True when the HTML is nothing but one `doop-recon` script (in an optional html/head/body shell): no design markup, text or other script. */
+export function isReconOnly(html: string): boolean {
+  const els = scanElements(html)
+  const recon = reconScripts(els)
+  if (recon.length !== 1 || els.some((el) => el !== recon[0] && !RECON_SHELL.has(el.tag))) return false
+  const text = html
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<script[\s\S]*?<\/script\s*>/gi, '')
+    .replace(/<[^>]*>/g, '')
+  return text.replace(/&nbsp;|\s/g, '') === ''
+}
+
 /* ---- what is a design frame ---- */
 
 interface ScannedFrame {
