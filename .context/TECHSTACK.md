@@ -229,7 +229,9 @@
   and does not move it, so the G3 attestation stays current; the frame carries `lockEpoch` (up on every unlock, never
   reused) and `lockAttestationId` (`frames.lock_epoch`, `frames.lock_attestation_id`, migration 0042). Unlock is
   `{ locked: false }` alone, from a signed-in user whose account id is in `setLockOwners` (an agent never unlocks; no
-  owners set = nobody unlocks); it raises `lockEpoch`, drops the attestation id and moves `updatedAt`, so the old
+  owners set = nobody unlocks; `server/index.ts` fills it at boot from `DOOP_LOCK_OWNERS`, a comma list of account ids).
+  `lockIfVersion` on an already locked frame never rewrites the attestation: the same id is a no-op (`already`, no
+  write, no broadcast), another id is `policy_refused` until an owner unlocks. It raises `lockEpoch`, drops the attestation id and moves `updatedAt`, so the old
   attestation no longer matches. `expected_updated_at` fences MCP `set_frame_html`, `edit_frame_html`,
   `append_frame_html` and `update_frame` (`VersionChanged`, `version_changed`). REST answers a refusal 423 and a lost
   fence 409. `tests/frameLockPolicy.test.ts` covers it. `tests/writePolicy.test.ts` also scans `server/` so a new

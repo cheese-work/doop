@@ -59,7 +59,7 @@ import {
   MAX_ASSET_BYTES,
 } from './assets.ts'
 import * as ingest from './ingest.ts'
-import { PolicyRefused, VersionChanged } from './writePolicy.ts'
+import { PolicyRefused, setLockOwners, VersionChanged } from './writePolicy.ts'
 import * as agentKeys from './agentKeys.ts'
 import * as backgrounds from './backgrounds.ts'
 import * as storage from './storage.ts'
@@ -2269,6 +2269,7 @@ if (env.isProduction) {
 /* ------------------------------------------------- websocket */
 
 /* G2 reads the issue's comments from Multica; without its settings no design frame on an issue page passes */
+setLockOwners(env.DOOP_LOCK_OWNERS)
 setReconSources({ assets: storedReconAssets, comments: multicaCommentsSource(env)?.comments })
 
 const server = http.createServer(app)

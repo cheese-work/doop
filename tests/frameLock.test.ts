@@ -56,3 +56,36 @@ it('keeps the lock across a server restart', async () => {
   const loaded: Canvas = await (await again.get(`/api/canvases/${canvas.id}`)).json()
   expect(loaded.frames.find((f) => f.id === frame.id)?.locked).toBe(true)
 }, 60_000)
+
+it('boot reads DOOP_LOCK_OWNERS: an owner unlocks a lock made before, a member does not (real server, real pglite)', async () => {
+  const member = new Client(server)
+  await member.signUp('lock-member@test.dev', 'Lock Member')
+  const sessionOf = async (c: Client) =>
+    ((await (await c.get('/api/auth/get-session')).json()) as { user: { id: string } }).user.id
+  const canvas: Canvas = await (await owner.post('/api/canvases', { name: 'Owner unlock' })).json()
+  expect((await owner.post(`/api/canvases/${canvas.id}/members`, { email: 'lock-member@test.dev' })).status).toBe(200)
+  const frame: Frame = await (await owner.post(`/api/canvases/${canvas.id}/frames`, { name: 'Old lock' })).json()
+  expect((await owner.patch(`/api/frames/${frame.id}`, { locked: true })).status).toBe(200)
+  const ownerId = await sessionOf(owner)
+
+  /* the server boots with the owner configured; the frame was locked before this boot */
+  const dataDir = server.dataDir
+  server.stop({ keepData: true })
+  await server.stopped
+  server = await startServer({ DOOP_LOCK_OWNERS: ownerId }, dataDir)
+  const login = async (email: string) => {
+    const c = new Client(server)
+    expect((await c.post('/api/auth/sign-in/email', { email, password: 'password12345' })).status).toBe(200)
+    return c
+  }
+  const memberAgain = await login('lock-member@test.dev')
+  const ownerAgain = await login('lock@test.dev')
+
+  expect((await memberAgain.patch(`/api/frames/${frame.id}`, { locked: false })).status).toBe(423)
+  const unlocked = await ownerAgain.patch(`/api/frames/${frame.id}`, { locked: false })
+  expect(unlocked.status).toBe(200)
+  expect(await unlocked.json()).toMatchObject({ lockEpoch: 1 })
+  const loaded: Canvas = await (await ownerAgain.get(`/api/canvases/${canvas.id}`)).json()
+  expect(loaded.frames.find((f) => f.id === frame.id)).toMatchObject({ lockEpoch: 1 })
+  expect(loaded.frames.find((f) => f.id === frame.id)?.locked).toBeFalsy()
+}, 90_000)

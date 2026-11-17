@@ -267,11 +267,51 @@ describe('lock_if_version, lockEpoch, unlock voids the attestation', () => {
     expect(db.saveFrame).toHaveBeenLastCalledWith(expect.objectContaining({ id: f.f.id, locked: true }), true)
   })
 
-  it('is idempotent: locking again at the same version is OK and still does not touch updatedAt', () => {
+  it('is idempotent for the same attestation: OK, no write, updatedAt and the id untouched', () => {
     const f = locked()
-    const again = store.lockIfVersion(agent, f.f.id, f.f.updatedAt, 'att-2')
+    db.saveFrame.mockClear()
+    const again = store.lockIfVersion(agent, f.f.id, f.f.updatedAt, 'att-1')
     expect(again).toMatchObject({ ok: true })
-    expect(store.getFrame(f.f.id)).toMatchObject({ locked: true, updatedAt: f.f.updatedAt, lockAttestationId: 'att-2' })
+    expect(db.saveFrame).not.toHaveBeenCalled()
+    expect(store.getFrame(f.f.id)).toMatchObject({ locked: true, updatedAt: f.f.updatedAt, lockAttestationId: 'att-1' })
+  })
+
+  it('a locked frame keeps its attestation: another id is refused, by anyone, until an owner unlocks', () => {
+    const f = locked()
+    db.saveFrame.mockClear()
+    for (const ctx of [agent, sys, bob, cheese]) {
+      expect(() => store.lockIfVersion(ctx, f.f.id, f.f.updatedAt, 'att-other')).toThrow(PolicyRefused)
+    }
+    expect(store.getFrame(f.f.id)?.lockAttestationId).toBe('att-1')
+    expect(db.saveFrame).not.toHaveBeenCalled()
+    /* after the owner unlocks, the frame is at a new version and may be attested again */
+    const unlocked = store.updateFrame(cheese, f.f.id, { locked: false }, 'c')!
+    expect(store.lockIfVersion(agent, f.f.id, unlocked.updatedAt, 'att-other')).toMatchObject({ ok: true })
+    expect(store.getFrame(f.f.id)?.lockAttestationId).toBe('att-other')
+  })
+
+  it('a frame locked by hand has no attestation, and a call cannot attach one to it', () => {
+    const f = fixture()
+    store.updateFrame(sys, f.f.id, { locked: true }, 'x')
+    const lockedAt = store.getFrame(f.f.id)!.updatedAt
+    expect(() => store.lockIfVersion(agent, f.f.id, lockedAt, 'att-1')).toThrow(PolicyRefused)
+    expect(store.getFrame(f.f.id)?.lockAttestationId).toBeUndefined()
+  })
+
+  it('actions and MCP surface the refusal; the publish lifecycle gets no card', async () => {
+    const f = locked()
+    const retry = actions.lockFramesForPublish(
+      [{ frameId: f.f.id, attestedUpdatedAt: f.f.updatedAt, attestationId: 'att-1' }],
+      agentActor,
+    )
+    expect(retry.cardAllowed).toBe(true)
+    const other = actions.lockFramesForPublish(
+      [{ frameId: f.f.id, attestedUpdatedAt: f.f.updatedAt, attestationId: 'att-other' }],
+      agentActor,
+    )
+    expect(other.cardAllowed).toBe(false)
+    expect(other.results[0]).toMatchObject({ ok: false, error: 'policy_refused' })
+    expect(store.getFrame(f.f.id)?.lockAttestationId).toBe('att-1')
   })
 
   it('a stale version is not locked and answers version_changed', () => {
@@ -387,13 +427,12 @@ describe('the publish lifecycle: attest -> lock every frame -> card', () => {
     expect(store.getFrame(f.f.id)?.locked).toBe(true) // the safe side stays locked
     expect(store.getFrame(f.g.id)?.locked).toBeFalsy()
 
-    /* the designer attests again on the new version, then publishes again */
-    const second = actions.lockFramesForPublish(
-      [entry(f.f, 'att-9'), entry(store.getFrame(f.g.id)!, 'att-9')],
-      agentActor,
-    )
+    /* the designer attests the edited frame again and publishes again; the frame that already holds its
+       lock is retried with the attestation it holds (a no-op), and the new frame locks with the new one */
+    const second = actions.lockFramesForPublish([entry(f.f), entry(store.getFrame(f.g.id)!, 'att-9')], agentActor)
     expect(second.cardAllowed).toBe(true)
-    expect(store.getFrame(f.f.id)?.lockAttestationId).toBe('att-9')
+    expect(store.getFrame(f.f.id)?.lockAttestationId).toBe('att-1')
+    expect(store.getFrame(f.g.id)?.lockAttestationId).toBe('att-9')
   })
 
   it('(f) an open append stream ends when the frame locks, and a later chunk is refused', () => {

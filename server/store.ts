@@ -784,18 +784,26 @@ class Store {
 
   /** Compare-and-set lock (CHE-6626): locks the frame only if it is still at `attestedUpdatedAt`, the
    *  version a G3 attestation covers. A lock does not move `updatedAt`, so the attestation stays current.
-   *  Locking an already locked frame at that version is a no-op that re-records the attestation id.
+   *  A frame that is already locked keeps its attestation: the same id again is a no-op (`already`, a retry),
+   *  any other id, or a lock that carries none, is refused until an owner unlocks it.
    *  Undefined = not found; a refused write throws PolicyRefused. */
   lockIfVersion(
     ctx: WriteContext,
     frameId: string,
     attestedUpdatedAt: number,
     attestationId: string,
-  ): { ok: true; frame: Frame } | { ok: false; error: 'version_changed'; currentUpdatedAt: number } | undefined {
+  ):
+    | { ok: true; frame: Frame; already?: true }
+    | { ok: false; error: 'version_changed'; currentUpdatedAt: number }
+    | undefined {
     const frame = this.getFrame(frameId)
     if (!frame) return undefined
     const c = this.canvases.get(frame.canvasId)!
     assertWritable(ctx, 'lock_frame', { canvas: c, frame, pageIds: [framePageId(c, frame)] })
+    if (frame.locked) {
+      if (frame.lockAttestationId === attestationId) return { ok: true, frame, already: true }
+      throw new PolicyRefused('lock_frame', 'the frame is locked with another attestation; an owner unlocks it first')
+    }
     if (frame.updatedAt !== attestedUpdatedAt)
       return { ok: false, error: 'version_changed', currentUpdatedAt: frame.updatedAt }
     frame.locked = true

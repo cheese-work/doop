@@ -1569,6 +1569,7 @@ export function lockFrameIfVersion(entry: LockEntry, actor: Actor): LockResult {
   }
   if (!res) return { frameId, ok: false, error: 'not_found' }
   if (!res.ok) return { frameId, ok: false, error: res.error }
+  if (res.already) return { frameId, ok: true } // a retry of a lock that holds: nothing to announce
   finishStream(frameId, false)
   finishReveal(frameId)
   broadcast(res.frame.canvasId, { type: 'frame:updated', frame: res.frame, actor })
