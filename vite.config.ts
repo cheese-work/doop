@@ -22,6 +22,9 @@ export default defineConfig({
     /* seven files drive a real Chromium; closing one under a full parallel
        run can outlast the 10s default */
     hookTimeout: 30_000,
+    /* EXPERIMENT (CHE-6913): one file at a time on CI, to test whether files
+       sharing the 2-vCPU runner (and the one Chromium) cause the stalls */
+    maxWorkers: process.env.CI ? 1 : undefined,
   },
   /* Error tracking resolves minified stack frames through the .map next to
      each bundle. The source is public (AGPL), so the maps are too; browsers
