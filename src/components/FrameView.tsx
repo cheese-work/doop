@@ -496,13 +496,19 @@ export const FrameView = memo(function FrameView({
   }, [keepIframe])
   useEffect(() => {
     function onMsg(ev: MessageEvent) {
-      if (ev.data?.type === 'doop:frame-ready' && ev.source === iframeRef.current?.contentWindow) {
-        setRuntimeReady(true)
+      if (ev.source !== iframeRef.current?.contentWindow) return
+      if (ev.data?.type === 'doop:frame-ready') setRuntimeReady(true)
+      /* the frame posts absolute time; convert with this document's origin (CHE-6942 C1) */
+      else if (ev.data?.type === 'doop:paint' && typeof ev.data.time === 'number') {
+        performance.mark('doop:paint', {
+          startTime: ev.data.time - performance.timeOrigin,
+          detail: { frameId: frame.id, name: ev.data.name },
+        })
       }
     }
     window.addEventListener('message', onMsg)
     return () => window.removeEventListener('message', onMsg)
-  }, [])
+  }, [frame.id])
   /* once the runtime answers, the element panel may talk to this document */
   useEffect(() => {
     const win = iframeRef.current?.contentWindow
@@ -516,6 +522,7 @@ export const FrameView = memo(function FrameView({
     const request = ++htmlRequest.current
     let cancelled = false
     void requestFrame(frame.id, 'doop:html', { html }).then((reply) => {
+      if (reply) performance.mark('doop:html-result', { detail: { frameId: frame.id } })
       if (reply && !cancelled && request === htmlRequest.current) setRuntimeDocument({ html, request })
     })
     return () => {

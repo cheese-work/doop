@@ -37,6 +37,7 @@ function open() {
 
   s.onopen = () => {
     if (socket !== s) return
+    performance.mark('doop:ws-open')
     const { clientId, name } = getIdentity()
     /* join first: flipping `connected` makes the Stage announce its camera,
        and the server drops anything sent before the socket has a canvas */
@@ -47,12 +48,19 @@ function open() {
   s.onmessage = (ev) => {
     if (socket !== s) return
     let msg: ServerMessage
+    const received = performance.now()
     try {
       msg = JSON.parse(ev.data)
     } catch {
       return
     }
+    const init = msg.type === 'init'
+    if (init) {
+      performance.mark('doop:init-received', { startTime: received })
+      performance.mark('doop:init-parsed')
+    }
     handle(msg)
+    if (init) performance.mark('doop:init-applied')
   }
 
   s.onclose = (ev) => {
