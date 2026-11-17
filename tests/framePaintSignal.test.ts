@@ -91,16 +91,19 @@ describe.skipIf(!findBrowserPath())('frame paint signals (real bootstrap)', { ti
   it('C1-e: a body hidden by CSS for 800 ms paints no earlier than 800 ms after the html', async () => {
     const r = await run(
       '<!doctype html><html><head><style>@keyframes show{to{visibility:visible}}body{visibility:hidden;animation:show 0s 800ms forwards}</style></head>' +
-        '<body style="margin:0"><div style="width:150px;height:120px;background:#c33"></div></body></html>',
+        '<body style="margin:0"><div style="width:150px;height:120px;background:#c33"></div>' +
+        // the frame's own clock at apply time, so a busy host cannot skew the bound
+        '<script>parent.postMessage({ type: "doop:test-applied", time: performance.timeOrigin + performance.now() }, "*")</script></body></html>',
       5000,
       true,
     )
     const first = paints(r).find((m) => m.name === 'first-paint')
     expect(first).toBeTruthy()
-    // the plan's bound: paint at or after the doop:html-result + 800 ms (host clock)
-    const result = r.msgs.find((m) => m.type === 'doop:html-result')
-    expect(result).toBeTruthy()
-    expect(first!.time! - r.origin).toBeGreaterThanOrEqual(result!.at + 800)
+    // plan bound: paint at or after the apply (just before doop:html-result) + 800 ms, on the frame's clock
+    expect(r.msgs.some((m) => m.type === 'doop:html-result')).toBe(true)
+    const applied = r.msgs.find((m) => m.type === 'doop:test-applied')
+    expect(applied).toBeTruthy()
+    expect(first!.time!).toBeGreaterThanOrEqual(applied!.time! + 800)
   })
 
   it('doop:frame-ready carries paintTiming', async () => {
