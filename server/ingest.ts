@@ -332,7 +332,7 @@ export async function handleIngest(req: express.Request, res: express.Response) 
   const title = typeof req.body?.title === 'string' && req.body.title.trim() ? req.body.title.trim() : page
   const width = Math.min(3840, Math.max(320, Math.round(Number(req.body?.width) || 1280)))
   const height = Math.min(8000, Math.max(400, Math.round(Number(req.body?.height) || 900)))
-  const actor = actions.resolveActor({ name: key.name, kind: 'user' })
+  const actor = actions.resolveActor({ name: key.name, kind: 'user', origin: 'sync' })
 
   db.update(syncKeys)
     .set({ lastUsedAt: Date.now() })

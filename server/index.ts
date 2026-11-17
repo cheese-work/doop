@@ -58,6 +58,7 @@ import {
   MAX_ASSET_BYTES,
 } from './assets.ts'
 import * as ingest from './ingest.ts'
+import { PolicyRefused } from './writePolicy.ts'
 import * as agentKeys from './agentKeys.ts'
 import * as backgrounds from './backgrounds.ts'
 import * as storage from './storage.ts'
@@ -622,6 +623,11 @@ app.options('/ingest/:key', (_req, res) => {
 
 app.post('/ingest/:key', express.json({ limit: '10mb', type: () => true }), (req, res) => {
   ingest.handleIngest(req, res).catch((err) => {
+    if (err instanceof PolicyRefused) {
+      if (!res.headersSent)
+        res.status(403).json({ error: 'this canvas is bound to a project; sync cannot write to it' })
+      return
+    }
     console.error('[ingest] failed', err)
     if (!res.headersSent) res.status(500).json({ error: 'sync failed' })
   })
@@ -1200,7 +1206,7 @@ app.delete('/api/canvases/:id', (req, res) => {
      before they can be destroyed */
   if (!c.ownerId) return res.status(403).json({ error: 'claim it first' })
   if (!canManageCanvas(req.user!.id, c)) return res.status(403).json({ error: 'not yours' })
-  actions.deleteCanvas(c.id)
+  actions.deleteCanvas(c.id, actions.resolveActor({ name: req.user!.name, kind: 'user' }))
   res.json({ ok: true })
 })
 

@@ -12,6 +12,7 @@ import { disconnectAgent, receiveRequest, tickSlack, type Inbound } from '../ser
 import { slackWebhookRouter, validSignature } from '../server/slack/webhook.ts'
 import { buildPrompt, plainText, titleFor } from '../server/slack/prompt.ts'
 import { store } from '../server/store.ts'
+import { systemContext } from '../server/writePolicy.ts'
 import * as actions from '../server/actions.ts'
 import { onFeedback } from '../server/resident.ts'
 import { pickModel } from '../server/agentModel.ts'
@@ -261,8 +262,18 @@ describe('design jobs', () => {
     await tickSlack()
     const row = await session()
     expect(row.reported).toBe(false)
-    const frame = store.createFrame(row.canvasId!, { name: 'Checkout', html: '<h1>Hi</h1>' }, 'tester')!
-    const unrelated = store.createFrame(row.canvasId!, { name: 'Private notes', html: '<p>mine</p>' }, 'tester')!
+    const frame = store.createFrame(
+      systemContext(),
+      row.canvasId!,
+      { name: 'Checkout', html: '<h1>Hi</h1>' },
+      'tester',
+    )!
+    const unrelated = store.createFrame(
+      systemContext(),
+      row.canvasId!,
+      { name: 'Private notes', html: '<p>mine</p>' },
+      'tester',
+    )!
     actions.getTasks(row.canvasId!).find((task) => task.id === row.taskId)!.frameIds = [frame.id]
     actions.completeCard(row.canvasId!, row.taskId!)
     await tickSlack()
@@ -281,7 +292,7 @@ describe('design jobs', () => {
     await receiveRequest(mention())
     await tickSlack()
     const row = await session()
-    store.createFrame(row.canvasId!, { name: 'Unrelated', html: '<p>mine</p>' }, 'tester')
+    store.createFrame(systemContext(), row.canvasId!, { name: 'Unrelated', html: '<p>mine</p>' }, 'tester')
     actions.completeCard(row.canvasId!, row.taskId!)
     await tickSlack()
     const result = sent.filter((request) => request.method === 'chat.postMessage').at(-1)!

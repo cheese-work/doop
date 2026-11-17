@@ -9,6 +9,7 @@ import { conflicts, defaultSpot, freeSpot } from './frameLayout.ts'
 import { isCanvasComment } from '../shared/comments.ts'
 import { decodeEscapedHtml, looksEscapedHtml, repairEscapedHtml } from './escapedHtml.ts'
 import { emitCanvasEvent } from './events.ts'
+import { writeContextFor } from './writePolicy.ts'
 import type {
   Actor,
   CanvasGuide,
@@ -134,7 +135,16 @@ function logActivity(canvasId: string, actor: Actor, message: string, frameId?: 
 }
 
 export function resolveActor(
-  raw: { name?: string; kind?: string; clientId?: string; owner?: string; multicaTaskId?: string } | undefined,
+  raw:
+    | {
+        name?: string
+        kind?: string
+        clientId?: string
+        owner?: string
+        multicaTaskId?: string
+        origin?: 'mcp' | 'sync'
+      }
+    | undefined,
 ): Actor {
   const kind = raw?.kind === 'agent' ? 'agent' : raw?.kind === 'user' ? 'user' : 'agent'
   const name = raw?.name?.trim() || (kind === 'agent' ? 'AI Agent' : 'Anonymous')
@@ -144,6 +154,7 @@ export function resolveActor(
     color: colorFor(name),
     clientId: raw?.clientId,
     owner: raw?.owner,
+    ...(raw?.origin ? { origin: raw.origin } : {}),
     ...(kind === 'agent' && raw?.multicaTaskId ? { multicaTaskId: raw.multicaTaskId } : {}),
   }
 }
@@ -1135,7 +1146,7 @@ export async function restoreFrameVersion(
   finishReveal(frameId)
   const prior = priorState(before)
   const patch = { html: version.html, width: version.width, height: version.height }
-  const frame = store.updateFrame(frameId, patch, actor.name)
+  const frame = store.updateFrame(writeContextFor(actor), frameId, patch, actor.name)
   if (!frame) return undefined
   noteHtmlChange(prior, actor, false)
   broadcast(frame.canvasId, { type: 'frame:updated', frame, actor })
@@ -1293,7 +1304,7 @@ export function appendFrameHtml(
   const piece = escaped ? decodeEscapedHtml(chunk) : chunk
   const html = opts.start ? piece : before.html + piece
   const prior = priorState(before)
-  const frame = store.updateFrame(frameId, { html }, actor.name)!
+  const frame = store.updateFrame(writeContextFor(actor), frameId, { html }, actor.name)!
   /* the opening chunk replaces the design; every later one extends this burst */
   noteHtmlChange(prior, actor, !starting)
 
@@ -1323,7 +1334,7 @@ export function appendFrameHtml(
 /* ------------------------------------------------------------------ */
 
 export function setCanvasPages(canvasId: string, pages: import('../shared/types.ts').CanvasPageInfo[], actor: Actor) {
-  const saved = store.setPages(canvasId, pages)
+  const saved = store.setPages(writeContextFor(actor), canvasId, pages)
   const next = saved?.pages ?? pages
   broadcast(canvasId, { type: 'canvas:pages', pages: next, actor })
   for (const guide of saved?.dropped ?? []) broadcast(canvasId, { type: 'guide', id: guide.id, guide: null, actor })
@@ -1359,7 +1370,7 @@ export function deleteGuide(canvasId: string, guideId: string, actor: Actor) {
 
 /** Copy a page with its frames; peers get the page list and each new frame. */
 export async function duplicatePage(canvasId: string, pageId: string, actor: Actor) {
-  const copy = await store.duplicatePage(canvasId, pageId, actor.name)
+  const copy = await store.duplicatePage(writeContextFor(actor), canvasId, pageId, actor.name)
   if (!copy) return undefined
   broadcast(canvasId, { type: 'canvas:pages', pages: copy.pages, actor })
   for (const guide of copy.guides) broadcast(canvasId, { type: 'guide', id: guide.id, guide, actor })
@@ -1412,7 +1423,7 @@ export function createFrame(
   if (input.html !== undefined) input = { ...input, html: repairEscapedHtml(input.html) }
   let moved = false
   if (actor.kind === 'agent') ({ input, moved } = clearOfOverlap(canvasId, input))
-  const frame = store.createFrame(canvasId, input, actor.name)
+  const frame = store.createFrame(writeContextFor(actor), canvasId, input, actor.name)
   if (!frame) return undefined
   if (moved) relocated.add(frame)
   bursts.set(frame.id, { actor, lastAt: frame.createdAt })
@@ -1448,7 +1459,7 @@ export function updateFrame(
   const prevHidden = !!before.hidden
   const prevLocked = !!before.locked
   const prior = priorState(before)
-  const frame = store.updateFrame(frameId, patch, actor.name)
+  const frame = store.updateFrame(writeContextFor(actor), frameId, patch, actor.name)
   if (!frame) return undefined
 
   const htmlChanged = patch.html !== undefined && patch.html !== prevHtml
@@ -1519,7 +1530,7 @@ export function setFrameApproval(
         approvedFrameUpdatedAt: current.updatedAt,
       }
     : null
-  const frame = store.updateFrame(frameId, { approval }, user.name)!
+  const frame = store.updateFrame(writeContextFor(actor), frameId, { approval }, user.name)!
   broadcast(frame.canvasId, { type: 'frame:updated', frame, actor })
   logActivity(
     frame.canvasId,
@@ -1539,7 +1550,7 @@ export function deleteFrame(frameId: string, actor: Actor): Frame | undefined {
      so their auto “Designing…” tasks end with it */
   finishStream(frameId, false)
   finishReveal(frameId)
-  const frame = store.deleteFrame(frameId)
+  const frame = store.deleteFrame(writeContextFor(actor), frameId)
   if (!frame) return undefined
   bursts.delete(frameId)
   thumbs.purge(frameId)
@@ -1550,8 +1561,8 @@ export function deleteFrame(frameId: string, actor: Actor): Frame | undefined {
 }
 
 /** Remove a canvas with everything attached to it; viewers are told to leave. */
-export function deleteCanvas(canvasId: string): boolean {
-  const c = store.deleteCanvas(canvasId)
+export function deleteCanvas(canvasId: string, actor: Actor): boolean {
+  const c = store.deleteCanvas(writeContextFor(actor), canvasId)
   if (!c) return false
   for (const f of c.frames) {
     thumbs.purge(f.id)

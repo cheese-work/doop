@@ -15,6 +15,7 @@ vi.mock('../server/db/persist.ts', () => ({
 
 const actions = await import('../server/actions.ts')
 const { store } = await import('../server/store.ts')
+const { systemContext } = await import('../server/writePolicy.ts')
 
 /**
  * A card's text IS the prompt the resident agent runs on. It used to be cut
@@ -71,7 +72,7 @@ describe('addQueuedCard', () => {
   })
 
   it('carries the selected frame and element as the card scope', () => {
-    const frame = store.createFrame(canvasId, { name: 'Home' }, 'kevin')!
+    const frame = store.createFrame(systemContext(), canvasId, { name: 'Home' }, 'kevin')!
     const card = actions.addQueuedCard(canvasId, 'make it bolder', 'kevin', undefined, undefined, undefined, {
       frameId: frame.id,
       selector: 'aside:nth-of-type(1)',
@@ -87,7 +88,7 @@ describe('addQueuedCard', () => {
 
   it('drops a scope whose frame is not on this canvas', () => {
     const other = store.createCanvas('elsewhere', 'kevin').id
-    const foreign = store.createFrame(other, { name: 'Away' }, 'kevin')!
+    const foreign = store.createFrame(systemContext(), other, { name: 'Away' }, 'kevin')!
     const card = actions.addQueuedCard(canvasId, 'tidy up', 'kevin', undefined, undefined, undefined, {
       frameId: foreign.id,
       selector: 'div',
