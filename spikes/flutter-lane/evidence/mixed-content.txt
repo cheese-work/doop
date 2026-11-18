@@ -1,0 +1,17 @@
+# mixed content: HTTPS outer page (tailnet, valid cert) embedding the app over plain HTTP (tailnet IP :18459). Chrome 158 stock policy (no Playwright switches). 2026-11-19 03:29:14 ICT+0700
+=== form 2 (kind), app over HTTP
+Mixed Content: The page at 'https://congvc-x99.taila6fa8a.ts.net:19451/player?form=kind&sandbox=allow-scripts%20allow-same-origin&src=http://100.117.164.34:18459/' was loaded over HTTPS, but requested an insecure frame 'http://100.117.164.3
+Mixed Content: The page at 'https://congvc-x99.taila6fa8a.ts.net:19451/' was loaded over HTTPS, but requested an insecure script 'http://100.117.164.34:18459/flutter_bootstrap.js'. This content should also be served over HTTPS.
+Mixed Content: The page at 'https://congvc-x99.taila6fa8a.ts.net:19451/' was loaded over HTTPS, but requested an insecure resource 'http://100.117.164.34:18459/canvaskit/canvaskit.wasm'. This content should also be served over HTTPS.
+messages that reached the outer page: ["doop:flutter-ready","doop:flutter-frame"]
+frames: [
+  'https://congvc-x99.taila6fa8a.ts.net:19451/player?form=kind&sandbox=al',
+  'http://100.117.164.34:18459/'
+]
+=== control: same, app over HTTPS (:18453)
+no mixed-content message
+messages that reached the outer page: ["doop:flutter-ready","doop:flutter-frame"]
+frames: [
+  'https://congvc-x99.taila6fa8a.ts.net:19451/player?form=kind&sandbox=al',
+  'https://congvc-x99.taila6fa8a.ts.net:18453/'
+]

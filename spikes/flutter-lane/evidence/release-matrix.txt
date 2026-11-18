@@ -1,0 +1,238 @@
+# Release builds: first frame (cold), env per form. 5 runs each. 2026-11-19 02:50:33 ICT+0700
+# columns: form, build. App origins: :18453 canvaskit plain, :18454 skwasm plain, :18455 canvaskit +CORS, :18456 skwasm +CORS
+=== top-level canvaskit
+run 1: first frame 2887 ms
+run 2: first frame 1647 ms
+run 3: first frame 1565 ms
+run 4: first frame 1623 ms
+run 5: first frame 1593 ms
+env: {"renderer":"canvaskit","origin":"https://congvc-x99.taila6fa8a.ts.net:18453","localStorage":"ok","crossOriginIsolated":false,"secureContext":true,"sharedArrayBuffer":false,"dpr":3}
+ready 5/5; p50=1623 ms, max=2887 ms
+=== top-level skwasm
+run 1: first frame 1381 ms
+run 2: first frame 1285 ms
+run 3: first frame 1372 ms
+run 4: first frame 1391 ms
+run 5: first frame 1459 ms
+env: {"renderer":"skwasm","origin":"https://congvc-x99.taila6fa8a.ts.net:18454","localStorage":"ok","crossOriginIsolated":false,"secureContext":true,"sharedArrayBuffer":false,"dpr":3}
+ready 5/5; p50=1381 ms, max=1459 ms
+=== form2 canvaskit
+run 1: first frame 1916 ms
+run 2: first frame 1739 ms
+run 3: first frame 1799 ms
+run 4: first frame 1822 ms
+run 5: first frame 1873 ms
+env: {"renderer":"canvaskit","origin":"https://congvc-x99.taila6fa8a.ts.net:18453","localStorage":"ok","crossOriginIsolated":false,"secureContext":true,"sharedArrayBuffer":false,"dpr":3}
+ready 5/5; p50=1822 ms, max=1916 ms
+=== form2 skwasm
+run 1: first frame 1576 ms
+run 2: first frame 1459 ms
+run 3: first frame 1518 ms
+run 4: first frame 1417 ms
+run 5: first frame 1387 ms
+env: {"renderer":"skwasm","origin":"https://congvc-x99.taila6fa8a.ts.net:18454","localStorage":"ok","crossOriginIsolated":false,"secureContext":true,"sharedArrayBuffer":false,"dpr":3}
+ready 5/5; p50=1459 ms, max=1576 ms
+
+# form 1 = nested iframe in the HTML frame (sandbox=allow-scripts, opaque origin, relay on)
+=== form1 canvaskit, assets WITHOUT CORS
+run 1: NOT READY in 25000 ms
+  first errors: ["error: Failed to load resource: the server responded with a status of 404 ()"]
+run 2: NOT READY in 25000 ms
+  first errors: ["error: Failed to load resource: the server responded with a status of 404 ()"]
+run 3: NOT READY in 25000 ms
+  first errors: ["error: Failed to load resource: the server responded with a status of 404 ()"]
+ready 0/3
+=== form1 canvaskit, assets WITH CORS (ACAO:*)
+run 1: NOT READY in 25000 ms
+  first errors: ["error: Failed to load resource: the server responded with a status of 404 ()"]
+run 2: NOT READY in 25000 ms
+  first errors: ["error: Failed to load resource: the server responded with a status of 404 ()"]
+run 3: NOT READY in 25000 ms
+  first errors: ["error: Failed to load resource: the server responded with a status of 404 ()"]
+ready 0/3
+=== form1 skwasm, assets WITHOUT CORS
+run 1: NOT READY in 25000 ms
+  first errors: ["error: Failed to load resource: the server responded with a status of 404 ()"]
+run 2: NOT READY in 25000 ms
+  first errors: ["error: Failed to load resource: the server responded with a status of 404 ()"]
+run 3: NOT READY in 25000 ms
+  first errors: ["error: Failed to load resource: the server responded with a status of 404 ()"]
+ready 0/3
+=== form1 skwasm, assets WITH CORS (ACAO:*)
+run 1: NOT READY in 25000 ms
+  first errors: ["error: Failed to load resource: the server responded with a status of 404 ()"]
+run 2: NOT READY in 25000 ms
+  first errors: ["error: Failed to load resource: the server responded with a status of 404 ()"]
+run 3: NOT READY in 25000 ms
+  first errors: ["error: Failed to load resource: the server responded with a status of 404 ()"]
+ready 0/3
+=== form1 canvaskit +CORS, relay OFF (what the player sees from a bare nested iframe)
+run 1: NOT READY in 25000 ms
+  first errors: ["error: Failed to load resource: the server responded with a status of 404 ()"]
+run 2: NOT READY in 25000 ms
+  first errors: ["error: Failed to load resource: the server responded with a status of 404 ()"]
+run 3: NOT READY in 25000 ms
+  first errors: ["error: Failed to load resource: the server responded with a status of 404 ()"]
+ready 0/3
+
+# form 1, stock build: root cause (dbg: page errors of the sandboxed frame; 2026-11-19 ICT)
+pageerror Failed to read the 'serviceWorker' property from 'Navigator': Service worker is disabled because the context is sandboxed and lacks the 'allow-same-origin' flag.
+msgs []
+
+# RERUN with a custom flutter_bootstrap.js (no service worker). 2026-11-19 03:01:05 ICT+0700
+=== form1 canvaskit, assets WITHOUT CORS
+run 1: NOT READY in 25000 ms
+  first errors: ["error: Failed to load resource: the server responded with a status of 404 ()","error: Access to fetch at 'https://congvc-x99.taila6fa8a.ts.net:18453/assets/FontManifest.json' from origin 'null' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.","requestfailed: https://congvc-x99.taila6fa8a.ts.net:18453/assets/FontManifest.json net::ERR_FAILED","error: Failed to load resource: net::ERR_FAILED"]
+  failed requests: 1
+run 2: NOT READY in 25000 ms
+  first errors: ["error: Failed to load resource: the server responded with a status of 404 ()","error: Access to fetch at 'https://congvc-x99.taila6fa8a.ts.net:18453/assets/FontManifest.json' from origin 'null' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.","requestfailed: https://congvc-x99.taila6fa8a.ts.net:18453/assets/FontManifest.json net::ERR_FAILED","error: Failed to load resource: net::ERR_FAILED"]
+  failed requests: 1
+run 3: NOT READY in 25000 ms
+  first errors: ["error: Access to fetch at 'https://congvc-x99.taila6fa8a.ts.net:18453/assets/FontManifest.json' from origin 'null' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.","requestfailed: https://congvc-x99.taila6fa8a.ts.net:18453/assets/FontManifest.json net::ERR_FAILED","error: Failed to load resource: net::ERR_FAILED","error: Failed to load resource: the server responded with a status of 404 ()"]
+  failed requests: 1
+run 4: NOT READY in 25000 ms
+  first errors: ["error: Access to fetch at 'https://congvc-x99.taila6fa8a.ts.net:18453/assets/FontManifest.json' from origin 'null' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.","requestfailed: https://congvc-x99.taila6fa8a.ts.net:18453/assets/FontManifest.json net::ERR_FAILED","error: Failed to load resource: net::ERR_FAILED","error: Failed to load resource: the server responded with a status of 404 ()"]
+  failed requests: 1
+run 5: NOT READY in 25000 ms
+  first errors: ["error: Failed to load resource: the server responded with a status of 404 ()","error: Access to fetch at 'https://congvc-x99.taila6fa8a.ts.net:18453/assets/FontManifest.json' from origin 'null' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.","requestfailed: https://congvc-x99.taila6fa8a.ts.net:18453/assets/FontManifest.json net::ERR_FAILED","error: Failed to load resource: net::ERR_FAILED"]
+  failed requests: 1
+ready 0/5
+=== form1 canvaskit, assets WITH CORS (ACAO:*)
+run 1: first frame 1864 ms
+env: {"renderer":"canvaskit","origin":"null","localStorage":"blocked","crossOriginIsolated":false,"secureContext":true,"sharedArrayBuffer":false,"dpr":1}
+ready 5/5; p50=1747 ms, max=1920 ms
+=== form1 skwasm, assets WITHOUT CORS
+run 1: NOT READY in 25000 ms
+  first errors: ["error: Access to script at 'https://congvc-x99.taila6fa8a.ts.net:18454/main.dart.mjs' from origin 'null' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.","requestfailed: https://congvc-x99.taila6fa8a.ts.net:18454/main.dart.mjs net::ERR_FAILED","error: Failed to load resource: net::ERR_FAILED","error: Failed to load resource: the server responded with a status of 404 ()"]
+  failed requests: 1
+run 2: NOT READY in 25000 ms
+  first errors: ["error: Access to script at 'https://congvc-x99.taila6fa8a.ts.net:18454/main.dart.mjs' from origin 'null' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.","requestfailed: https://congvc-x99.taila6fa8a.ts.net:18454/main.dart.mjs net::ERR_FAILED","error: Failed to load resource: net::ERR_FAILED","error: Failed to load resource: the server responded with a status of 404 ()"]
+  failed requests: 1
+run 3: NOT READY in 25000 ms
+  first errors: ["error: Access to script at 'https://congvc-x99.taila6fa8a.ts.net:18454/main.dart.mjs' from origin 'null' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.","requestfailed: https://congvc-x99.taila6fa8a.ts.net:18454/main.dart.mjs net::ERR_FAILED","error: Failed to load resource: net::ERR_FAILED","error: Failed to load resource: the server responded with a status of 404 ()"]
+  failed requests: 1
+run 4: NOT READY in 25000 ms
+  first errors: ["error: Access to script at 'https://congvc-x99.taila6fa8a.ts.net:18454/main.dart.mjs' from origin 'null' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.","requestfailed: https://congvc-x99.taila6fa8a.ts.net:18454/main.dart.mjs net::ERR_FAILED","error: Failed to load resource: net::ERR_FAILED","error: Failed to load resource: the server responded with a status of 404 ()"]
+  failed requests: 1
+run 5: NOT READY in 25000 ms
+  first errors: ["error: Access to script at 'https://congvc-x99.taila6fa8a.ts.net:18454/main.dart.mjs' from origin 'null' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.","requestfailed: https://congvc-x99.taila6fa8a.ts.net:18454/main.dart.mjs net::ERR_FAILED","error: Failed to load resource: net::ERR_FAILED","error: Failed to load resource: the server responded with a status of 404 ()"]
+  failed requests: 1
+ready 0/5
+=== form1 skwasm, assets WITH CORS (ACAO:*)
+run 1: first frame 1536 ms
+env: {"renderer":"skwasm","origin":"null","localStorage":"blocked","crossOriginIsolated":false,"secureContext":true,"sharedArrayBuffer":false,"dpr":1}
+ready 5/5; p50=1510 ms, max=1548 ms
+=== form1 canvaskit +CORS, relay OFF
+run 1: NOT READY in 25000 ms
+  first errors: ["error: Failed to load resource: the server responded with a status of 404 ()","error: Permissions policy violation: focus-without-user-activation is not allowed in this document."]
+run 2: NOT READY in 25000 ms
+  first errors: ["error: Failed to load resource: the server responded with a status of 404 ()","error: Permissions policy violation: focus-without-user-activation is not allowed in this document."]
+run 3: NOT READY in 25000 ms
+  first errors: ["error: Permissions policy violation: focus-without-user-activation is not allowed in this document.","error: Failed to load resource: the server responded with a status of 404 ()"]
+run 4: NOT READY in 25000 ms
+  first errors: ["error: Permissions policy violation: focus-without-user-activation is not allowed in this document.","error: Failed to load resource: the server responded with a status of 404 ()"]
+run 5: NOT READY in 25000 ms
+  first errors: ["error: Permissions policy violation: focus-without-user-activation is not allowed in this document.","error: Failed to load resource: the server responded with a status of 404 ()"]
+ready 0/5
+=== form2 canvaskit (no-SW build)
+run 1: first frame 1768 ms
+env: {"renderer":"canvaskit","origin":"https://congvc-x99.taila6fa8a.ts.net:18453","localStorage":"ok","crossOriginIsolated":false,"secureContext":true,"sharedArrayBuffer":false,"dpr":3}
+ready 5/5; p50=1768 ms, max=1898 ms
+=== form2 skwasm (no-SW build)
+run 1: first frame 1504 ms
+env: {"renderer":"skwasm","origin":"https://congvc-x99.taila6fa8a.ts.net:18454","localStorage":"ok","crossOriginIsolated":false,"secureContext":true,"sharedArrayBuffer":false,"dpr":3}
+ready 5/5; p50=1462 ms, max=1504 ms
+
+# cross-origin isolation: player page served with COOP same-origin + COEP require-corp (local page 127.0.0.1:18458, secure context); app = skwasm +CORS +COI headers (:18457). 2026-11-19 03:09:18 ICT+0700
+=== form2 skwasm, isolated player
+run 1: first frame 1210 ms
+run 2: first frame 1100 ms
+run 3: first frame 1044 ms
+env: {"renderer":"skwasm","origin":"https://congvc-x99.taila6fa8a.ts.net:18457","localStorage":"ok","crossOriginIsolated":true,"secureContext":true,"sharedArrayBuffer":true,"dpr":1}
+ready 3/3; p50=1100 ms, max=1210 ms
+=== form1 skwasm, isolated player
+run 1: first frame 1478 ms
+run 2: first frame 1425 ms
+run 3: first frame 1381 ms
+env: {"renderer":"skwasm","origin":"null","localStorage":"blocked","crossOriginIsolated":false,"secureContext":true,"sharedArrayBuffer":false,"dpr":1}
+ready 3/3; p50=1425 ms, max=1478 ms
+=== form2 skwasm, isolated player, app WITHOUT coi headers (:18456)
+run 1: NOT READY in 25000 ms
+  first errors: ["requestfailed: https://congvc-x99.taila6fa8a.ts.net:18456/ net::ERR_BLOCKED_BY_RESPONSE","error: Failed to load resource: the server responded with a status of 404 (Not Found)"]
+  failed requests: 1
+run 2: NOT READY in 25000 ms
+  first errors: ["requestfailed: https://congvc-x99.taila6fa8a.ts.net:18456/ net::ERR_BLOCKED_BY_RESPONSE","error: Failed to load resource: the server responded with a status of 404 (Not Found)"]
+  failed requests: 1
+run 3: NOT READY in 25000 ms
+  first errors: ["requestfailed: https://congvc-x99.taila6fa8a.ts.net:18456/ net::ERR_BLOCKED_BY_RESPONSE","error: Failed to load resource: the server responded with a status of 404 (Not Found)"]
+  failed requests: 1
+ready 0/3
+
+# FINAL: builds with --no-web-resources-cdn + custom no-service-worker bootstrap. Chrome 158, cold, 5 runs (3 isolated). 2026-11-19 03:22:53 ICT+0700
+=== top-level canvaskit
+run 1: first frame 12813 ms
+run 2: first frame 5726 ms
+run 3: first frame 11253 ms
+run 4: first frame 2626 ms
+run 5: first frame 2223 ms
+env: {"renderer":"canvaskit","origin":"https://congvc-x99.taila6fa8a.ts.net:18453","localStorage":"ok","crossOriginIsolated":false,"secureContext":true,"sharedArrayBuffer":false,"dpr":3}
+ready 5/5; p50=5726 ms, max=12813 ms
+=== top-level skwasm
+run 1: first frame 2505 ms
+run 2: first frame 2427 ms
+run 3: first frame 3889 ms
+run 4: first frame 4693 ms
+run 5: first frame 2327 ms
+env: {"renderer":"skwasm","origin":"https://congvc-x99.taila6fa8a.ts.net:18454","localStorage":"ok","crossOriginIsolated":false,"secureContext":true,"sharedArrayBuffer":false,"dpr":3}
+ready 5/5; p50=2505 ms, max=4693 ms
+=== form2 canvaskit
+run 1: first frame 2525 ms
+run 2: first frame 2866 ms
+run 3: first frame 4263 ms
+run 4: first frame 2728 ms
+run 5: first frame 4165 ms
+env: {"renderer":"canvaskit","origin":"https://congvc-x99.taila6fa8a.ts.net:18453","localStorage":"ok","crossOriginIsolated":false,"secureContext":true,"sharedArrayBuffer":false,"dpr":3}
+ready 5/5; p50=2866 ms, max=4263 ms
+=== form2 skwasm
+run 1: first frame 3397 ms
+run 2: first frame 2603 ms
+run 3: first frame 1009 ms
+run 4: first frame 1088 ms
+run 5: first frame 1150 ms
+env: {"renderer":"skwasm","origin":"https://congvc-x99.taila6fa8a.ts.net:18454","localStorage":"ok","crossOriginIsolated":false,"secureContext":true,"sharedArrayBuffer":false,"dpr":3}
+ready 5/5; p50=1150 ms, max=3397 ms
+=== form1 canvaskit (+CORS)
+run 1: first frame 1640 ms
+run 2: first frame 1813 ms
+run 3: first frame 1768 ms
+run 4: first frame 1768 ms
+run 5: first frame 1824 ms
+env: {"renderer":"canvaskit","origin":"null","localStorage":"blocked","crossOriginIsolated":false,"secureContext":true,"sharedArrayBuffer":false,"dpr":1}
+ready 5/5; p50=1768 ms, max=1824 ms
+=== form1 skwasm (+CORS)
+run 1: first frame 1151 ms
+run 2: first frame 1499 ms
+run 3: first frame 1079 ms
+run 4: first frame 1161 ms
+run 5: first frame 1561 ms
+env: {"renderer":"skwasm","origin":"null","localStorage":"blocked","crossOriginIsolated":false,"secureContext":true,"sharedArrayBuffer":false,"dpr":1}
+ready 5/5; p50=1161 ms, max=1561 ms
+=== form2 skwasm, isolated player + COI app
+run 1: first frame 706 ms
+run 2: first frame 719 ms
+run 3: first frame 687 ms
+env: {"renderer":"skwasm","origin":"https://congvc-x99.taila6fa8a.ts.net:18457","localStorage":"ok","crossOriginIsolated":true,"secureContext":true,"sharedArrayBuffer":true,"dpr":1}
+ready 3/3; p50=706 ms, max=719 ms
+
+# FINAL interleaved, form 2, local builds, 8 pairs (ck, sk, ck, sk, ...). 2026-11-19 03:26:40 ICT+0700; load average: 64.17, 47.09, 32.44
+pair 1: canvaskit 6670 ms, skwasm 5170 ms
+pair 2: canvaskit 3833 ms, skwasm 1633 ms
+pair 3: canvaskit 2347 ms, skwasm 2324 ms
+pair 4: canvaskit 2861 ms, skwasm 1634 ms
+pair 5: canvaskit 2081 ms, skwasm 3049 ms
+pair 6: canvaskit 2018 ms, skwasm 1148 ms
+pair 7: canvaskit 1720 ms, skwasm 1976 ms
+pair 8: canvaskit 2168 ms, skwasm 1304 ms
+canvaskit p50 2168 max 6670 min 1720
+skwasm    p50 1634 max 5170 min 1148
+load at end average: 44.60, 44.90, 33.02

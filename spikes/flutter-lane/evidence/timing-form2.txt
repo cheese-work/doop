@@ -1,0 +1,24 @@
+# form 2 (frame kind, sandbox='allow-scripts allow-same-origin'), HTTPS, CanvasKit, dev server; fresh dev server (cold)
+2026-11-19 02:17:36 ICT+0700
+ 02:17:36 up 27 days,  7:40,  3 users,  load average: 11.59, 13.44, 18.39
+run 1: 492 ms
+run 2: 386 ms
+run 3: 323 ms
+run 4: 353 ms
+run 5: 361 ms
+run 6: 378 ms
+run 7: 317 ms
+run 8: 391 ms
+run 9: 348 ms
+run 10: 354 ms
+run 11: 290 ms
+run 12: 333 ms
+run 13: 330 ms
+run 14: 326 ms
+run 15: 319 ms
+run 16: 366 ms
+run 17: 356 ms
+run 18: 352 ms
+run 19: 326 ms
+run 20: 324 ms
+n=20 p50=348 max=492

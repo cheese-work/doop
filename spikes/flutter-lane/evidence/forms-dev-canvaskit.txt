@@ -1,0 +1,27 @@
+### top-level
+READY {"renderer":"canvaskit","origin":"https://congvc-x99.taila6fa8a.ts.net:18451","localStorage":"ok","crossOriginIsolated":false,"secureContext":true,"sharedArrayBuffer":false,"dpr":3}
+failed requests: 0
+### form2 sandbox='allow-scripts allow-same-origin'
+READY {"renderer":"canvaskit","origin":"https://congvc-x99.taila6fa8a.ts.net:18451","localStorage":"ok","crossOriginIsolated":false,"secureContext":true,"sharedArrayBuffer":false,"dpr":3}
+failed requests: 0
+### form2 sandbox='allow-scripts' (opaque)
+NOT READY [
+  'log: Unhandled error detected in the injected client.js script.',
+  'error: Failed to load resource: the server responded with a status of 404 ()'
+]
+failed requests: 0
+### form2 no sandbox attr
+READY {"renderer":"canvaskit","origin":"https://congvc-x99.taila6fa8a.ts.net:18451","localStorage":"ok","crossOriginIsolated":false,"secureContext":true,"sharedArrayBuffer":false,"dpr":3}
+failed requests: 0
+### form1 nested (HTML frame, relay)
+NOT READY [
+  'error: Failed to load resource: the server responded with a status of 404 ()',
+  'log: Unhandled error detected in the injected client.js script.'
+]
+failed requests: 0
+### form1 nested without relay
+NOT READY [
+  'error: Failed to load resource: the server responded with a status of 404 ()',
+  'log: Unhandled error detected in the injected client.js script.'
+]
+failed requests: 0
