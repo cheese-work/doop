@@ -11,6 +11,7 @@
 // M1  hours from publication (else seen_at) to the createdAt of the first PR containing the tag commit.
 // M1' diagnostic, burst only: that PR's createdAt minus the predecessor PR's mergedAt (0 when negative).
 // M2  max(0, mergedAt of the PR that brought the predecessor - published_at); `ongoing` while it is unmerged.
+//     At +72 h it is frozen at the checkpoint: the merge delay if merged by then, else 72 h and `ongoing`.
 const H72 = 72 * 3600e3
 
 const ms = (v) => (v == null ? NaN : Date.parse(v))
@@ -74,7 +75,14 @@ export function measure(input) {
       ? { ...dur(Math.max(0, (prevMerged ?? now) - x.start)), ...(prevMerged == null ? { ongoing: true } : {}) }
       : dur(0)
     out.m2_at_publication = m2
-    out.m2_at_72h = now >= checkpoint ? m2 : { pending_until: iso(checkpoint) }
+    // The +72 h value is the state at the checkpoint, so a later merge or a delayed read never moves it:
+    // merged by then, the merge delay; otherwise 72 h and still ongoing.
+    out.m2_at_72h =
+      now < checkpoint
+        ? { pending_until: iso(checkpoint) }
+        : prevMerged != null && prevMerged <= checkpoint
+          ? m2
+          : { ...dur(H72), ongoing: true }
 
     if (merged != null) {
       Object.assign(out, now < checkpoint ? { outcome: 'PENDING', pending_until: checkpoint } : { outcome: 'RECORDED' })

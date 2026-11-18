@@ -209,6 +209,39 @@ describe('measure: M1, M1 prime, M2', () => {
     expect(v15.m2_at_publication.text).toBe('46 h 26 min')
   })
 
+  it('M2 at +72 h stays at the checkpoint state when the predecessor merges later, even on a delayed read', () => {
+    const out = measure(
+      base({
+        now: t(10 + H(120)),
+        releases: [rel('v1.0.0', SHA_A, 9), rel('v1.1.0', SHA_B, 10)],
+        prs: [pr(1, 9.5, 10 + H(100), [SHA_A])],
+      }),
+    )
+    const v = only(out, 'v1.1.0')
+    expect(v.m2_at_publication).toMatchObject({ minutes: 100 * 60 })
+    expect(v.m2_at_72h).toMatchObject({ minutes: 72 * 60, ongoing: true })
+  })
+
+  it('M2 at +72 h while the predecessor is still unmerged: 72 h, ongoing', () => {
+    const out = measure(
+      base({ now: t(10 + H(80)), releases: [rel('v1.0.0', SHA_A, 9), rel('v1.1.0', SHA_B, 10)], prs: [] }),
+    )
+    expect(only(out, 'v1.1.0').m2_at_72h).toMatchObject({ minutes: 72 * 60, ongoing: true })
+  })
+
+  it('M2 at +72 h is the merge delay when the predecessor merged before the checkpoint', () => {
+    const out = measure(
+      base({
+        now: t(10 + H(120)),
+        releases: [rel('v1.0.0', SHA_A, 9), rel('v1.1.0', SHA_B, 10)],
+        prs: [pr(1, 9.5, 10 + H(30), [SHA_A])],
+      }),
+    )
+    const m2 = only(out, 'v1.1.0').m2_at_72h as { minutes: number; ongoing?: boolean }
+    expect(m2.minutes).toBe(30 * 60)
+    expect(m2.ongoing).toBeUndefined()
+  })
+
   it('M2 is 0 when the predecessor merged before publication', () => {
     const out = measure(
       base({
