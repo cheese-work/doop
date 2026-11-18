@@ -1869,12 +1869,14 @@ export function buildMcpServer(owner?: string, ownerId?: string, multicaTaskId?:
     },
     async ({ frame_id, attested_updated_at, attestation_id, agent_name }) => {
       if (!frameFor(frame_id, 'edit')) return noFrame(frame_id)
-      const res = actions.lockFrameIfVersion(
+      const res = await actions.lockFrameIfVersionDurable(
         { frameId: frame_id, attestedUpdatedAt: versionMs(attested_updated_at)!, attestationId: attestation_id },
         actorFrom(agent_name),
       )
       if (res.error === 'not_found') return noFrame(frame_id)
       if (res.error === 'policy_refused') return err('policy_refused: this agent may not lock that frame')
+      if (res.error === 'persist_failed')
+        return err('persist_failed: the lock could not be written; the frame was NOT locked. Try again.')
       if (res.error === 'version_changed') {
         const current = store.getFrame(frame_id)
         return err(

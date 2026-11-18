@@ -1554,10 +1554,22 @@ export function setFrameApproval(
 }
 
 export type LockEntry = { frameId: string; attestedUpdatedAt: number; attestationId: string }
-export type LockResult = { frameId: string; ok: boolean; error?: 'not_found' | 'version_changed' | 'policy_refused' }
+export type LockResult = {
+  frameId: string
+  ok: boolean
+  error?: 'not_found' | 'version_changed' | 'policy_refused' | 'persist_failed'
+}
 
-/** Lock one frame if it is still at the attested version (CHE-6626). Any open stream or playback ends
- *  with the lock, so no chunk lands after it. */
+/** What a lock that took effect tells the room: any open stream or playback ends with it, so no chunk lands after. */
+function announceLock(frame: Frame, actor: Actor): void {
+  finishStream(frame.id, false)
+  finishReveal(frame.id)
+  broadcast(frame.canvasId, { type: 'frame:updated', frame, actor })
+  logActivity(frame.canvasId, actor, `locked “${frame.name}” at its attested version`, frame.id)
+  touch(frame.canvasId, actor, frame.id)
+}
+
+/** Lock one frame if it is still at the attested version (CHE-6626). */
 export function lockFrameIfVersion(entry: LockEntry, actor: Actor): LockResult {
   const { frameId, attestedUpdatedAt, attestationId } = entry
   let res: ReturnType<typeof store.lockIfVersion>
@@ -1570,12 +1582,45 @@ export function lockFrameIfVersion(entry: LockEntry, actor: Actor): LockResult {
   if (!res) return { frameId, ok: false, error: 'not_found' }
   if (!res.ok) return { frameId, ok: false, error: res.error }
   if (res.already) return { frameId, ok: true } // a retry of a lock that holds: nothing to announce
-  finishStream(frameId, false)
-  finishReveal(frameId)
-  broadcast(res.frame.canvasId, { type: 'frame:updated', frame: res.frame, actor })
-  logActivity(res.frame.canvasId, actor, `locked “${res.frame.name}” at its attested version`, frameId)
-  touch(res.frame.canvasId, actor, frameId)
+  announceLock(res.frame, actor)
   return { frameId, ok: true }
+}
+
+/** The same lock, answered only once its row is durable (CHE-7062 B7): the MCP publish step uses this one. */
+export async function lockFrameIfVersionDurable(
+  entry: LockEntry,
+  actor: Actor,
+): Promise<LockResult & { epoch?: number }> {
+  const { frameId, attestedUpdatedAt, attestationId } = entry
+  let res: Awaited<ReturnType<typeof store.lockIfVersionDurable>>
+  try {
+    res = await store.lockIfVersionDurable(writeContextFor(actor), frameId, attestedUpdatedAt, attestationId)
+  } catch (err) {
+    if (err instanceof PolicyRefused) return { frameId, ok: false, error: 'policy_refused' }
+    throw err
+  }
+  if (!res) return { frameId, ok: false, error: 'not_found' }
+  if (!res.ok) return { frameId, ok: false, error: res.error }
+  if (!res.already) announceLock(res.frame, actor)
+  return { frameId, ok: true, epoch: res.epoch }
+}
+
+/** An owner's unlock (CHE-7062 B5/B7): `pinned` while a decision card holds the frame; the row is written first. */
+export async function unlockFrameDurable(
+  frameId: string,
+  actor: Actor,
+  opts: { userId?: string; expectedUpdatedAt?: number } = {},
+): Promise<
+  | { ok: true; frame: Frame }
+  | { ok: false; error: 'pinned' | 'version_changed' | 'persist_failed' | 'not_locked' | 'not_found' }
+> {
+  const res = await store.unlockFrame(writeContextFor(actor, opts.userId), frameId, actor.name, opts.expectedUpdatedAt)
+  if (!res) return { ok: false, error: 'not_found' }
+  if (!res.ok) return res
+  broadcast(res.frame.canvasId, { type: 'frame:updated', frame: res.frame, actor })
+  logActivity(res.frame.canvasId, actor, `unlocked “${res.frame.name}”`, frameId)
+  touch(res.frame.canvasId, actor, frameId)
+  return res
 }
 
 /** Publish step: lock every attested frame, one after another. A failure leaves the frames already locked

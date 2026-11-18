@@ -32,6 +32,7 @@ vi.mock('../server/db/persist.ts', () => {
     saveCanvasCopy: noop,
     saveFeedback: noop,
     saveFrame: db.saveFrame,
+    saveFrameNow: async (f: unknown) => db.saveFrame(f), // the durable lock (CHE-7062) awaits this one
     saveFrameVersion: noop,
     getFrameVersion: db.getFrameVersion,
     saveGuideline: noop,

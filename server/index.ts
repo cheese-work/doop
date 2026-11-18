@@ -59,6 +59,7 @@ import {
   MAX_ASSET_BYTES,
 } from './assets.ts'
 import * as ingest from './ingest.ts'
+import { configurePins, loadPins } from './framePins.ts'
 import { PolicyRefused, setLockOwners, VersionChanged } from './writePolicy.ts'
 import * as agentKeys from './agentKeys.ts'
 import * as backgrounds from './backgrounds.ts'
@@ -109,6 +110,10 @@ if (data.canvases.length === 0 && (await persist.importLegacyJson())) {
   data = await persist.hydrate()
 }
 store.init(data.canvases)
+/* G5b: pins are read back before the first request, so no unlock is answered without them. The Multica side of the
+   port (A1 ref_status / abort_ref) is not wired here: until it is, release_pin answers multica_unreachable. */
+configurePins({ secret: env.DOOP_PIN_SECRET })
+await loadPins()
 await workspaces.hydrateWorkspaces() // before the first request: canvasRole reads membership
 await webhooks.hydrateWebhooks()
 billing.reportBillingConfig()
@@ -1780,7 +1785,7 @@ app.post('/api/canvases/:id/frames', (req, res) => {
   res.json(frame)
 })
 
-app.patch('/api/frames/:id', (req, res) => {
+app.patch('/api/frames/:id', async (req, res) => {
   const current = requireFrame(req, res, req.params.id, 'edit', req.body?.expectedUpdatedAt)
   if (!current) return
   const { actor: _ignored, expectedUpdatedAt: _version, ...patch } = req.body ?? {}
@@ -1796,6 +1801,16 @@ app.patch('/api/frames/:id', (req, res) => {
   /* the eye in the Layers panel: anything but a literal true shows the frame */
   if (patch.hidden !== undefined) clean.hidden = patch.hidden === true
   if (patch.locked !== undefined) clean.locked = !!patch.locked
+  /* an unlock goes through its own durable path: a pin answers `pinned`, the row is written before the reply */
+  if (patch.locked === false && current.locked) {
+    const out = await actions.unlockFrameDurable(req.params.id, actor, {
+      userId: req.user!.id,
+      expectedUpdatedAt: req.body?.expectedUpdatedAt,
+    })
+    if (out.ok) return res.json(out.frame)
+    if (out.error === 'not_found') return res.status(404).json({ error: 'frame not found' })
+    return res.status(out.error === 'persist_failed' ? 503 : 409).json({ error: out.error, code: out.error })
+  }
   /* the account id, not the display name, decides who may unlock a frame (DOOP_LOCK_OWNERS) */
   const frame = actions.updateFrame(req.params.id, clean, actor, { userId: req.user!.id })
   if (!frame) return res.status(404).json({ error: 'frame not found' })
