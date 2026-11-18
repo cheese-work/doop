@@ -517,6 +517,47 @@ describe('attestation validity', () => {
     expect(currentAttestation(canvas, PAGE, rows)).toBeNull()
   })
 
+  describe('stops counting when the Motion page changes (Terra P1, 9ebc904)', () => {
+    const edits: [string, (c: Canvas) => void][] = [
+      [
+        'the spec frame is edited',
+        (c) =>
+          Object.assign(
+            c.frames.find((f) => f.id === 'spec')!,
+            { html: '<p/>', updatedAt: 101 },
+          ),
+      ],
+      [
+        'the animated frame is edited',
+        (c) =>
+          Object.assign(
+            c.frames.find((f) => f.id === 'anim')!,
+            { html: '<p/>', updatedAt: 101 },
+          ),
+      ],
+      ['the animated frame is hidden', (c) => (c.frames.find((f) => f.id === 'anim')!.hidden = true)],
+      ['the spec frame is hidden', (c) => (c.frames.find((f) => f.id === 'spec')!.hidden = true)],
+      ['the animated frame is deleted', (c) => void (c.frames = c.frames.filter((f) => f.id !== 'anim'))],
+      ['the spec frame is renamed', (c) => (c.frames.find((f) => f.id === 'spec')!.name = 'CHE-2 · motion')],
+      ['the animated frame is renamed', (c) => (c.frames.find((f) => f.id === 'anim')!.name = 'pull')],
+      ['the Motion page is renamed', (c) => (c.pages!.find((p) => p.id === MOTION_PAGE)!.name = 'Moves')],
+      [
+        'the Motion page is deleted',
+        (c) => {
+          c.pages = c.pages!.filter((p) => p.id !== MOTION_PAGE)
+          c.frames = c.frames.filter((f) => f.pageId !== MOTION_PAGE)
+        },
+      ],
+    ]
+    it.each(edits)('when %s', (_name, edit) => {
+      const canvas = page()
+      const rows = stored(canvas)
+      expect(currentAttestation(canvas, PAGE, rows)?.runId).toBe('run-1')
+      edit(canvas)
+      expect(currentAttestation(canvas, PAGE, rows)).toBeNull()
+    })
+  })
+
   it('never counts an incomplete run', () => {
     const canvas = page({ hifi: HIFI.replace(' data-recon-ref="kebab"', '') })
     expect(currentAttestation(canvas, PAGE, stored(canvas))).toBeNull()

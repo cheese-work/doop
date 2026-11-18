@@ -304,11 +304,16 @@ export const designAttestations = pgTable(
     frameUpdatedAt: bigint('frame_updated_at', { mode: 'number' }).notNull(),
     ruleset: text('ruleset').notNull(),
     scanHash: text('scan_hash'),
-    /** recon frame(s) at their version and the page's flow start, as the run saw them */
+    /** recon frame(s) at their version, the page's flow start and the Motion page, as the run saw them */
     inputs: jsonb('inputs')
       .$type<{
         recon: { id: string; updatedAt: number }[]
         start: string | null
+        motion?: {
+          pageId: string
+          name: string
+          frames: { id: string; name: string; updatedAt: number; hidden: boolean }[]
+        } | null
         requirements?: string | null
         requirementsIssue?: string | null
       }>()

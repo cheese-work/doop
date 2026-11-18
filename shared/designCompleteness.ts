@@ -15,6 +15,7 @@ import type { Canvas, Frame } from './types.ts'
 /** Bump when a rule changes: older attestations then stop counting. */
 export const COMPLETENESS_RULESET = 'g3-r6'
 
+export const MOTION_PAGE_NAME = 'Motion'
 export const REQUIRED_STATES = ['loading', 'empty', 'error', 'disconnected'] as const
 export const MOTION_FIELDS = ['trigger', 'property', 'duration', 'easing', 'reducedMotion'] as const
 export const DOC_HEADINGS = [
@@ -51,9 +52,17 @@ export interface CompletenessReport {
   reviewerNotes: string[]
 }
 
+export interface MotionInput {
+  pageId: string
+  name: string
+  frames: { id: string; name: string; updatedAt: number; hidden: boolean }[]
+}
+
 export interface AttestedInputs {
   recon: { id: string; updatedAt: number }[]
   start: string | null
+  /** the Motion page (g3-r6) and each of its frames at the version, name and visibility the run saw; a change to any ends the attestation */
+  motion?: MotionInput | null
   /** hash of the requirement lines the ledger row read (CHE-6373); absent when that row did not run */
   requirements?: string | null
   /** the Multica issue those lines came from; a rebind to another issue ends the attestation */
@@ -153,11 +162,34 @@ function attestedInputs(canvas: Canvas, pageId: string, scanned = scanPage(canva
     .filter((s) => s.isRecon)
     .map((s) => ({ id: s.frame.id, updatedAt: s.frame.updatedAt }))
     .sort((a, b) => a.id.localeCompare(b.id))
-  return { recon, start: canvasPages(canvas).find((p) => p.id === pageId)?.startFrameId ?? null }
+  const motionPage = canvasPages(canvas).find((p) => p.name === MOTION_PAGE_NAME)
+  const motion = motionPage
+    ? {
+        pageId: motionPage.id,
+        name: motionPage.name,
+        frames: pageFrames(canvas, motionPage.id)
+          .map((f) => ({ id: f.id, name: f.name, updatedAt: f.updatedAt, hidden: !!f.hidden }))
+          .sort((a, b) => a.id.localeCompare(b.id)),
+      }
+    : null
+  return { recon, start: canvasPages(canvas).find((p) => p.id === pageId)?.startFrameId ?? null, motion }
 }
+
+const sameMotion = (a: MotionInput | null | undefined, b: MotionInput | null) =>
+  !a || !b
+    ? !a && !b
+    : a.pageId === b.pageId &&
+      a.name === b.name &&
+      a.frames.length === b.frames.length &&
+      a.frames.every((f, i) => {
+        const g = b.frames[i]
+        /* field by field: Postgres jsonb does not keep key order, so a stringified compare would never match a stored row */
+        return f.id === g?.id && f.name === g.name && f.updatedAt === g.updatedAt && f.hidden === g.hidden
+      })
 
 const sameInputs = (a: AttestedInputs, b: AttestedInputs) =>
   a.start === b.start &&
+  sameMotion(a.motion, b.motion ?? null) &&
   a.recon.length === b.recon.length &&
   a.recon.every((r, i) => r.id === b.recon[i]?.id && r.updatedAt === b.recon[i]?.updatedAt)
 
@@ -373,7 +405,7 @@ export function checkPageCompleteness(canvas: Canvas, pageId: string, opts: Chec
 
   /* g3-r6 2 and 4: the Motion page, the issue's spec frame, and an animated frame per spec row */
   const specName = `${opts.issueKey ?? '<ISSUE-KEY>'} · motion`
-  const motionPage = canvasPages(canvas).find((p) => p.name === 'Motion')
+  const motionPage = canvasPages(canvas).find((p) => p.name === MOTION_PAGE_NAME)
   const motionFrames = motionPage ? pageFrames(canvas, motionPage.id).filter((f) => !f.hidden) : []
   const spec = opts.issueKey ? motionFrames.find((f) => f.name === specName) : undefined
   if (!spec)
