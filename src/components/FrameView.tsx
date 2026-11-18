@@ -47,6 +47,7 @@ import {
 import { isSyncedFrame } from '../lib/sync'
 import { isGithubFrame, isGithubPlaceholder } from '../lib/github'
 import { AgentIcon } from './AgentIcon'
+import { FramePreview } from './FramePreview'
 import { ElementResizeHandles } from './ElementResizeHandles'
 
 /** ?comment=<rootId> — the link in a comment email. The thread opens once
@@ -1259,6 +1260,14 @@ export const FrameView = memo(function FrameView({
                   transformOrigin: '0 0',
                 }}
               />
+            )}
+            {/* The stored preview stands in while the frame is culled (far, small or over the live cap),
+                and covers a live frame until its runtime is ready, so zooming in swaps in place with no
+                jump or blank. Same box as the iframe: the surface is absolute inset-0. */}
+            {frame.html && (!keepIframe || !runtimeReady) && (
+              <div className="pointer-events-none absolute inset-0 bg-white">
+                <FramePreview frameId={frame.id} empty={null} quietFail={keepIframe} />
+              </div>
             )}
             {!frame.html && (
               <div className="absolute inset-0 grid place-items-center bg-[repeating-linear-gradient(45deg,transparent_0_10px,rgba(28,26,21,0.025)_10px_20px)] text-[13px] text-ink-faint">
