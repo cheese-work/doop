@@ -145,14 +145,20 @@ export function ActivityPanel({
         {/* the Agents tab is a column: what the agents are doing on top, the
             conversation with them under it, the prompt composer docked below */}
         <PanelTabPanel value="tasks" className={tabEnter}>
-          {hasChat ? (
-            <AgentsSplit />
-          ) : (
-            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain">
-              <RecentTasks />
+          {/* BridgeChat sits in the same slot in both layouts, so a chat card
+              arriving mid-draft does not remount it and drop the unsent text */}
+          <div className="flex min-h-0 flex-1 flex-col">
+            {hasChat ? (
+              <AgentsSplit />
+            ) : (
+              <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain">
+                <RecentTasks />
+              </div>
+            )}
+            <div className="max-h-[50%] flex-none overflow-y-auto overscroll-contain">
               <BridgeChat canvasId={canvasId} />
             </div>
-          )}
+          </div>
           {/* the composer briefs agents to change frames: editors only */}
           {canEdit && <PromptBar canvasId={canvasId} />}
         </PanelTabPanel>
