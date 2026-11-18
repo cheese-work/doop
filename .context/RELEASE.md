@@ -31,22 +31,27 @@ The CI build uses `bun run --bun build` to match the `oven/bun` Docker build sta
 where `node` commands run with Bun. Extension tests also build with both runtimes
 and run the Bun-built archive under Node, including its nested runtime dependencies.
 
-### Image publish (`image.yml`, CD slice A)
+### Image publish (`image.yml`, D1 of the deploy train)
 
 A push to `cheese/main` (or a manual dispatch) runs `ci.yml` as a reusable workflow, then builds the
 `Dockerfile` on a GitHub runner and pushes `ghcr.io/<repo>:<sha>`. The image's identity is its digest:
-`scripts/image-evidence.mjs` writes `image-evidence.json` (`image`, `digest`, `ref` =
-`image@digest`, `sha`, `run_url`) and the run uploads it as the `image-evidence` artifact. The script
-exits non-zero on an empty or non-sha256 digest, so a failed push leaves no evidence. Nothing builds
-on a deploy host. Fork runs skip the push.
+`scripts/image-evidence.mjs` writes the candidate manifest `candidate-manifest.json` (`image`, `digest`,
+`ref` = `image@digest`, `sha`, `run_url`, `migration_inventory_sha` from `scripts/migration-inventory.mjs`,
+`d1_run_id`) and the run uploads it as the `candidate-manifest` artifact. The script exits non-zero on an
+empty or non-sha256 digest or a malformed field, so a failed push leaves no manifest. Nothing builds on a
+deploy host. Fork runs skip the push. D1 holds no deploy secret and no C00 runner.
 
-### C00 deploy (`image.yml`, CD slice B)
+### C00 deploy (`cd-deploy.yml`, D2 of the deploy train)
 
-After `image`, the `gate` job lets the merger of `cheese/main` (`congvc-dev` or a login in
-`C00_DEPLOY_AUTHORIZERS`) through; anyone else builds and stops. `MAIN_RED_PAUSED` pauses it and a failed
-deploy suspends it. The `deploy` job then runs on the `cheese-c00-deploy` runner: pull the digest, start
-it, read back digest, SHA label and health within 15 minutes, and on failure roll back to the previous
-image. Setup and rules: [`deploy/cd/README.md`](../deploy/cd/README.md).
+D2 runs three times a day (06:17, 14:17, 22:17 ICT) and on dispatch. `resolve` and `admit` run hosted: they
+pick the newest `cheese/main` commit with a successful D1 run and pin the manifest, D1 run, image label and
+migration inventory to it. `deploy`, `readback-confirm` and `rollback` run on the `cheese-c00-deploy` runner
+in concurrency group `c00-deploy-doop`; `c00.sh apply` also takes a host `flock`. The train ships off: repo
+variable `DOOP_DEPLOY_TRAIN` absent or not `on` means every scheduled run skips. The suspension marker
+`DOOP_DEPLOY_SUSPENDED` is armed by a train run before its first change, restored only by that run's passing
+confirm, and written `suspended:*` (never clear) by recovery, drill and rollback, via `scripts/deploy-marker.mjs`
+and a GitHub App token from environment `doop-deploy-marker`. Setup and rules:
+[`deploy/cd/README.md`](../deploy/cd/README.md).
 
 ## Desktop app (Tauri: macOS DMG + Windows NSIS installer + Linux AppImage/.deb/.rpm)
 

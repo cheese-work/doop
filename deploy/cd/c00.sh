@@ -4,19 +4,21 @@
 #
 #   Everything below that mentions migration supervision applies only when DOOP_DEPLOY_TRAIN=on. Absent or
 #   off, apply and rollback behave as before the train (no quiescence check, the app migrates at boot).
-#   c00.sh apply      prove migration quiescence, pin the running image as the rollback target, pull
-#                     DEPLOY_REF, run its migrations once in a supervised one-shot container (C-8.8),
-#                     then start it with DOOP_SKIP_MIGRATIONS=1
+#   c00.sh apply      take the C00 deploy lock, run the pre-apply check, prove migration quiescence, pin the
+#                     running image as the rollback target, pull DEPLOY_REF, run its migrations once in a
+#                     supervised one-shot container (C-8.8), then start it with DOOP_SKIP_MIGRATIONS=1
 #   c00.sh readback   running digest == DEPLOY_REF's, image revision label == DEPLOY_SHA,
 #                     then healthy on consecutive checks inside the window
 #   c00.sh rollback   prove migration quiescence, start the pinned previous image, wait for it to be healthy
 #   c00.sh quiescence prove migration quiescence and nothing else (compat and lift jobs call this first)
 #
 # Env: DEPLOY_REF (image@sha256:...), DEPLOY_SHA, C00_COMPOSE_DIR (compose project on C00),
+#      apply also needs DEPLOY_MODE (train|recovery|drill) and MARKER_EXPECT (this run's own
+#      DOOP_DEPLOY_SUSPENDED value), plus the GH_TOKEN/REPO/EXTRA env that deploy-gate.mjs reads,
 #      C00_PG_CONTAINER (the live Postgres container; read through `docker exec`, read-only; default: the
 #      compose project's `db` service, C00_PG_SERVICE),
 #      DEPLOY_RUN_ID (apply with DOOP_DEPLOY_TRAIN=on only: [a-z0-9-], names the one-shot container and its DB sessions).
-# Optional: C00_COMPOSE_FILE, C00_CONTAINER, C00_READBACK_SECONDS (900), C00_ROLLBACK_SECONDS (300),
+# Optional: C00_LOCK_FILE (/var/lock/doop-deploy.lock), C00_LOCK_WAIT (600 seconds), C00_COMPOSE_FILE, C00_CONTAINER, C00_READBACK_SECONDS (900), C00_ROLLBACK_SECONDS (300),
 #           C00_POLL_SECONDS (10), C00_STABLE_CHECKS (3), C00_PG_USER (doop), C00_PG_DB (doop),
 #           C00_MIGRATE_SECONDS (120), C00_QUIESCE_SECONDS (30), C00_QUIESCE_POLL_SECONDS (2).
 # Outcomes go to $GITHUB_OUTPUT as `outcome=migrate_failed|needs_operator`.
@@ -199,6 +201,17 @@ case $cmd in
     ref=${DEPLOY_REF:-}
     [[ $ref =~ ^[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]] || die "DEPLOY_REF must be image@sha256:<64 hex>, got '$ref'"
     need_dir
+    mode=${DEPLOY_MODE:-}
+    expect=${MARKER_EXPECT:-}
+    [ -n "$mode" ] && [ -n "$expect" ] || die "DEPLOY_MODE and MARKER_EXPECT are required"
+    # The host-level lock (C-5): no second deploy, and no other tool taking this lock, changes C00 while
+    # this one checks and applies. It is released when this process exits.
+    exec 9>"${C00_LOCK_FILE:-/var/lock/doop-deploy.lock}"
+    flock -w "${C00_LOCK_WAIT:-600}" 9 || die "could not take the deploy lock within ${C00_LOCK_WAIT:-600}s"
+    # Under the lock the answer can no longer change: ask again before anything is tagged, pulled or started.
+    node "$here/../../scripts/deploy-gate.mjs" recheck "$mode" --op pre-apply --expect "$expect" ||
+      die "pre-apply check refused the deploy"
+    # Under the lock, prove quiescence and read the ledger the failure path compares against.
     if train_on; then
       need_run_id
       need_pg

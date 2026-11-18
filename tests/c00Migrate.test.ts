@@ -65,6 +65,12 @@ case "$*" in
 esac
 `
 
+/* `apply` runs the pre-apply gate through `node` (CHE-5544); the stub accepts it. */
+const NODE_STUB = `#!/usr/bin/env bash
+echo "node $*" >> "$STUB_DIR/nodelog"
+exit 0
+`
+
 let dir: string
 const put = (name: string, text: string) => writeFileSync(join(dir, name), text)
 const log = () => readFileSync(join(dir, 'log'), 'utf8')
@@ -76,6 +82,8 @@ beforeEach(() => {
   mkdirSync(join(dir, 'bin'))
   writeFileSync(join(dir, 'bin', 'docker'), STUB)
   chmodSync(join(dir, 'bin', 'docker'), 0o755)
+  writeFileSync(join(dir, 'bin', 'node'), NODE_STUB)
+  chmodSync(join(dir, 'bin', 'node'), 0o755)
   put('log', '')
   put('running', 'true\n')
   put('container_image', 'sha256:oldimageid\n')
@@ -105,6 +113,10 @@ function c00(cmd: string, env: Record<string, string> = {}) {
       DEPLOY_REF: REF,
       DEPLOY_SHA: 'c'.repeat(40),
       DEPLOY_RUN_ID: RUN,
+      DEPLOY_MODE: 'train',
+      MARKER_EXPECT: 'armed:n1:99:' + 'c'.repeat(40),
+      C00_LOCK_FILE: join(dir, 'lock'),
+      C00_LOCK_WAIT: '2',
       DOOP_DEPLOY_TRAIN: 'on', // the supervised path is the train's; the legacy tests are below
       ...env,
     },
@@ -353,22 +365,35 @@ describe('inputs fail closed', () => {
   })
 })
 
-/* The deploy job's own env (`.github/workflows/image.yml`) is what c00.sh really gets. Resolve the few
-   expressions it uses, then run `apply` and `rollback` with exactly that env. */
-function workflowDeployEnv(vars: Record<string, string> = {}): Record<string, string> {
-  const wf = readFileSync(resolve('.github/workflows/image.yml'), 'utf8')
-  const job = /^ {2}deploy:\n([\s\S]*?)(?=^ {2}[a-z][a-z0-9-]*:\n|(?![\s\S]))/m.exec(wf)?.[1] ?? ''
+/* The deploy and rollback jobs' own env (`.github/workflows/cd-deploy.yml`) is what c00.sh really gets.
+   Keep the keys c00.sh reads, resolve the few expressions they use, then run it with exactly that env.
+   MARKER_EXPECT and the secrets are step-level or unused by the stubs, so the tests add or skip them. */
+const WORKFLOW = '.github/workflows/cd-deploy.yml'
+const C00_KEYS = new Set([
+  'DEPLOY_REF',
+  'DEPLOY_SHA',
+  'DEPLOY_MODE',
+  'C00_COMPOSE_DIR',
+  'DEPLOY_RUN_ID',
+  'DOOP_DEPLOY_TRAIN',
+  'C00_PG_CONTAINER',
+])
+function workflowDeployEnv(vars: Record<string, string> = {}, jobName = 'deploy'): Record<string, string> {
+  const wf = readFileSync(resolve(WORKFLOW), 'utf8')
+  const job =
+    new RegExp(`^ {2}${jobName}:\\n([\\s\\S]*?)(?=^ {2}[a-z][a-z0-9-]*:\\n|(?![\\s\\S]))`, 'm').exec(wf)?.[1] ?? ''
   const block = /^ {4}env:\n((?: {6}.*\n)+)/m.exec(job)?.[1] ?? ''
   const out: Record<string, string> = {}
   for (const line of block.split('\n')) {
     const m = /^ {6}([A-Z0-9_]+): (.*)$/.exec(line)
-    if (!m?.[1] || m[2] === undefined) continue
+    if (!m?.[1] || m[2] === undefined || !C00_KEYS.has(m[1])) continue
     out[m[1]] = m[2]
       .replace(/\$\{\{\s*format\('\{0\}-\{1\}', github\.run_id, github\.run_attempt\)\s*\}\}/g, '9001-2')
       .replace(/\$\{\{\s*vars\.\w+\s*\|\|\s*'([^']*)'\s*\}\}/g, '$1')
       .replace(/\$\{\{\s*vars\.(\w+)\s*\}\}/g, (_m, name: string) => vars[name] ?? '')
       .replace(/\$\{\{\s*format\('ghcr\.io\/\{0\}@\{1\}'[^}]*\)\s*\}\}/g, REF)
-      .replace(/\$\{\{\s*github\.sha\s*\}\}/g, 'c'.repeat(40))
+      .replace(/\$\{\{\s*needs\.admit\.outputs\.candidate\s*\}\}/g, 'c'.repeat(40))
+      .replace(/\$\{\{\s*needs\.admit\.outputs\.mode\s*\}\}/g, 'train')
     if (out[m[1]]!.includes('${{')) throw new Error(`unresolved expression in deploy env ${m[1]}: ${m[2]}`)
   }
   return out
@@ -380,8 +405,9 @@ describe('the real deploy workflow environment', () => {
     cmd: string,
     env: Record<string, string> = {},
     vars: Record<string, string> = { DOOP_DEPLOY_TRAIN: 'on' },
+    jobName = 'deploy',
   ) => {
-    const wf = workflowDeployEnv(vars)
+    const wf = workflowDeployEnv(vars, jobName)
     return spawnSync('bash', [SCRIPT, cmd], {
       encoding: 'utf8',
       env: {
@@ -390,6 +416,8 @@ describe('the real deploy workflow environment', () => {
         GITHUB_OUTPUT: out(),
         C00_POLL_SECONDS: '0',
         C00_STABLE_CHECKS: '1',
+        MARKER_EXPECT: 'armed:n1:99:' + 'c'.repeat(40),
+        C00_LOCK_FILE: join(dir, 'lock'),
         ...wf,
         ...env,
       },
@@ -401,16 +429,16 @@ describe('the real deploy workflow environment', () => {
     expect(e.DEPLOY_RUN_ID).toBe('9001-2')
   })
 
-  it('apply runs end to end with only what image.yml provides (no extra inputs)', () => {
+  it('apply runs end to end with only what cd-deploy.yml provides (no extra inputs)', () => {
     const r = run('apply')
     expect(r.status, r.stderr).toBe(0)
     expect(log()).toContain('doop-migrate-9001-2')
     expect(log()).toMatch(/docker exec [^\n]* doop-db-1 psql/)
   })
 
-  it('rollback runs with only what image.yml provides', () => {
+  it('rollback runs with only what the rollback job of cd-deploy.yml provides', () => {
     put('rollback_tag', 'x')
-    const r = run('rollback')
+    const r = run('rollback', {}, { DOOP_DEPLOY_TRAIN: 'on' }, 'rollback')
     expect(r.status, r.stderr).toBe(0)
   })
 
@@ -458,7 +486,7 @@ describe('the real deploy workflow environment', () => {
     it('rollback with the switch off does not read the database', () => {
       put('rollback_tag', 'x')
       put('sessions', '1|2026-11-16 06:00:01+00\n') // a survivor would refuse under the train
-      const r = run('rollback', {}, { DOOP_DEPLOY_TRAIN: 'off' })
+      const r = run('rollback', {}, { DOOP_DEPLOY_TRAIN: 'off' }, 'rollback')
       expect(r.status, r.stderr).toBe(0)
       expect(log()).not.toMatch(/docker exec/)
       expect(log()).toMatch(/up -d/)
@@ -471,10 +499,8 @@ describe('the real deploy workflow environment', () => {
       expect(log()).toContain('compose.supervised.yml')
     })
 
-    it('image.yml hands the repository variable to c00.sh', () => {
-      expect(readFileSync(resolve('.github/workflows/image.yml'), 'utf8')).toMatch(
-        /DOOP_DEPLOY_TRAIN: \$\{\{ vars\.DOOP_DEPLOY_TRAIN \}\}/,
-      )
+    it.each(['deploy', 'rollback'])('the %s job of cd-deploy.yml hands the repository variable to c00.sh', (job) => {
+      expect(workflowDeployEnv({ DOOP_DEPLOY_TRAIN: 'on' }, job).DOOP_DEPLOY_TRAIN).toBe('on')
     })
   })
 })

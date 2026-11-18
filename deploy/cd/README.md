@@ -1,57 +1,106 @@
-# C00 deploy (CD slice B, CHE-4585)
+# C00 deploy (deploy train S2 and S3a, CHE-5544, CHE-5545; plan CHE-5474)
 
-`image.yml` deploys the digest it just built to C00 when `gate` allows it. Build stays on GitHub
-runners. C00 only pulls and runs.
+Two workflows. D1 (`image.yml`) tests, builds, pushes and records a candidate manifest; it holds no
+deploy secret and no C00 runner. D2 (`cd-deploy.yml`) is the only workflow that touches C00. Build stays
+on GitHub runners; C00 only pulls and runs.
 
 ```
-push to cheese/main -> ci -> image (digest) -> gate -> deploy [cheese-c00-deploy runner]
-                                                         apply -> readback -> (on failure) rollback
+D1  push to cheese/main -> ci -> image (digest) -> candidate-manifest artifact
+                                                  (SHA, digest, migration inventory sha, D1 run id)
+D2  schedule 06:17 / 14:17 / 22:17 ICT, or dispatch
+    resolve [hosted] -> admit [hosted] -> deploy [C00]: pre-arm check, ARM, apply, readback
+                                       -> readback-confirm [C00]: confirm check, RESTORE (train only)
+                                       \-> rollback [C00] (failure only): check, roll back, SUSPEND
 ```
 
-## Who may deploy
+## The switch is off
 
-`gate` (`scripts/deploy-gate.mjs`) reads who merged the commit through the pull request API.
+The train deploys only when repo variable `DOOP_DEPLOY_TRAIN` is `on`. Absent, empty or anything else:
+a scheduled run ends at `resolve` as a clean skip (exit 0, `go=false`). A variable that cannot be read is
+a skip too. This slice approves no deploy: nothing sets the switch to `on`, and the marker below starts absent.
 
-- Allowed: `congvc-dev` plus the logins in repo variable `C00_DEPLOY_AUTHORIZERS` (comma-separated;
-  put the CHE-3123 agent-merge identity there). Case is ignored; blanks are dropped.
-- Any other merger, a direct push, or an unmatched pull request: the image is built, the deploy is skipped.
-- A GitHub API error fails the gate job, so nothing deploys.
-- `workflow_dispatch` is allowed for the same logins and only from `cheese/main`; any other actor fails.
-- `MAIN_RED_PAUSED` (repo variable): any non-empty value skips merge-triggered deploys. A dispatch ignores it.
-- After a failed deploy, merge-triggered deploys stay off until a deploy job succeeds (an allowlisted
-  dispatch). Skipped and cancelled runs are ignored. If the last 100 runs hold no deploy, it stays off.
-- The history is read in the order deploys finished, not the order GitHub lists the runs (creation). A slow
-  older run can fail after a newer run succeeded; the failure is the later event, so it suspends. Every
-  finished deploy in the runs read counts, each attempt of a rerun too, and the latest finish decides. A
-  failure and a success that finish at the same instant count as the failure. A deploy still running says
-  nothing yet. A finished deploy with no completion time fails the gate.
-- The run list is by creation, and a run created earlier can finish later. So the gate reads 100 runs a page and
-  keeps paging until the newest lifting success is more than 24 hours newer than the oldest run on the page
-  (a run that old cannot finish after it), or a page is short. It reads at most 10 pages. If that does not
-  decide, or a run has no creation time, the last result is unknown and it stays off.
-- A rerun is not a recovery. A rerun keeps its run id, so the gate reads the earlier attempts too: an earlier
-  failed deploy attempt keeps counting as a failure, for this run and for older runs, unless the login that
-  started the rerun (`github.triggering_actor`) is on the allowlist. A rerun of a `workflow_dispatch` run is
-  judged by whoever reran it, not by the original dispatcher.
-- The deploy job asks again once it holds the deploy lock (`deploy-gate.mjs recheck`), before login or apply,
-  on every attempt. GitHub reuses a passed `gate` when failed jobs are rerun, so the recheck is the check that
-  sees the rerun. A dispatch passes only if the login that started this attempt (`github.triggering_actor`)
-  is on the allowlist; `decide` and `recheck` use the same rule. A push stops there if a deploy ahead of it
-  failed. Any other event is refused. A refusal fails the job, so the suspension holds, and nothing has
-  touched C00.
-- Rebase and merge-queue merges whose commit differs from the pull request's `merge_commit_sha`
-  are not matched and deploy by dispatch only.
+## The suspension marker (S3a, C-10)
+
+Repo variable `DOOP_DEPLOY_SUSPENDED` is the one thing that lets a train run. Its value is one of:
+
+| Value                                       | Meaning                                       |
+| ------------------------------------------- | --------------------------------------------- |
+| `clear:<nonce>:<lift run id or restore>`    | the train may run                             |
+| `armed:<nonce>:<run id>:<sha>`              | a train run is changing C00                   |
+| `suspended:<nonce>:<run id>:<sha>:<reason>` | stopped until a lift (slice S3b) writes clear |
+
+The nonce is 128 random bits. Absent, unreadable or any other shape reads as suspended; a prefix match is not
+enough. `scripts/deploy-marker.mjs` is the only writer. Every write reads the variable, checks it is the
+value the writer expects, writes, and reads it back; a write it cannot prove fails the job.
+
+- **Arm before change.** A train run writes `armed:*` over `clear:*` right after the `pre-arm` check and before
+  `docker login`, any pull or any start. If that write fails, nothing on C00 has changed and the marker still
+  reads as it did.
+- **Restore only by the same run.** Only the passing `confirm` of that run writes a new `clear:*:restore`, and
+  only over its own `armed:*`. Any other value (another run, a suspension, a lift) refuses and fails the job.
+  A failed restore leaves `armed:*`, which is suspended.
+- **Recovery and drill never write clear.** They write `suspended:*` over whatever stands, before any change,
+  and never touch `DOOP_DEPLOY_TRAIN`. A bot dispatch is refused at entry. A rollback also writes `suspended:*`,
+  over its own `armed:*`, whatever the rollback itself did.
+- **Reading is read only.** `decide` and every check read the marker and never write it.
+
+Every failure leaves the marker `armed` or `suspended`, so the train stops until a lift. Lifting is S3b.
+
+### Adoption of the 11 Nov failure (one write, by an admin)
+
+The variable starts absent, which reads as suspended. Before this slice's PR merges, write the marker once so
+the failed deploy of 11 Nov is recorded as the reason. The App token and the admin both can:
+
+```bash
+node scripts/deploy-marker.mjs suspend --any --reason migrated   # env: GH_TOKEN (App or admin), REPO=cheese-work/doop, RUN_ID=42955625332, SHA=612f86854a6020f45b90321302a79dae1214d13a
+```
+
+The agent that wrote S3a holds no token that can write repo variables, so this write is an owner action.
+
+## Entry rules (`deploy-gate.mjs decide`)
+
+- `schedule`: mode `train`. `workflow_dispatch` takes `mode` (`train`, `recovery`, `drill`).
+- A train run is attempt 1 only; a rerun is refused. A train dispatch is allowed only as the schedule
+  backup (`schedule_backup=true` from `github-actions[bot]`).
+- `recovery` and `drill` are dispatch-only, by `congvc-dev` or a login in `C00_DEPLOY_AUTHORIZERS`, never by a
+  bot. `drill` is refused until slice S6.
+- `MAIN_RED_PAUSED` set skips a train run. A skip is a clean exit; a refusal fails the job.
+
+## Candidate and pin (`resolve`, `admit`)
+
+`resolve` picks the newest `cheese/main` commit with a successful D1 push run (train), or takes
+`candidate_sha` (recovery, drill), and reads that run's `candidate-manifest`. `admit` stops the run
+unless all four name the candidate: the manifest SHA, the D1 run (success, on that exact SHA), the image
+label `org.opencontainers.image.revision`, and the migration inventory sha recomputed from the checked-out
+candidate (`scripts/migration-inventory.mjs`). A red D1 run skips a train run and refuses recovery.
+
+## Checks per operation (`deploy-gate.mjs recheck <mode> --op ... --expect ...`)
+
+| Operation   | Where                                           | Passes when                                                                        |
+| ----------- | ----------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `pre-arm`   | `deploy` step 1                                 | switch, pause and marker allow it; the candidate is strictly ahead of C00          |
+| `pre-apply` | `c00.sh apply`, inside `flock`, before `docker` | the same facts, and the marker is this run's own `--expect` value                  |
+| `confirm`   | `readback-confirm`                              | marker is this run's own value; C00 runs the candidate digest and label            |
+| `rollback`  | `rollback`, before any change                   | marker is this run's own value; reports `action`: `rollback`, `none`, `superseded` |
+
+Before the arm write a "no" is a skip; after it every "no" fails the job. Migration quiescence is an
+injected hook; slice S4b wires the real proof. An unknown operation exits non-zero.
+
+## Locks
+
+`c00.sh apply` takes `flock -w 600 /var/lock/doop-deploy.lock` (`C00_LOCK_FILE`, `C00_LOCK_WAIT`), runs the
+`pre-apply` check, then tags the rollback target, pulls and starts. Every C00 job also sits in GitHub
+concurrency group `c00-deploy-doop` with `cancel-in-progress: false`. D2 has no workflow-level concurrency.
 
 ## What the deploy does (`c00.sh`)
 
-1. `apply`: tags the running image `doop-rollback:previous`, pulls `ghcr.io/cheese-work/doop@sha256:...`,
-   starts it with `compose.image.yml` (`--no-build --pull never`). A ref that is not a 64-hex digest is refused.
-2. `readback`: the running image has the evidence digest; its `org.opencontainers.image.revision`
-   label equals the deployed SHA; the container reports `healthy` on 3 consecutive checks inside
-   15 minutes. `unhealthy` or a stopped container fails at once.
-3. `rollback` (only on failure, and only if `apply` got as far as starting the change; a login, recheck
-   or pull failure leaves the running service alone): starts `doop-rollback:previous` and waits up to 5 minutes for `healthy`.
-   The job stays failed, which suspends auto-deploy. On a first deploy there is nothing to roll back to.
+1. `apply`: lock, `pre-apply` check, tags the running image `doop-rollback:previous`, pulls
+   `ghcr.io/cheese-work/doop@sha256:...`, starts it with `compose.image.yml` (`--no-build --pull never`). A ref
+   that is not a 64-hex digest is refused; so is a missing `DEPLOY_MODE` or `MARKER_EXPECT`.
+2. `readback`: the running image has the manifest digest; its `org.opencontainers.image.revision` label equals
+   the deployed SHA; the container reports `healthy` on 3 consecutive checks inside 15 minutes.
+3. `rollback` (only when `apply` got as far as starting the change, and only when the rollback check says the
+   candidate still runs): starts `doop-rollback:previous` and waits up to 5 minutes for `healthy`.
 
 ## Prerequisites (set once; not in this repo)
 
@@ -61,6 +110,9 @@ push to cheese/main -> ci -> image (digest) -> gate -> deploy [cheese-c00-deploy
 | Repo variable | `C00_DOOP_COMPOSE_DIR`    | optional; default `/home/congvc/.local/share/doop` (`compose.yaml`, service `app`, its `.env`)                                                                                                                                           |
 | Repo variable | `C00_DEPLOY_AUTHORIZERS`  | extra logins, e.g. the agent-merge identity                                                                                                                                                                                              |
 | Repo variable | `MAIN_RED_PAUSED`         | empty, or a reason to pause                                                                                                                                                                                                              |
+| Environment   | `doop-deploy-marker`      | on `cheese-work/doop`; holds the marker App's key. The three C00 jobs run in it; no hosted job does                                                                                                                                      |
+| Env variable  | `DOOP_MARKER_APP_ID`      | App id of the marker GitHub App (repository permission: Variables read and write; installed on `doop` only)                                                                                                                              |
+| Env secret    | `DOOP_MARKER_APP_KEY`     | that App's private key                                                                                                                                                                                                                   |
 
 Optional on the runner: `C00_COMPOSE_FILE` (default `compose.yaml`), `C00_CONTAINER` (default `doop`).
 The compose service is `app` (container name `doop`); `compose.image.yml` overrides only its image.
