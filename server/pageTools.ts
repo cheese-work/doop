@@ -2,7 +2,7 @@ import { normalizeRotation } from '../shared/frameRotation.ts'
 import * as actions from './actions.ts'
 import { MAX_PAGES, PageLimitError } from './store.ts'
 import { canvasPages, framePageId, MAX_PAGE_NAME, pageFrames, samePages } from '../shared/pages.ts'
-import { conflicts, freeSpot, FRAME_GAP } from './frameLayout.ts'
+import { conflicts, freeSpot, visibleBox, FRAME_GAP } from './frameLayout.ts'
 import type { Actor, Canvas, CanvasPageInfo, Frame } from '../shared/types.ts'
 
 /**
@@ -86,7 +86,8 @@ export function savePages(
 
 /** CHE-6119: why a move or resize that puts the frame on another frame is refused (undefined = fine). */
 function overlapRefusal(canvas: Canvas, frame: Frame, patch: FrameMetaPatch): string | undefined {
-  if (!(['x', 'y', 'width', 'height', 'pageId'] as const).some((k) => patch[k] !== undefined)) return undefined
+  /* rotation counts: `normalizeRotation` leaves the key present but undefined for a straightened frame */
+  if (!(['x', 'y', 'width', 'height', 'pageId', 'rotation'] as const).some((k) => k in patch)) return undefined
   const pageId = patch.pageId ?? framePageId(canvas, frame)
   const box = {
     x: patch.x ?? frame.x,
@@ -94,11 +95,12 @@ function overlapRefusal(canvas: Canvas, frame: Frame, patch: FrameMetaPatch): st
     width: patch.width ?? frame.width,
     height: patch.height ?? frame.height,
   }
+  const shown = visibleBox({ ...box, rotation: 'rotation' in patch ? patch.rotation : frame.rotation })
   const others = pageFrames(canvas, pageId)
-  const hit = conflicts(box, others, frame.id)
+  const hit = conflicts(shown, others, frame.id)
   if (!hit.length) return undefined
   const spot = freeSpot(others.filter((f) => f.id !== frame.id))
-  return `frames may not overlap or sit closer than ${FRAME_GAP}px: this ${box.width}x${box.height} box at ${box.x},${box.y} hits ${hit.map((f) => `${f.id} “${f.name}”`).join(', ')}. Free space: x ${spot.x}, y ${spot.y}.`
+  return `frames may not overlap or sit closer than ${FRAME_GAP}px: this ${Math.round(shown.width)}x${Math.round(shown.height)} box at ${Math.round(shown.x)},${Math.round(shown.y)} hits ${hit.map((f) => `${f.id} “${f.name}”`).join(', ')}. Free space: x ${spot.x}, y ${spot.y}.`
 }
 
 /** Rename, move, resize or (un)lock a frame, or move it to another page. Agents may not leave it on another frame. */

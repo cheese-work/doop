@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { Canvas, Frame } from '../shared/types'
-import { conflicts, freeSpot } from '../server/frameLayout.ts'
+import { conflicts, freeSpot, visibleBox } from '../server/frameLayout.ts'
 import { Client, startServer, type Server } from './harness.ts'
 
 /* CHE-6119: an agent's direct doop write (MCP create_frame / update_frame) never leaves frames overlapping */
@@ -58,7 +58,48 @@ describe('frameLayout', () => {
   })
 })
 
+describe('rotated frames count by their on-screen box', () => {
+  const f = (id: string, x: number, y: number, w: number, h: number, rotation?: number) => ({
+    id,
+    name: id,
+    x,
+    y,
+    width: w,
+    height: h,
+    rotation,
+  })
+
+  it('a frame turned 90 degrees conflicts where it shows, not where its unrotated rect is', () => {
+    const wide = f('a', 0, 0, 400, 100, 90) // shows as 100x400 at x 150, y -150
+    expect(conflicts({ x: 150, y: 200, width: 100, height: 100 }, [wide])).toHaveLength(1)
+    expect(conflicts({ x: 0, y: 0, width: 100, height: 100 }, [{ ...wide, rotation: undefined }])).toHaveLength(1)
+    expect(conflicts({ x: 150, y: 200, width: 100, height: 100 }, [{ ...wide, rotation: undefined }])).toHaveLength(0)
+    expect(visibleBox(wide).height).toBeCloseTo(400)
+  })
+
+  it('free space clears a turned frame', () => {
+    expect(freeSpot([f('a', 0, 0, 400, 100, 90)]).y).toBeCloseTo(-150 + 400 + 80)
+  })
+})
+
 describe('agent writes through MCP', () => {
+  it('a rotation-only update onto another frame is refused; a create onto a turned frame is relocated', async () => {
+    const canvas: Canvas = await (await owner.post('/api/canvases', { name: 'Rotate' })).json()
+    const mk = async (name: string, x: number, y: number, width: number, height: number) =>
+      JSON.parse((await call('create_frame', { canvas_id: canvas.id, name, html: '', x, y, width, height })).text)
+    const a = await mk('A', 0, 0, 400, 100)
+    const b = await mk('B', 150, 200, 100, 100)
+    const turn = await call('update_frame', { frame_id: a.frame.id, rotation: 90 })
+    expect(turn.isError).toBe(true)
+    expect(turn.text).toContain(b.frame.id)
+    // clear of B once B is away: the turn is accepted, then a create on its turned box is relocated
+    await call('update_frame', { frame_id: b.frame.id, x: 1000, y: 0 })
+    expect((await call('update_frame', { frame_id: a.frame.id, rotation: 90 })).isError).toBe(false)
+    const c = await mk('C', 150, 200, 100, 100) // inside A's turned box (x 150..250, y -150..250)
+    expect(c.placement).toMatch(/placed in free space/)
+    expect(overlapping(await frames(canvas.id))).toEqual([])
+  })
+
   it('create_frame at an overlapping x/y lands in free space and says so', async () => {
     const canvas: Canvas = await (await owner.post('/api/canvases', { name: 'Create' })).json()
     const a = JSON.parse((await call('create_frame', { canvas_id: canvas.id, name: 'A', html: '', x: 0, y: 0 })).text)
