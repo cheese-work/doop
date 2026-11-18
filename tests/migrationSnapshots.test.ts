@@ -33,3 +33,28 @@ it('0045 is additive over 0044, by sql and by snapshot', async () => {
   const sql = await readFile(path.join(dir, '0045_frame_write_keys.sql'), 'utf8')
   expect((await classifyMigration(sql)).additive).toBe(true)
 })
+
+/* CHE-7205: the upstream 0.15.0 merge renumbered upstream 0049-0059 to 0055-0065. Each renumbered snapshot must
+   still carry every fork table and column of 0054, and the chain must stay additive and linked end to end. */
+it('0055-0065 keep every fork table and column of 0054 and chain from it', async () => {
+  const read = async (n: number) =>
+    JSON.parse(await readFile(path.join(dir, `meta/${String(n).padStart(4, '0')}_snapshot.json`), 'utf8')) as {
+      id: string
+      prevId: string
+      tables: Record<string, { columns: Record<string, unknown> }>
+    }
+  let prev = await read(54)
+  const fork = prev
+  for (let n = 55; n <= 65; n++) {
+    const cur = await read(n)
+    expect(cur.prevId, `snapshot ${n} prevId`).toBe(prev.id)
+    for (const [t, table] of Object.entries(fork.tables)) {
+      expect(cur.tables[t], `snapshot ${n} lost table ${t}`).toBeDefined()
+      for (const c of Object.keys(table.columns)) {
+        expect(cur.tables[t]?.columns[c], `snapshot ${n} lost ${t}.${c}`).toBeDefined()
+      }
+    }
+    expect(diffSnapshots(prev, cur), `snapshot ${n - 1} -> ${n}`).toEqual({ ok: true })
+    prev = cur
+  }
+})
