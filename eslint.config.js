@@ -155,7 +155,12 @@ export default tseslint.config(
     /* repo maintenance scripts, the iOS dev helpers and the desktop release
        scripts: plain ESM run directly by node or bun, so they get node globals
        rather than the browser set */
-    files: ['scripts/**/*.{js,mjs}', 'ios/scripts/**/*.{js,mjs}', 'desktop/scripts/**/*.{js,mjs}'],
+    files: [
+      'scripts/**/*.{js,mjs}',
+      'tests/fixtures/**/*.{js,mjs}',
+      'ios/scripts/**/*.{js,mjs}',
+      'desktop/scripts/**/*.{js,mjs}',
+    ],
     languageOptions: {
       globals: Object.fromEntries(
         'process console Buffer URL fetch setTimeout clearTimeout setInterval clearInterval'
