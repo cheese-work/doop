@@ -45,6 +45,10 @@ export interface CompletenessReport {
 export interface AttestedInputs {
   recon: { id: string; updatedAt: number }[]
   start: string | null
+  /** hash of the requirement lines the ledger row read (CHE-6373); absent when that row did not run */
+  requirements?: string | null
+  /** the Multica issue those lines came from; a rebind to another issue ends the attestation */
+  requirementsIssue?: string | null
 }
 
 /** One stored row: a frame at a version, inside one run of the check. */
@@ -63,7 +67,7 @@ export interface AttestationRow {
   createdBy: string
 }
 
-/** Plug-in point for the requirement ledger (CHE-6373, a later issue): extra
+/** Plug-in point for the requirement ledger (CHE-6373, server/requirementLedger.ts): extra
  *  checks over the same page, whose findings count like any other. */
 export interface CheckContext {
   canvas: Canvas
@@ -76,14 +80,14 @@ export interface CheckOptions {
 
 /* ---- reading frame HTML without a DOM ---- */
 
-interface El {
+export interface El {
   tag: string
   attrs: Map<string, string>
   /** script and style bodies only */
   body?: string
 }
 
-function scanElements(html: string): El[] {
+export function scanElements(html: string): El[] {
   const out: El[] = []
   const tagRe = /<!--[\s\S]*?-->|<(script|style)(?=[\s/>])|<([a-z][\w:-]*)/gi
   let m: RegExpExecArray | null
@@ -386,10 +390,16 @@ export function attestationRowsFor(
 /**
  * The newest complete run that still describes the page: same ruleset, and
  * exactly the page's current design frames, each at the version the run saw.
- * An edit, an added frame or a removed frame ends it, and so does any change to the recon frame or the flow start. Null means "attest again".
+ * An edit, an added frame or a removed frame ends it, and so does any change to the recon frame, the flow start or the requirement lines. Null means "attest again".
  * G4 reads this from the stored rows, never from comment text.
  */
-export function currentAttestation(canvas: Canvas, pageId: string, rows: AttestationRow[]): AttestationRow | null {
+export function currentAttestation(
+  canvas: Canvas,
+  pageId: string,
+  rows: AttestationRow[],
+  /** the requirement hash the source gives now; null when it cannot be read */
+  requirementsNow: string | null = null,
+): AttestationRow | null {
   const now = new Map(designFrames(canvas, pageId).map((f) => [f.id, f.updatedAt]))
   const inputsNow = attestedInputs(canvas, pageId)
   const runs = new Map<string, AttestationRow[]>()
@@ -400,6 +410,8 @@ export function currentAttestation(canvas: Canvas, pageId: string, rows: Attesta
     if (head.result !== 'complete' || head.ruleset !== COMPLETENESS_RULESET) continue
     if (run.length !== now.size) continue
     if (!sameInputs(head.inputs, inputsNow)) continue
+    /* a run that read requirement lines is only current while the source still hashes the same */
+    if (typeof head.inputs.requirements === 'string' && head.inputs.requirements !== requirementsNow) continue
     if (run.every((r) => now.get(r.frameId) === r.frameUpdatedAt)) return head
   }
   return null

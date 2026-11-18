@@ -1,8 +1,9 @@
+import { createServer, type Server as HttpServer } from 'node:http'
 import { afterAll, beforeAll, expect, it } from 'vitest'
 import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { Canvas, Frame } from '../shared/types'
-import { Client, startServer, type Server } from './harness.ts'
+import { Client, freePort, startServer, type Server } from './harness.ts'
 
 /* G3 end to end (CHE-6078 r5): the check_design_completeness tool, the stored
    attestation, and what happens to it when a frame changes or the server restarts. */
@@ -11,6 +12,11 @@ let server: Server
 let owner: Client
 let stranger: Client
 let agent: McpClient
+let multica: HttpServer
+let serverEnv: Record<string, string> = {}
+
+/* the page is bound to an issue with no requirement lines: the ledger runs and finds nothing (an unchecked ledger never attests) */
+const ISSUE = '01a1e586-c5e6-71a7-9cae-c5b32b8f2818'
 
 async function connectAgent(client: Client) {
   const { secret } = await (await client.post('/api/agent-keys', { name: 'Reviewer' })).json()
@@ -24,7 +30,21 @@ async function connectAgent(client: Client) {
 }
 
 beforeAll(async () => {
-  server = await startServer()
+  multica = createServer((req, res) => {
+    res.setHeader('Content-Type', 'application/json')
+    if (req.url === `/api/issues/${ISSUE}`) return void res.end(JSON.stringify({ id: ISSUE, description: null }))
+    if (req.url === `/api/issues/${ISSUE}/comments`) return void res.end('[]')
+    res.statusCode = 404
+    res.end('{}')
+  })
+  const port = await freePort()
+  await new Promise<void>((resolve) => multica.listen(port, '127.0.0.1', resolve))
+  serverEnv = {
+    MULTICA_API_URL: `http://127.0.0.1:${port}`,
+    MULTICA_API_TOKEN: 'attest-token',
+    MULTICA_WORKSPACE_ID: 'ws-1',
+  }
+  server = await startServer(serverEnv)
   owner = await new Client(server).signUp('attest@test.dev', 'Attest Owner')
   stranger = await new Client(server).signUp('attest-stranger@test.dev', 'Stranger')
   agent = await connectAgent(owner)
@@ -33,6 +53,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await agent?.close()
   server?.stop()
+  multica?.close()
 })
 
 async function callTool(name: string, args: Record<string, unknown>) {
@@ -69,6 +90,15 @@ async function addFrame(canvasId: string, name: string, html: string): Promise<F
 
 it('stores an attestation per run and ends it when a frame changes', async () => {
   const canvas: Canvas = await (await owner.post('/api/canvases', { name: 'Proposal' })).json()
+  const pageId: string = (await (await owner.get(`/api/canvases/${canvas.id}`)).json()).pages[0].id
+  expect(
+    (
+      await owner.req(`/api/canvases/${canvas.id}/pages/${pageId}/issue`, {
+        method: 'PUT',
+        body: JSON.stringify({ issueId: ISSUE }),
+      })
+    ).status,
+  ).toBe(200)
   await addFrame(canvas.id, 'Recon', `<script type="application/json" id="doop-recon">${RECON}</script>`)
   const wire = await addFrame(
     canvas.id,
@@ -106,7 +136,7 @@ it('stores an attestation per run and ends it when a frame changes', async () =>
   await agent.close()
   server.stop({ keepData: true })
   await server.stopped
-  server = await startServer({}, dataDir)
+  server = await startServer(serverEnv, dataDir)
   owner = new Client(server)
   expect(
     (await owner.post('/api/auth/sign-in/email', { email: 'attest@test.dev', password: 'password12345' })).status,
