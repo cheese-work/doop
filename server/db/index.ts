@@ -29,6 +29,8 @@ export async function initDb(): Promise<void> {
   if (url) {
     const { drizzle } = await import('drizzle-orm/node-postgres')
     db = drizzle(url, { schema })
+    /* C00 migrates in a supervised one-shot container first (server/db/migrate.ts, CHE-5474 C-8.8) */
+    if (env.DOOP_SKIP_MIGRATIONS) return
     const { migrate } = await import('drizzle-orm/node-postgres/migrator')
     await migrate(db, { migrationsFolder: MIGRATIONS })
   } else {

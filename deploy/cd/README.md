@@ -129,3 +129,16 @@ Pure checks the deploy train calls before it changes C00; none runs yet (the tra
 - `scripts/migration-classify.mjs`: Postgres parser (`libpg-query`); additive is `CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS` (nullable or constant default), `CREATE INDEX IF NOT EXISTS` (not unique, not concurrent). Anything else fails.
 - `scripts/migration-snapshot.mjs`: static drizzle-snapshot diff (new tables, new nullable or constant-default columns, new non-unique indexes only).
 - `tests/migrationSnapshots.test.ts`: every journal entry needs `meta/<idx>_snapshot.json`; run `npx drizzle-kit generate` and keep the snapshot with the migration.
+
+## Supervised migration apply (CHE-5474 S4b)
+
+Rules C-8.7 and C-8.8. With `DOOP_DEPLOY_TRAIN=on`, `c00.sh apply` no longer lets the app migrate at boot.
+
+**Switch.** Everything below runs only when the deploy job's `DOOP_DEPLOY_TRAIN` (repository variable, passed by `image.yml`) is exactly `on`. Absent, `off` or any other value: `apply` and `rollback` do what they did before the train (no quiescence read, no one-shot container, the app migrates at boot and is not given `compose.supervised.yml`), and `DEPLOY_RUN_ID` and a Postgres container are not needed. The overlay that sets `DOOP_SKIP_MIGRATIONS=1` is `compose.supervised.yml`, added to the compose command only in train mode; `compose.image.yml` is unchanged.
+
+- `apply` first proves quiescence, then pulls, then runs `node server/db/migrate.ts` once in a one-shot container `doop-migrate-<DEPLOY_RUN_ID>` of the candidate image (`docker compose run`, label `doop.migrate.run`). The runner sets `application_name=doop-migrate-<run id>`, holds `pg_advisory_lock(1685025648, 1)` for the whole run, and fails at 120 s (`C00_MIGRATE_SECONDS`). The app is then recreated with `DOOP_SKIP_MIGRATIONS=1` (`compose.supervised.yml`).
+- Timeout or non-zero exit: no app start. `docker kill`, `docker wait`, `pg_terminate_backend` on every session with that name, then within 30 s (`C00_QUIESCE_SECONDS`) the container is `exited`, `pg_stat_activity` has no such session (`(pid, backend_start)` logged before and after) and `pg_locks` shows the key free. The ledger is compared with the pre-apply ledger (`ledger_changed=`). Proven: outcome `migrate_failed`, the running app is untouched. Not proven: outcome `needs_operator`. Both go to `$GITHUB_OUTPUT` as `outcome=`.
+- `apply`, `rollback` and `quiescence` (for the compat and lift jobs) first check the same facts: no migrate container running, no session named `doop-migrate-%`, advisory key free. Any read that fails counts as not proven and refuses with `needs_operator`.
+- All database reads go through `docker exec` into `C00_PG_CONTAINER` (local socket, `default_transaction_read_only=on`); the only write is `pg_terminate_backend`, and only on the failed run's own name.
+- `image.yml` passes `DOOP_DEPLOY_TRAIN`, `DEPLOY_RUN_ID` (`<run id>-<attempt>`) and optional repo variable `C00_DOOP_PG_CONTAINER`; empty, `c00.sh` finds the compose project's `db` service (`docker compose ps -q db`) and refuses if there is none. `tests/c00Migrate.test.ts` runs `c00.sh` with the deploy job's real env.
+- Not in this slice: the marker write on `migrate_failed`, the compat sandbox (S4c) and rollback sequencing (S5). The switch stays off.
