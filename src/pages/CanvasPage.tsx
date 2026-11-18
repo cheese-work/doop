@@ -277,7 +277,7 @@ export function CanvasPage({ canvasId }: { canvasId: string }) {
       useStore.getState().setPresences([])
       useStore.getState().setCanvasNotFound(false)
       select(null)
-      useStore.getState().setTool('select')
+      useStore.getState().setTool('hand')
       clearHistory()
     }
   }, [canvasId, select])

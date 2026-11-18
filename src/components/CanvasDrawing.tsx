@@ -76,7 +76,7 @@ export function useCanvasDrawing(stage: RefObject<HTMLDivElement>) {
         e.preventDefault()
         e.stopImmediatePropagation()
         cancel()
-        useStore.getState().setTool('select')
+        useStore.getState().setTool('hand')
       } else if (
         e.key === 'Enter' &&
         (current.drawing.tool === 'path' || (current.typing && (e.metaKey || e.ctrlKey)))

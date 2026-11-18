@@ -1,5 +1,5 @@
 {
-  "id": "fd107c4e-8d62-4722-9f3e-d9df1f4377a3",
+  "id": "82a317f8-d81f-4e90-aabe-1a4445d746cc",
   "prevId": "49be320d-529c-4d0e-903a-f84a1382c920",
   "version": "7",
   "dialect": "postgresql",
@@ -1474,6 +1474,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "lock_epoch": {
+          "name": "lock_epoch",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lock_attestation_id": {
+          "name": "lock_attestation_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "approval": {
           "name": "approval",
           "type": "jsonb",
@@ -2541,183 +2553,6 @@
         }
       },
       "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.page_authors": {
-      "name": "page_authors",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "canvas_id": {
-          "name": "canvas_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "page_id": {
-          "name": "page_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "frame_id": {
-          "name": "frame_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "''"
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "agent_id": {
-          "name": "agent_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "''"
-        },
-        "task_id": {
-          "name": "task_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "''"
-        },
-        "provider": {
-          "name": "provider",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "''"
-        },
-        "model": {
-          "name": "model",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "''"
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "''"
-        },
-        "source": {
-          "name": "source",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_page_id": {
-          "name": "source_page_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "''"
-        },
-        "first_at": {
-          "name": "first_at",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {
-        "page_authors_writer_uniq": {
-          "name": "page_authors_writer_uniq",
-          "columns": [
-            {
-              "expression": "canvas_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "page_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "kind",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "agent_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "task_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "source",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "source_page_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "page_authors_page_idx": {
-          "name": "page_authors_page_idx",
-          "columns": [
-            {
-              "expression": "canvas_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "page_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},

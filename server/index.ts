@@ -59,7 +59,7 @@ import {
   MAX_ASSET_BYTES,
 } from './assets.ts'
 import * as ingest from './ingest.ts'
-import { PolicyRefused } from './writePolicy.ts'
+import { PolicyRefused, setLockOwners, VersionChanged } from './writePolicy.ts'
 import * as agentKeys from './agentKeys.ts'
 import * as backgrounds from './backgrounds.ts'
 import * as storage from './storage.ts'
@@ -627,7 +627,9 @@ app.post('/ingest/:key', express.json({ limit: '10mb', type: () => true }), (req
   ingest.handleIngest(req, res).catch((err) => {
     if (err instanceof PolicyRefused) {
       if (!res.headersSent)
-        res.status(403).json({ error: 'this canvas is bound to a project; sync cannot write to it' })
+        res
+          .status(403)
+          .json({ error: 'sync cannot write here: the canvas is bound to a project or the frame is locked' })
       return
     }
     console.error('[ingest] failed', err)
@@ -1795,7 +1797,8 @@ app.patch('/api/frames/:id', (req, res) => {
   /* the eye in the Layers panel: anything but a literal true shows the frame */
   if (patch.hidden !== undefined) clean.hidden = patch.hidden === true
   if (patch.locked !== undefined) clean.locked = !!patch.locked
-  const frame = actions.updateFrame(req.params.id, clean, actor)
+  /* the account id, not the display name, decides who may unlock a frame (DOOP_LOCK_OWNERS) */
+  const frame = actions.updateFrame(req.params.id, clean, actor, { userId: req.user!.id })
   if (!frame) return res.status(404).json({ error: 'frame not found' })
   res.json(frame)
 })
@@ -1857,10 +1860,15 @@ app.get('/api/frames/:id/versions/:versionId', async (req, res) => {
   res.json(version)
 })
 
-app.post('/api/frames/:id/versions/:versionId/restore', async (req, res) => {
+app.post('/api/frames/:id/versions/:versionId/restore', async (req, res, next) => {
   if (!requireFrame(req, res, req.params.id, 'edit')) return
   const actor = actions.resolveActor({ name: req.user!.name, kind: 'user' })
-  const restored = await actions.restoreFrameVersion(req.params.id, req.params.versionId, actor)
+  let restored: Awaited<ReturnType<typeof actions.restoreFrameVersion>>
+  try {
+    restored = await actions.restoreFrameVersion(req.params.id, req.params.versionId, actor)
+  } catch (err) {
+    return next(err) /* a locked frame refuses the restore: answered by the write-refusal handler below */
+  }
   if (restored === null) return res.status(404).json({ error: 'version not found' })
   if (!restored) return res.status(404).json({ error: 'frame not found' })
   res.json(restored)
@@ -2262,6 +2270,7 @@ if (env.isProduction) {
 /* ------------------------------------------------- websocket */
 
 /* G2 reads the issue's comments from Multica; without its settings no design frame on an issue page passes */
+setLockOwners(env.DOOP_LOCK_OWNERS)
 setReconSources({ assets: storedReconAssets, comments: multicaCommentsSource(env)?.comments })
 
 const server = http.createServer(app)
@@ -2400,6 +2409,15 @@ wss.on('connection', (ws, upgradeReq) => {
     if (conn.silent) return // never announced a join, so nothing to leave
     broadcast(conn.canvasId, { type: 'presence:leave', clientId: conn.presence.clientId })
   })
+})
+
+/* A store write refused by policy or by a version fence (frame lock, project binding): a clean 4xx for the
+   session routes instead of Express's default 500 page. Registered after every route. */
+app.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (res.headersSent) return next(err)
+  if (err instanceof PolicyRefused) return res.status(423).json({ error: err.message, code: err.code })
+  if (err instanceof VersionChanged) return res.status(409).json({ error: err.message, code: err.code })
+  next(err)
 })
 
 server.listen(PORT, () => {

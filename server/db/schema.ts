@@ -172,6 +172,10 @@ export const frames = pgTable(
     hidden: boolean('hidden'),
     /** Figma-style lock; null = unlocked */
     locked: boolean('locked'),
+    /** unlocks so far (CHE-6626); raised on every unlock, never reused; null = never unlocked */
+    lockEpoch: integer('lock_epoch'),
+    /** the design attestation the frame was locked against; null = none */
+    lockAttestationId: text('lock_attestation_id'),
     approval: jsonb('approval').$type<FrameApproval>(),
   },
   (t) => [index('frames_canvas_idx').on(t.canvasId)],
@@ -217,7 +221,14 @@ export const designAttestations = pgTable(
     ruleset: text('ruleset').notNull(),
     scanHash: text('scan_hash'),
     /** recon frame(s) at their version and the page's flow start, as the run saw them */
-    inputs: jsonb('inputs').$type<{ recon: { id: string; updatedAt: number }[]; start: string | null }>().notNull(),
+    inputs: jsonb('inputs')
+      .$type<{
+        recon: { id: string; updatedAt: number }[]
+        start: string | null
+        requirements?: string | null
+        requirementsIssue?: string | null
+      }>()
+      .notNull(),
     /** 'complete' | 'incomplete' */
     result: text('result').notNull(),
     missing: jsonb('missing').$type<{ code: string; frameId?: string; detail: string }[]>().notNull(),

@@ -90,6 +90,8 @@ export async function saveCanvasCopy(c: Canvas): Promise<void> {
           demo: frame.demo ?? null,
           hidden: frame.hidden ?? null,
           locked: frame.locked ?? null,
+          lockEpoch: frame.lockEpoch ?? null,
+          lockAttestationId: frame.lockAttestationId ?? null,
         })),
       )
     }
@@ -309,6 +311,8 @@ export async function savePageCopy(c: Canvas, frames: Frame[], beforeCommit?: ()
         demo: frame.demo ?? null,
         hidden: frame.hidden ?? null,
         locked: frame.locked ?? null,
+        lockEpoch: frame.lockEpoch ?? null,
+        lockAttestationId: frame.lockAttestationId ?? null,
       })),
     )
     const refs = frames.flatMap((frame) =>
@@ -391,6 +395,8 @@ function writeFrame(f: Frame) {
       demo: f.demo ?? null,
       hidden: f.hidden ?? null,
       locked: f.locked ?? null,
+      lockEpoch: f.lockEpoch ?? null,
+      lockAttestationId: f.lockAttestationId ?? null,
       approval: f.approval ?? null,
     }
     const { id, createdAt, ...set } = row
@@ -950,6 +956,8 @@ export async function hydrate(): Promise<Hydrated> {
       demo: f.demo ?? undefined,
       hidden: f.hidden ?? undefined,
       locked: f.locked ?? undefined,
+      lockEpoch: f.lockEpoch ?? undefined,
+      lockAttestationId: f.lockAttestationId ?? undefined,
     })
   for (const c of canvases) c.frames.sort((a, b) => a.createdAt - b.createdAt)
   for (const r of referenceRows) {
