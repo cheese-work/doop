@@ -1,4 +1,4 @@
-# C00 deploy (deploy train S2, CHE-5544; plan CHE-5474)
+# C00 deploy (deploy train S2 and S3a, CHE-5544, CHE-5545; plan CHE-5474)
 
 Two workflows. D1 (`image.yml`) tests, builds, pushes and records a candidate manifest; it holds no
 deploy secret and no C00 runner. D2 (`cd-deploy.yml`) is the only workflow that touches C00. Build stays
@@ -8,17 +8,54 @@ on GitHub runners; C00 only pulls and runs.
 D1  push to cheese/main -> ci -> image (digest) -> candidate-manifest artifact
                                                   (SHA, digest, migration inventory sha, D1 run id)
 D2  schedule 06:17 / 14:17 / 22:17 ICT, or dispatch
-    resolve [hosted] -> admit [hosted] -> deploy [C00] -> readback-confirm [C00]
-                                                       \-> rollback [C00] (failure only)
+    resolve [hosted] -> admit [hosted] -> deploy [C00]: pre-arm check, ARM, apply, readback
+                                       -> readback-confirm [C00]: confirm check, RESTORE (train only)
+                                       \-> rollback [C00] (failure only): check, roll back, SUSPEND
 ```
 
 ## The switch is off
 
 The train deploys only when repo variable `DOOP_DEPLOY_TRAIN` is `on`. Absent, empty or anything else:
 a scheduled run ends at `resolve` as a clean skip (exit 0, `go=false`). A variable that cannot be read is
-a skip too. This slice approves no deploy. Arming, restoring and lifting the suspension marker
-`DOOP_DEPLOY_SUSPENDED` (`clear:*`, `armed:*`, `suspended:*`) are slice S3a: until it lands no marker reads
-`clear:*`, so a train run always skips.
+a skip too. This slice approves no deploy: nothing sets the switch to `on`, and the marker below starts absent.
+
+## The suspension marker (S3a, C-10)
+
+Repo variable `DOOP_DEPLOY_SUSPENDED` is the one thing that lets a train run. Its value is one of:
+
+| Value                                       | Meaning                                       |
+| ------------------------------------------- | --------------------------------------------- |
+| `clear:<nonce>:<lift run id or restore>`    | the train may run                             |
+| `armed:<nonce>:<run id>:<sha>`              | a train run is changing C00                   |
+| `suspended:<nonce>:<run id>:<sha>:<reason>` | stopped until a lift (slice S3b) writes clear |
+
+The nonce is 128 random bits. Absent, unreadable or any other shape reads as suspended; a prefix match is not
+enough. `scripts/deploy-marker.mjs` is the only writer. Every write reads the variable, checks it is the
+value the writer expects, writes, and reads it back; a write it cannot prove fails the job.
+
+- **Arm before change.** A train run writes `armed:*` over `clear:*` right after the `pre-arm` check and before
+  `docker login`, any pull or any start. If that write fails, nothing on C00 has changed and the marker still
+  reads as it did.
+- **Restore only by the same run.** Only the passing `confirm` of that run writes a new `clear:*:restore`, and
+  only over its own `armed:*`. Any other value (another run, a suspension, a lift) refuses and fails the job.
+  A failed restore leaves `armed:*`, which is suspended.
+- **Recovery and drill never write clear.** They write `suspended:*` over whatever stands, before any change,
+  and never touch `DOOP_DEPLOY_TRAIN`. A bot dispatch is refused at entry. A rollback also writes `suspended:*`,
+  over its own `armed:*`, whatever the rollback itself did.
+- **Reading is read only.** `decide` and every check read the marker and never write it.
+
+Every failure leaves the marker `armed` or `suspended`, so the train stops until a lift. Lifting is S3b.
+
+### Adoption of the 11 Nov failure (one write, by an admin)
+
+The variable starts absent, which reads as suspended. Before this slice's PR merges, write the marker once so
+the failed deploy of 11 Nov is recorded as the reason. The App token and the admin both can:
+
+```bash
+node scripts/deploy-marker.mjs suspend --any --reason migrated   # env: GH_TOKEN (App or admin), REPO=cheese-work/doop, RUN_ID=42955625332, SHA=612f86854a6020f45b90321302a79dae1214d13a
+```
+
+The agent that wrote S3a holds no token that can write repo variables, so this write is an owner action.
 
 ## Entry rules (`deploy-gate.mjs decide`)
 
@@ -65,11 +102,6 @@ concurrency group `c00-deploy-doop` with `cancel-in-progress: false`. D2 has no 
 3. `rollback` (only when `apply` got as far as starting the change, and only when the rollback check says the
    candidate still runs): starts `doop-rollback:previous` and waits up to 5 minutes for `healthy`.
 
-## Legacy gate
-
-`decide` and `recheck` in `deploy-gate.mjs` (the retired `image.yml` gate with its run-history walk) stay
-exported and tested until S3a replaces them with the marker.
-
 ## Prerequisites (set once; not in this repo)
 
 | Where         | Name                      | Value                                                                                                                                                                                                                                    |
@@ -78,6 +110,9 @@ exported and tested until S3a replaces them with the marker.
 | Repo variable | `C00_DOOP_COMPOSE_DIR`    | optional; default `/home/congvc/.local/share/doop` (`compose.yaml`, service `app`, its `.env`)                                                                                                                                           |
 | Repo variable | `C00_DEPLOY_AUTHORIZERS`  | extra logins, e.g. the agent-merge identity                                                                                                                                                                                              |
 | Repo variable | `MAIN_RED_PAUSED`         | empty, or a reason to pause                                                                                                                                                                                                              |
+| Environment   | `doop-deploy-marker`      | on `cheese-work/doop`; holds the marker App's key. The three C00 jobs run in it; no hosted job does                                                                                                                                      |
+| Env variable  | `DOOP_MARKER_APP_ID`      | App id of the marker GitHub App (repository permission: Variables read and write; installed on `doop` only)                                                                                                                              |
+| Env secret    | `DOOP_MARKER_APP_KEY`     | that App's private key                                                                                                                                                                                                                   |
 
 Optional on the runner: `C00_COMPOSE_FILE` (default `compose.yaml`), `C00_CONTAINER` (default `doop`).
 The compose service is `app` (container name `doop`); `compose.image.yml` overrides only its image.

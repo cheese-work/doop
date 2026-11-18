@@ -332,7 +332,8 @@
     on a GitHub runner, pushes to GHCR and uploads the candidate manifest (digest, source SHA, migration
     inventory sha, run id) as `candidate-manifest`. No deploy power.
   - `.github/workflows/cd-deploy.yml` - D2, the only workflow that deploys to C00: schedule (3 a day) and
-    dispatch, off unless repo variable `DOOP_DEPLOY_TRAIN` is `on`. See `deploy/cd/README.md`.
+    dispatch, off unless repo variable `DOOP_DEPLOY_TRAIN` is `on`; the `DOOP_DEPLOY_SUSPENDED` marker is written
+    only by `scripts/deploy-marker.mjs`. See `deploy/cd/README.md`.
   - `.github/workflows/cla.yml` - CLA check (this is an AGPL-3.0 project with CLA-based
     contribution).
   - `.github/workflows/desktop.yml` / `desktop-release.yml` - Tauri desktop app CI and installer
