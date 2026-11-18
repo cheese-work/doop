@@ -813,6 +813,35 @@ class Store {
     return { ok: true, frame }
   }
 
+  /** Durable lock (CHE-7062 B7): as lockIfVersion, but answers only after the row is written. STUB. */
+  async lockIfVersionDurable(
+    _ctx: WriteContext,
+    _frameId: string,
+    _attestedUpdatedAt: number,
+    _attestationId: string,
+  ): Promise<
+    | { ok: true; frame: Frame; epoch: number; already?: true }
+    | { ok: false; error: 'version_changed' | 'persist_failed'; currentUpdatedAt?: number }
+    | undefined
+  > {
+    throw new Error('not implemented')
+  }
+
+  /** Durable unlock (CHE-7062 B5/B7): `pinned` while a pin holds the frame; else the row is written before memory
+   *  changes. STUB. */
+  async unlockFrame(
+    _ctx: WriteContext,
+    _frameId: string,
+    _by: string,
+    _expectedUpdatedAt?: number,
+  ): Promise<
+    | { ok: true; frame: Frame }
+    | { ok: false; error: 'pinned' | 'version_changed' | 'persist_failed' | 'not_locked' }
+    | undefined
+  > {
+    throw new Error('not implemented')
+  }
+
   deleteFrame(ctx: WriteContext, frameId: string): Frame | undefined {
     const canvasId = this.frameIndex.get(frameId)
     if (!canvasId) return undefined
