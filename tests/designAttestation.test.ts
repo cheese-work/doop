@@ -3,6 +3,7 @@ import { afterAll, beforeAll, expect, it } from 'vitest'
 import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { Canvas, Frame } from '../shared/types'
+import { addMotionAndDocs } from './motionFixtures.ts'
 import { Client, freePort, startServer, type Server } from './harness.ts'
 
 /* G3 end to end (CHE-6078 r5): the check_design_completeness tool, the stored
@@ -32,7 +33,8 @@ async function connectAgent(client: Client) {
 beforeAll(async () => {
   multica = createServer((req, res) => {
     res.setHeader('Content-Type', 'application/json')
-    if (req.url === `/api/issues/${ISSUE}`) return void res.end(JSON.stringify({ id: ISSUE, description: null }))
+    if (req.url === `/api/issues/${ISSUE}`)
+      return void res.end(JSON.stringify({ id: ISSUE, identifier: 'CHE-77', description: null }))
     if (req.url === `/api/issues/${ISSUE}/comments`) return void res.end('[]')
     res.statusCode = 404
     res.end('{}')
@@ -106,6 +108,7 @@ it('stores an attestation per run and ends it when a frame changes', async () =>
     '<div data-doop-stage="wireframe"><a data-doop-on="click" data-doop-action="navigate:HIFI">next</a></div>',
   )
   const design = await addFrame(canvas.id, 'Hi-fi', hifi(false))
+  await addMotionAndDocs(owner, canvas.id, 'CHE-77', ['Hi-fi'])
   await owner.patch(`/api/frames/${wire.id}`, {
     html: `<div data-doop-stage="wireframe"><a data-doop-on="click" data-doop-action="navigate:${design.id}">next</a></div>`,
   })

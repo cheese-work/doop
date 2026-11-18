@@ -37,7 +37,7 @@ export type AttestedReport = CompletenessReport & {
 }
 
 type RequirementRead =
-  | { kind: 'lines'; lines: RequirementLine[]; hash: string; issue: string }
+  | { kind: 'lines'; lines: RequirementLine[]; hash: string; issue: string; key: string }
   | { kind: 'unavailable'; reason: string }
   | { kind: 'not_checked'; reason: string }
 
@@ -54,8 +54,8 @@ async function readRequirements(
     return { kind: 'unavailable', reason: 'the page has an invalid issue link; a member must rebind it' }
   if (!issueId) return { kind: 'not_checked', reason: 'the page is not bound to a Multica issue' }
   try {
-    const lines = await source.lines(issueId)
-    return { kind: 'lines', lines, hash: requirementsHash(lines), issue: issueId }
+    const [lines, key] = await Promise.all([source.lines(issueId), source.issueKey(issueId)])
+    return { kind: 'lines', lines, hash: requirementsHash(lines), issue: issueId, key }
   } catch (error) {
     return {
       kind: 'unavailable',
@@ -73,6 +73,7 @@ export async function attestPage(
   const requirements = await readRequirements(canvas, pageId, source)
   let ledger: ReturnType<typeof ledgerReport> | undefined
   const report = checkPageCompleteness(canvas, pageId, {
+    issueKey: requirements.kind === 'lines' ? requirements.key : null,
     extraChecks: [
       (ctx) => {
         if (requirements.kind === 'unavailable')
