@@ -80,7 +80,7 @@ export function measure(input) {
     out.m2_at_72h =
       now < checkpoint
         ? { pending_until: iso(checkpoint) }
-        : prevMerged != null && prevMerged <= checkpoint
+        : !prev || (prevMerged != null && prevMerged <= checkpoint)
           ? m2
           : { ...dur(H72), ongoing: true }
 

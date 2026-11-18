@@ -242,6 +242,13 @@ describe('measure: M1, M1 prime, M2', () => {
     expect(m2.ongoing).toBeUndefined()
   })
 
+  it('a tag with no predecessor has M2 = 0 at the checkpoint, not ongoing', () => {
+    const out = measure(base({ now: t(10), releases: [rel('v1.0.0', SHA_A, 0)], prs: [] }))
+    const v = only(out, 'v1.0.0')
+    expect(v.m2_at_72h).toEqual({ minutes: 0, text: '0 h 0 min' })
+    expect(v.m2_at_publication).toEqual({ minutes: 0, text: '0 h 0 min' })
+  })
+
   it('M2 is 0 when the predecessor merged before publication', () => {
     const out = measure(
       base({
