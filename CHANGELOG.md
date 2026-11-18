@@ -1,5 +1,100 @@
 # Changelog
 
+## [0.11.0](https://github.com/cheese-work/doop/compare/v0.10.0...v0.11.0) (2026-11-18)
+
+
+### Features
+
+* **canvas:** phone review layout and safe-area insets ([42123e4](https://github.com/cheese-work/doop/commit/42123e47669f2ba57fcbe5093b962f40e07edb46))
+* **canvas:** phone review layout and safe-area insets (CHE-3467) [squash] ([9a22fde](https://github.com/cheese-work/doop/commit/9a22fde15418cff2f18cd5cd6aa8fd383fb5bbd4))
+* **desktop:** follow new Claude models by alias, and pick the effort ([#251](https://github.com/cheese-work/doop/issues/251)) ([bfcec7d](https://github.com/cheese-work/doop/commit/bfcec7d318cf03df440a852844fd0033a05e5e47))
+* **doop-load:** post first-paint and paint-support signals from the frame runtime (CHE-6951) ([b2bb1b0](https://github.com/cheese-work/doop/commit/b2bb1b038c62339b9b9ad3010dc8a1cfd86aed89))
+* **doop-load:** post first-paint and paint-support signals from the frame runtime (CHE-6951) [squash] ([3ff5df3](https://github.com/cheese-work/doop/commit/3ff5df3837cba478b2ee142488d524bb023b38cf))
+* **doop:** add G2 recon guard and recon-scan (CHE-6627) ([4dfc54f](https://github.com/cheese-work/doop/commit/4dfc54fd027a0e9587b1620d92b29e3cfe026bbd))
+* **doop:** add G2 recon guard and recon-scan (CHE-6627) ([558fc69](https://github.com/cheese-work/doop/commit/558fc6992d3bb49616026736f25d137169ea1655))
+* **doop:** agent frame writes cannot overlap another frame (CHE-6119) ([93481ed](https://github.com/cheese-work/doop/commit/93481ed0dbafadf2658228ac42456f6cf2b85b31))
+* **doop:** agent frame writes cannot overlap another frame (CHE-6119) ([688dcd5](https://github.com/cheese-work/doop/commit/688dcd535fcf8105cf6836e736f60adbc2a51fdf))
+* **doop:** carry Multica task id on MCP calls, bind pages to issues, list page runs [squash] ([b0c08ca](https://github.com/cheese-work/doop/commit/b0c08cae0c2c458bf912c775a395436dc665bb01))
+* **doop:** carry the Multica task id on MCP calls, bind pages to issues, list runs per page ([742a379](https://github.com/cheese-work/doop/commit/742a3792487e4980443ddd30f2c4b030536ac9a3))
+* **doop:** check_design_completeness + stored attestation (CHE-6625) ([8d9fbcb](https://github.com/cheese-work/doop/commit/8d9fbcb4ba4925dd8100ee396ab25b51343b1013))
+* **doop:** check_design_completeness + stored attestation (CHE-6625) ([f60f6d6](https://github.com/cheese-work/doop/commit/f60f6d688951861f3d8cc5b50ffda5772507c930))
+* **doop:** double-tap fit on Stage ([9cadcf9](https://github.com/cheese-work/doop/commit/9cadcf9a51279c797162bdf98c345525142ecd43))
+* **doop:** double-tap fit on Stage (CHE-3466) [squash] ([6d346c7](https://github.com/cheese-work/doop/commit/6d346c7ca5c86b4a731c42db1958955cca8c30ec))
+* **doop:** enforce write policy and G1 project binding and identity (CHE-6624) ([126ec25](https://github.com/cheese-work/doop/commit/126ec250121a547403b4f96f0c1c5181454cff3a))
+* **doop:** enforce write policy and G1 project binding, task identity (CHE-6624) ([02a7e12](https://github.com/cheese-work/doop/commit/02a7e12e421c9b2410364df2786e5807e81fcc8d))
+* **doop:** lock frames at the store with lock_if_version and lockEpoch (CHE-6626) ([0a07e84](https://github.com/cheese-work/doop/commit/0a07e84ea6fb7b1dd8a3c1c431ffebf4e4f9fef7))
+* **doop:** lock frames at the store with lock_if_version and lockEpoch (CHE-6626) ([04a4b38](https://github.com/cheese-work/doop/commit/04a4b38bcbb539be01d5c95ed0abf2568fd785bb))
+* **doop:** make Hand (H) the default canvas tool (CHE-6941) ([ecb983b](https://github.com/cheese-work/doop/commit/ecb983ba8557a628d21e568e223a3e56c04b2f0f))
+* **doop:** make Hand (H) the default canvas tool (CHE-6941) [squash] ([323f90f](https://github.com/cheese-work/doop/commit/323f90ff1a8128cccea798870d6f14c08d27cd51))
+* **doop:** minimap L1 requirement ledger as a G3 row (CHE-6629) ([4585a23](https://github.com/cheese-work/doop/commit/4585a23a65f3c349c90b004643119f1002d2593d))
+* **doop:** minimap L1 requirement ledger as a G3 row (CHE-6629) [squash] ([c1119f0](https://github.com/cheese-work/doop/commit/c1119f0d1d2013f54060fcd6d3dfa12ff60b5e55))
+* **ios:** move page picker and frame count into the canvas actions menu ([#248](https://github.com/cheese-work/doop/issues/248)) ([21ddd8c](https://github.com/cheese-work/doop/commit/21ddd8c7f79780550aaa7f7d48d02416f81969dc))
+* **models:** discover ChatGPT subscription models from the Codex catalog ([#250](https://github.com/cheese-work/doop/issues/250)) ([ad028ab](https://github.com/cheese-work/doop/commit/ad028ab9ae2a0e2bd26c3f2718361e32d48e2b58))
+* **models:** let users pick the OpenAI reasoning effort ([#246](https://github.com/cheese-work/doop/issues/246)) ([b28219a](https://github.com/cheese-work/doop/commit/b28219a779169b53303aec48e8cd45c0e555e042))
+* **pwa:** service worker with offline fallback page ([52cfbf7](https://github.com/cheese-work/doop/commit/52cfbf7ceec8a87cd15d90f530fd05579df03965))
+* **pwa:** service worker with offline fallback page (CHE-3468) [squash] ([d7a3a05](https://github.com/cheese-work/doop/commit/d7a3a05144894cb96aa82c7ff7564894bbdc3638))
+* **skills:** add verify-change, a repo skill that proves a change works ([98ee1d8](https://github.com/cheese-work/doop/commit/98ee1d88f53921f2b37e60284239f8c547a4cff3))
+* **skills:** add verify-change, a repo skill that proves a change works [squash] ([94b38f3](https://github.com/cheese-work/doop/commit/94b38f3f354dd95dcb1a752392faa4bdea4d97d0))
+* **skills:** add verify-doop live-app verification skill ([92e1a34](https://github.com/cheese-work/doop/commit/92e1a34ca12708d80a8e2617da50b9fdd411c8fd))
+* **skills:** add verify-doop live-app verification skill (CHE-5073) [squash] ([a77d356](https://github.com/cheese-work/doop/commit/a77d356dd382eac2656f2bd860a8203880a38cca))
+* **web:** add to home screen opens Doop full-screen on iPhone ([9ae29e7](https://github.com/cheese-work/doop/commit/9ae29e79cad7b21da8f4fdf6c664adc4fc55aac1))
+* **web:** add to home screen opens Doop full-screen on iPhone [squash] ([6de7a8b](https://github.com/cheese-work/doop/commit/6de7a8bbda199f8f0b7923157c75dc3fa54dbf59))
+
+
+### Bug Fixes
+
+* **auth:** keep canvas link when a provider sign-in fails (CHE-3469) ([6e6e18b](https://github.com/cheese-work/doop/commit/6e6e18b4ddd07b3c7be880c994174a864fe2b32b))
+* **auth:** keep canvas link when a provider sign-in fails [squash] ([1620d7e](https://github.com/cheese-work/doop/commit/1620d7e17ad437d3e688ad48f8e75d91b6818a0f))
+* **canvas:** keep a culled frame's iframe until its pending text edit is saved ([579d46a](https://github.com/cheese-work/doop/commit/579d46a3d3d5769516de46599baf093a34c24cc4))
+* **canvas:** keep Comments reachable in the phone review layout ([a7c95d9](https://github.com/cheese-work/doop/commit/a7c95d9020776273b56297feaf02f950afa9a3dc))
+* **canvas:** mount a new frame's iframe on its first render ([4626f1d](https://github.com/cheese-work/doop/commit/4626f1d9937e6b992b0c200cd9d975fd6373ae48))
+* **canvas:** never cull a frame once it has been edited ([93ce941](https://github.com/cheese-work/doop/commit/93ce9415684d763c1fbe5f67576d1305f14b50ae))
+* **canvas:** release a culled frame's iframe only when its final save arrives ([7188353](https://github.com/cheese-work/doop/commit/7188353e3119a23b80a853334fdef43f3e77ba93))
+* **canvas:** show the stored preview, not a live iframe, for small or surplus frames (CHE-7019) ([92d48c0](https://github.com/cheese-work/doop/commit/92d48c057e8e7a426d3e06fe032d8b744f95fe70))
+* **canvas:** show the stored preview, not a live iframe, for small or surplus frames (CHE-7019) [merge] ([968f927](https://github.com/cheese-work/doop/commit/968f9275eac7c8c1c52fd06145c88ce6259250f2))
+* **canvas:** unmount frames far from the camera to cap iframe memory ([a8a6009](https://github.com/cheese-work/doop/commit/a8a60099954be885dfbbcc439466541a8cd5dda1))
+* **canvas:** unmount frames far from the camera to cap iframe memory CHE-2663 [squash] ([c3c93ce](https://github.com/cheese-work/doop/commit/c3c93ce7a8c6b122c8ca8435cc5e78f680023948))
+* **ci:** report headless AWAITING_CHECKS entries as inconclusive ([c48bdbc](https://github.com/cheese-work/doop/commit/c48bdbcf5b8311cef506063a47392de166aa2d3d))
+* **ci:** time merge-queue stalls from the merge-group head, not enqueue ([a93ecb9](https://github.com/cheese-work/doop/commit/a93ecb9db46ee24c31832654d2029fcfe2a59a41))
+* **ci:** use the doop repo name in the merge-queue-watch test ([2e88a5c](https://github.com/cheese-work/doop/commit/2e88a5cfee9783207bfe4399c4966cec38ad3afa))
+* **doop-load:** count whole pixels for fractional boxes (CHE-6954) ([16cf33d](https://github.com/cheese-work/doop/commit/16cf33d6d5d4aa3f84b43d9459f0b7cbb1ab5129))
+* **doop:** bind recon frame and flow start into the G3 attestation (CHE-6625) ([a9ddf5a](https://github.com/cheese-work/doop/commit/a9ddf5a41bd9bf81ec3fccf5fdd103274ea69446))
+* **doop:** check the attested version on a same-attestation lock retry (CHE-6626) ([933e768](https://github.com/cheese-work/doop/commit/933e768e98ad9f1e91766060ddb69e914f160e04))
+* **doop:** check the defaulted x/y too when an agent creates a frame (CHE-6119) ([247111c](https://github.com/cheese-work/doop/commit/247111c6a67325d10001fb2a0b466e2a22b817b2))
+* **doop:** document Multica env vars ([3c15e36](https://github.com/cheese-work/doop/commit/3c15e363b17810cbb10a58a7c0c8491b58abea11))
+* **doop:** exempt only recon-only frames and wire the Multica comment source (CHE-6627) ([ddbcbad](https://github.com/cheese-work/doop/commit/ddbcbad6a646069f8d4d37ab217947fadf0600d3))
+* **doop:** hold MCP agents and sync keys to G1, undo refused page copy (CHE-6624) ([5210e82](https://github.com/cheese-work/doop/commit/5210e820c8e104d88b10a97f1281ba0a04b0ec67))
+* **doop:** judge double-tap on release so pan and pinch never fit ([1597033](https://github.com/cheese-work/doop/commit/15970336efc29f3cd0e70f5f336550310896ea08))
+* **doop:** judge page-copy policy inside the db transaction (CHE-6624) ([1cbbdd5](https://github.com/cheese-work/doop/commit/1cbbdd5a2ae42cd929f815b19a11657b311cf3b7))
+* **doop:** keep the lock attestation and read lock owners at boot (CHE-6626) ([42371c3](https://github.com/cheese-work/doop/commit/42371c3dea1b314a2306c26b8a96886cb3aaf523))
+* **doop:** unchecked requirement ledger cannot attest or stay current (CHE-6629) ([8c7da97](https://github.com/cheese-work/doop/commit/8c7da97c0cc2a77412bd01e61af6c5d24cb90982))
+* **pwa:** scope SW cache cleanup to own caches; add browser offline test ([9c47f58](https://github.com/cheese-work/doop/commit/9c47f589c095b0e3f627b1b99a3efbd84434c10c))
+* **skills:** cover deleted modules and browser tests in verify-change ([7bcc0f1](https://github.com/cheese-work/doop/commit/7bcc0f19dc1a6e21a102a29290f366bbe700255b))
+* **skills:** declare globals for verify-doop drive script ([3ddf422](https://github.com/cheese-work/doop/commit/3ddf4224178a33af287e5befd0e224ae8671b0ac))
+* **skills:** keep the verify-change test out of its own browser-test search ([157b937](https://github.com/cheese-work/doop/commit/157b937b894662c31bc7cba65288d27f3d486600))
+* **skills:** run the whole suite on deleted modules and flag server/ browser gaps in verify-change ([7d5c0b4](https://github.com/cheese-work/doop/commit/7d5c0b41569232a4bb1a2f7906359b40b19c884b))
+* **skills:** satisfy noUncheckedIndexedAccess in the verify-change test ([92f76b8](https://github.com/cheese-work/doop/commit/92f76b8111cab17393ea9c6fadd98593dd6d270a))
+* **ui:** draw icons from the Lucide set instead of text glyphs ([#244](https://github.com/cheese-work/doop/issues/244)) ([6dedda8](https://github.com/cheese-work/doop/commit/6dedda83b049626004a4f1db10dc7671d9d2d606))
+
+
+### Performance
+
+* **server:** gzip the client and cache hashed assets (CHE-2690) [squash] ([362fd99](https://github.com/cheese-work/doop/commit/362fd99f66f75aa7c44f78988a9db401116b21cc))
+* **server:** gzip the client and cache hashed assets as immutable ([d8869aa](https://github.com/cheese-work/doop/commit/d8869aa7f35e4a34a6e382d1fb3439aa9dcd6707))
+
+
+### Documentation
+
+* **design:** export lifecycle-ui frames verbatim from doop ([2858685](https://github.com/cheese-work/doop/commit/28586850133146efc0c88579984bcf811f243fd3))
+* **design:** lock agents-panel direction B pinned run strip ([bae90d4](https://github.com/cheese-work/doop/commit/bae90d4a23cb779f5703176faa181d81aad2d1a4))
+* **design:** lock agents-panel direction B pinned run strip ([016b7e9](https://github.com/cheese-work/doop/commit/016b7e9a97c17ff8ff3e0fae835a07bc27b6b281))
+* **design:** lock lifecycle-ui direction A ([572cc77](https://github.com/cheese-work/doop/commit/572cc77a350a7eab9562ed40e272e69444b38c2f))
+* **design:** lock lifecycle-ui direction A ([4c812c2](https://github.com/cheese-work/doop/commit/4c812c2193522bc129b0dd8c2a9f89925b05cc78))
+* **design:** record lock PR number ([7d09e6a](https://github.com/cheese-work/doop/commit/7d09e6afb92aa0f4d5f4abc9dc9f459fa7a7ff5c))
+* **design:** record lock PR number for agents-panel ([2bb44aa](https://github.com/cheese-work/doop/commit/2bb44aaeea03518422f202d022b9f389c2fe2d68))
+* **env:** document DOOP_LOCK_OWNERS in .env.example (CHE-6626) ([49d7080](https://github.com/cheese-work/doop/commit/49d70802832c64036a245b8e52555cb25d80d044))
+* note the built-app manifest test ([18552e4](https://github.com/cheese-work/doop/commit/18552e44fbe16ac55bbe0f33fd91ca908ef5f4af))
+
 ## [0.10.0](https://github.com/kgoedecke/doop/compare/v0.9.0...v0.10.0) (2026-10-26)
 
 
