@@ -548,6 +548,57 @@ describe('pin/transfer/no-gap (K2)', () => {
   })
 })
 
+describe('pin/receipt (R1, R2)', () => {
+  const epochsOf = (entries: { frameId: string; epoch: number }[]) =>
+    Object.fromEntries(entries.map((e) => [e.frameId, e.epoch]))
+
+  it('a receipt doop issued verifies, and carries the card, the pin and the epochs', async () => {
+    const h = await held()
+    expect(h.receipt).toMatchObject({
+      kind: 'R1',
+      cardRequestId: h.cardRequestId,
+      state: 'HELD',
+      epochs: epochsOf(h.entries),
+    })
+    expect(pins.verifyReceipt(SECRET, h.receipt)).toBe(true)
+    const s = await sealed()
+    expect(s.r2).toMatchObject({ kind: 'R2', state: 'SEALED', pickRequestId: s.pickRequestId })
+    expect(pins.verifyReceipt(SECRET, s.r2)).toBe(true)
+  })
+
+  it('pin/receipt/forged-r1: a changed field, a wrong secret or a swapped kind does not verify', async () => {
+    const h = await held()
+    expect(pins.verifyReceipt(SECRET, { ...h.receipt, cardRequestId: 'other' })).toBe(false)
+    expect(pins.verifyReceipt(SECRET, { ...h.receipt, mac: '0'.repeat(h.receipt.mac.length) })).toBe(false)
+    expect(pins.verifyReceipt('not-the-secret', h.receipt)).toBe(false)
+    expect(pins.verifyReceipt(SECRET, { ...h.receipt, kind: 'R2' })).toBe(false)
+  })
+
+  it('pin/receipt/forged-r2: an R2 with another pick, another frame or an R1 as R2 does not verify', async () => {
+    const s = await sealed()
+    expect(pins.verifyReceipt(SECRET, { ...s.r2, pickRequestId: 'other-pick' })).toBe(false)
+    expect(pins.verifyReceipt(SECRET, { ...s.r2, pickedFrameId: 'other-frame' })).toBe(false)
+    expect(pins.verifyReceipt(SECRET, { ...s.r2, state: 'HELD' })).toBe(false)
+    expect(pins.verifyReceipt(SECRET, { ...s.receipt, kind: 'R2' })).toBe(false)
+  })
+
+  it('pin/receipt/wrong-epoch: an epoch changed after signing does not verify', async () => {
+    const h = await held()
+    const frameId = h.entries[0]!.frameId
+    expect(pins.verifyReceipt(SECRET, { ...h.receipt, epochs: { [frameId]: 5 } })).toBe(false)
+    expect(pins.verifyReceipt(SECRET, { ...h.receipt, epochs: {} })).toBe(false)
+  })
+
+  it('without a shared secret doop issues no receipt (fail closed) and the pin stays RESERVED', async () => {
+    pins.configurePins({ secret: undefined, multica })
+    const entries = await lockedFrames()
+    const cardRequestId = card()
+    await pins.reserveLock({ cardRequestId, frames: entries })
+    expect(await pins.confirmPin(cardRequestId)).toMatchObject({ ok: false, error: 'no_secret' })
+    expect(state.getPin(cardRequestId)?.state).toBe('RESERVED')
+  })
+})
+
 describe('lock_if_version at publish (B7)', () => {
   const entry = (f: { id: string; updatedAt: number }, attestationId: string) => ({
     frameId: f.id,
@@ -565,7 +616,7 @@ describe('lock_if_version at publish (B7)', () => {
     await vi.waitFor(async () => expect(await frameRow(g.id)).toBeTruthy())
     return { f, g }
   }
-  const actor = { name: 'agent', kind: 'agent' as const }
+  const actor = { name: 'agent', kind: 'agent' as const, color: '#000000' }
 
   it('answers only after every row is written', async () => {
     const { f, g } = await twoFrames()
