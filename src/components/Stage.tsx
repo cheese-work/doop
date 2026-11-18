@@ -736,16 +736,16 @@ export function Stage({
     }
   }, [])
 
-  /* Bare shortcut keys pick a tool, Esc returns to Select — bare keys
+  /* Bare shortcut keys pick a tool, Esc returns to Hand, the resting tool — bare keys
      only (no modifiers), and never while typing in a field. Esc is the one
-     exception for canvas composers: it drops their draft and returns to Select.
+     exception for canvas composers: it drops their draft and returns to Hand.
      Other fields keep Escape for their own editing behavior. */
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey || e.repeat) return
       if (e.key === 'Escape') {
         if (isTypingTarget(e.target) && !e.target.closest('[data-comment-ui], [data-drawing-input]')) return
-        if (useStore.getState().tool !== 'select') useStore.getState().setTool('select')
+        if (useStore.getState().tool !== 'hand') useStore.getState().setTool('hand')
         return
       }
       if (isTypingTarget(e.target)) return
