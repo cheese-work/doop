@@ -316,6 +316,69 @@
       "when": 1794488857029,
       "tag": "0045_frame_write_keys",
       "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1794488857030,
+      "tag": "0046_agent_feedback",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1794488857031,
+      "tag": "0047_custom_fonts",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1794488857032,
+      "tag": "0048_comment_element_origin",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1794488857033,
+      "tag": "0049_frame_stack",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1794488857034,
+      "tag": "0050_design_tokens",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1794488857035,
+      "tag": "0051_agent_runner_pick",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1794488857036,
+      "tag": "0052_multiple_model_accounts",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1794488857037,
+      "tag": "0053_feedback_runner",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1794488857038,
+      "tag": "0054_frame_rotation",
+      "breakpoints": true
     }
   ]
 }

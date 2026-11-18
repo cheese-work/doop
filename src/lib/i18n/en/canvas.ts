@@ -9,6 +9,7 @@ export const canvas = {
   toolPath: 'Vector path',
   toolText: 'Text',
   toolComment: 'Comment',
+  toolZoom: 'Zoom',
 
   /* top bar */
   untitled: 'Untitled',
@@ -16,7 +17,15 @@ export const canvas = {
   readOnlyBadgeTitle: 'Your share link lets you look around but not change the design',
   canComment: 'Can comment',
   viewOnly: 'View only',
+  readOnlyViewBanner: 'You can only view this canvas.',
+  readOnlyCommentBanner: 'You can only view and comment on this canvas.',
+  guestBanner: 'Sign up to comment, edit and more.',
+  dismissBanner: 'Dismiss',
   canvasIdTitle: 'Canvas id — agents use this with the MCP tools',
+  canvasIdMenu: 'Canvas id',
+  copyId: 'Copy ID',
+  idCopied: 'Canvas id copied',
+  copyFailed: 'Could not copy',
   autoSaved: '— Auto-saved',
   reconnecting: '— Reconnecting…',
   justYou: 'Just you here',
@@ -68,6 +77,7 @@ export const canvas = {
   /* side rail */
   canvasPanels: 'Canvas panels',
   inspectFrame: 'Inspect frame',
+  pageSettings: 'Page settings',
   help: 'Help',
   docs: 'Docs',
   contactSupport: 'Contact support',
@@ -99,6 +109,12 @@ export const canvas = {
   zoomTo: 'Zoom to {percent}%',
   showRulers: 'Show rulers',
   hideRulers: 'Hide rulers',
+  showPixelGrid: 'Show pixel grid',
+  hidePixelGrid: 'Hide pixel grid',
+  showCursors: 'Show multiplayer cursors',
+  hideCursors: 'Hide multiplayer cursors',
+  showComments: 'Show comments',
+  hideComments: 'Hide comments',
 
   /* onboarding */
   gettingStarted: 'Getting started',
@@ -226,6 +242,8 @@ export const canvas = {
   connecting: 'Connecting…',
   connect: 'Connect',
   allConnected: 'All installed repositories are connected.',
+  addRepos: 'Add repositories on GitHub',
+  refreshRepos: 'Refresh list',
   openingGithub: 'Opening GitHub…',
   connectGithub: 'Connect GitHub',
   pasteToken: 'paste a token instead',
