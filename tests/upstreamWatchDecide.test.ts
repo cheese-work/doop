@@ -129,6 +129,25 @@ describe('decide', () => {
     ])
   })
 
+  it('retarget never picks a backlog duplicate that is being cancelled: a waiting child for T remains', () => {
+    // claimed v0.15.0 (#7205) plus a backlog duplicate of it (#8301): cancel #8301, then create for T
+    const dup = legacy('0.15.0', {
+      number: 8301,
+      metadata: { upstream_sync_sha: '9a4fb9ec442a982772b752004761eda3aca2633d' },
+    })
+    const r = run({ children: [che7205(), dup] })
+    expect(r.actions).toEqual([
+      { type: 'cancel_duplicate', id: dup.id, key: 'CHE-8301', duplicateOf: 'CHE-7205' },
+      { type: 'create', version: '0.16.0', tag: 'v0.16.0', commit: C16, waitsFor: 'CHE-7205', promote: false },
+    ])
+    const cancelled = new Set(
+      r.actions.filter((a: { type: string }) => a.type === 'cancel_duplicate').map((a: { id: string }) => a.id),
+    )
+    expect(r.actions.some((a: { type: string; id: string }) => a.type === 'retarget' && cancelled.has(a.id))).toBe(
+      false,
+    )
+  })
+
   it('no live child, nothing claimed: create, then promote the survivor', () => {
     const r = run({ children: [] })
     expect(r.actions).toEqual([

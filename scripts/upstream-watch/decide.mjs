@@ -119,7 +119,8 @@ export function decide({ tag, commit, inMain, children = [], lookupError = null 
   if (claimedOlder.length) {
     // latest predecessor; lowest number on a tie
     const S = claimedOlder.sort((a, b) => cmp(b.version, a.version) || a.number - b.number)[0]
-    const older = live.find((p) => !p.claimed && cmp(p.version, version) < 0)
+    // only a survivor of step 3: a backlog child being cancelled as a duplicate must not be retargeted
+    const older = [...keep.values()].find((p) => !p.claimed && cmp(p.version, version) < 0)
     if (older) actions.push({ type: 'retarget', id: older.id, key: older.key, ...target, waitsFor: S.key })
     else actions.push({ type: 'create', ...target, waitsFor: S.key, promote: false })
   } else {
