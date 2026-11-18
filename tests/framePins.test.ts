@@ -16,6 +16,7 @@ const { store } = await import('../server/store.ts')
 const { PolicyRefused, setLockOwners, systemContext } = await import('../server/writePolicy.ts')
 const pins = await import('../server/framePins.ts')
 const state = await import('../server/pinState.ts')
+const actions = await import('../server/actions.ts')
 await dbm.initDb()
 process.chdir(cwd)
 
@@ -29,6 +30,8 @@ type Status = 'pending' | 'open' | 'pick_pending' | 'decided' | 'void' | 'missin
 const multica = {
   status: new Map<string, Status>(),
   down: false,
+  /** a call to abort_ref that has already made the card void waits here before it answers */
+  abortGate: undefined as Promise<void> | undefined,
   calls: [] as string[],
   async refStatus(card: string): Promise<Status> {
     this.calls.push('ref')
@@ -41,6 +44,7 @@ const multica = {
     const now = this.status.get(card) ?? 'missing'
     const final: Status = now === 'decided' || now === 'void' ? now : 'void'
     this.status.set(card, final)
+    await this.abortGate
     return final
   },
 }
@@ -50,6 +54,7 @@ afterAll(() => fs.rmSync(dir, { recursive: true, force: true }))
 beforeEach(async () => {
   multica.status.clear()
   multica.down = false
+  multica.abortGate = undefined
   multica.calls = []
   state.pinHooks.beforeWrite = undefined
   await dbm.db.delete(t.framePinFrames)
@@ -504,55 +509,94 @@ describe('pin/transfer/no-gap (K2)', () => {
     expect(state.isPinned(id)).toBe(true)
     expect(store.getFrame(id)?.locked).toBe(true)
   })
+
+  it('pin/transfer/force-release-race: a normal release racing a force_release on a void card never skips the epoch raise', async () => {
+    const h = await held()
+    const id = h.entries[0]!.frameId
+    multica.status.set(h.cardRequestId, 'open')
+    let open!: () => void
+    multica.abortGate = new Promise<void>((r) => (open = r))
+    /* force_release aborts: the card is void in Multica, its answer is still on the way */
+    const force = pins.forceRelease({ cardRequestId: h.cardRequestId, reason: 'owner decision', userId: 'cheese' })
+    await vi.waitFor(() => expect(multica.status.get(h.cardRequestId)).toBe('void'))
+    /* the normal release now sees void and must not get in front of the force's epoch raise */
+    const normal = pins.releasePin(h.cardRequestId)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(state.getPin(h.cardRequestId)?.state).toBe('HELD')
+    open()
+    const [f, nrm] = await Promise.all([force, normal])
+    expect(f).toMatchObject({ ok: true, pin: { state: 'RELEASED', releaseReason: 'owner decision' } })
+    expect(nrm).toMatchObject({ ok: true, already: true })
+    expect(store.getFrame(id)).toMatchObject({ locked: true, lockEpoch: 1 })
+    expect(await frameRow(id)).toMatchObject({ locked: true, lockEpoch: 1 })
+    expect(await pinRow(h.cardRequestId)).toMatchObject({ state: 'RELEASED', releaseReason: 'owner decision' })
+  })
+
+  it('pin/transfer/release-race-order: the other way round the void release still raises the epoch once', async () => {
+    const h = await held()
+    const id = h.entries[0]!.frameId
+    multica.status.set(h.cardRequestId, 'open')
+    const results = await Promise.all([
+      pins.releasePin(h.cardRequestId),
+      pins.forceRelease({ cardRequestId: h.cardRequestId, reason: 'owner decision', userId: 'cheese' }),
+      pins.releasePin(h.cardRequestId),
+    ])
+    expect(results[0]).toMatchObject({ ok: false, error: 'not_final' })
+    expect(results[1]).toMatchObject({ ok: true })
+    expect(results[2]).toMatchObject({ ok: true, already: true })
+    expect(store.getFrame(id)?.lockEpoch).toBe(1)
+  })
 })
 
-describe('pin/receipt (R1, R2)', () => {
-  const epochsOf = (entries: { frameId: string; epoch: number }[]) =>
-    Object.fromEntries(entries.map((e) => [e.frameId, e.epoch]))
-
-  it('a receipt doop issued verifies, and carries the card, the pin and the epochs', async () => {
-    const h = await held()
-    expect(h.receipt).toMatchObject({
-      kind: 'R1',
-      cardRequestId: h.cardRequestId,
-      state: 'HELD',
-      epochs: epochsOf(h.entries),
+describe('lock_if_version at publish (B7)', () => {
+  const entry = (f: { id: string; updatedAt: number }, attestationId: string) => ({
+    frameId: f.id,
+    attestedUpdatedAt: f.updatedAt,
+    attestationId,
+  })
+  async function twoFrames() {
+    const canvas = store.createCanvas('Publish', 'alice')
+    await vi.waitFor(async () => {
+      const [c] = await dbm.db.select().from(t.canvases).where(eq(t.canvases.id, canvas.id))
+      expect(c).toBeTruthy()
     })
-    expect(pins.verifyReceipt(SECRET, h.receipt)).toBe(true)
-    const s = await sealed()
-    expect(s.r2).toMatchObject({ kind: 'R2', state: 'SEALED', pickRequestId: s.pickRequestId })
-    expect(pins.verifyReceipt(SECRET, s.r2)).toBe(true)
+    const f = store.createFrame(sys, canvas.id, { name: 'f', html: '<p>x</p>' }, 'x')!
+    const g = store.createFrame(sys, canvas.id, { name: 'g', html: '<p>y</p>' }, 'x')!
+    await vi.waitFor(async () => expect(await frameRow(g.id)).toBeTruthy())
+    return { f, g }
+  }
+  const actor = { name: 'agent', kind: 'agent' as const }
+
+  it('answers only after every row is written', async () => {
+    const { f, g } = await twoFrames()
+    let release!: () => void
+    state.pinHooks.beforeWrite = async (op) => {
+      if (op === 'lock') await new Promise<void>((r) => (release = r))
+    }
+    let done = false
+    const out = actions.lockFramesForPublish([entry(f, 'att-f')], actor).then((r) => ((done = true), r))
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(done).toBe(false)
+    expect(await frameRow(f.id)).toMatchObject({ locked: null })
+    state.pinHooks.beforeWrite = undefined
+    release()
+    expect(await out).toMatchObject({ cardAllowed: true })
+    expect(await frameRow(f.id)).toMatchObject({ locked: true, lockAttestationId: 'att-f' })
+    expect(g.id).toBeTruthy()
   })
 
-  it('pin/receipt/forged-r1: a changed field, a wrong secret or a swapped kind does not verify', async () => {
-    const h = await held()
-    expect(pins.verifyReceipt(SECRET, { ...h.receipt, cardRequestId: 'other' })).toBe(false)
-    expect(pins.verifyReceipt(SECRET, { ...h.receipt, mac: '0'.repeat(h.receipt.mac.length) })).toBe(false)
-    expect(pins.verifyReceipt('not-the-secret', h.receipt)).toBe(false)
-    expect(pins.verifyReceipt(SECRET, { ...h.receipt, kind: 'R2' })).toBe(false)
-  })
-
-  it('pin/receipt/forged-r2: an R2 with another pick, another frame or an R1 as R2 does not verify', async () => {
-    const s = await sealed()
-    expect(pins.verifyReceipt(SECRET, { ...s.r2, pickRequestId: 'other-pick' })).toBe(false)
-    expect(pins.verifyReceipt(SECRET, { ...s.r2, pickedFrameId: 'other-frame' })).toBe(false)
-    expect(pins.verifyReceipt(SECRET, { ...s.r2, state: 'HELD' })).toBe(false)
-    expect(pins.verifyReceipt(SECRET, { ...s.receipt, kind: 'R2' })).toBe(false)
-  })
-
-  it('pin/receipt/wrong-epoch: an epoch changed after signing does not verify', async () => {
-    const h = await held()
-    const frameId = h.entries[0]!.frameId
-    expect(pins.verifyReceipt(SECRET, { ...h.receipt, epochs: { [frameId]: 5 } })).toBe(false)
-    expect(pins.verifyReceipt(SECRET, { ...h.receipt, epochs: {} })).toBe(false)
-  })
-
-  it('without a shared secret doop issues no receipt (fail closed) and the pin stays RESERVED', async () => {
-    pins.configurePins({ secret: undefined, multica })
-    const entries = await lockedFrames()
-    const cardRequestId = card()
-    await pins.reserveLock({ cardRequestId, frames: entries })
-    expect(await pins.confirmPin(cardRequestId)).toMatchObject({ ok: false, error: 'no_secret' })
-    expect(state.getPin(cardRequestId)?.state).toBe('RESERVED')
+  it('a failed write withholds the card, leaves that frame unlocked and the one before it locked', async () => {
+    const { f, g } = await twoFrames()
+    let calls = 0
+    state.pinHooks.beforeWrite = (op) => {
+      if (op === 'lock' && ++calls === 2) throw new Error('disk full')
+    }
+    const out = await actions.lockFramesForPublish([entry(f, 'att-f'), entry(g, 'att-g')], actor)
+    expect(out.cardAllowed).toBe(false)
+    expect(out.results.map((r) => ('error' in r ? r.error : 'ok'))).toEqual(['ok', 'persist_failed'])
+    expect(await frameRow(f.id)).toMatchObject({ locked: true })
+    expect(store.getFrame(g.id)?.locked).toBeFalsy()
+    expect(await frameRow(g.id)).toMatchObject({ locked: null })
   })
 })

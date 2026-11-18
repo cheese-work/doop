@@ -1785,7 +1785,12 @@ app.post('/api/canvases/:id/frames', (req, res) => {
   res.json(frame)
 })
 
-app.patch('/api/frames/:id', async (req, res) => {
+app.patch('/api/frames/:id', (req, res, next) => {
+  patchFrame(req, res).catch(next)
+})
+
+/* Express 4 drops an async handler's rejection, so the route wraps this and forwards it (423/409 or the 500 page) */
+async function patchFrame(req: express.Request<{ id: string }>, res: express.Response): Promise<void> {
   const current = requireFrame(req, res, req.params.id, 'edit', req.body?.expectedUpdatedAt)
   if (!current) return
   const { actor: _ignored, expectedUpdatedAt: _version, ...patch } = req.body ?? {}
@@ -1793,8 +1798,10 @@ app.patch('/api/frames/:id', async (req, res) => {
   if (
     patch.pageId !== undefined &&
     !store.getCanvas(store.getFrame(req.params.id)!.canvasId)?.pages?.some((p) => p.id === patch.pageId)
-  )
-    return res.status(400).json({ error: 'page not found' })
+  ) {
+    res.status(400).json({ error: 'page not found' })
+    return
+  }
   const allowed = ['name', 'pageId', 'x', 'y', 'width', 'height', 'html'] as const
   const clean: Record<string, unknown> = {}
   for (const k of allowed) if (patch[k] !== undefined) clean[k] = patch[k]
@@ -1807,15 +1814,25 @@ app.patch('/api/frames/:id', async (req, res) => {
       userId: req.user!.id,
       expectedUpdatedAt: req.body?.expectedUpdatedAt,
     })
-    if (out.ok) return res.json(out.frame)
-    if (out.error === 'not_found') return res.status(404).json({ error: 'frame not found' })
-    return res.status(out.error === 'persist_failed' ? 503 : 409).json({ error: out.error, code: out.error })
+    if (out.ok) {
+      res.json(out.frame)
+      return
+    }
+    if (out.error === 'not_found') {
+      res.status(404).json({ error: 'frame not found' })
+      return
+    }
+    res.status(out.error === 'persist_failed' ? 503 : 409).json({ error: out.error, code: out.error })
+    return
   }
   /* the account id, not the display name, decides who may unlock a frame (DOOP_LOCK_OWNERS) */
   const frame = actions.updateFrame(req.params.id, clean, actor, { userId: req.user!.id })
-  if (!frame) return res.status(404).json({ error: 'frame not found' })
+  if (!frame) {
+    res.status(404).json({ error: 'frame not found' })
+    return
+  }
   res.json(frame)
-})
+}
 
 /* G3 attestations (CHE-6078): read-only. Rows are written by the server's own
    check run only; there is deliberately no way to edit or delete one here. */

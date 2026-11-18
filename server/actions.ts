@@ -1569,24 +1569,8 @@ function announceLock(frame: Frame, actor: Actor): void {
   touch(frame.canvasId, actor, frame.id)
 }
 
-/** Lock one frame if it is still at the attested version (CHE-6626). */
-export function lockFrameIfVersion(entry: LockEntry, actor: Actor): LockResult {
-  const { frameId, attestedUpdatedAt, attestationId } = entry
-  let res: ReturnType<typeof store.lockIfVersion>
-  try {
-    res = store.lockIfVersion(writeContextFor(actor), frameId, attestedUpdatedAt, attestationId)
-  } catch (err) {
-    if (err instanceof PolicyRefused) return { frameId, ok: false, error: 'policy_refused' }
-    throw err
-  }
-  if (!res) return { frameId, ok: false, error: 'not_found' }
-  if (!res.ok) return { frameId, ok: false, error: res.error }
-  if (res.already) return { frameId, ok: true } // a retry of a lock that holds: nothing to announce
-  announceLock(res.frame, actor)
-  return { frameId, ok: true }
-}
-
-/** The same lock, answered only once its row is durable (CHE-7062 B7): the MCP publish step uses this one. */
+/** Lock one frame if it is still at the attested version (CHE-6626), answered only once its row is durable
+ *  (CHE-7062 B7): the MCP lock tool and the publish step both use this one. */
 export async function lockFrameIfVersionDurable(
   entry: LockEntry,
   actor: Actor,
@@ -1623,13 +1607,15 @@ export async function unlockFrameDurable(
   return res
 }
 
-/** Publish step: lock every attested frame, one after another. A failure leaves the frames already locked
- *  locked (the safe side) and withholds the card; the retry, after a fresh attestation, locks the rest. */
-export function lockFramesForPublish(
+/** Publish step: lock every attested frame, one after another, each durable before the next. A failure leaves the
+ *  frames already locked locked (the safe side) and withholds the card; the retry, after a fresh attestation, locks the
+ *  rest. `cardAllowed` is true only once every row is written. */
+export async function lockFramesForPublish(
   entries: LockEntry[],
   actor: Actor,
-): { cardAllowed: boolean; results: LockResult[] } {
-  const results = entries.map((entry) => lockFrameIfVersion(entry, actor))
+): Promise<{ cardAllowed: boolean; results: LockResult[] }> {
+  const results: LockResult[] = []
+  for (const entry of entries) results.push(await lockFrameIfVersionDurable(entry, actor))
   return { cardAllowed: results.length > 0 && results.every((r) => r.ok), results }
 }
 

@@ -286,45 +286,58 @@ async function releaseNow(
   })
 }
 
+/** Release decisions queue behind each other (not behind unlocks): the Multica answer and the write that acts on it
+ *  are one step, so a normal release can never slip between a force_release's `void` and its epoch bump. */
+let releaseTail: Promise<unknown> = Promise.resolve()
+function releaseLane<T>(job: () => Promise<T>): Promise<T> {
+  const run = releaseTail.then(job, job)
+  releaseTail = run.catch(() => undefined)
+  return run
+}
+
 const final = (s: MulticaStatus): s is 'decided' | 'void' => s === 'decided' || s === 'void'
 
 /** K5 / C2: doop asks Multica itself (B1) and releases only on `decided` or `void`. The frames stay locked. */
-export async function releasePin(cardRequestId: string): Promise<{ ok: true; pin: Pin; already?: true } | Fail> {
-  const pin = getPin(cardRequestId)
-  if (!pin) return { ok: false, error: 'no_pin' }
-  if (pin.state === 'RELEASED') return { ok: true, pin, already: true }
-  let status: MulticaStatus
-  try {
-    if (!multica) throw new Error('no multica port')
-    status = await multica.refStatus(cardRequestId)
-  } catch {
-    return { ok: false, error: 'multica_unreachable' }
-  }
-  if (!final(status)) return { ok: false, error: 'not_final', status }
-  return releaseNow(cardRequestId, status, false)
+export function releasePin(cardRequestId: string): Promise<{ ok: true; pin: Pin; already?: true } | Fail> {
+  return releaseLane(async () => {
+    const pin = getPin(cardRequestId)
+    if (!pin) return { ok: false, error: 'no_pin' }
+    if (pin.state === 'RELEASED') return { ok: true, pin, already: true }
+    let status: MulticaStatus
+    try {
+      if (!multica) throw new Error('no multica port')
+      status = await multica.refStatus(cardRequestId)
+    } catch {
+      return { ok: false, error: 'multica_unreachable' }
+    }
+    if (!final(status)) return { ok: false, error: 'not_final', status }
+    return releaseNow(cardRequestId, status, false)
+  })
 }
 
 /** F1: a lock owner's way out of a pin. A1 (abort_ref) goes first; the pin is released only on the final answer it
  *  gives. On `void` the frames' epoch goes up (a lock decision made on the voided card can never be replayed); on
  *  `decided` it does not (the chosen version keeps its epoch). */
-export async function forceRelease(input: {
+export function forceRelease(input: {
   cardRequestId: string
   reason: string
   userId?: string
 }): Promise<{ ok: true; pin: Pin } | Fail> {
   const { cardRequestId, reason, userId } = input
-  if (!isLockOwner(userId)) return { ok: false, error: 'forbidden' }
-  const pin = getPin(cardRequestId)
-  if (!pin) return { ok: false, error: 'no_pin' }
-  if (pin.state === 'RELEASED') return { ok: true, pin }
-  let status: MulticaStatus
-  try {
-    if (!multica) throw new Error('no multica port')
-    status = await multica.abortRef(cardRequestId, reason)
-  } catch {
-    return { ok: false, error: 'multica_unreachable' }
-  }
-  if (!final(status)) return { ok: false, error: 'not_final', status }
-  const out = await releaseNow(cardRequestId, reason, status === 'void')
-  return out.ok ? { ok: true, pin: out.pin } : out
+  if (!isLockOwner(userId)) return Promise.resolve({ ok: false, error: 'forbidden' })
+  return releaseLane(async (): Promise<{ ok: true; pin: Pin } | Fail> => {
+    const pin = getPin(cardRequestId)
+    if (!pin) return { ok: false, error: 'no_pin' }
+    if (pin.state === 'RELEASED') return { ok: true, pin }
+    let status: MulticaStatus
+    try {
+      if (!multica) throw new Error('no multica port')
+      status = await multica.abortRef(cardRequestId, reason)
+    } catch {
+      return { ok: false, error: 'multica_unreachable' }
+    }
+    if (!final(status)) return { ok: false, error: 'not_final', status }
+    const out = await releaseNow(cardRequestId, reason, status === 'void')
+    return out.ok ? { ok: true, pin: out.pin } : out
+  })
 }
