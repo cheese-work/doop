@@ -1025,7 +1025,9 @@ data-doop-webfonts>` for the roster families the frame names and does not load i
 
 - Design completeness (G3, CHE-6078): MCP `check_design_completeness` runs `shared/designCompleteness.ts`
   over one page (recon inventory `doop-recon` with `data-recon-ref` per Keep/Change item, wireframe,
-  states, `data-doop-motion` blocks, prototype wiring and reachability) and stores the result in
+  states, `data-doop-motion` blocks, prototype wiring and reachability; ruleset `g3-r6` (CHE-6853) adds a motion block
+  per transition, the `Motion` page with the issue's `<KEY> · motion` spec frame whose rows each name an animated frame,
+  and a `<screen> · doc` frame with the 7 filled headings per hi-fi screen) and stores the result in
   `design_attestations`, one row per design frame at its `updatedAt`, append-only. The route
   `/api/design-attestations/:id` reads a run with `current` (false once any frame changed).
   `extraChecks` is the plug-in point for the requirement ledger. Tests: `designCompleteness.test.ts`,

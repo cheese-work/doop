@@ -4,6 +4,7 @@ import { afterAll, beforeAll, expect, it } from 'vitest'
 import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { Canvas, Frame } from '../shared/types'
+import { addMotionAndDocs } from './motionFixtures.ts'
 import { Client, freePort, startServer, type Server } from './harness.ts'
 
 /* CHE-6629: the minimap L1 ledger as a row of the real check_design_completeness
@@ -50,7 +51,8 @@ beforeAll(async () => {
       return void res.end('{}')
     }
     for (const id of [ISSUE, OTHER_ISSUE]) {
-      if (req.url === `/api/issues/${id}`) return void res.end(JSON.stringify({ id, description: null }))
+      if (req.url === `/api/issues/${id}`)
+        return void res.end(JSON.stringify({ id, identifier: 'CHE-88', description: null }))
       if (req.url === `/api/issues/${id}/comments`) return void res.end(JSON.stringify(comments))
     }
     res.statusCode = 404
@@ -120,6 +122,7 @@ it('blocks a dropped minimap line on the real G3 tool, and the stored attestatio
   const reconFrame = await addFrame(canvas.id, 'Recon', recon(mapAll([ID[0]!, ID[2]!])))
   const wire = await addFrame(canvas.id, 'Wire', '<div data-doop-stage="wireframe"></div>')
   const design = await addFrame(canvas.id, 'Hi-fi', hifi([ID[0]!, ID[2]!]))
+  await addMotionAndDocs(owner, canvas.id, 'CHE-88', ['Hi-fi'])
   await owner.patch(`/api/frames/${wire.id}`, {
     html: `<div data-doop-stage="wireframe"><a data-doop-on="click" data-doop-action="navigate:${design.id}">next</a></div>`,
   })

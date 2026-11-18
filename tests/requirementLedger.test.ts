@@ -10,6 +10,7 @@ import {
   type SourceComment,
 } from '../server/requirementLedger.ts'
 import type { Canvas, Frame } from '../shared/types.ts'
+import { ANIM_HTML, DOC_HTML, SPEC_HTML } from './motionFixtures.ts'
 
 /* CHE-6629: the minimap L1 requirement ledger (CHE-6373 mechanism) as one row of
    the real G3 check. Replays the CHE-5452 omission: Cheese's own comment is the
@@ -74,11 +75,12 @@ const reconWith = (l: unknown) =>
   `<script type="application/json" id="doop-recon">${JSON.stringify({ scanHash: 's', candidates: [] })}</script>` +
   (l === undefined ? '' : `<script type="application/json" id="doop-reqledger">${JSON.stringify(l)}</script>`)
 
-function frame(id: string, html: string): Frame {
+function frame(id: string, html: string, name = id, pageId?: string): Frame {
   return {
     id,
     canvasId: 'c1',
-    name: id,
+    name,
+    ...(pageId ? { pageId } : {}),
     x: 0,
     y: 0,
     width: 400,
@@ -94,14 +96,27 @@ function canvasWith(l: unknown, hifiBody: string, recon?: string): Canvas {
   return {
     id: 'c1',
     name: 'Proposal',
-    pages: [{ id: PAGE, name: 'Direction A', startFrameId: 'wire' }],
-    frames: [frame('recon', recon ?? reconWith(l)), frame('wire', WIRE), frame('hifi', hifi(hifiBody))],
+    pages: [
+      { id: PAGE, name: 'Direction A', startFrameId: 'wire' },
+      { id: 'c1:motion', name: 'Motion' },
+    ],
+    frames: [
+      frame('recon', recon ?? reconWith(l)),
+      frame('wire', WIRE),
+      frame('hifi', hifi(hifiBody)),
+      frame('hifidoc', DOC_HTML, 'hifi · doc'),
+      frame('spec', SPEC_HTML, 'CHE-9 · motion', 'c1:motion'),
+      frame('fade', ANIM_HTML, 'Fade', 'c1:motion'),
+    ],
   } as Canvas
 }
 
 const lines = requirementLines(null, COMMENTS)
 const run = (l: unknown, hifiBody: string, recon?: string): CompletenessReport =>
-  checkPageCompleteness(canvasWith(l, hifiBody, recon), PAGE, { extraChecks: [requirementLedgerCheck(lines)] })
+  checkPageCompleteness(canvasWith(l, hifiBody, recon), PAGE, {
+    issueKey: 'CHE-9',
+    extraChecks: [requirementLedgerCheck(lines)],
+  })
 const codes = (r: CompletenessReport) => r.missing.map((m) => m.code)
 const idsOf = (r: CompletenessReport, code: string) =>
   r.missing.filter((m) => m.code === code).map((m) => m.detail.match(/\[([^\]]+)\]/)?.[1])
@@ -205,7 +220,10 @@ describe('G3 row: Cheese requirement ledger (replay of the CHE-5452 minimap omis
 
   it('07 Cheese adds a line after the ledger was written: blocked', () => {
     const edited = requirementLines(null, [AGENT, { ...CHEESE, content: CHEESE.content + '\nvà thêm dark mode' }])
-    const r = checkPageCompleteness(canvasWith(ledger(), ALL), PAGE, { extraChecks: [requirementLedgerCheck(edited)] })
+    const r = checkPageCompleteness(canvasWith(ledger(), ALL), PAGE, {
+      issueKey: 'CHE-9',
+      extraChecks: [requirementLedgerCheck(edited)],
+    })
     expect(r.complete).toBe(false)
     expect(codes(r)).toEqual(['req_missing'])
   })

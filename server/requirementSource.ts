@@ -13,6 +13,8 @@ import { requirementLines, type RequirementLine, type SourceComment } from './re
 
 export interface RequirementSource {
   lines(issueId: string): Promise<RequirementLine[]>
+  /** the issue's Multica key (`CHE-123`): the Motion page's spec frame is named after it */
+  issueKey(issueId: string): Promise<string>
 }
 
 export interface RequirementSourceConfig {
@@ -41,6 +43,13 @@ export function httpRequirementSource(
     return res.json()
   }
   return {
+    async issueKey(issueId) {
+      const issue = await get(`/api/issues/${encodeURIComponent(issueId)}`)
+      const key =
+        typeof issue === 'object' && issue !== null ? (issue as { identifier?: unknown }).identifier : undefined
+      if (typeof key !== 'string' || !key.trim()) throw new Error('Multica returned an issue with no identifier')
+      return key.trim()
+    },
     async lines(issueId) {
       const id = encodeURIComponent(issueId)
       const [issue, rows] = await Promise.all([get(`/api/issues/${id}`), get(`/api/issues/${id}/comments`)])
