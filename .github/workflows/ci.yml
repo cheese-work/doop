@@ -5,8 +5,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The main merge queue (check_response_timeout_minutes: 60) removes a PR whose required checks never report on
+  # the queue commit, so every required job here has to run for it. `commit-message` stays skipped: the queue
+  # commit has no PR title, and a skipped job satisfies a required check.
+  merge_group:
 
-# A new push to the same PR supersedes the run in flight; main is never cancelled.
+# A new push to the same PR supersedes the run in flight; main and queue runs are never cancelled.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -48,6 +52,7 @@ jobs:
       - run: bun run lint
       - run: bun run format:check
       - run: bun run doc-lint
+      - run: python3 scripts/merge-group-workflows.test.py
 
   build:
     runs-on: ubuntu-latest

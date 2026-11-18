@@ -6,6 +6,10 @@ on:
     types: [created]
   pull_request_target:
     types: [opened, closed, synchronize]
+  # Queue entry: `cla-assistant` is a required check and must report on the queue commit. The signing step's
+  # `if:` is false for this event, so the step is skipped and the job passes: the PR already passed the
+  # CLA on its own head. Do not add a head checkout or a secret to a merge_group run.
+  merge_group:
 
 permissions:
   actions: write
