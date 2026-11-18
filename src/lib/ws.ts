@@ -189,11 +189,20 @@ function handle(msg: ServerMessage) {
     case 'canvas:renamed':
       s.renameCanvasLocal(msg.name)
       break
+    case 'component':
+      s.setComponentLocal(msg.id, msg.component)
+      break
+    case 'library':
+      s.bumpLibrary()
+      break
     case 'guidelines':
       s.setGuidelineLocal(msg.name, msg.doc)
       break
     case 'tokens':
       s.setTokensLocal(msg.tokens, msg.themes)
+      break
+    case 'team':
+      s.setTeamLocal(msg.team)
       break
     case 'reference':
       s.setReferenceLocal(msg.id, msg.reference)
