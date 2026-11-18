@@ -2,7 +2,7 @@ import { nanoid } from 'nanoid'
 import { canvasPages, copyPageName, framePageId, pageFrames, samePages } from '../shared/pages.ts'
 import { defaultSpot } from './frameLayout.ts'
 import * as persist from './db/persist.ts'
-import { assertWritable, PolicyRefused, type WriteContext } from './writePolicy.ts'
+import { assertWritable, PolicyRefused, VersionChanged, type WriteContext } from './writePolicy.ts'
 import type { LinkAccess } from '../shared/canvasRole.ts'
 import { MAX_GUIDES } from '../shared/guides.ts'
 import { deriveDesignLinks, isUuid, type DesignIssue } from '../shared/pageIssue.ts'
@@ -45,6 +45,9 @@ const names = (pages: CanvasPageInfo[]) => pages.map((page) => page.name)
  * broadcasts. Every committed mutation is mirrored to the database via
  * the write-through helpers in db/persist.ts; boot hydrates from there.
  */
+/** A copy is a new draft: it carries no lock, no epoch and no attestation of the frame it came from. */
+const UNLOCKED = { locked: undefined, lockEpoch: undefined, lockAttestationId: undefined } as const
+
 class Store {
   canvases = new Map<string, Canvas>()
   private frameIndex = new Map<string, string>() // frameId -> canvasId
@@ -171,6 +174,7 @@ class Store {
       ...frame,
       id: frameIds.get(frame.id)!,
       approval: null,
+      ...UNLOCKED,
       canvasId,
       createdAt: now,
       updatedAt: now,
@@ -243,6 +247,7 @@ class Store {
       id: nanoid(10),
       pageId: page.id,
       approval: null,
+      ...UNLOCKED,
       createdAt: now,
       updatedAt: now,
       updatedBy: by,
@@ -730,6 +735,8 @@ class Store {
       Pick<Frame, 'name' | 'pageId' | 'x' | 'y' | 'width' | 'height' | 'html' | 'hidden' | 'locked' | 'approval'>
     >,
     by: string,
+    /** the version the caller read; a different current version throws VersionChanged and writes nothing */
+    expectedUpdatedAt?: number,
   ): Frame | undefined {
     const frame = this.getFrame(frameId)
     if (!frame) return undefined
@@ -738,7 +745,11 @@ class Store {
       !canvasPages(this.canvases.get(frame.canvasId)!).some((p) => p.id === patch.pageId)
     )
       return undefined
-    assertWritable(ctx, 'update_frame', {
+    /* unlocking is its own operation: owners only, and only on its own, so an unlock never smuggles an edit */
+    const unlocking = frame.locked === true && patch.locked === false
+    if (unlocking && Object.keys(patch).some((key) => key !== 'locked'))
+      throw new PolicyRefused('unlock_frame', 'unlock changes nothing else; edit after it')
+    assertWritable(ctx, unlocking ? 'unlock_frame' : 'update_frame', {
       canvas: this.canvases.get(frame.canvasId)!,
       frame,
       pageIds:
@@ -746,6 +757,13 @@ class Store {
           ? [framePageId(this.canvases.get(frame.canvasId)!, frame), patch.pageId]
           : [framePageId(this.canvases.get(frame.canvasId)!, frame)],
     })
+    if (expectedUpdatedAt !== undefined && frame.updatedAt !== expectedUpdatedAt)
+      throw new VersionChanged(frameId, frame.updatedAt)
+    if (unlocking) {
+      /* the epoch only goes up, so a lock decision made before this unlock can never be replayed after it */
+      frame.lockEpoch = (frame.lockEpoch ?? 0) + 1
+      delete frame.lockAttestationId
+    }
     const designChanged = (['html', 'width', 'height'] as const).some(
       (key) => patch[key] !== undefined && patch[key] !== frame[key],
     )
@@ -762,6 +780,37 @@ class Store {
     persist.saveFrame(frame) // debounced: streaming appends land as one write per burst
     persist.saveCanvas(c)
     return frame
+  }
+
+  /** Compare-and-set lock (CHE-6626): locks the frame only if it is still at `attestedUpdatedAt`, the
+   *  version a G3 attestation covers. A lock does not move `updatedAt`, so the attestation stays current.
+   *  A frame that is already locked keeps its attestation: the same id again at the current version is a no-op
+   *  (`already`, a retry), at another version `version_changed`; any other id, or a lock that carries none,
+   *  is refused until an owner unlocks it.
+   *  Undefined = not found; a refused write throws PolicyRefused. */
+  lockIfVersion(
+    ctx: WriteContext,
+    frameId: string,
+    attestedUpdatedAt: number,
+    attestationId: string,
+  ):
+    | { ok: true; frame: Frame; already?: true }
+    | { ok: false; error: 'version_changed'; currentUpdatedAt: number }
+    | undefined {
+    const frame = this.getFrame(frameId)
+    if (!frame) return undefined
+    const c = this.canvases.get(frame.canvasId)!
+    assertWritable(ctx, 'lock_frame', { canvas: c, frame, pageIds: [framePageId(c, frame)] })
+    if (frame.locked && frame.lockAttestationId !== attestationId)
+      throw new PolicyRefused('lock_frame', 'the frame is locked with another attestation; an owner unlocks it first')
+    /* the version check comes first for a retry too: a late retry of an older attempt must not pass */
+    if (frame.updatedAt !== attestedUpdatedAt)
+      return { ok: false, error: 'version_changed', currentUpdatedAt: frame.updatedAt }
+    if (frame.locked) return { ok: true, frame, already: true }
+    frame.locked = true
+    frame.lockAttestationId = attestationId
+    persist.saveFrame(frame, true)
+    return { ok: true, frame }
   }
 
   deleteFrame(ctx: WriteContext, frameId: string): Frame | undefined {

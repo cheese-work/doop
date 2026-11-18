@@ -197,6 +197,22 @@ const agentName = z
     'Your display name, shown live to everyone on the canvas (e.g. "Claude", "Codex"). Reuse the SAME name on every call so your work is attributed consistently.',
   )
 
+/** The frame version a caller read (`updatedAt` from get_frame, an ISO string or epoch ms). A write fenced with it
+ *  fails with version_changed instead of overwriting a frame that moved on. */
+const expectedUpdatedAt = z
+  .union([z.string(), z.number()])
+  .optional()
+  .describe(
+    'The frame updatedAt you last read (from get_frame). If the frame changed since, the write is refused with version_changed and nothing is written.',
+  )
+
+function versionMs(value: string | number | undefined): number | undefined {
+  if (value === undefined) return undefined
+  const ms = typeof value === 'number' ? value : Date.parse(value)
+  if (!Number.isFinite(ms)) throw new Error('expected_updated_at must be an ISO timestamp or epoch milliseconds')
+  return ms
+}
+
 /** CHE-6119: why an update_frame that moves or resizes a frame onto another frame is refused (undefined = fine). */
 function overlapRefusal(
   frame: Frame,
@@ -1093,11 +1109,19 @@ export function buildMcpServer(owner?: string, ownerId?: string, multicaTaskId?:
       description:
         'Replace the HTML design of a frame in one shot. The change renders live for everyone viewing the canvas. For new or heavily reworked designs, prefer append_frame_html so viewers can watch the design stream in.',
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
-      inputSchema: { frame_id: z.string(), html: z.string(), agent_name: agentName },
+      inputSchema: {
+        frame_id: z.string(),
+        html: z.string(),
+        expected_updated_at: expectedUpdatedAt,
+        agent_name: agentName,
+      },
     },
-    async ({ frame_id, html, agent_name }) => {
+    async ({ frame_id, html, expected_updated_at, agent_name }) => {
       if (!frameFor(frame_id, 'edit')) return noFrame(frame_id)
-      const frame = actions.updateFrame(frame_id, { html }, actorFrom(agent_name), { replace: true })
+      const frame = actions.updateFrame(frame_id, { html }, actorFrom(agent_name), {
+        replace: true,
+        expectedUpdatedAt: versionMs(expected_updated_at),
+      })
       if (!frame) return noFrame(frame_id)
       return withPreview(
         withGuidelinesNudge(
@@ -1714,12 +1738,17 @@ export function buildMcpServer(owner?: string, ownerId?: string, multicaTaskId?:
           .describe('The next piece of HTML, appended to what has been sent so far. Raw markup — never escaped.'),
         start: z.boolean().optional().describe('true on the first chunk — clears the frame and starts the live stream'),
         done: z.boolean().optional().describe('true on the final chunk — ends the live stream'),
+        expected_updated_at: expectedUpdatedAt,
         agent_name: agentName,
       },
     },
-    async ({ frame_id, html_chunk, start, done, agent_name }) => {
+    async ({ frame_id, html_chunk, start, done, expected_updated_at, agent_name }) => {
       if (!frameFor(frame_id, 'edit')) return noFrame(frame_id)
-      const frame = actions.appendFrameHtml(frame_id, html_chunk, actorFrom(agent_name), { start, done })
+      const frame = actions.appendFrameHtml(frame_id, html_chunk, actorFrom(agent_name), {
+        start,
+        done,
+        expectedUpdatedAt: versionMs(expected_updated_at),
+      })
       if (!frame) return noFrame(frame_id)
       const result = done
         ? textWithNudge(
@@ -1752,17 +1781,20 @@ export function buildMcpServer(owner?: string, ownerId?: string, multicaTaskId?:
         frame_id: z.string(),
         old_str: z.string().describe('Exact text to find in the frame HTML — must occur exactly once'),
         new_str: z.string().describe('Replacement text'),
+        expected_updated_at: expectedUpdatedAt,
         agent_name: agentName,
       },
     },
-    async ({ frame_id, old_str, new_str, agent_name }) => {
+    async ({ frame_id, old_str, new_str, expected_updated_at, agent_name }) => {
       const f = frameFor(frame_id, 'edit')
       if (!f) return noFrame(frame_id)
       const count = f.html.split(old_str).length - 1
       if (count === 0) return err('old_str not found in the frame HTML. Call get_frame to see the current content.')
       if (count > 1)
         return err(`old_str occurs ${count} times — include more surrounding context so it matches exactly once.`)
-      const frame = actions.updateFrame(frame_id, { html: f.html.replace(old_str, new_str) }, actorFrom(agent_name))!
+      const frame = actions.updateFrame(frame_id, { html: f.html.replace(old_str, new_str) }, actorFrom(agent_name), {
+        expectedUpdatedAt: versionMs(expected_updated_at),
+      })!
       return withPreview(
         withStatusNudge(
           withFeedback(
@@ -1785,7 +1817,7 @@ export function buildMcpServer(owner?: string, ownerId?: string, multicaTaskId?:
       title: 'Rename, move or resize a frame',
       _meta: previewToolMeta('Updating the frame…', 'Frame updated'),
       description:
-        'Update frame metadata: rename it, move/resize it, or move it to another page using pageId. Set locked to true to lock the frame on the canvas (humans cannot select, move, resize or delete it from the stage until it is unlocked) or false to unlock it. A move or resize that would overlap another frame on the page (or leave less than 40px clear) is refused with the free spot to use.',
+        'Update frame metadata: rename it, move/resize it, or move it to another page using pageId. Set locked to true to lock the frame: a locked frame refuses every edit and delete, from everyone, until its owner unlocks it (an agent can never unlock; locked=false is refused). Prefer lock_frame_if_version, which locks only if the frame is still the version you checked. A move or resize that would overlap another frame on the page (or leave less than 40px clear) is refused with the free spot to use.',
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: {
         frame_id: z.string(),
@@ -1796,23 +1828,60 @@ export function buildMcpServer(owner?: string, ownerId?: string, multicaTaskId?:
         width: z.number().optional(),
         height: z.number().optional(),
         locked: z.boolean().optional(),
+        expected_updated_at: expectedUpdatedAt,
         agent_name: agentName,
       },
     },
-    async ({ frame_id, agent_name, ...patch }) => {
+    async ({ frame_id, agent_name, expected_updated_at, ...patch }) => {
       const clean = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined))
       if (!Object.keys(clean).length) return err('nothing to update')
       const current = frameFor(frame_id, 'edit')
       if (!current) return noFrame(frame_id)
       const blocked = overlapRefusal(current, clean)
       if (blocked) return err(blocked)
-      const frame = actions.updateFrame(frame_id, clean, actorFrom(agent_name))
+      const frame = actions.updateFrame(frame_id, clean, actorFrom(agent_name), {
+        expectedUpdatedAt: versionMs(expected_updated_at),
+      })
       if (!frame) return noFrame(frame_id)
       return withPreview(
         withFeedback(text({ ok: true, frame: frameSummary(frame) }), frame.canvasId, actorFrom(agent_name)),
         frame.canvasId,
         [frame],
       )
+    },
+  )
+
+  server.registerTool(
+    'lock_frame_if_version',
+    {
+      title: 'Lock a frame if it is still the checked version',
+      description:
+        'Lock a frame only if its updatedAt still equals attested_updated_at, the version check_design_completeness attested. A frame that changed in between is NOT locked and the call fails with version_changed (re-check, then lock again). A locked frame refuses every edit and delete from everyone; only its owner can unlock it. Locking does not change updatedAt, so the attestation stays current.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: {
+        frame_id: z.string(),
+        attested_updated_at: z
+          .union([z.string(), z.number()])
+          .describe('The frame updatedAt the attestation covers (ISO string or epoch ms).'),
+        attestation_id: z.string().min(1).describe('The id of the design attestation being relied on.'),
+        agent_name: agentName,
+      },
+    },
+    async ({ frame_id, attested_updated_at, attestation_id, agent_name }) => {
+      if (!frameFor(frame_id, 'edit')) return noFrame(frame_id)
+      const res = actions.lockFrameIfVersion(
+        { frameId: frame_id, attestedUpdatedAt: versionMs(attested_updated_at)!, attestationId: attestation_id },
+        actorFrom(agent_name),
+      )
+      if (res.error === 'not_found') return noFrame(frame_id)
+      if (res.error === 'policy_refused') return err('policy_refused: this agent may not lock that frame')
+      if (res.error === 'version_changed') {
+        const current = store.getFrame(frame_id)
+        return err(
+          `version_changed: the frame changed after ${new Date(versionMs(attested_updated_at)!).toISOString()} (now ${current ? new Date(current.updatedAt).toISOString() : 'gone'}); it was NOT locked. Check it again, then lock again.`,
+        )
+      }
+      return text({ ok: true, locked: true, frame: frameSummary(store.getFrame(frame_id)!) })
     },
   )
 

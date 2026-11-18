@@ -9,7 +9,7 @@ import { conflicts, defaultSpot, freeSpot } from './frameLayout.ts'
 import { isCanvasComment } from '../shared/comments.ts'
 import { decodeEscapedHtml, looksEscapedHtml, repairEscapedHtml } from './escapedHtml.ts'
 import { emitCanvasEvent } from './events.ts'
-import { writeContextFor } from './writePolicy.ts'
+import { PolicyRefused, writeContextFor } from './writePolicy.ts'
 import type {
   Actor,
   CanvasGuide,
@@ -1291,7 +1291,7 @@ export function appendFrameHtml(
   frameId: string,
   chunk: string,
   actor: Actor,
-  opts: { start?: boolean; done?: boolean } = {},
+  opts: { start?: boolean; done?: boolean; expectedUpdatedAt?: number } = {},
 ): Frame | undefined {
   const before = store.getFrame(frameId)
   if (!before) return undefined
@@ -1304,7 +1304,7 @@ export function appendFrameHtml(
   const piece = escaped ? decodeEscapedHtml(chunk) : chunk
   const html = opts.start ? piece : before.html + piece
   const prior = priorState(before)
-  const frame = store.updateFrame(writeContextFor(actor), frameId, { html }, actor.name)!
+  const frame = store.updateFrame(writeContextFor(actor), frameId, { html }, actor.name, opts.expectedUpdatedAt)!
   /* the opening chunk replaces the design; every later one extends this burst */
   noteHtmlChange(prior, actor, !starting)
 
@@ -1449,7 +1449,13 @@ export function updateFrame(
   frameId: string,
   patch: Partial<Pick<Frame, 'name' | 'pageId' | 'x' | 'y' | 'width' | 'height' | 'html' | 'hidden' | 'locked'>>,
   actor: Actor,
-  opts: { replace?: boolean } = {},
+  opts: {
+    replace?: boolean
+    /** the signed-in account id (session routes only); an unlock needs it, a display name proves nothing */
+    userId?: string
+    /** the version the caller read; a newer one throws VersionChanged and writes nothing */
+    expectedUpdatedAt?: number
+  } = {},
 ): Frame | undefined {
   const before = store.getFrame(frameId)
   if (!before) return undefined
@@ -1459,7 +1465,13 @@ export function updateFrame(
   const prevHidden = !!before.hidden
   const prevLocked = !!before.locked
   const prior = priorState(before)
-  const frame = store.updateFrame(writeContextFor(actor), frameId, patch, actor.name)
+  const frame = store.updateFrame(
+    writeContextFor(actor, opts.userId),
+    frameId,
+    patch,
+    actor.name,
+    opts.expectedUpdatedAt,
+  )
   if (!frame) return undefined
 
   const htmlChanged = patch.html !== undefined && patch.html !== prevHtml
@@ -1539,6 +1551,41 @@ export function setFrameApproval(
     frameId,
   )
   return frame
+}
+
+export type LockEntry = { frameId: string; attestedUpdatedAt: number; attestationId: string }
+export type LockResult = { frameId: string; ok: boolean; error?: 'not_found' | 'version_changed' | 'policy_refused' }
+
+/** Lock one frame if it is still at the attested version (CHE-6626). Any open stream or playback ends
+ *  with the lock, so no chunk lands after it. */
+export function lockFrameIfVersion(entry: LockEntry, actor: Actor): LockResult {
+  const { frameId, attestedUpdatedAt, attestationId } = entry
+  let res: ReturnType<typeof store.lockIfVersion>
+  try {
+    res = store.lockIfVersion(writeContextFor(actor), frameId, attestedUpdatedAt, attestationId)
+  } catch (err) {
+    if (err instanceof PolicyRefused) return { frameId, ok: false, error: 'policy_refused' }
+    throw err
+  }
+  if (!res) return { frameId, ok: false, error: 'not_found' }
+  if (!res.ok) return { frameId, ok: false, error: res.error }
+  if (res.already) return { frameId, ok: true } // a retry of a lock that holds: nothing to announce
+  finishStream(frameId, false)
+  finishReveal(frameId)
+  broadcast(res.frame.canvasId, { type: 'frame:updated', frame: res.frame, actor })
+  logActivity(res.frame.canvasId, actor, `locked “${res.frame.name}” at its attested version`, frameId)
+  touch(res.frame.canvasId, actor, frameId)
+  return { frameId, ok: true }
+}
+
+/** Publish step: lock every attested frame, one after another. A failure leaves the frames already locked
+ *  locked (the safe side) and withholds the card; the retry, after a fresh attestation, locks the rest. */
+export function lockFramesForPublish(
+  entries: LockEntry[],
+  actor: Actor,
+): { cardAllowed: boolean; results: LockResult[] } {
+  const results = entries.map((entry) => lockFrameIfVersion(entry, actor))
+  return { cardAllowed: results.length > 0 && results.every((r) => r.ok), results }
 }
 
 export function isFrameStreaming(frameId: string): boolean {

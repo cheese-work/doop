@@ -31,7 +31,7 @@ vi.mock('../server/resident.ts', () => ({ onFeedback: () => {} }))
 import { reconManifestHash, setReconSources, warmReconEvidence, type AssetFacts } from '../server/reconGuard.ts'
 import { expectedCells, hashScan, scanSources, type ReconScan } from '../server/reconScan.ts'
 import { store } from '../server/store.ts'
-import { PolicyRefused, systemContext, type WriteContext } from '../server/writePolicy.ts'
+import { PolicyRefused, erasureContext, systemContext, type WriteContext } from '../server/writePolicy.ts'
 import { canvasPages } from '../shared/pages.ts'
 
 const ISSUE = '01a1d642-a8dd-75cd-886c-97d80b9e0048'
@@ -144,7 +144,7 @@ const refused = (f: Awaited<ReturnType<typeof setup>>, pattern: RegExp) =>
   )
 
 beforeEach(() => {
-  for (const canvas of store.allCanvases()) store.deleteCanvas(sys, canvas.id)
+  for (const canvas of store.allCanvases()) store.deleteCanvas(erasureContext(), canvas.id)
   setReconSources(undefined)
 })
 
@@ -199,9 +199,11 @@ describe('G2 recon guard', () => {
   })
 
   it('(f) recon edited after the comment -> policy_refused', async () => {
-    const f = await setup()
+    /* a locked frame cannot be edited any more (CHE-6626): edit while open, then lock the changed frame */
+    const f = await setup({ lock: false })
     const html = f.frame.html.replace('"decision":"keep"', '"decision":"remove","reason":"x"')
     store.updateFrame(sys, f.frame.id, { html }, 'x')
+    store.updateFrame(sys, f.frame.id, { locked: true }, 'x')
     refused(f, /hash/)
   })
 
