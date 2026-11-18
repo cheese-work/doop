@@ -28,6 +28,11 @@ declare global {
   }
 }
 
+/* Every puppeteer wait in this file. The 5 s it had timed out in the first seed
+   on a loaded CI runner (CHE-7021); 12 s stays under the 15 s per-test limit,
+   so a real stall still reports the wait that failed. */
+const WAIT_MS = 12_000
+
 describe.skipIf(!findBrowserPath())('element design controls', () => {
   let browser: TestBrowser
   let page: Page
@@ -47,7 +52,7 @@ describe.skipIf(!findBrowserPath())('element design controls', () => {
     writeFileSync(path.join(imageDir, 'replacement.svg'), replacementSvg)
     browser = await openBrowser()
     page = await browser.newPage()
-    page.setDefaultTimeout(5_000)
+    page.setDefaultTimeout(WAIT_MS)
     page.on('pageerror', (error) => errors.push(String(error)))
     await page.setViewport({ width: 1000, height: 900 })
     await page.setRequestInterception(true)
@@ -284,7 +289,7 @@ describe.skipIf(!findBrowserPath())('element design controls', () => {
               if (!hasTouch) await page.hover('[aria-label="Upload image"]')
               return page.$eval('[aria-label="Upload image"] > span', (el) => getComputedStyle(el).opacity)
             },
-            { timeout: 5000 },
+            { timeout: WAIT_MS },
           )
           .toBe('1')
         await page.screenshot({ path: '/tmp/doop-image-fill-editor.png' })
