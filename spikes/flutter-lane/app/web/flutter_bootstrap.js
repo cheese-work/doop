@@ -1,3 +1,4 @@
+/* eslint-disable no-unused-expressions -- the two template lines below are Flutter build tokens, not JS */
 // prettier-ignore
 {{flutter_js}}
 // prettier-ignore
