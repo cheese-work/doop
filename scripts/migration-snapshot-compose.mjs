@@ -77,8 +77,9 @@ function locate(snap, path) {
 
 function apply(snap, d) {
   const [box, key] = locate(snap, d.path)
-  const cur = box?.[key]
-  const has = box !== undefined && key in box
+  if (!box) return 'table absent'
+  const cur = box[key]
+  const has = key in box
   if (d.op === 'add') {
     if (!has) box[key] = clone(d.new)
     else if (!eq(cur, d.new)) return 'present and different'

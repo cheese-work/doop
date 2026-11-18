@@ -145,6 +145,18 @@ describe('stops and no-ops', () => {
     expect(r).toMatchObject({ ok: false, step: 1, op: 'modify', path: 'tables.public.t.columns.b' })
   })
 
+  it('stops, without throwing, on a change to a table the base lacks', () => {
+    const noTable = { ...snap({}), tables: {} }
+    const r = composeSnapshots(noTable, [snap({ a: col('a') }), snap({ a: col('a'), b: col('b') })])
+    expect(r).toMatchObject({
+      ok: false,
+      step: 1,
+      op: 'add',
+      path: 'tables.public.t.columns.b',
+      reason: 'table absent',
+    })
+  })
+
   it('modifies a column equal to old, and treats one already at new as a no-op', () => {
     const inc = [snap({ b: col('b') }), snap({ b: col('b', 'integer') })]
     expect(composeSnapshots(snap({ b: col('b') }), inc).snapshots[0].tables['public.t'].columns.b.type).toBe('integer')
