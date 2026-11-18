@@ -5,6 +5,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The main merge queue requires build, lint, typecheck, test (1-4), tests and commit-message on the
+  # queued commit; without this trigger none of them report and the entry times out (checks_timed_out).
+  merge_group:
 
 # A new push to the same PR supersedes the run in flight; main is never cancelled.
 concurrency:
