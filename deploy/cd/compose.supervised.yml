@@ -1,0 +1,8 @@
+# Second overlay, added by `deploy/cd/c00.sh` only when DOOP_DEPLOY_TRAIN=on (CHE-5474 C-8.8):
+# c00.sh applies the migrations in its own supervised one-shot container before it recreates
+# the app, so the app does not migrate at boot. Absent or off, this file is not used and the
+# app migrates at boot as it did before the train.
+services:
+  app:
+    environment:
+      DOOP_SKIP_MIGRATIONS: '1'
