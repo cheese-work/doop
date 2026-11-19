@@ -9,7 +9,7 @@ name: Desktop
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [cheese/main]
     paths:
       - 'desktop/**'
       - '.github/actions/setup-desktop/**'
