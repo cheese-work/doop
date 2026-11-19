@@ -241,6 +241,47 @@ export const designAttestations = pgTable(
   ],
 )
 
+/** G4 author ledger (CHE-7064 D1.5): one row per writer, per task, per source, for
+ *  each page. Append-only: the store appends in the same tick as the write and no
+ *  route, tool or query updates or deletes a row, so who wrote a page cannot be
+ *  rewritten afterwards. `kind` comes from the write context, never from client
+ *  text. The identity columns are NOT NULL with '' for "none" so the unique key
+ *  holds for every kind (a NULL would never collide). */
+export const pageAuthors = pgTable(
+  'page_authors',
+  {
+    id: text('id').primaryKey(),
+    canvasId: text('canvas_id').notNull(),
+    pageId: text('page_id').notNull(),
+    /** the frame the write touched (audit only; not part of the key) */
+    frameId: text('frame_id').notNull().default(''),
+    /** 'agent' | 'user' | 'system' | 'unknown' */
+    kind: text('kind').notNull(),
+    agentId: text('agent_id').notNull().default(''),
+    taskId: text('task_id').notNull().default(''),
+    provider: text('provider').notNull().default(''),
+    model: text('model').notNull().default(''),
+    userId: text('user_id').notNull().default(''),
+    /** 'write' | 'copy' | 'legacy' */
+    source: text('source').notNull(),
+    sourcePageId: text('source_page_id').notNull().default(''),
+    firstAt: bigint('first_at', { mode: 'number' }).notNull(),
+  },
+  (t) => [
+    uniqueIndex('page_authors_writer_uniq').on(
+      t.canvasId,
+      t.pageId,
+      t.kind,
+      t.agentId,
+      t.taskId,
+      t.userId,
+      t.source,
+      t.sourcePageId,
+    ),
+    index('page_authors_page_idx').on(t.canvasId, t.pageId),
+  ],
+)
+
 /** Design-sync keys: the write-only capability behind the /ingest endpoint.
  *  An app embeds the doop-sync snippet with a key's secret, and its live
  *  screens land on ONE canvas as frames — the secret grants no reads and no

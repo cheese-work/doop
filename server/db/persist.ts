@@ -6,6 +6,7 @@ import { db } from './index.ts'
 import * as t from './schema.ts'
 import { extractAssetIds } from '../assets.ts'
 import { roleByAgentName } from '../../shared/agents.ts'
+import { framePageId } from '../../shared/pages.ts'
 import type { AttestationRow } from '../../shared/designCompleteness.ts'
 import { isCommunityCategory } from '../../shared/types.ts'
 import { storedLinkAccess } from '../../shared/canvasRole.ts'
@@ -340,30 +341,68 @@ export function saveFrame(f: Frame, immediate = false) {
   )
 }
 
-async function writeFrame(f: Frame) {
-  const row = {
-    id: f.id,
-    canvasId: f.canvasId,
-    pageId: f.pageId ?? null,
-    name: f.name,
-    x: f.x,
-    y: f.y,
-    width: f.width,
-    height: f.height,
-    html: f.html,
-    createdAt: f.createdAt,
-    updatedAt: f.updatedAt,
-    updatedBy: f.updatedBy,
-    demo: f.demo ?? null,
-    hidden: f.hidden ?? null,
-    locked: f.locked ?? null,
-    lockEpoch: f.lockEpoch ?? null,
-    lockAttestationId: f.lockAttestationId ?? null,
-    approval: f.approval ?? null,
+/* Frame rows and their ledger rows (page_authors) become durable together. Every frame write and
+   delete runs on one serial queue; each job takes the ledger rows pending for its frame in the same
+   tick it reads the frame, and commits them in one transaction with the frame. A failed commit puts
+   the rows back and leaves the frame row as it was, so the next write or flush retries both and a
+   frame state is never durable without the writers that produced it. */
+let frameQueue: Promise<unknown> = Promise.resolve()
+const pendingAuthors = new Map<string, (typeof t.pageAuthors.$inferInsert)[]>()
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0]
+
+function serial(job: () => Promise<unknown>) {
+  const run = frameQueue.then(job)
+  frameQueue = run.catch(() => undefined)
+  return run
+}
+
+function takeAuthors(frameId: string) {
+  const taken = pendingAuthors.get(frameId) ?? []
+  pendingAuthors.delete(frameId)
+  return taken
+}
+
+/** Run `work` with the frame's pending ledger rows inserted in the same transaction; keep the rows on failure. */
+async function withAuthors(frameId: string, work: (tx: Tx) => Promise<unknown>) {
+  const authors = takeAuthors(frameId)
+  try {
+    await db.transaction(async (tx) => {
+      if (authors.length) await tx.insert(t.pageAuthors).values(authors).onConflictDoNothing()
+      await work(tx)
+    })
+  } catch (err) {
+    pendingAuthors.set(frameId, [...authors, ...(pendingAuthors.get(frameId) ?? [])])
+    throw err
   }
-  const { id, createdAt, ...set } = row
-  await db.insert(t.frames).values(row).onConflictDoUpdate({ target: t.frames.id, set })
-  await syncAssetRefs(f.id, f.html)
+}
+
+function writeFrame(f: Frame) {
+  return serial(async () => {
+    const row = {
+      id: f.id,
+      canvasId: f.canvasId,
+      pageId: f.pageId ?? null,
+      name: f.name,
+      x: f.x,
+      y: f.y,
+      width: f.width,
+      height: f.height,
+      html: f.html,
+      createdAt: f.createdAt,
+      updatedAt: f.updatedAt,
+      updatedBy: f.updatedBy,
+      demo: f.demo ?? null,
+      hidden: f.hidden ?? null,
+      locked: f.locked ?? null,
+      lockEpoch: f.lockEpoch ?? null,
+      lockAttestationId: f.lockAttestationId ?? null,
+      approval: f.approval ?? null,
+    }
+    const { id, createdAt, ...set } = row
+    await withAuthors(f.id, (tx) => tx.insert(t.frames).values(row).onConflictDoUpdate({ target: t.frames.id, set }))
+    await syncAssetRefs(f.id, f.html)
+  })
 }
 
 /* Frame design history: one row per burst boundary (see actions.ts), newest
@@ -559,11 +598,100 @@ export function deleteFrame(frameId: string) {
     clearTimeout(timer)
     frameTimers.delete(frameId)
   }
-  swallow(db.delete(t.frames).where(eq(t.frames.id, frameId)))
-  swallow(db.delete(t.assetRefs).where(eq(t.assetRefs.frameId, frameId)))
+  swallow(
+    serial(async () => {
+      await withAuthors(frameId, (tx) => tx.delete(t.frames).where(eq(t.frames.id, frameId)))
+      await db.delete(t.assetRefs).where(eq(t.assetRefs.frameId, frameId))
+    }),
+  )
   queueVersionWrite(frameId, versionWrites.get(frameId)?.canvasId ?? '', () =>
     db.delete(t.frameVersions).where(eq(t.frameVersions.frameId, frameId)),
   )
+}
+
+/* ------------------------------------------------------------------ */
+/* G4 author ledger (page_authors), append-only                        */
+/* ------------------------------------------------------------------ */
+
+export type PageAuthorRow = typeof t.pageAuthors.$inferSelect
+
+/** The ledger rows of a canvas (one page when given), oldest first. Read side only. */
+export async function listPageAuthors(canvasId: string, pageId?: string): Promise<PageAuthorRow[]> {
+  const where = pageId
+    ? and(eq(t.pageAuthors.canvasId, canvasId), eq(t.pageAuthors.pageId, pageId))
+    : eq(t.pageAuthors.canvasId, canvasId)
+  return db.select().from(t.pageAuthors).where(where).orderBy(t.pageAuthors.firstAt, t.pageAuthors.id)
+}
+
+export type PageAuthorInput = {
+  canvasId: string
+  pageId: string
+  /** the frame the write touched (audit only) */
+  frameId?: string
+  kind: 'agent' | 'user' | 'system' | 'unknown'
+  agentId?: string
+  taskId?: string
+  provider?: string
+  model?: string
+  userId?: string
+  source: 'write' | 'copy' | 'legacy'
+  sourcePageId?: string
+}
+
+function pageAuthorValues(input: PageAuthorInput, firstAt: number): typeof t.pageAuthors.$inferInsert {
+  return {
+    id: nanoid(),
+    canvasId: input.canvasId,
+    pageId: input.pageId,
+    frameId: input.frameId ?? '',
+    kind: input.kind,
+    agentId: input.agentId ?? '',
+    taskId: input.taskId ?? '',
+    provider: input.provider ?? '',
+    model: input.model ?? '',
+    userId: input.userId ?? '',
+    source: input.source,
+    sourcePageId: input.sourcePageId ?? '',
+    firstAt,
+  }
+}
+
+/** Queue one ledger row for its frame. Called by the store in the same tick as the write it records; the
+ *  row commits with that frame's next save, delete or flush. Append-only: this module has no update or
+ *  delete of page_authors. The unique key makes a repeat of the same writer a no-op. */
+export function appendPageAuthor(input: PageAuthorInput) {
+  const key = input.frameId ?? ''
+  pendingAuthors.set(key, [...(pendingAuthors.get(key) ?? []), pageAuthorValues(input, Date.now())])
+}
+
+/** One `legacy` `unknown` row for every page that holds frames and has no row yet. Returns how many it wrote.
+ *  Idempotent: a page with any row, and a page the first run already filled, is skipped. */
+export async function backfillPageAuthors(canvases: Canvas[]): Promise<number> {
+  await frameQueue
+  const have = new Set(
+    (
+      await db.selectDistinct({ canvasId: t.pageAuthors.canvasId, pageId: t.pageAuthors.pageId }).from(t.pageAuthors)
+    ).map((row) => `${row.canvasId}\u0000${row.pageId}`),
+  )
+  const missing: PageAuthorInput[] = []
+  for (const canvas of canvases) {
+    for (const pageId of new Set(canvas.frames.map((frame) => framePageId(canvas, frame)))) {
+      if (!have.has(`${canvas.id}\u0000${pageId}`)) {
+        missing.push({ canvasId: canvas.id, pageId, kind: 'unknown', source: 'legacy' })
+      }
+    }
+  }
+  const now = Date.now()
+  let written = 0
+  for (let i = 0; i < missing.length; i += 500) {
+    const inserted = await db
+      .insert(t.pageAuthors)
+      .values(missing.slice(i, i + 500).map((input) => pageAuthorValues(input, now)))
+      .onConflictDoNothing()
+      .returning({ id: t.pageAuthors.id })
+    written += inserted.length
+  }
+  return written
 }
 
 /** The frame/element a prompt card was scoped to, or nothing when the row
@@ -737,15 +865,21 @@ export function saveActivity(canvasId: string, item: ActivityItem) {
 /** Flush pending debounced frame writes and queued version writes (called
  *  on shutdown): a design must not survive a restart without its history. */
 export async function flush(getFrame: (id: string) => Frame | undefined): Promise<void> {
-  const ids = [...frameTimers.keys()]
+  /* drain the saves already running first: a job that fails puts its ledger rows back, and the
+     snapshot below must see them so this flush retries them */
+  await frameQueue
+  const ids = new Set([...frameTimers.keys(), ...pendingAuthors.keys()])
   for (const [, timer] of frameTimers) clearTimeout(timer)
   frameTimers.clear()
-  await Promise.allSettled(
-    ids.map((id) => {
+  const results = await Promise.allSettled(
+    [...ids].map((id) => {
       const f = getFrame(id)
-      return f ? writeFrame(f) : Promise.resolve()
+      /* no live frame: a deleted one whose delete failed, so retry the delete with its ledger rows */
+      return f ? writeFrame(f) : serial(() => withAuthors(id, (tx) => tx.delete(t.frames).where(eq(t.frames.id, id))))
     }),
   )
+  for (const result of results)
+    if (result.status === 'rejected') console.error('[db] flush write failed', result.reason)
   await pendingVersionWrites(() => true)
 }
 

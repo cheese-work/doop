@@ -22,6 +22,7 @@ const db = vi.hoisted(() => ({
 vi.mock('../server/db/persist.ts', () => {
   const noop = () => undefined
   return {
+    appendPageAuthor: noop,
     deleteCanvas: noop,
     deleteFrame: noop,
     deleteGuideline: noop,

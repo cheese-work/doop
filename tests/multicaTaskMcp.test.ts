@@ -12,6 +12,7 @@ vi.mock('../server/db/persist.ts', () => ({
   saveFeedback: () => {},
   saveActivity: () => {},
   saveFrame: () => {},
+  appendPageAuthor: () => {},
   saveCanvas: () => {},
 }))
 vi.mock('../server/resident.ts', () => ({ onFeedback: () => {} }))

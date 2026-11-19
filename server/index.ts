@@ -109,6 +109,7 @@ if (data.canvases.length === 0 && (await persist.importLegacyJson())) {
   data = await persist.hydrate()
 }
 store.init(data.canvases)
+await store.backfillPageAuthors() // CHE-7082: every page with frames and no ledger row gets one legacy `unknown` row, once
 await workspaces.hydrateWorkspaces() // before the first request: canvasRole reads membership
 await webhooks.hydrateWebhooks()
 billing.reportBillingConfig()
