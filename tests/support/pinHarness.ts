@@ -350,7 +350,8 @@ export async function pinWorld() {
       },
       force: () => pins.forceRelease({ cardRequestId: s.cardRequestId, reason: 'owner', userId: 'cheese' }),
       release: () => pins.releasePin(s.cardRequestId),
-      reconcile: async () => (await rec.reconcilePins({ now: clock.now() })).filter((o) => o.cardRequestId === s.cardRequestId),
+      reconcile: async () =>
+        (await rec.reconcilePins({ now: clock.now() })).filter((o) => o.cardRequestId === s.cardRequestId),
       view: () => frameView(f.id),
       async expectFrameUnchanged() {
         expect(await frameView(f.id)).toEqual({ locked: true, epoch: s.p2.epoch, updatedAt: s.p2.updatedAt })
@@ -384,7 +385,8 @@ export async function pinWorld() {
     const final = (x?: string) => x === 'decided' || x === 'void'
     /* B1: no pin released while Multica's card is not at a final state */
     for (const r of rows)
-      if (r.state === 'RELEASED') expect(final(multica.cards.get(r.cardRequestId)?.status), 'B1 released early').toBe(true)
+      if (r.state === 'RELEASED')
+        expect(final(multica.cards.get(r.cardRequestId)?.status), 'B1 released early').toBe(true)
     /* B2/B3: every open / decided card has a receipt doop issued, matching its pin */
     if (card && ['open', 'pick_pending', 'decided'].includes(card.status)) {
       expect(card.r1 && pins.verifyReceipt(SECRET, card.r1), 'B2 open without R1').toBe(true)
