@@ -7,7 +7,7 @@ import { colorFor } from '../shared/types.ts'
 import type { StackWrite } from '../shared/frameStack.ts'
 import { DEFAULT_ROLE_ID, mentionedRole, normalizePipeline, roleByAgentName, roleName } from '../shared/agents.ts'
 import { canvasPages, framePageId, pageFrames } from '../shared/pages.ts'
-import { conflicts, defaultSpot, freeSpot, visibleBox } from './frameLayout.ts'
+import { conflicts, defaultSpot, freeSpotFor, visibleBox } from './frameLayout.ts'
 import { normalizeRotation } from '../shared/frameRotation.ts'
 import { SnapshotError, capturePage, compareFrames, sameState, signature, stateOf } from './pageSnapshots.ts'
 import { FRAME_COMMENT_SELECTOR, isCanvasComment, trimComments, type CommentAnchorInput } from '../shared/comments.ts'
@@ -2181,10 +2181,8 @@ function clearOfOverlap<
   })
   if (!conflicts(shown, frames).length) return { input, moved: false }
   /* the free spot is for the visible box, so the unrotated rect sits where its turned bounds would */
-  const spot = freeSpot(frames)
-  const w = input.width ?? 640
-  const h = input.height ?? 480
-  return { input: { ...input, x: spot.x + (shown.width - w) / 2, y: spot.y + (shown.height - h) / 2 }, moved: true }
+  const size = { width: input.width ?? 640, height: input.height ?? 480 }
+  return { input: { ...input, ...freeSpotFor(frames, shown, size) }, moved: true }
 }
 
 export function createFrame(

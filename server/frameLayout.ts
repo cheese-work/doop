@@ -45,6 +45,17 @@ export function freeSpot(frames: Placed[]): { x: number; y: number } {
   }
 }
 
+/** Free spot for a frame that shows as `shown` (its `visibleBox`): the x/y to give the frame itself, so that its
+ *  turned box lands on `freeSpot`. A turned frame's x/y is its unrotated rect, offset from its on-screen box. */
+export function freeSpotFor(
+  frames: Placed[],
+  shown: Box,
+  size: { width: number; height: number },
+): { x: number; y: number } {
+  const spot = freeSpot(frames)
+  return { x: spot.x + (shown.width - size.width) / 2, y: spot.y + (shown.height - size.height) / 2 }
+}
+
 /** Where the store puts a frame with no x/y: right of the right-most frame, or the page origin when empty. */
 export function defaultSpot(frames: Pick<Frame, 'x' | 'y' | 'width' | 'height' | 'rotation'>[]): {
   x: number

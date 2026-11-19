@@ -2,7 +2,7 @@ import { normalizeRotation } from '../shared/frameRotation.ts'
 import * as actions from './actions.ts'
 import { MAX_PAGES, PageLimitError } from './store.ts'
 import { canvasPages, framePageId, MAX_PAGE_NAME, pageFrames, samePages } from '../shared/pages.ts'
-import { conflicts, freeSpot, visibleBox, FRAME_GAP } from './frameLayout.ts'
+import { conflicts, freeSpotFor, visibleBox, FRAME_GAP } from './frameLayout.ts'
 import type { Actor, Canvas, CanvasPageInfo, Frame } from '../shared/types.ts'
 
 /**
@@ -99,7 +99,11 @@ function overlapRefusal(canvas: Canvas, frame: Frame, patch: FrameMetaPatch): st
   const others = pageFrames(canvas, pageId)
   const hit = conflicts(shown, others, frame.id)
   if (!hit.length) return undefined
-  const spot = freeSpot(others.filter((f) => f.id !== frame.id))
+  const spot = freeSpotFor(
+    others.filter((f) => f.id !== frame.id),
+    shown,
+    box,
+  )
   return `frames may not overlap or sit closer than ${FRAME_GAP}px: this ${Math.round(shown.width)}x${Math.round(shown.height)} box at ${Math.round(shown.x)},${Math.round(shown.y)} hits ${hit.map((f) => `${f.id} “${f.name}”`).join(', ')}. Free space: x ${spot.x}, y ${spot.y}.`
 }
 
