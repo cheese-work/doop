@@ -133,6 +133,17 @@
       ]
     },
     {
+      "group": "/api/agents",
+      "calls": [
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/agents"
+        }
+      ],
+      "noWrite": "creating or editing a custom agent stores a prompt and a model choice in the live account"
+    },
+    {
       "group": "/api/auth",
       "calls": [
         {
@@ -309,6 +320,19 @@
       "noWrite": "copying needs a published canvas from another account"
     },
     {
+      "group": "/api/custom-providers",
+      "calls": [
+        {
+          "kind": "contract",
+          "method": "GET",
+          "path": "/api/custom-providers",
+          "expect": [200, 404],
+          "contract": "the group answers 200, or 404 when custom providers are off on this server; never a 5xx"
+        }
+      ],
+      "noWrite": "creating a provider stores an endpoint and a key, and a probe calls an outside host"
+    },
+    {
       "group": "/api/feedback",
       "calls": [
         {
@@ -390,6 +414,17 @@
         }
       ],
       "noWrite": "the activity feed is derived from the writes above"
+    },
+    {
+      "group": "/api/image-descriptions",
+      "calls": [
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/image-descriptions"
+        }
+      ],
+      "noWrite": "changing the mode saves a preference on the live account"
     },
     {
       "group": "/api/image-model",
@@ -704,6 +739,20 @@
       "noWrite": "image routes are read-only; there is nothing to write"
     },
     {
+      "group": "/icons",
+      "calls": [
+        {
+          "kind": "contract",
+          "method": "GET",
+          "path": "/icons/iconify/x/not-svg",
+          "expect": [404],
+          "contract": "a name that is not an .svg answers 404 before any outside fetch",
+          "auth": false
+        }
+      ],
+      "noWrite": "icon routes are read-only copies of an outside set; there is nothing to write"
+    },
+    {
       "group": "/ingest",
       "calls": [
         {
@@ -769,6 +818,20 @@
           }
         }
       ]
+    },
+    {
+      "group": "/photos",
+      "calls": [
+        {
+          "kind": "contract",
+          "method": "GET",
+          "path": "/photos/pexels/not-a-photo",
+          "expect": [404],
+          "contract": "a file name that is no Pexels photo answers 404 before any outside fetch",
+          "auth": false
+        }
+      ],
+      "noWrite": "photo routes are read-only copies of an outside set; there is nothing to write"
     },
     {
       "group": "/relay",

@@ -61,6 +61,8 @@ describe('route groups', () => {
       '/assets',
       '/bg',
       '/i',
+      '/icons',
+      '/photos',
       '/api',
       '/api/admin',
       '/api/feedback',
