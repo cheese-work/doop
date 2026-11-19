@@ -8,6 +8,7 @@ import {
   pageFrames,
   samePages,
 } from '../shared/pages.ts'
+import { defaultSpot } from './frameLayout.ts'
 import * as persist from './db/persist.ts'
 import type { LinkAccess } from '../shared/canvasRole.ts'
 import { MAX_GUIDES } from '../shared/guides.ts'
@@ -1262,13 +1263,9 @@ class Store {
     const frames = pageFrames(c, pageId)
     const now = Date.now()
     // auto-place: to the right of the right-most frame
-    let x = input.x
-    let y = input.y
-    if (x === undefined || y === undefined) {
-      const rightmost = frames.reduce((mx, f) => Math.max(mx, f.x + f.width), 0)
-      x ??= frames.length ? rightmost + 80 : 120
-      y ??= 120
-    }
+    const at = defaultSpot(frames)
+    const x = input.x ?? at.x
+    const y = input.y ?? at.y
     const frame: Frame = {
       id: nanoid(10),
       canvasId,

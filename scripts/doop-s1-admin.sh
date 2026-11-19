@@ -5,7 +5,10 @@
 set -euo pipefail
 R=cheese-work/doop
 UP=kgoedecke/doop  # fork parent; the mirror script fast-forwards from here
-rs() { gh api "repos/$R/rulesets" --jq ".[]|select(.name==\"$1\")|.id"; }
+# The repo ruleset list also returns organization rulesets (source_type Organization). Their id 404s on the
+# repo PUT endpoint (v3 failed on org ruleset `protect main`, CHE-5543 18 Nov), so retarget edits repo-owned ones only.
+rs() { gh api "repos/$R/rulesets" --jq ".[]|select(.name==\"$1\" and (.source_type // \"Repository\")==\"Repository\")|.id"; }
+rs_any() { gh api "repos/$R/rulesets" --jq ".[]|select(.name==\"$1\")|.id"; }
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 # 3 (branch): upstream-main must exist at, or behind, the UPSTREAM tip, never cut from fork main. Fork main
@@ -25,15 +28,50 @@ seed_upstream_main() {
   fi
 }
 
+# Resolve the repo-owned ids of the two rulesets before any write. An org-owned one is left on ~DEFAULT_BRANCH.
+plan_retarget() {
+  REPO_IDS=()
+  ORG_IDS=()
+  local n id
+  for n in "protect main" "protect default branches"; do
+    id=$(rs "$n")
+    if [ -n "$id" ]; then
+      for id in $id; do REPO_IDS+=("$id"); done
+    elif [ -n "$(rs_any "$n")" ]; then
+      echo "skip: '$n' is an organization ruleset, not editable at repo level; left on ~DEFAULT_BRANCH" >&2
+      ORG_IDS+=("$(rs_any "$n")")
+    else
+      die "ruleset '$n' not found"
+    fi
+  done
+}
+retarget() {  # $1 = ref_name include pattern
+  local id
+  for id in ${REPO_IDS[@]+"${REPO_IDS[@]}"}; do
+    gh api "repos/$R/rulesets/$id" | jq --arg ref "$1" '{name,target,enforcement,bypass_actors:(.bypass_actors // []),rules,conditions:{ref_name:{include:[$ref],exclude:[]}}}' \
+      | gh api -X PUT "repos/$R/rulesets/$id" --input - --jq .id
+  done
+}
+
+# An org ruleset on ~DEFAULT_BRANCH stops covering main at the switch (it follows the default branch to cheese/main).
+# Keep main protected as C-1.1 says: copy the org rules to one repo ruleset on refs/heads/main. Idempotent.
+COPY="protect main (repo copy)"
+copy_org_rules() {
+  local id
+  [ -z "$(rs "$COPY")" ] || return 0
+  for id in ${ORG_IDS[@]+"${ORG_IDS[@]}"}; do
+    gh api "repos/$R/rulesets/$id" | jq -c --arg n "$COPY" '{name:$n,target,enforcement,bypass_actors:(.bypass_actors // []),rules:(.rules|map(select(.type!="required_status_checks" or ((.parameters.required_status_checks // [])|length)>0))),conditions:{ref_name:{include:["refs/heads/main"],exclude:[]}}}' \
+      | gh api -X POST "repos/$R/rulesets" --input - --jq .id
+  done
+}
+
 apply() {
   gh api "repos/$R/contents/.github/workflows/merge-queue-watch.yml?ref=cheese/main" --jq .path >/dev/null  # C-1.6 precondition
   seed_upstream_main  # exits non-zero before any settings change if the mirror branch is not usable
-  # 1: retarget both rulesets to refs/heads/main
-  for n in "protect main" "protect default branches"; do
-    id=$(rs "$n")
-    gh api "repos/$R/rulesets/$id" | jq '{name,target,enforcement,bypass_actors:(.bypass_actors // []),rules,conditions:{ref_name:{include:["refs/heads/main"],exclude:[]}}}' \
-      | gh api -X PUT "repos/$R/rulesets/$id" --input - --jq .id
-  done
+  # 1: retarget the repo-owned rulesets to refs/heads/main
+  plan_retarget
+  retarget refs/heads/main
+  copy_org_rules
   # 2: protect cheese/main (no merge queue); checks = contexts ci.yml reports (PR #34 on cheese/main)
   jq -n '{name:"protect cheese/main",target:"branch",enforcement:"active",bypass_actors:[],
     conditions:{ref_name:{include:["refs/heads/cheese/main"],exclude:[]}},
@@ -63,10 +101,8 @@ verify() {
 }
 rollback() {  # C-1.5
   gh api -X PATCH "repos/$R" -f default_branch=main --jq .default_branch
-  for n in "protect main" "protect default branches"; do
-    id=$(rs "$n")
-    gh api "repos/$R/rulesets/$id" | jq '{name,target,enforcement,bypass_actors:(.bypass_actors // []),rules,conditions:{ref_name:{include:["~DEFAULT_BRANCH"],exclude:[]}}}' \
-      | gh api -X PUT "repos/$R/rulesets/$id" --input - --jq .id
-  done
+  plan_retarget
+  retarget '~DEFAULT_BRANCH'
+  for id in $(rs "$COPY"); do gh api -X DELETE "repos/$R/rulesets/$id"; done
 }
 "${1:?apply|verify|rollback}"
