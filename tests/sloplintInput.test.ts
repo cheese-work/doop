@@ -19,7 +19,7 @@ const input = (over: Record<string, unknown> = {}) => ({
 describe('sloplintEntries', () => {
   it('keeps a result whose digest matches', () => {
     expect(sloplintEntries([input()])).toEqual([
-      { frameId: 'f1', updatedAt: 5, toolSha: SLOPLINT_SHA, sha256: sha(JSON_OUT), status: 'ok' },
+      { frameId: 'f1', updatedAt: 5, toolSha: SLOPLINT_SHA, sha256: sha(JSON_OUT), status: 'ok', resultJson: JSON_OUT },
     ])
   })
 
@@ -36,6 +36,29 @@ describe('sloplintEntries', () => {
     }
     const bad = 'not json'
     expect(sloplintEntries([input({ result_json: bad, sha256: sha(bad) })])[0]!.status).toBe('NOT-RUN')
+  })
+
+  it('marks NOT-RUN a digest-matched result that is not a run of the tool: null, arrays, scalars, a NOT-RUN marker, no findings', () => {
+    for (const bad of [
+      'null',
+      '[]',
+      '3',
+      '"ok"',
+      '{}',
+      '{"status":"NOT-RUN"}',
+      '{"status":"not_run","findings":[]}',
+      '{"findings":"none"}',
+    ]) {
+      const [e] = sloplintEntries([input({ result_json: bad, sha256: sha(bad) })])
+      expect(e!.status, bad).toBe('NOT-RUN')
+      expect(e!.resultJson, bad).toBeUndefined()
+    }
+  })
+
+  it('keeps the verified result JSON on the entry so the attestation stores it', () => {
+    const withFindings = JSON.stringify({ findings: [{ rule: 'x', line: 3 }], score: 63 })
+    const [e] = sloplintEntries([input({ result_json: withFindings, sha256: sha(withFindings) })])
+    expect(e).toMatchObject({ status: 'ok', resultJson: withFindings })
   })
 
   it('refuses an updated_at it cannot read', () => {
