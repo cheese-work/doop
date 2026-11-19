@@ -1,0 +1,19 @@
+# 2026-11-19 20:23:14 ICT server=s2b mode=http runs=5 load=11.0 13.2 20.3
+run 1 cold: ttf 15982 ms; toolkit 44181401 B (76 req, playwright saw 30498125 B); third-party 63498 B fonts.gstatic.com; storage 0; ran-new-toolkit true
+run 1 warm: ttf 42249 ms; toolkit 0 B (0 req, playwright saw 3590 B); third-party 0 B fonts.gstatic.com; storage 0; ran-new-toolkit true
+run 1 bump: ttf 12018 ms; toolkit 31329131 B (12 req, playwright saw 31335146 B); third-party 0 B fonts.gstatic.com; storage 0; ran-new-toolkit true
+run 2 cold: ttf 12574 ms; toolkit 44181401 B (76 req, playwright saw 30498125 B); third-party 63498 B fonts.gstatic.com; storage 0; ran-new-toolkit true
+run 2 warm: ttf 13748 ms; toolkit 0 B (0 req, playwright saw 3590 B); third-party 0 B fonts.gstatic.com; storage 0; ran-new-toolkit true
+run 2 bump: ttf 10864 ms; toolkit 31329131 B (12 req, playwright saw 17632416 B); third-party 0 B fonts.gstatic.com; storage 0; ran-new-toolkit true
+run 3 cold: ttf 11614 ms; toolkit 44181401 B (76 req, playwright saw 30498125 B); third-party 63498 B fonts.gstatic.com; storage 0; ran-new-toolkit true
+run 3 warm: ttf 11922 ms; toolkit 0 B (0 req, playwright saw 3590 B); third-party 0 B fonts.gstatic.com; storage 0; ran-new-toolkit true
+run 3 bump: ttf 10717 ms; toolkit 31329131 B (12 req, playwright saw 17632416 B); third-party 0 B fonts.gstatic.com; storage 0; ran-new-toolkit true
+run 4 cold: ttf 12453 ms; toolkit 44181401 B (76 req, playwright saw 30498125 B); third-party 63498 B fonts.gstatic.com; storage 0; ran-new-toolkit true
+run 4 warm: ttf 11984 ms; toolkit 0 B (0 req, playwright saw 3590 B); third-party 0 B fonts.gstatic.com; storage 0; ran-new-toolkit true
+run 4 bump: ttf 11378 ms; toolkit 31329131 B (12 req, playwright saw 17632416 B); third-party 0 B fonts.gstatic.com; storage 0; ran-new-toolkit true
+run 5 cold: ttf 11633 ms; toolkit 44181401 B (76 req, playwright saw 30498125 B); third-party 63498 B fonts.gstatic.com; storage 0; ran-new-toolkit true
+run 5 warm: ttf 12356 ms; toolkit 0 B (0 req, playwright saw 3590 B); third-party 0 B fonts.gstatic.com; storage 0; ran-new-toolkit true
+run 5 bump: ttf 10970 ms; toolkit 31329131 B (12 req, playwright saw 17632416 B); third-party 0 B fonts.gstatic.com; storage 0; ran-new-toolkit true
+SUMMARY cold: ttf p50 12453 ms max 15982 ms; toolkit bytes p50 44181401 max 44181401
+SUMMARY warm: ttf p50 12356 ms max 42249 ms; toolkit bytes p50 0 max 0
+SUMMARY bump: ttf p50 10970 ms max 12018 ms; toolkit bytes p50 31329131 max 31329131

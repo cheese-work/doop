@@ -1,0 +1,10 @@
+# 2026-11-19 19:27:47 ICT server=s2b mode=sw load=51.8 46.0 48.8
+cold  ttf 100305 ms, toolkit 31.33 MB in 12 requests, third-party pub.dev,fonts.gstatic.com
+warm  ttf 33223 ms, toolkit 0.00 MB in 0 requests
+bump  ttf 16166 ms, toolkit 0.01 MB in 2 requests
+PASS  1 cold reaches a first frame  
+PASS  2 warm second visit downloads no toolkit asset  0.00 MB
+PASS  3 after a toolkit bump the page runs the new toolkit  ran 52c6aa63f4aa want 52c6aa63f4aa
+PASS  4 after a bump only changed assets download (< 1 MB)  0.01 MB
+PASS  5 page exposes a frame-open hook (preload needs one)  
+FAIL  6 viewer browser calls no third-party host  pub.dev,fonts.gstatic.com

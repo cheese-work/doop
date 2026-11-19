@@ -1,0 +1,6 @@
+# 2026-11-19 23:13:25 ICT server=s2b mode=sw load=34.0 26.6 23.8
+E quota 100 MB, first visit: ttf null ms; toolkit 0 B in 0 req; cache entries 0; storage 0.00 MB
+E error: TimeoutError: page.waitForFunction: Timeout 240000ms exceeded.
+FAIL  E page still reaches a first frame when the cache is full  
+E quota 100 MB, second visit: ttf null ms; toolkit 0 B in 0 req; cache entries 0; storage 0.00 MB
+FAIL  E second visit reaches a first frame  
