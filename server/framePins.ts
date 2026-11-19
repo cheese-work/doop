@@ -24,8 +24,12 @@ export type MulticaStatus = 'pending' | 'open' | 'pick_pending' | 'decided' | 'v
 export interface MulticaPort {
   /** A1's read half: where the card stands, asked of Multica itself */
   refStatus(cardRequestId: string): Promise<MulticaStatus>
-  /** A1: close the card as void unless it is already decided; answers the final status */
+  /** A1: close the card as void unless it is already decided; answers the final status. Only force_release (F1)
+   *  calls it: it is an owner's deliberate cancel and does cancel an `open` card. */
   abortRef(cardRequestId: string, reason: string): Promise<MulticaStatus>
+  /** A2: a conditional CAS, the only abort reconcile may make. A missing row becomes a `void` tombstone, a `pending`
+   *  card becomes `void`; any other state is left exactly as it is and `notAborted` says so. */
+  abortIfPending(cardRequestId: string): Promise<{ status: MulticaStatus; notAborted: boolean }>
 }
 export type Receipt = {
   kind: 'R1' | 'R2'
