@@ -1,0 +1,10 @@
+FAIL probe completed | page.waitForFunction: Timeout 8000ms exceeded.
+debug: Injecting <script> tag. Using callback.
+log: 14738 ms sandbox 1 debug Injecting <script> tag. Using callback.
+log: Starting application from main method in: package:doop_s2/main.dart.flutter-wrapper.dart.
+log: 15057 ms sandbox 1 log Starting application from main method in: package:doop_s2/main.dart.flutter-wrapper.dart.
+log: 15515 ms run 1 6907 ms
+error: Permissions policy violation: focus-without-user-activation is not allowed in this document.
+warning: [.WebGL-0x93436cd9c00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+warning: [.WebGL-0x93436cd9c00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+s2 pins: RED (0/1 pass)

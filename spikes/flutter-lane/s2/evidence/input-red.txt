@@ -1,0 +1,9 @@
+ready slot: {"x":59.00004005432129,"y":32.99999237060547,"w":402,"h":874} page: {"w":520,"h":940}
+FAIL slot scaled with the device box | slot w 402 want 361.8
+semantics rects (iframe px): {"erus-net-worth":{"x":79.00003814697266,"y":171,"w":362,"h":139},"erus-add":{"x":99.00003814697266,"y":450,"w":94.59374237060547,"h":32},"erus-recent":{"x":79.00003814697266,"y":534,"w":362,"h":339},"note":null}
+PASS Semantics reports the Add button | {"x":99.00003814697266,"y":450,"w":94.59374237060547,"h":32}
+FAIL Add button rect is scaled by the device box | w 94.6 want 85.1
+PASS mouse click 1 on Add reaches the button | events 1, last {"type":"doop:flutter-tap","ts":1795095309411,"taps":1,"fi":0,"rx":1795095309561}
+PASS mouse click 2 on Add reaches the button | events 2, last {"type":"doop:flutter-tap","ts":1795095309857,"taps":2,"fi":0,"rx":1795095309978}
+FAIL Semantics reports the Note field | null
+s2 input: RED (3/6 pass)

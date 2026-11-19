@@ -63,12 +63,13 @@ const subs = new Set<ReadableStreamDefaultController>()
 const readSrc = () =>
   Object.fromEntries(
     fs
-      .readdirSync(SRC)
+      .readdirSync(SRC, { recursive: true })
+      .map(String)
       .filter((f) => f.endsWith('.dart'))
       .map((f) => [f, fs.readFileSync(join(SRC, f), 'utf8')]),
   )
 let t: ReturnType<typeof setTimeout> | undefined
-fs.watch(SRC, () => {
+fs.watch(SRC, { recursive: true }, () => {
   clearTimeout(t)
   t = setTimeout(() => {
     const m = new TextEncoder().encode(`data: ${JSON.stringify(readSrc())}\n\n`)

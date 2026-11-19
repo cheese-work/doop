@@ -1,0 +1,6 @@
+not ok 1 - product folder has no MaterialApp / CupertinoApp / WidgetsApp
+ok 2 - product folder does not import the harness
+ok 3 - harness has exactly one MaterialApp
+ok 4 - main.dart wires the two and builds no app itself
+# pass 3
+# fail 1

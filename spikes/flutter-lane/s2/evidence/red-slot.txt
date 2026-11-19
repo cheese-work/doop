@@ -1,0 +1,8 @@
+ready: {"type":"doop:flutter-ready","ts":1795093175938,"harness":"none","fi":0,"rx":1795093176337}
+FAIL harness is doop_harness | none
+FAIL slot reported
+FAIL slot follows the Rive node (Component lookup) | undefined
+ring: {"h":null,"v":null,"size":[1040,1880]}
+FAIL probe ring visible on all four sides | no ring pixels
+page state: {"console":["debug: Injecting <script> tag. Using callback.","log: Starting application from main method in: package:doop_s2/main.dart.flutter-wrapper.dart."]}
+s2 check: RED (0/4 pass)
