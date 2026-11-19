@@ -68,7 +68,7 @@ const unlock = () => {
 }
 const load = () => {
   const s = existsSync(STATE) ? JSON.parse(readFileSync(STATE, 'utf8')) : {}
-  return { calls: 0, nextNumber: 8000, issues: [], autopilots: {}, wakeups: [], ...s }
+  return { calls: 0, nextNumber: 8000, issues: [], autopilots: {}, wakeups: [], log: [], ...s }
 }
 const save = (s) => {
   writeFileSync(`${STATE}.tmp`, JSON.stringify(s, null, 2))
@@ -186,6 +186,7 @@ function issueCmd(s, sub, pos, f) {
       return i
     }
     case 'wakeup': {
+      if (pos[0] === 'list') return s.wakeups.filter((w) => w.issue === need(s, pos[1]).id)
       if (pos[0] !== 'create') break
       const w = { id: `wk-${s.calls}`, issue: need(s, pos[1]).id, flags: f }
       s.wakeups.push(w)
@@ -258,6 +259,8 @@ const killCaller = () => process.kill(process.ppid, 'SIGKILL')
 lock()
 const s = load()
 const fault = faults[++s.calls]
+const entry = { n: s.calls, argv: process.argv.slice(2), ok: true } // every attempted call; ok=false when rejected
+s.log.push(entry)
 let out
 let error
 try {
@@ -278,6 +281,7 @@ try {
 } catch (e) {
   if (!(e instanceof Err)) throw e
   error = e
+  entry.ok = false
 }
 save(s)
 unlock()
