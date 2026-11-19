@@ -88,7 +88,6 @@ let S1B = null // the S1b issue the wakeups hang on
 let L = null // the ledger issue, refreshed after each write to it
 const steps = []
 const alerts = []
-const bk = [] // bookkeeping errors of a wait stop (the stop itself stands)
 const done = (step, detail) => steps.push({ step, detail })
 
 /* ---- reads ---- */
@@ -108,7 +107,11 @@ function findLedger() {
     .sort((a, b) => a.number - b.number)
   return hits[0] ? cli('issue', 'get', hits[0].id) : null
 }
-const kids = () => list(cli('issue', 'children', L.id), 'stages').flatMap((s) => s.issues ?? [])
+// `issue children` lists staged children under `stages` and the rest flat under `unstaged`; sync children have no stage
+const kids = () => {
+  const r = cli('issue', 'children', L.id)
+  return [...list(r, 'stages').flatMap((s) => s.issues ?? []), ...list(r, 'unstaged')]
+}
 const TERMINAL = new Set(['completed', 'failed', 'cancelled'])
 /** The whole run history, paged until an empty page. A status outside TERMINAL counts as in flight. */
 function runsOf(apId) {
@@ -212,12 +215,13 @@ function mkWake(w) {
   if (!id) throw new Error('wakeup create returned no id')
   cli('issue', 'wakeup', 'get', S1B, id)
 }
+/** Registers and reads back every wake, then writes the stop marker. A failure is a blocked stop with no marker, so a later run retries. */
 function register(step, wakes) {
   try {
-    writeMeta('cutover_stopped_at', `${NOW} ${step}`)
     for (const w of wakes) mkWake(w)
+    writeMeta('cutover_stopped_at', `${NOW} ${step}`)
   } catch (e) {
-    bk.push(e.message)
+    throw new Stop(step, 'blocked', `wake registration failed: ${e.message}`)
   }
 }
 /**
@@ -229,7 +233,7 @@ function hold(step, ms, wakes, detail) {
   if (rec?.step === step) {
     if (Date.parse(NOW) - rec.at >= ms) return 'expired'
   } else register(step, wakes)
-  throw new Stop(step, 'wait', detail.reason, { ...detail, ...(bk.length ? { bookkeeping_error: bk.join('; ') } : {}) })
+  throw new Stop(step, 'wait', detail.reason, detail)
 }
 const inflightDetail = (n, runs) => ({ reason: `${n} run(s) in flight`, runs: runs.map(brief) })
 
@@ -552,12 +556,11 @@ function rollbackFlow() {
           detail,
         )
       }
-      at('rollback.4', () => writeMeta('cutover_hold_renewed', 'true'))
       register('rollback.4', wakes)
+      at('rollback.4', () => writeMeta('cutover_hold_renewed', 'true'))
       throw new Stop('rollback.4', 'wait', `${detail.reason} (renewed once)`, {
         ...detail,
         renewed: true,
-        ...(bk.length ? { bookkeeping_error: bk.join('; ') } : {}),
       })
     }
   }

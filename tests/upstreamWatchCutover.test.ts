@@ -434,6 +434,27 @@ describe('--start', () => {
     expect(await admitLog()).toEqual([])
   })
 
+  describe.each([
+    ['create', 'issue.wakeup#1:crash,issue.wakeup#2:crash'], // the first create falls back to a timed wakeup, so both fail
+    ['readback', 'issue.wakeup#2:crash'],
+  ])('a wake %s failure at a wait stop (review P1)', (_n, fault) => {
+    it('stops blocked with no stop marker, and a later --resume registers the wake', async () => {
+      await seed({ legacyRuns: [run('r-live', 'running')] })
+      const r = await cut(['--start'], { FAKE_MULTICA_FAULT: fault })
+      expect(r.code).not.toBe(0)
+      expect(r.json.stop).toMatchObject({ step: '2', next: 'blocked' })
+      expect(r.json.stop.reason).toMatch(/wake/i)
+      let s = await read()
+      const stopped = s.issues.find((x: Obj) => x.title === LEDGER_TITLE).metadata.cutover_stopped_at
+      expect(!stopped || stopped === 'none').toBe(true)
+      const again = await cut(['--resume'])
+      expect(again.json.stop).toMatchObject({ step: '2', next: 'wait' })
+      s = await read()
+      expect(s.wakeups.length).toBeGreaterThan(0)
+      expect(s.issues.find((x: Obj) => x.title === LEDGER_TITLE).metadata.cutover_stopped_at).toMatch(/ 2$/)
+    })
+  })
+
   it('a non-terminal legacy run on page 2 of the history (offset 50) is found', async () => {
     await seed({ legacyRuns: manyRuns(60, { 54: { status: 'queued' } }) })
     const r = await cut(['--start'])
