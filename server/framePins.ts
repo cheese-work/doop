@@ -51,6 +51,8 @@ export function configurePins(options: { secret?: string; multica?: MulticaPort 
   multica = options.multica
 }
 
+export const getMulticaPort = (): MulticaPort | undefined => multica
+
 /** Boot: the database is the truth, so every pin is read back before the first unlock can be answered. */
 export async function loadPins(): Promise<void> {
   replacePins(await persist.loadPins())

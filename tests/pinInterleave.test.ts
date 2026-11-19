@@ -357,7 +357,9 @@ const cells: Record<Point, Record<Event, Cell>> = {
         expect(out.rec).toMatchObject([{ action: 'released' }]) // K5 by reconcile
         if (order === 'unlock-first') expect(out.unlock).toMatchObject({ ok: false, error: 'pinned' })
         else expect(out.unlock).toMatchObject({ ok: true })
-        expect(await x.unlock().then((r) => r.ok || r.error === 'not_locked')).toBe(true)
+        expect(await x.unlock().then((r: { ok: boolean; error?: string }) => r.ok || r.error === 'not_locked')).toBe(
+          true,
+        )
         expect(multica.status(x.cardRequestId)).toBe('decided')
       }),
     E3: async (s) => {

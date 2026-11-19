@@ -47,6 +47,16 @@ const multica = {
     await this.abortGate
     return final
   },
+  async abortIfPending(card: string): Promise<{ status: Status; notAborted: boolean }> {
+    this.calls.push('abortIfPending')
+    if (this.down) throw new Error('multica down')
+    const now = this.status.get(card) ?? 'missing'
+    if (now === 'missing' || now === 'pending') {
+      this.status.set(card, 'void')
+      return { status: 'void', notAborted: false }
+    }
+    return { status: now, notAborted: true }
+  },
 }
 
 beforeAll(() => setLockOwners(['cheese']))

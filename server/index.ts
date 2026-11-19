@@ -119,6 +119,7 @@ import { RendererBusyError } from './renderBrowser.ts'
 import { getAsset, reconcileAssetRefs, beginTicketUpload, endTicketUpload, createAsset } from './assets.ts'
 import * as ingest from './ingest.ts'
 import { configurePins, loadPins } from './framePins.ts'
+import { startPinReconcile } from './pinReconcile.ts'
 import { PolicyRefused, setLockOwners } from './writePolicy.ts'
 import * as agentKeys from './agentKeys.ts'
 import * as backgrounds from './backgrounds.ts'
@@ -189,9 +190,11 @@ if (data.canvases.length === 0 && (await persist.importLegacyJson())) {
 }
 store.init(data.canvases, data.trash)
 /* G5b: pins are read back before the first request, so no unlock is answered without them. The Multica side of the
-   port (A1 ref_status / abort_ref) is not wired here: until it is, release_pin answers multica_unreachable. */
+   port (A1 ref_status / abort_ref, A2 abort_if_pending) is not wired here: until it is, release_pin answers
+   multica_unreachable and the reconcile job below only lists pins as stuck. It asks every 30 s and never releases by time. */
 configurePins({ secret: env.DOOP_PIN_SECRET })
 await loadPins()
+startPinReconcile()
 await workspaces.hydrateWorkspaces() // before the first request: canvasRole reads membership
 await hydrateInstanceSettings() // the sign-in policy, read on every signup
 await webhooks.hydrateWebhooks()

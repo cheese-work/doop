@@ -227,110 +227,123 @@ export async function pinWorld() {
     })
     const f = store.createFrame(sys, canvas.id, { name: 'f', html: '<p>x</p>' }, 'x')!
     await vi.waitFor(async () => expect(await frameRow(f.id)).toBeTruthy())
-    const s = {
-      frameId: f.id,
-      cardRequestId: `card-${counter}`,
-      pickRequestId: `pick-${counter}`,
-      attestationId: `att-${f.id}`,
-      /** the frame as P2 left it: the version and epoch the card is bound to */
+    const st = {
       p2: { updatedAt: f.updatedAt, epoch: 0 },
       r1: undefined as Receipt | undefined,
       r2: undefined as Receipt | undefined,
       done: [] as Step[],
       unlocks: [] as { ok: boolean; pinnedBefore: boolean; error?: string }[],
       epochsSeen: [0],
-      entry: () => ({
-        frameId: f.id,
-        updatedAt: s.p2.updatedAt,
-        attestationId: s.attestationId,
-        epoch: s.p2.epoch,
-      }),
-      epochs: () => ({ [f.id]: s.p2.epoch }),
-      pin: () => state.getPin(s.cardRequestId),
+    }
+    const cardRequestId = `card-${counter}`
+    const pickRequestId = `pick-${counter}`
+    const attestationId = `att-${f.id}`
+    const entry = () => ({ frameId: f.id, updatedAt: st.p2.updatedAt, attestationId, epoch: st.p2.epoch })
+    const epochs = () => ({ [f.id]: st.p2.epoch })
 
-      /** one step; a thrown error (Multica down) is a refusal, never a crash of the test */
-      async step(name: Step): Promise<Result> {
-        try {
-          let out: Result
-          switch (name) {
-            case 'P2': {
-              const r = await store.lockIfVersionDurable(agent, f.id, s.p2.updatedAt, s.attestationId)
-              out = norm(r)
-              break
-            }
-            case 'P3':
-              out = norm(multica.createPending(s.cardRequestId))
-              break
-            case 'P4':
-              out = norm(await pins.reserveLock({ cardRequestId: s.cardRequestId, frames: [s.entry()] }))
-              break
-            case 'P5':
-              out = norm(multica.recordEpoch(s.cardRequestId, s.epochs()))
-              break
-            case 'P6': {
-              const r = await pins.confirmPin(s.cardRequestId)
-              if (r.ok) s.r1 = r.receipt
-              out = norm(r)
-              break
-            }
-            case 'P7':
-              out = norm(await multica.open(s.cardRequestId, s.r1))
-              break
-            case 'K1':
-              out = norm(multica.pick(s.cardRequestId, s.pickRequestId, f.id))
-              break
-            case 'K2': {
-              const r = await pins.pinForPick({
-                cardRequestId: s.cardRequestId,
-                pickRequestId: s.pickRequestId,
-                pickedFrameId: f.id,
-                versions: [{ frameId: f.id, updatedAt: s.p2.updatedAt, epoch: s.p2.epoch }],
-              })
-              if (r.ok) s.r2 = r.receipt
-              out = norm(r)
-              break
-            }
-            case 'K4':
-              out = norm(await multica.decide(s.cardRequestId, s.r2))
-              break
-            case 'K5':
-            case 'C2':
-              out = norm(await pins.releasePin(s.cardRequestId))
-              break
-            case 'C1':
-              out = norm(multica.voidCard(s.cardRequestId))
-              break
+    /** one step; a thrown error (Multica down) is a refusal, never a crash of the test */
+    const step = async (name: Step): Promise<Result> => {
+      try {
+        let out: Result
+        switch (name) {
+          case 'P2': {
+            const r = await store.lockIfVersionDurable(agent, f.id, st.p2.updatedAt, attestationId)
+            out = norm(r)
+            break
           }
-          if (out.ok) s.done.push(name)
-          return out
-        } catch (e) {
-          return { ok: false, error: e instanceof Error ? e.message : 'threw' }
+          case 'P3':
+            out = norm(multica.createPending(cardRequestId))
+            break
+          case 'P4':
+            out = norm(await pins.reserveLock({ cardRequestId: cardRequestId, frames: [entry()] }))
+            break
+          case 'P5':
+            out = norm(multica.recordEpoch(cardRequestId, epochs()))
+            break
+          case 'P6': {
+            const r = await pins.confirmPin(cardRequestId)
+            if (r.ok) st.r1 = r.receipt
+            out = norm(r)
+            break
+          }
+          case 'P7':
+            out = norm(await multica.open(cardRequestId, st.r1))
+            break
+          case 'K1':
+            out = norm(multica.pick(cardRequestId, pickRequestId, f.id))
+            break
+          case 'K2': {
+            const r = await pins.pinForPick({
+              cardRequestId: cardRequestId,
+              pickRequestId: pickRequestId,
+              pickedFrameId: f.id,
+              versions: [{ frameId: f.id, updatedAt: st.p2.updatedAt, epoch: st.p2.epoch }],
+            })
+            if (r.ok) st.r2 = r.receipt
+            out = norm(r)
+            break
+          }
+          case 'K4':
+            out = norm(await multica.decide(cardRequestId, st.r2))
+            break
+          case 'K5':
+          case 'C2':
+            out = norm(await pins.releasePin(cardRequestId))
+            break
+          case 'C1':
+            out = norm(multica.voidCard(cardRequestId))
+            break
         }
+        if (out.ok) st.done.push(name)
+        return out
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : 'threw' }
+      }
+    }
+
+    const s = {
+      frameId: f.id,
+      cardRequestId,
+      pickRequestId,
+      attestationId,
+      /** the frame as P2 left it: the version and epoch the card is bound to */
+      p2: st.p2,
+      get r1() {
+        return st.r1
       },
+      get r2() {
+        return st.r2
+      },
+      done: st.done,
+      unlocks: st.unlocks,
+      epochsSeen: st.epochsSeen,
+      entry,
+      epochs,
+      step,
+      pin: () => state.getPin(cardRequestId),
 
       /** run the happy path up to `point`, checking every step took; control comes back there */
-      async pauseAfter(point: Point) {
-        for (const step of PATH[point]) {
-          if (s.done.includes(step)) continue
-          const r = await s.step(step)
-          expect(r, `${step} on the way to ${point}`).toMatchObject({ ok: true })
+      async pauseAfter(point: Point): Promise<void> {
+        for (const name of PATH[point]) {
+          if (st.done.includes(name)) continue
+          const r = await step(name)
+          expect(r, `${name} on the way to ${point}`).toMatchObject({ ok: true })
         }
-        return s
       },
       /** the rest of the happy path after the stop point (stops at the first refused step) */
       async resume(from: Step[] = HAPPY) {
         const out: Record<string, Result> = {}
-        for (const step of from) {
-          if (s.done.includes(step)) continue
-          out[step] = await s.step(step)
-          if (!out[step]!.ok) break
+        for (const name of from) {
+          if (st.done.includes(name)) continue
+          out[name] = await step(name)
+          if (!out[name]!.ok) break
         }
         return out
       },
       /** the step happened but its answer never reached the caller */
       dropResponse(step: Step) {
-        if (step === 'P6') s.r1 = undefined
-        if (step === 'K2') s.r2 = undefined
+        if (step === 'P6') st.r1 = undefined
+        if (step === 'K2') st.r2 = undefined
       },
 
       /* ---- events ---- */
@@ -338,36 +351,35 @@ export async function pinWorld() {
         const pinnedBefore = !!state.pinOf(f.id)
         const r = await store.unlockFrame(cheese, f.id, 'cheese')
         const res = { ok: !!r?.ok, pinnedBefore, error: r && !r.ok ? r.error : undefined }
-        s.unlocks.push(res)
-        s.epochsSeen.push((await frameView(f.id)).epoch)
+        st.unlocks.push(res)
+        st.epochsSeen.push((await frameView(f.id)).epoch)
         return res
       },
       /** lock the frame again at its current version (a new epoch is then what the pin is checked against) */
       async relock() {
         const row = await frameView(f.id)
-        const r = await store.lockIfVersionDurable(agent, f.id, row.updatedAt, s.attestationId)
+        const r = await store.lockIfVersionDurable(agent, f.id, row.updatedAt, attestationId)
         expect(r).toMatchObject({ ok: true })
       },
-      force: () => pins.forceRelease({ cardRequestId: s.cardRequestId, reason: 'owner', userId: 'cheese' }),
-      release: () => pins.releasePin(s.cardRequestId),
+      force: () => pins.forceRelease({ cardRequestId: cardRequestId, reason: 'owner', userId: 'cheese' }),
+      release: () => pins.releasePin(cardRequestId),
       reconcile: async () =>
-        (await rec.reconcilePins({ now: clock.now() })).filter((o) => o.cardRequestId === s.cardRequestId),
+        (await rec.reconcilePins({ now: clock.now() })).filter((o) => o.cardRequestId === cardRequestId),
       view: () => frameView(f.id),
       async expectFrameUnchanged() {
-        expect(await frameView(f.id)).toEqual({ locked: true, epoch: s.p2.epoch, updatedAt: s.p2.updatedAt })
+        expect(await frameView(f.id)).toEqual({ locked: true, epoch: st.p2.epoch, updatedAt: st.p2.updatedAt })
       },
       async expectUnpinnedAfter(expectedEpoch: number) {
         expect(await frameView(f.id)).toMatchObject({ locked: false, epoch: expectedEpoch })
       },
     }
-    scenarios.push(s)
     return s
   }
-  type Scenario = Awaited<ReturnType<typeof scenario>>
-  const scenarios: Scenario[] = []
 
   async function atPoint(point: Point) {
-    return (await scenario()).pauseAfter(point)
+    const s = await scenario()
+    await s.pauseAfter(point)
+    return s
   }
 
   function crashMultica() {
@@ -378,7 +390,7 @@ export async function pinWorld() {
   }
 
   /** B1, B2/B3, B5, B6 and the main invariant, read from both databases; then Multica is left alive to converge. */
-  async function assertInvariants(s: Scenario, options: { converge?: boolean } = {}) {
+  async function assertInvariants(s: Awaited<ReturnType<typeof scenario>>, options: { converge?: boolean } = {}) {
     const rows = await dbm.db.select().from(t.framePins)
     const row = rows.find((r) => r.cardRequestId === s.cardRequestId)
     const card = multica.cards.get(s.cardRequestId)
@@ -424,7 +436,6 @@ export async function pinWorld() {
   async function reset() {
     multica.reset()
     clock.offset = 0
-    scenarios.length = 0
     state.pinHooks.beforeWrite = undefined
     rec.reconcileHooks.afterRead = undefined
     await dbm.db.delete(t.framePinFrames)
