@@ -96,6 +96,17 @@
       "noWrite": "the allowance is derived from the plan; nothing to write"
     },
     {
+      "group": "/api/agent-runners",
+      "calls": [
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/agent-runners"
+        }
+      ],
+      "noWrite": "the default runner can only be set to a connected, enabled account; the sandbox has none"
+    },
+    {
       "group": "/api/agent-keys",
       "calls": [
         {
@@ -312,6 +323,17 @@
       "noWrite": "feedback is created by an agent run; the sandbox has no agent"
     },
     {
+      "group": "/api/fonts",
+      "calls": [
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/fonts"
+        }
+      ],
+      "noWrite": "an upload needs real font bytes and a stored file in the live volume"
+    },
+    {
       "group": "/api/frames",
       "calls": [
         {
@@ -510,7 +532,7 @@
           "method": "GET",
           "path": "/api/model-account",
           "expectJson": {
-            "connected": "false"
+            "accounts.length": "0"
           }
         }
       ],

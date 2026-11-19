@@ -1,4 +1,4 @@
-/** The signed-in shell every page repeats: the account menu. */
+/** The shell every page repeats: the account menu and the desktop app's update card. */
 export const shell = {
   account: 'Account',
   teamPlan: 'Team plan',
@@ -6,7 +6,14 @@ export const shell = {
   settings: 'Settings',
   admin: 'Admin',
   helpDocs: 'Help & docs',
+  desktopApp: 'Get desktop app',
+  website: 'Doop website',
   appearance: 'Appearance',
-  language: 'Language',
   logOut: 'Log out',
+  updateTitle: 'Update available',
+  updateBody: 'Doop {version} is ready. Restart to apply the update.',
+  updateAgentNote: 'Restarting stops an agent run in progress.',
+  updateRestart: 'Restart to update',
+  updateRestarting: 'Restarting…',
+  updateLater: 'Not now',
 } as const

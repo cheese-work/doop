@@ -5,7 +5,7 @@ on:
   pull_request:
     paths: ['ios/**', '.github/workflows/ios.yml']
   push:
-    branches: [main]
+    branches: [cheese/main]
     paths: ['ios/**', '.github/workflows/ios.yml']
   workflow_dispatch:
 

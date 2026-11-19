@@ -5,8 +5,9 @@ import { posthog } from '../lib/posthog'
 import { useMe } from '../lib/me'
 import { isDesktopShell } from '../lib/shell'
 import { isTheme, useTheme } from '../lib/theme'
-import { LOCALES, LOCALE_NAMES, isLocale, useLocale, useT } from '../lib/i18n'
+import { useT } from '../lib/i18n'
 import { colorFor } from '../../shared/types'
+import { avatarUrl } from '../../shared/avatar'
 import { themeOptions } from './ThemePicker'
 import { Badge } from './ui/badge'
 import { Avatar } from './ui/avatar'
@@ -24,7 +25,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from './ui/dropdown-menu'
-import { GearIcon, HelpIcon, LogOutIcon, ShieldIcon } from './ui/icons'
+import { DesktopIcon, ExportIcon, GearIcon, HelpIcon, LogOutIcon, ShieldIcon } from './ui/icons'
+import { DOWNLOAD_URL, WEBSITE_URL } from '../lib/siteLinks'
 
 /** The account menu the signed-in shell repeats on every page: in the rail
  *  and in the settings header. It lives here so they cannot drift apart. */
@@ -42,9 +44,9 @@ export function AccountMenu({
   const { data: session } = authClient.useSession()
   const me = useMe(session?.user.id)
   const { theme, setTheme } = useTheme()
-  const { locale, setLocale } = useLocale()
   const t = useT()
   const name = session?.user.name ?? ''
+  const image = avatarUrl(session?.user.image)
 
   return (
     <DropdownMenu>
@@ -56,7 +58,13 @@ export function AccountMenu({
             shape="round"
             className="size-7 hover:bg-transparent focus-visible:ring-ink-faint data-[state=open]:ring-2 data-[state=open]:ring-ink-faint"
           >
-            <Avatar name={name} color={colorFor(session?.user.id ?? name)} size={28} className="shadow-none" />
+            <Avatar
+              name={name}
+              image={image}
+              color={colorFor(session?.user.id ?? name)}
+              size={28}
+              className="shadow-none"
+            />
           </IconButton>
         ) : (
           <Pressable
@@ -66,14 +74,22 @@ export function AccountMenu({
             focus="ring"
             className="flex-none rounded-full"
           >
-            <Avatar tone="ink" name={name} size={34} />
+            <Avatar tone="ink" name={name} image={image} size={34} />
           </Pressable>
         )}
       </DropdownMenuTrigger>
       <DropdownMenuContent side={side} align={align} width="lg">
         <DropdownMenuLabel className="px-2.5 pb-2.5 pt-2">
           <PersonRow
-            avatar={<Avatar name={name} color={colorFor(session?.user.id ?? name)} size={32} className="shadow-none" />}
+            avatar={
+              <Avatar
+                name={name}
+                image={image}
+                color={colorFor(session?.user.id ?? name)}
+                size={32}
+                className="shadow-none"
+              />
+            }
             name={name}
             detail={me?.email ?? session?.user.email}
           />
@@ -105,6 +121,20 @@ export function AccountMenu({
             <HelpIcon size="rail" /> {t('shell.helpDocs')}
           </a>
         </DropdownMenuItem>
+        {/* new tabs, which the desktop shell hands to the system browser
+            (initDesktopShell); the desktop app has nothing to download */}
+        {!isDesktopShell() && (
+          <DropdownMenuItem asChild>
+            <a href={DOWNLOAD_URL} target="_blank" rel="noopener noreferrer">
+              <DesktopIcon size="rail" /> {t('shell.desktopApp')}
+            </a>
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuItem asChild>
+          <a href={WEBSITE_URL} target="_blank" rel="noopener noreferrer">
+            <ExportIcon size="rail" /> {t('shell.website')}
+          </a>
+        </DropdownMenuItem>
         <DropdownMenuSeparator />
         {/* the theme is one click from every page; picking one keeps the menu
             open so the change can be seen, and judged, before it closes */}
@@ -113,17 +143,6 @@ export function AccountMenu({
           {themeOptions.map(({ value, label, Icon }) => (
             <DropdownMenuRadioItem key={value} value={value} onSelect={(e) => e.preventDefault()}>
               <Icon size="rail" /> {t(label)}
-            </DropdownMenuRadioItem>
-          ))}
-        </DropdownMenuRadioGroup>
-        <DropdownMenuSeparator />
-        {/* the language sits beside the theme for the same reason, each named
-            in itself so someone who cannot read the current one finds theirs */}
-        <DropdownMenuCaption>{t('shell.language')}</DropdownMenuCaption>
-        <DropdownMenuRadioGroup value={locale} onValueChange={(next) => isLocale(next) && setLocale(next)}>
-          {LOCALES.map((value) => (
-            <DropdownMenuRadioItem key={value} value={value} lang={value} onSelect={(e) => e.preventDefault()}>
-              {LOCALE_NAMES[value]}
             </DropdownMenuRadioItem>
           ))}
         </DropdownMenuRadioGroup>

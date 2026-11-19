@@ -5,6 +5,7 @@ package-lock.json
 bun.lock
 CHANGELOG.md
 desktop/src-tauri/tauri.conf.json
+desktop/src-tauri-chromium/tauri.conf.json
 desktop/CHANGELOG.md
 
 # Real frames captured verbatim as Blitz bridge test fixtures
@@ -19,3 +20,4 @@ storybook-static/
 
 # agent worktrees (git worktrees under the repo)
 .claude/
+scripts/upstream-watch/legacy-before.md

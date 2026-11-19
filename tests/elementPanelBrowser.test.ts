@@ -16,6 +16,7 @@ declare global {
       select: (selector: string) => void
       selectFrame: () => void
       deselect: () => void
+      panelOpen: () => boolean
       picked: () => string[]
       pickAlso: (selector: string) => void
       nudge: (dx: number, dy: number) => boolean
@@ -27,11 +28,6 @@ declare global {
     }
   }
 }
-
-/* Every puppeteer wait in this file. The 5 s it had timed out in the first seed
-   on a loaded CI runner (CHE-7021); 12 s stays under the 15 s per-test limit,
-   so a real stall still reports the wait that failed. */
-const WAIT_MS = 12_000
 
 describe.skipIf(!findBrowserPath())('element design controls', () => {
   let browser: TestBrowser
@@ -52,7 +48,7 @@ describe.skipIf(!findBrowserPath())('element design controls', () => {
     writeFileSync(path.join(imageDir, 'replacement.svg'), replacementSvg)
     browser = await openBrowser()
     page = await browser.newPage()
-    page.setDefaultTimeout(WAIT_MS)
+    page.setDefaultTimeout(5_000)
     page.on('pageerror', (error) => errors.push(String(error)))
     await page.setViewport({ width: 1000, height: 900 })
     await page.setRequestInterception(true)
@@ -72,6 +68,18 @@ describe.skipIf(!findBrowserPath())('element design controls', () => {
       }
       // The delayed-font test releases this stylesheet after the panel's first read.
       if (new URL(request.url()).pathname === '/tests/fixtures/late-font.css') return
+      if (new URL(request.url()).pathname === '/api/canvases/c/tokens' && request.method() === 'POST') {
+        const { tokens } = JSON.parse(request.postData()!)
+        await request.respond({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            results: tokens.map((t: { name: string }) => ({ name: t.name, result: 'created' })),
+            tokens,
+          }),
+        })
+        return
+      }
       if (new URL(request.url()).pathname === '/api/frames/f' && request.method() === 'PATCH') {
         framePatches.push(JSON.parse(request.postData()!))
         saved = { ...saved, ...framePatches.at(-1) }
@@ -131,11 +139,12 @@ describe.skipIf(!findBrowserPath())('element design controls', () => {
     ).toBe(1)
     expect(await page.$eval('[aria-label="Align left"]', (el) => el.getAttribute('data-state'))).toBe('on')
 
-    await page.select(selector, 'Georgia, serif')
-    await frame.waitForFunction(
-      () => getComputedStyle(document.querySelector('#text')!).fontFamily === 'Georgia, serif',
-    )
-    await expect.poll(() => saved.html).toContain('font-family: Georgia, serif')
+    await page.select(selector, '"Lora", serif')
+    await frame.waitForFunction(() => getComputedStyle(document.querySelector('#text')!).fontFamily === 'Lora, serif')
+    await expect.poll(() => saved.html).toContain('font-family: Lora, serif')
+    /* a hosted font rides along as its stylesheet link */
+    await expect.poll(() => saved.html).toContain('data-doop-webfonts')
+    expect(saved.html).toContain('family=Lora:')
     await page.evaluate(() => window.elementPanelHarness.undo())
     await page.waitForFunction(
       (value) => document.querySelector<HTMLSelectElement>('select[aria-label="Font family"]')?.value === value,
@@ -153,7 +162,7 @@ describe.skipIf(!findBrowserPath())('element design controls', () => {
     await frame.waitForFunction(() =>
       getComputedStyle(document.querySelector('#text')!).fontFamily.includes('Display Face'),
     )
-    await page.select(selector, 'Georgia, serif')
+    await page.select(selector, '"Lora", serif')
     await page.click('[aria-label="Align center"]')
     await frame.waitForFunction(() => getComputedStyle(document.querySelector('#text')!).textAlign === 'center')
     await page.keyboard.press('ArrowRight')
@@ -289,7 +298,7 @@ describe.skipIf(!findBrowserPath())('element design controls', () => {
               if (!hasTouch) await page.hover('[aria-label="Upload image"]')
               return page.$eval('[aria-label="Upload image"] > span', (el) => getComputedStyle(el).opacity)
             },
-            { timeout: WAIT_MS },
+            { timeout: 5000 },
           )
           .toBe('1')
         await page.screenshot({ path: '/tmp/doop-image-fill-editor.png' })
@@ -1002,7 +1011,7 @@ describe.skipIf(!findBrowserPath())('element design controls', () => {
   }
 
   async function startScrub(label: string) {
-    const unit = (await page.$(`label:has(input[aria-label="${label}"]) > span:last-child`))!
+    const unit = (await page.$(`label:has(input[aria-label="${label}"]) > span[data-unit]`))!
     await unit.scrollIntoView()
     expect(await unit.evaluate((el) => getComputedStyle(el).cursor)).toBe('ew-resize')
     const box = (await unit.boundingBox())!
@@ -1049,6 +1058,28 @@ describe.skipIf(!findBrowserPath())('element design controls', () => {
     await expect.poll(() => saved.html).toContain('translate: -20px 5px')
     await page.evaluate(() => window.elementPanelHarness.undo())
     await frame.waitForFunction(() => (document.querySelector('#box') as HTMLElement).style.translate === '10px 5px')
+  }, 15_000)
+
+  it('scrubs a fractional position onto whole values, zoomed in too', async () => {
+    const frame = await seedPanel(
+      `<!doctype html><html><head><style>
+        body { margin: 0 } #box { width: 120px; height: 80px }
+      </style></head><body><div id="box" style="translate: 9.94px 5px">Move</div></body></html>`,
+      '#box',
+    )
+    await page.waitForFunction(
+      () => document.querySelector<HTMLInputElement>('[aria-label="X position"]')?.value === '9.94',
+    )
+    await page.evaluate(() => window.elementPanelHarness.setZoom(2.5))
+    const point = await startScrub('X position')
+    for (let i = 1; i <= 12; i++) await page.mouse.move(point.x + 3 + i * 0.5, point.y)
+    await frame.waitForFunction(() => (document.querySelector('#box') as HTMLElement).style.translate === '19px 5px')
+    await page.mouse.up()
+    await expect.poll(() => saved.html).toContain('translate: 19px 5px')
+    await page.waitForFunction(
+      () => document.querySelector<HTMLInputElement>('[aria-label="X position"]')?.value === '19',
+    )
+    await page.evaluate(() => window.elementPanelHarness.setZoom(1))
   }, 15_000)
 
   it('scrubs live in both directions, saves, and undoes/redoes the edit', async () => {
@@ -1459,6 +1490,20 @@ describe.skipIf(!findBrowserPath())('element design controls', () => {
     expect(saved.html).not.toContain('translate: 0px 7px')
   })
 
+  it('keeps the element picked when its panel is closed', async () => {
+    await seedPanel(
+      `<!doctype html><html><head><style>#box { width: 120px; height: 40px }</style></head><body><div id="box"></div></body></html>`,
+      '#box',
+    )
+    await page.click('button[aria-label="Close"]')
+    await page.waitForSelector('[aria-label="Width"]', { hidden: true })
+    expect(await page.evaluate(() => window.elementPanelHarness.panelOpen())).toBe(false)
+    expect(await page.evaluate(() => window.elementPanelHarness.picked())).toEqual(['#box'])
+    /* picking it again reopens the panel */
+    await page.evaluate(() => window.elementPanelHarness.select('#box'))
+    await page.waitForSelector('[aria-label="Width"]')
+  })
+
   it('leaves a standalone canvas element in place', async () => {
     saved = { ...saved, html: '<body data-doop-canvas-element="rect"><div id="shape"></div></body>' }
     framePatches.length = 0
@@ -1520,4 +1565,33 @@ describe.skipIf(!findBrowserPath())('element design controls', () => {
     await frame.waitForFunction(() => (document.querySelector('#scrub') as HTMLElement).style.aspectRatio === '80 / 40')
     await expect.poll(() => saved.html).toContain('aspect-ratio: 80 / 40')
   }, 15_000)
+  it("creates a token from a field with that field's value, and binds the field", async () => {
+    const frame = await seedScrubTarget()
+    await page.click('label:has(input[aria-label="Corner radius"]) button[aria-label="Use a token"]')
+    await page.click('[data-slot="popover-content"] button[aria-label="Create a token from this value"]')
+    const name = await page.waitForSelector('[data-slot="popover-content"] input[aria-label="New token name"]')
+    /* the field's value is what the token is made from, and it can be edited first */
+    expect(
+      await page.$eval(
+        '[data-slot="popover-content"] input[aria-label="Value"]',
+        (el) => (el as HTMLInputElement).value,
+      ),
+    ).toBe('3px')
+    /* the name comes prefilled (radius-1); replace it */
+    await name!.click({ count: 3 })
+    await name!.type('card')
+    await page.keyboard.press('Enter')
+    await page.waitForFunction(() => !document.querySelector('[data-slot="popover-content"]'), { timeout: 10_000 })
+    await frame.waitForFunction(
+      () => (document.querySelector('#scrub') as HTMLElement).style.getPropertyValue('border-radius') === 'var(--card)',
+    )
+    await expect.poll(() => saved.html).toContain('border-radius: var(--card)')
+    /* bound: the field shows the token's name, and the broken chain detaches it */
+    await page.waitForSelector('label:has(span[title="Bound to card"])')
+    await page.click('button[aria-label="Detach from card"]')
+    /* detached to the computed literal (the fixture's frame carries no token block, so 0px here) */
+    await frame.waitForFunction(
+      () => !(document.querySelector('#scrub') as HTMLElement).style.getPropertyValue('border-radius').includes('var('),
+    )
+  }, 20_000)
 })
