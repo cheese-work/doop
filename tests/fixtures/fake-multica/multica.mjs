@@ -89,12 +89,16 @@ function issueCmd(s, sub, pos, f) {
     case 'children': {
       const parent = need(s, pos[0])
       const kids = s.issues.filter((i) => i.parent_issue_id === parent.id)
-      const stages = [...new Set(kids.map((k) => k.stage ?? 0))].sort((a, b) => a - b)
+      // the real response: children with a stage are grouped under `stages`, the rest are a flat `unstaged` list
+      const staged = kids.filter((k) => k.stage)
+      const stages = [...new Set(staged.map((k) => k.stage))].sort((a, b) => a - b)
       return {
         stages: stages.map((st) => {
-          const issues = kids.filter((k) => (k.stage ?? 0) === st)
+          const issues = staged.filter((k) => k.stage === st)
           return { stage: st, total: issues.length, done: issues.filter((k) => k.status === 'done').length, issues }
         }),
+        total: kids.length,
+        unstaged: kids.filter((k) => !k.stage),
       }
     }
     case 'search': {

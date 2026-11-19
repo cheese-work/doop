@@ -47,7 +47,7 @@ beforeAll(async () => {
   c15 = commit('0.15.0')
   sh('git', ['tag', 'v0.15.0'], upstream)
   c16 = commit('0.16.0')
-  sh('git', ['tag', '-a', '-m', 'annotated', 'v0.16.0'], upstream) // annotated: the commit is the peeled one
+  sh('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', 'tag', '-a', '-m', 'annotated', 'v0.16.0'], upstream) // annotated: the commit is the peeled one
   sh('git', ['tag', 'v0.16.0-rc.1'], upstream) // pre-release, never stable
   for (const [name, file] of [
     ['multica', FAKE_MULTICA],

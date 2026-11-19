@@ -51,7 +51,11 @@ const multica = (args) => {
 const gh = (args) => run(process.env.GH_BIN ?? 'gh', ['api', ...args], `gh api ${args[0]}`)
 
 /* ---- gather ---- */
-const flatten = (children) => (children?.stages ?? []).flatMap((s) => s.issues ?? [])
+// `issue children` groups staged children under `stages` and lists the rest flat under `unstaged`; sync children have no stage
+const flatten = (children) => [
+  ...(children?.stages ?? []).flatMap((s) => s.issues ?? []),
+  ...(children?.unstaged ?? []),
+]
 
 /** Stable tags of the upstream, as { version: commit }; an annotated tag's commit is the peeled one. */
 function stableTags() {
