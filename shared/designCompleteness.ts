@@ -76,6 +76,8 @@ export interface SloplintEntry {
   toolSha: string
   sha256: string
   status: 'ok' | 'NOT-RUN'
+  /** the verified `sloplint --json` text the digest vouches for; absent on a NOT-RUN entry */
+  resultJson?: string
 }
 
 export interface AttestedInputs {

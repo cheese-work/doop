@@ -10,9 +10,17 @@ export interface SloplintInput {
   sha256?: string | undefined
 }
 
-const readable = (json: string) => {
+/**
+ * A usable result is a JSON object with a `findings` array and no NOT-RUN marker. `null`, arrays, scalars and
+ * `{"status":"NOT-RUN"}` parse as JSON but are not a run of the tool (CHE-6854 review).
+ */
+const usable = (json: string) => {
   try {
-    return typeof JSON.parse(json) === 'object'
+    const v: unknown = JSON.parse(json)
+    if (typeof v !== 'object' || v === null || Array.isArray(v)) return false
+    const o = v as Record<string, unknown>
+    if (typeof o.status === 'string' && o.status.trim().toUpperCase().replace(/_/g, '-') === 'NOT-RUN') return false
+    return Array.isArray(o.findings)
   } catch {
     return false
   }
@@ -20,14 +28,15 @@ const readable = (json: string) => {
 
 /** G3 accepts the reviewer's result only when the digest they sent is the SHA256 of the JSON they sent (CHE-6854). Anything else is NOT-RUN. */
 export function sloplintEntries(inputs: SloplintInput[]): SloplintEntry[] {
-  return inputs.map((i) => {
+  return inputs.map((i): SloplintEntry => {
     const updatedAt = typeof i.updated_at === 'number' ? i.updated_at : Date.parse(i.updated_at)
     if (!Number.isFinite(updatedAt)) throw new Error('updated_at must be an ISO timestamp or epoch milliseconds')
     const claimed = (i.sha256 ?? '').toLowerCase()
     const vouched =
       i.result_json !== undefined &&
       claimed === createHash('sha256').update(i.result_json).digest('hex') &&
-      readable(i.result_json)
-    return { frameId: i.frame_id, updatedAt, toolSha: i.tool_sha, sha256: claimed, status: vouched ? 'ok' : 'NOT-RUN' }
+      usable(i.result_json)
+    const base = { frameId: i.frame_id, updatedAt, toolSha: i.tool_sha, sha256: claimed }
+    return vouched ? { ...base, status: 'ok', resultJson: i.result_json } : { ...base, status: 'NOT-RUN' }
   })
 }

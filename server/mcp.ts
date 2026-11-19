@@ -1001,7 +1001,9 @@ export function buildMcpServer(owner?: string, ownerId?: string, multicaTaskId?:
                 .string()
                 .max(200_000)
                 .optional()
-                .describe('The `sloplint --json` output, as text. Omit it for NOT-RUN.'),
+                .describe(
+                  'The `sloplint --json` output, as text: a JSON object with a `findings` array. null, an array, or {"status":"NOT-RUN"} counts as NOT-RUN. Omit it for NOT-RUN.',
+                ),
               sha256: z.string().optional().describe('Hex SHA256 of result_json exactly as sent.'),
             }),
           )

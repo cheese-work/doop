@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { createServer, type Server as HttpServer } from 'node:http'
 import { afterAll, beforeAll, expect, it } from 'vitest'
 import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js'
@@ -125,6 +126,20 @@ it('stores an attestation per run and ends it when a frame changes', async () =>
     agent_name: 'Reviewer',
   })
   expect(codesOf(tampered).filter((c) => c === 'sloplint_missing')).toHaveLength(3)
+  /* a NOT-RUN marker or a null with a matching digest is still no result */
+  for (const body of ['null', '{"status":"NOT-RUN"}']) {
+    const sha256 = createHash('sha256').update(body).digest('hex')
+    const hollow = (await sloplintFor(owner, canvas.id)).map((e) => ({ ...e, result_json: body, sha256 }))
+    const r = await callTool('check_design_completeness', {
+      canvas_id: canvas.id,
+      sloplint: hollow,
+      agent_name: 'Reviewer',
+    })
+    expect(
+      codesOf(r).filter((c) => c === 'sloplint_missing'),
+      body,
+    ).toHaveLength(3)
+  }
 
   /* the kebab is missing: the run is stored as incomplete */
   const first = await callTool('check_design_completeness', {
@@ -147,6 +162,9 @@ it('stores an attestation per run and ends it when a frame changes', async () =>
   })
   expect(second.missing).toEqual([])
   expect(second.complete).toBe(true)
+  /* the attested inputs keep each verified sloplint result */
+  expect(second.inputs.sloplint).toHaveLength(3)
+  for (const e of second.inputs.sloplint) expect(e).toMatchObject({ status: 'ok', resultJson: '{"findings":[]}' })
   const ok = await (await owner.get(`/api/design-attestations/${second.attestation_id}`)).json()
   expect(ok).toMatchObject({ complete: true, current: true })
   expect(ok.frames).toContainEqual({ frameId: design.id, updatedAt: fixed.updatedAt })
