@@ -1,3 +1,4 @@
+/* global Buffer */
 // S2 drift capture: does the Flutter screen stay on the Rive cutout while the device box scales every frame?
 // usage: S2_URL=<page url> [FRAMES=240] [DPR=2] [FACTORY=flutter|rive] [CHROME_ARGS='--flag --flag'] [OUT=report.json] node drift.mjs
 //   (run.sh sets S2_URL). X99: CHROME_ARGS='--use-gl=angle --use-angle=vulkan --enable-features=Vulkan --ignore-gpu-blocklist

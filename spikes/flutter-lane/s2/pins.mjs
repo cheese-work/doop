@@ -1,3 +1,4 @@
+/* global createImageBitmap, fetch, OffscreenCanvas */
 // S2 step 8, run first (test-first): the Semantics / node-annotation probe.
 // usage: S2_URL=<page url> node pins.mjs   env SCALE (default 0.9), SHOTS=<dir> to keep screenshots
 // Claims: (1) the harness answers a `doop:nodes` message with {id, rect} for each Home widget that carries

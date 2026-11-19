@@ -1,3 +1,4 @@
+/* global createImageBitmap, fetch, OffscreenCanvas */
 // Pixel measurements on a PNG of the S2 frame. Decoding runs in a helper browser page, so no image library is needed.
 // ring: the magenta probe ring (harness flag probe=1) along the middle row and middle column of the screenshot.
 // id:   the frame number the harness paints into the page corner (16 cells of 6 logical px, white = 1).

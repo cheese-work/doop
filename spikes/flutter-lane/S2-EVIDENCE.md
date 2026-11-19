@@ -41,7 +41,7 @@ No stop rule fired: the artboards composite in Flutter's scene on web, and a qua
 
 - `s2/lib/doop_harness/harness.dart`: `runDoop(product)` and `DoopHarness`, the only `MaterialApp`. It sets the iOS platform (`ThemeData.platform` plus a `ScrollBehavior` whose `getPlatform` returns iOS; no `debugDefaultTargetPlatformOverride`), `Locale('en','US')`, and a `MediaQuery` for the slot (size 402 x 874, padding and viewPadding 62 top and 34 bottom, no view insets).
 - `s2/lib/erus_home/`: the product. `product.dart` exports theme, delegates, locales and `onGenerateRoute`; it has no `MaterialApp`. `home.dart` is the erus Home from the S1 app, with a `TextField` (key `note`) added for step 7. It differs from the S1 Home by that field and three `Semantics(identifier:)` wrappers.
-- `s2/test/boundary.test.mjs`, 4 tests: product has no `MaterialApp`/`CupertinoApp`/`WidgetsApp`; product does not import the harness; the harness has exactly one `MaterialApp`; `main.dart` builds no app itself. Red (an injected `MaterialApp` in the product): `evidence/boundary-red.txt`, 3 of 4 pass. Green: `evidence/boundary-green.txt`, 4 of 4.
+- `s2/test/boundary.check.mjs`, 4 tests: product has no `MaterialApp`/`CupertinoApp`/`WidgetsApp`; product does not import the harness; the harness has exactly one `MaterialApp`; `main.dart` builds no app itself. Red (an injected `MaterialApp` in the product): `evidence/boundary-red.txt`, 3 of 4 pass. Green: `evidence/boundary-green.txt`, 4 of 4.
 - Known gap: the Navigator sits inside the slot, so a dialog pushed on the root navigator would escape the clip. Not exercised.
 
 ## 4. Slot
@@ -125,6 +125,6 @@ What was done (`s2/pins.mjs`, `lib/doop_harness/harness.dart` `_postNodes`):
 
 ## Files
 
-`spikes/flutter-lane/devices.yml`; `s2/lib/` (harness, product); `s2/tools/make-shell.mjs`, `riv-key-types.json`; `s2/check.mjs`, `input.mjs`, `pins.mjs`, `drift.mjs`, `measure.mjs`, `dom-probe.mjs`, `dtd-probe.mjs`, `summarize.mjs`, `run.sh`; `s2/test/boundary.test.mjs`; `s2/evidence/`. Changed from S1b: `s1b/serve.ts` (recursive folder read and watch, so `lib/` subfolders work) and `s1b/page/page.js` (iframe size from `?w=` and `?h=`).
+`spikes/flutter-lane/devices.yml`; `s2/lib/` (harness, product); `s2/tools/make-shell.mjs`, `riv-key-types.json`; `s2/check.mjs`, `input.mjs`, `pins.mjs`, `drift.mjs`, `measure.mjs`, `dom-probe.mjs`, `dtd-probe.mjs`, `summarize.mjs`, `run.sh`; `s2/test/boundary.check.mjs`; `s2/evidence/`. Changed from S1b: `s1b/serve.ts` (recursive folder read and watch, so `lib/` subfolders work) and `s1b/page/page.js` (iframe size from `?w=` and `?h=`).
 
 Run: `BLOB_DIR=<dir from make-shell.mjs> s2/run.sh check.mjs` (also `input.mjs`, `pins.mjs`, `drift.mjs`).

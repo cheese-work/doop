@@ -1,3 +1,4 @@
+/* global Buffer */
 // Derives the two S2 shell layers from a Rive community iPhone file, and a manifest of the screen slot.
 // usage: node make-shell.mjs <in.riv> <outdir> [artboard name, default Bezel_BlackTitanium]
 //   outdir/shell-below.riv  bezel raster hidden: body + (no screen)  -> drawn UNDER the Flutter screen

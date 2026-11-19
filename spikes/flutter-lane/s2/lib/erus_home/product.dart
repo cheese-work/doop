@@ -1,5 +1,5 @@
 // The product side of the boundary: theme, locale data, routes and the Home screen. It never builds a MaterialApp
-// (the harness owns the one MaterialApp) and never imports the harness. test/boundary.test.mjs holds both rules.
+// (the harness owns the one MaterialApp) and never imports the harness. test/boundary.check.mjs holds both rules.
 import 'package:flutter/material.dart';
 import 'home.dart';
 

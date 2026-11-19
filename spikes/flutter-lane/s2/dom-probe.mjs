@@ -1,3 +1,4 @@
+/* global OffscreenCanvas */
 // S2 steps 4-5 evidence: what the page holds under each Rive factory (canvases, WebGL contexts, platform views).
 // usage: S2_URL=<page url> FACTORY=flutter|rive node dom-probe.mjs
 import { open, waitMsg } from '../harness/lib.mjs'

@@ -1,3 +1,4 @@
+/* global location */
 // S2 step 8 (DTD): does the in-browser DartPad build expose anything the widget inspector / Dart Tooling Daemon can attach to?
 // Looks for a VM-service or DWDS hook on the sandbox window, and for debug-only inspector entry points; prints what it finds.
 import { open, waitMsg } from '../harness/lib.mjs'
