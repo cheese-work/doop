@@ -237,6 +237,18 @@
   fence 409. `tests/frameLockPolicy.test.ts` covers it. `tests/writePolicy.test.ts` also scans `server/` so a new
   writer outside `store.ts` and `db/persist.ts` fails CI.
 
+- Lock pins (G5b, CHE-7062, `server/framePins.ts`, `server/pinState.ts`, table `frame_pins` + `frame_pin_frames`,
+  migration 0043): a decision card holds the frames it shows. States RESERVED -> HELD -> SEALED -> RELEASED; no clock
+  moves a pin. Steps: `reserveLock` (P4, all or none, idempotent on `cardRequestId`), `confirmPin` (P6, receipt R1),
+  `pinForPick` (K2, one transaction HELD -> SEALED, receipt R2), `releasePin` (K5/C2: doop asks Multica itself through
+  `MulticaPort` and releases only on `decided` or `void`), `forceRelease` (F1: a lock owner; `abort_ref` first; a `void`
+  raises `lockEpoch`). Receipts are HMAC-SHA256 over card, pin, state, epochs (+ pick) with `DOOP_PIN_SECRET`; unset =
+  no receipt. `store.unlockFrame` (async) answers `pinned` while a pin exists and writes the row before memory changes;
+  the synchronous unlock in `updateFrame` refuses a pinned frame too. `store.lockIfVersionDurable` (MCP
+  `lock_frame_if_version`) answers only after its row is written and reverts memory if that write fails. Pins are read
+  back at boot (`loadPins`). Not wired yet: the Multica port itself (A1 `ref_status`/`abort_ref`) and an HTTP/MCP route
+  for P4/P6/K2/K5/F1. Tests: `framePins.test.ts` (temporary pglite).
+
 ## 6. Build and Dependency Management
 
 - Canvas access: `canvasRole` in `server/access.ts` gives owners, members and workspace members
