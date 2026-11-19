@@ -1,0 +1,8 @@
+PASS nodes message lists the three Home identifiers | ["erus-add","erus-net-worth","erus-recent"]
+annotation cost per call: median 0.20 ms, max 0.20 ms, 3 nodes
+rest: pin {"x":123.10003662109375,"y":490,"w":85.13436889648438,"h":28.79998779296875} painted {"x":123.5,"y":490,"w":84.5,"h":28.5} colour 83,90,146
+PASS rest: Add pin within 1 pt of the painted button | max edge delta 0.40 pt
+scrolled: pin {"x":123.10003662109375,"y":463,"w":85.13436889648438,"h":28.79998779296875} painted {"x":123.5,"y":463,"w":84.5,"h":28.5} colour 83,90,146
+PASS scrolled: Add pin within 1 pt of the painted button | max edge delta 0.40 pt
+PASS scroll moved the node (rect changed) | y 417.0 -> 387.0 pt
+s2 pins: GREEN (4/4 pass)

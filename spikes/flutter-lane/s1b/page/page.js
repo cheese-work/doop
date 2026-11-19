@@ -71,6 +71,8 @@ function startSandbox(host) {
   // the sandbox iframe, as package:dartpad's createSandboxedIframe builds it
   const f = document.createElement('iframe')
   f.setAttribute('sandbox', 'allow-scripts allow-same-origin')
+  if (q.get('w')) f.style.width = q.get('w') + 'px' // S2: a frame the size of the device shell
+  if (q.get('h')) f.style.height = q.get('h') + 'px'
   f.srcdoc = `<!DOCTYPE html><html><head><meta charset="utf-8"><script src="${SDK}sandbox.js" defer></script><style>body{margin:0;overflow:hidden;background:transparent}</style></head><body></body></html>`
   return new Promise((res, rej) => {
     const on = (e) => {

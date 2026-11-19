@@ -1,0 +1,1 @@
+{"factory":"flutter","renderer":"canvaskit","tracked":true,"canvases":[],"flutterView":true,"platformViews":0,"sceneHost":false,"glRenderer":"ANGLE (NVIDIA, Vulkan 1.4.312 (NVIDIA NVIDIA GeForce RTX 3060 (0x00002503)), NVIDIA)"}

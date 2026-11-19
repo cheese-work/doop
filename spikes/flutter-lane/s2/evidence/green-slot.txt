@@ -1,0 +1,17 @@
+ready: {"type":"doop:flutter-ready","ts":1795095631793,"harness":"doop","factory":"flutter","renderer":"canvaskit","tracked":true,"node":{"wt":[1,0,0,1,24.00004005432129,22.99999237060547],"x":24.00004005432129,"y":22.99999237060547},"slot":{"x":59.00004005432129,"y":32.99999237060547,"w":402,"h":874},"page":{"w":520,"h":940},"spec":{"aw":450,"ah":920,"sx":24.00004005432129,"sy":22.99999237060547,"sw":402,"sh":874},"origin":"https://congvc-x99.taila6fa8a.ts.net:19463","localStorage":"ok","crossOriginIsolated":false,"secureContext":true,"sharedArrayBuffer":false,"dpr":2,"fi":0,"rx":1795095632356}
+PASS harness is doop_harness | doop
+PASS slot reported | {"x":59.00004005432129,"y":32.99999237060547,"w":402,"h":874}
+PASS slot follows the Rive node (Component lookup) | true
+PASS slot origin = artboard centre + screen node | got 59.00004005432129,32.99999237060547 want 59.00004005432129,32.99999237060547
+PASS slot size = screen artboard size | 402x874
+ring: {"h":{"a0":118,"a1":126,"b0":914,"b1":922},"v":{"a0":66,"a1":74,"b0":1806,"b1":1814},"size":[1040,1880]}
+PASS probe ring visible on all four sides | yes
+ring thickness px: left 8 right 8 top 8 bottom 8 (4 pt = 8 px)
+PASS ring edge l on the cutout edge | got 118 want 118.0 device px
+PASS ring edge r on the cutout edge | got 922 want 922.0 device px
+PASS ring edge t on the cutout edge | got 66 want 66.0 device px
+PASS ring edge b on the cutout edge | got 1814 want 1814.0 device px
+PASS ring centred in the cutout, x | 0 device px
+PASS ring centred in the cutout, y | 0 device px
+page state: {"console":["debug: Injecting <script> tag. Using callback.","log: Starting application from main method in: package:doop_s2/main.dart.flutter-wrapper.dart."]}
+s2 check: GREEN (12/12 pass)

@@ -1,0 +1,34 @@
+TAP version 13
+# Subtest: product folder has no MaterialApp / CupertinoApp / WidgetsApp
+ok 1 - product folder has no MaterialApp / CupertinoApp / WidgetsApp
+  ---
+  duration_ms: 2.464263
+  type: 'test'
+  ...
+# Subtest: product folder does not import the harness
+ok 2 - product folder does not import the harness
+  ---
+  duration_ms: 2.619831
+  type: 'test'
+  ...
+# Subtest: harness has exactly one MaterialApp
+ok 3 - harness has exactly one MaterialApp
+  ---
+  duration_ms: 0.951446
+  type: 'test'
+  ...
+# Subtest: main.dart wires the two and builds no app itself
+ok 4 - main.dart wires the two and builds no app itself
+  ---
+  duration_ms: 0.398549
+  type: 'test'
+  ...
+1..4
+# tests 4
+# suites 0
+# pass 4
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 119.278805

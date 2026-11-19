@@ -1,0 +1,10 @@
+ready slot: {"x":79.10003604888917,"y":76.69999313354492,"w":361.79999999999995,"h":786.6} page: {"w":520,"h":940}
+PASS slot scaled with the device box | slot w 361.79999999999995 want 361.8
+semantics rects (iframe px): {"erus-net-worth":{"x":97.10003662109375,"y":200.89999389648438,"w":325.79998779296875,"h":125.10000610351562},"erus-add":{"x":115.10003662109375,"y":452,"w":85.13436889648438,"h":28.79998779296875},"erus-recent":{"x":97.10003662109375,"y":527.5999755859375,"w":325.79998779296875,"h":305.0999755859375},"note":{"x":115.10003662109375,"y":408.79998779296875,"w":289.79998779296875,"h":36}}
+PASS Semantics reports the Add button | {"x":115.10003662109375,"y":452,"w":85.13436889648438,"h":28.79998779296875}
+PASS Add button rect is scaled by the device box | w 85.1 want 85.1
+PASS mouse click 1 on Add reaches the button | events 1, last {"type":"doop:flutter-tap","ts":1795095385099,"taps":1,"fi":0,"rx":1795095385229}
+PASS mouse click 2 on Add reaches the button | events 2, last {"type":"doop:flutter-tap","ts":1795095385410,"taps":2,"fi":0,"rx":1795095385521}
+PASS Semantics reports the Note field | {"x":115.10003662109375,"y":408.79998779296875,"w":289.79998779296875,"h":36}
+PASS typed text arrives, ASCII then non-ASCII | {"type":"doop:flutter-text","ts":1795095387210,"value":"hello 123 đồng","fi":0,"rx":1795095387271}
+s2 input: GREEN (7/7 pass)

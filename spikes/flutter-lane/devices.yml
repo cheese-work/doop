@@ -1,0 +1,47 @@
+# One device entry for the S2 spike (CHE-7353). Every value carries its source.
+# apple: true  = published by Apple. apple: false = measured from the shell file, or third-party documented only.
+# Do not treat an apple:false value as a spec; S3 (CHE-7354) re-checks them on a real device.
+devices:
+  - id: iphone-16-pro
+    name: iPhone 16 Pro
+    screen:
+      points: { w: 402, h: 874 }
+      scale: 3
+      pixels: { w: 1206, h: 2622 }
+      ppi: 460
+    sources:
+      points:
+        value: 402 x 874 pt
+        source: shell file (nested screen artboard size, 402 x 874) and Apple Support 121031 (pixel size / scale 3)
+        apple: true
+      pixels_ppi:
+        value: 2622 x 1206 px at 460 ppi
+        source: Apple Support, "iPhone 16 Pro - Technical Specifications" (support.apple.com/en-us/121031)
+        apple: true
+      scale:
+        value: 3
+        source: 1206 px / 402 pt (derived)
+        apple: false
+    shell:
+      file: rive community file 19099 "iPhone 16 iOS 18 home screen" (artboard Bezel_BlackTitanium), not committed
+      license: CC BY 4.0, attribution in S2-EVIDENCE.md
+      artboard: { w: 450, h: 920 }
+      screen_node: { name: doop-screen, x: 24, y: 23, w: 402, h: 874 }
+      source: read from the .riv with tools/make-shell.mjs (shell.json)
+      apple: false
+    corner_radius:
+      value: 63
+      source: Rectangle in the shell file; no Apple-published value
+      apple: false
+    dynamic_island:
+      value: { w: 124.5, h: 35.8, top: 14.5, center_x: 201 }
+      source: measured on the rendered shell (S2 screenshot); no Apple-published value
+      apple: false
+    safe_area:
+      value: { top: 62, bottom: 34, left: 0, right: 0 }
+      source: third-party documentation only (not read from a device); S3 checks it on hardware
+      apple: false
+    font:
+      value: SF Pro
+      source: not committed or uploaded (licence); the spike runs on the Flutter default font
+      apple: false
