@@ -68,7 +68,7 @@ const unlock = () => {
 }
 const load = () => {
   const s = existsSync(STATE) ? JSON.parse(readFileSync(STATE, 'utf8')) : {}
-  return { calls: 0, nextNumber: 8000, issues: [], autopilots: {}, wakeups: [], ...s }
+  return { calls: 0, nextNumber: 8000, issues: [], autopilots: {}, wakeups: [], log: [], ...s }
 }
 const save = (s) => {
   writeFileSync(`${STATE}.tmp`, JSON.stringify(s, null, 2))
@@ -89,12 +89,16 @@ function issueCmd(s, sub, pos, f) {
     case 'children': {
       const parent = need(s, pos[0])
       const kids = s.issues.filter((i) => i.parent_issue_id === parent.id)
-      const stages = [...new Set(kids.map((k) => k.stage ?? 0))].sort((a, b) => a - b)
+      // the real response: children with a stage are grouped under `stages`, the rest are a flat `unstaged` list
+      const staged = kids.filter((k) => k.stage)
+      const stages = [...new Set(staged.map((k) => k.stage))].sort((a, b) => a - b)
       return {
         stages: stages.map((st) => {
-          const issues = kids.filter((k) => (k.stage ?? 0) === st)
+          const issues = staged.filter((k) => k.stage === st)
           return { stage: st, total: issues.length, done: issues.filter((k) => k.status === 'done').length, issues }
         }),
+        total: kids.length,
+        unstaged: kids.filter((k) => !k.stage),
       }
     }
     case 'search': {
@@ -186,6 +190,7 @@ function issueCmd(s, sub, pos, f) {
       return i
     }
     case 'wakeup': {
+      if (pos[0] === 'list') return s.wakeups.filter((w) => w.issue === need(s, pos[1]).id)
       if (pos[0] !== 'create') break
       const w = { id: `wk-${s.calls}`, issue: need(s, pos[1]).id, flags: f }
       s.wakeups.push(w)
@@ -258,6 +263,8 @@ const killCaller = () => process.kill(process.ppid, 'SIGKILL')
 lock()
 const s = load()
 const fault = faults[++s.calls]
+const entry = { n: s.calls, argv: process.argv.slice(2), ok: true } // every attempted call; ok=false when rejected
+s.log.push(entry)
 let out
 let error
 try {
@@ -278,6 +285,7 @@ try {
 } catch (e) {
   if (!(e instanceof Err)) throw e
   error = e
+  entry.ok = false
 }
 save(s)
 unlock()

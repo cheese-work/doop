@@ -55,7 +55,7 @@ describe('fake multica: issues', () => {
     })
     const r = fake(['issue', 'children', 'ledger-1', '--output', 'json'])
     expect(r.code).toBe(0)
-    const issues = r.json.stages.flatMap((s: { issues: unknown[] }) => s.issues)
+    const issues = [...r.json.stages.flatMap((s: { issues: unknown[] }) => s.issues), ...r.json.unstaged]
     expect(issues.map((i: { identifier: string }) => i.identifier)).toEqual(['CHE-9001', 'CHE-9002'])
     expect(issues[0]).toMatchObject({ revision: 1, status: 'backlog' })
   })
@@ -92,7 +92,7 @@ describe('fake multica: issues', () => {
       assignee_id: 'sq-1',
       revision: 1,
     })
-    const kids = fake(['issue', 'children', 'ledger-1']).json.stages.flatMap((s: { issues: unknown[] }) => s.issues)
+    const kids = fake(['issue', 'children', 'ledger-1']).json.unstaged
     expect(kids).toHaveLength(1)
     expect(kids[0].properties).toMatchObject({ Readiness: 'ready' })
   })
