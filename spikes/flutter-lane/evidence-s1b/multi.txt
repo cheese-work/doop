@@ -1,0 +1,28 @@
+ 13:17:25 up 27 days, 18:40,  4 users,  load average: 43.74, 50.18, 67.42
+n=1: all 1 frames ready after 15896 ms
+edit 1: frames reloaded 1 of 1 -> f0:620 ms taps=2
+edit 2: frames reloaded 1 of 1 -> f0:479 ms taps=2
+edit 3: frames reloaded 1 of 1 -> f0:645 ms taps=2
+edit 4: frames reloaded 1 of 1 -> f0:412 ms taps=2
+edit 5: frames reloaded 1 of 1 -> f0:675 ms taps=2
+worker-side reload times (ms from write start, one entry per frame): [{"write":1,"perSandbox":[624]},{"write":1,"perSandbox":[474]},{"write":2,"perSandbox":[440]},{"write":1,"perSandbox":[409]},{"write":1,"perSandbox":[384]}]
+memory: JS heap(page) 306 MB; chrome processes RSS 1984 MB
+console errors: error: Failed to load resource: the server responded with a status of 404 (Not Found) || requestfailed: https://congvc-x99.taila6fa8a.ts.net:19461/sdk/sdk.tar net::ERR_ABORTED || error: Permissions policy violation: focus-without-user-activation is not allowed in this document.
+n=2: all 2 frames ready after 16527 ms
+edit 1: frames reloaded 2 of 2 -> f0:569 ms taps=2, f1:1171 ms taps=0
+edit 2: frames reloaded 2 of 2 -> f0:353 ms taps=2, f1:604 ms taps=0
+edit 3: frames reloaded 2 of 2 -> f0:552 ms taps=2, f1:777 ms taps=0
+edit 4: frames reloaded 2 of 2 -> f0:417 ms taps=2, f1:679 ms taps=0
+edit 5: frames reloaded 2 of 2 -> f0:381 ms taps=2, f1:614 ms taps=0
+worker-side reload times (ms from write start, one entry per frame): [{"write":1,"perSandbox":[591,1202]},{"write":1,"perSandbox":[351,602]},{"write":1,"perSandbox":[363,578]},{"write":1,"perSandbox":[417,674]},{"write":2,"perSandbox":[380,607]}]
+memory: JS heap(page) 405 MB; chrome processes RSS 2718 MB
+console errors: requestfailed: https://congvc-x99.taila6fa8a.ts.net:19461/sdk/sdk.tar net::ERR_ABORTED || error: Failed to load resource: the server responded with a status of 404 (Not Found) || error: Permissions policy violation: focus-without-user-activation is not allowed in this document. || error: Permissions policy violation: focus-without-user-activation is not allowed in this document.
+n=3: all 3 frames ready after 18026 ms
+edit 1: frames reloaded 3 of 3 -> f0:508 ms taps=2, f1:888 ms taps=0, f2:1204 ms taps=0
+edit 2: frames reloaded 3 of 3 -> f0:415 ms taps=2, f1:717 ms taps=0, f2:969 ms taps=0
+edit 3: frames reloaded 3 of 3 -> f0:439 ms taps=2, f1:734 ms taps=0, f2:985 ms taps=0
+edit 4: frames reloaded 3 of 3 -> f0:407 ms taps=2, f1:654 ms taps=0, f2:904 ms taps=0
+edit 5: frames reloaded 3 of 3 -> f0:767 ms taps=2, f1:1005 ms taps=0, f2:1212 ms taps=0
+worker-side reload times (ms from write start, one entry per frame): [{"write":1,"perSandbox":[550,904,1202]},{"write":2,"perSandbox":[419,717,964]},{"write":1,"perSandbox":[445,739,982]},{"write":1,"perSandbox":[412,656,898]},{"write":1,"perSandbox":[391,617,824]}]
+memory: JS heap(page) 444 MB; chrome processes RSS 2674 MB
+console errors: error: Failed to load resource: the server responded with a status of 404 (Not Found) || requestfailed: https://congvc-x99.taila6fa8a.ts.net:19461/sdk/sdk.tar net::ERR_ABORTED || error: Permissions policy violation: focus-without-user-activation is not allowed in this document. || error: Permissions policy violation: focus-without-user-activation is not allowed in this document. || error: Permissions policy violation: focus-without-user-activation is not allowed in this document.

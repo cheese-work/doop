@@ -1,0 +1,27 @@
+requestfailed: https://congvc-x99.taila6fa8a.ts.net:19462/sdk/sdk.tar net::ERR_ABORTED
+log: 1884 ms worker session
+log: 1888 ms version {"workerProtocolMajor":1,"workerProtocolMinor":0,"modes":["console","flutter"],"dartVersion":"3.14.0","dartRevision":"fa8c1270c374c1346931583a17c3b7f278d3822d","properties":{"flutterVersion":"3.50.0","flutterRevision":"ab2912035e160d9cad6306df307576da6128ebdb","engineRevision":"371f77202a73e8dff57a8b3bff75bca55c090aee"}}
+log: 4103 ms pub get 2205 ms able) | + vm_service 15.4.0 | + web 1.1.2 | + webdriver 3.2.0 | Changed 35 dependencies! | 3 packages have newer versions incompatible with dependency constraints. | Try `dart pub outdated` for more information. | 
+warning: An iframe which has both allow-scripts and allow-same-origin for its sandbox attribute can escape its sandboxing.
+log: 13507 ms sandbox connected 1
+log: 13511 ms FAILED Compilation entrypoint "/workspace/pad_1/lib/main.dart" not found 7101 {"entrypoint":"/workspace/pad_1/lib/main.dart","request":{"jsonrpc":"2.0","method":"workspace/sandbox/run","params":{"workspaceId":1,"sandboxId":1,"path":"lib/main.dart","mode":"flutter"},"id":6}}
+font: FAIL
+exit=0
+log: 2270 ms worker session
+requestfailed: https://congvc-x99.taila6fa8a.ts.net:19462/sdk/sdk.tar net::ERR_ABORTED
+log: 2286 ms version {"workerProtocolMajor":1,"workerProtocolMinor":0,"modes":["console","flutter"],"dartVersion":"3.14.0","dartRevision":"fa8c1270c374c1346931583a17c3b7f278d3822d","properties":{"flutterVersion":"3.50.0","flutterRevision":"ab2912035e160d9cad6306df307576da6128ebdb","engineRevision":"371f77202a73e8dff57a8b3bff75bca55c090aee"}}
+log: 3175 ms pub get 837 ms able) | + vm_service 15.4.0 | + web 1.1.2 | + webdriver 3.2.0 | Changed 35 dependencies! | 3 packages have newer versions incompatible with dependency constraints. | Try `dart pub outdated` for more information. | 
+warning: An iframe which has both allow-scripts and allow-same-origin for its sandbox attribute can escape its sandboxing.
+log: 13147 ms sandbox connected 1
+log: 13151 ms FAILED Compilation entrypoint "/workspace/pad_1/lib/main.dart" not found 7101 {"entrypoint":"/workspace/pad_1/lib/main.dart","request":{"jsonrpc":"2.0","method":"workspace/sandbox/run","params":{"workspaceId":1,"sandboxId":1,"path":"lib/main.dart","mode":"flutter"},"id":6}}
+sem: FAIL
+exit=0
+requestfailed: https://congvc-x99.taila6fa8a.ts.net:19462/sdk/sdk.tar net::ERR_ABORTED
+log: 1293 ms worker session
+log: 1297 ms version {"workerProtocolMajor":1,"workerProtocolMinor":0,"modes":["console","flutter"],"dartVersion":"3.14.0","dartRevision":"fa8c1270c374c1346931583a17c3b7f278d3822d","properties":{"flutterVersion":"3.50.0","flutterRevision":"ab2912035e160d9cad6306df307576da6128ebdb","engineRevision":"371f77202a73e8dff57a8b3bff75bca55c090aee"}}
+log: 1909 ms pub get 600 ms able) | + vm_service 15.4.0 | + web 1.1.2 | + webdriver 3.2.0 | Changed 35 dependencies! | 3 packages have newer versions incompatible with dependency constraints. | Try `dart pub outdated` for more information. | 
+warning: An iframe which has both allow-scripts and allow-same-origin for its sandbox attribute can escape its sandboxing.
+log: 6682 ms sandbox connected 1
+log: 6685 ms FAILED Compilation entrypoint "/workspace/pad_1/lib/main.dart" not found 7101 {"entrypoint":"/workspace/pad_1/lib/main.dart","request":{"jsonrpc":"2.0","method":"workspace/sandbox/run","params":{"workspaceId":1,"sandboxId":1,"path":"lib/main.dart","mode":"flutter"},"id":6}}
+riv: FAIL
+exit=0

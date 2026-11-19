@@ -1,0 +1,24 @@
+2026-11-19 13:12:43 +07
+cold first frame: 10476 ms
+warm first frame: 10880 ms
+run 1: 1071 ms taps=2
+run 2: 462 ms taps=2
+run 3: 377 ms taps=2
+run 4: 490 ms taps=2
+run 5: 398 ms taps=2
+run 6: 453 ms taps=2
+run 7: 525 ms taps=2
+run 8: 685 ms taps=2
+run 9: 658 ms taps=2
+run 10: 620 ms taps=2
+run 11: 735 ms taps=2
+run 12: 666 ms taps=2
+run 13: 782 ms taps=2
+run 14: 699 ms taps=2
+run 15: 595 ms taps=2
+run 16: 782 ms taps=2
+run 17: 644 ms taps=2
+run 18: 838 ms taps=2
+run 19: 672 ms taps=2
+run 20: 722 ms taps=2
+n=20 p50=658 max=1071

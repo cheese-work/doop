@@ -1,0 +1,7 @@
+2026-11-19 13:09:18 +07
+LOAD FAILED: page.waitForFunction: Timeout 15000ms exceeded.
+error: Failed to load resource: the server responded with a status of 404 (Not Found)
+exit=1
+EDIT FAILED: page.waitForFunction: Timeout 15000ms exceeded.
+error: Failed to load resource: the server responded with a status of 404 (Not Found)
+exit=1

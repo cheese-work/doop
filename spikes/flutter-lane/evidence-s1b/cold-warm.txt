@@ -1,0 +1,11 @@
+2026-11-19 13:14:42 +07
+cold: first frame 18425 ms; wire 13.4 MB in 19 requests; 0 from disk cache
+  2460 ms worker session
+  3439 ms pub get 952 ms able) | + vm_service 15.4.0 | + web 1.1.2 | + webdriver 3.2.0 | Changed 35 dependencies
+  12119 ms sandbox connected 1
+  17917 ms run 1 5797 ms
+warm: first frame 22773 ms; wire 0.0 MB in 19 requests; 10 from disk cache
+  7915 ms worker session
+  9714 ms pub get 1492 ms able) | + vm_service 15.4.0 | + web 1.1.2 | + webdriver 3.2.0 | Changed 35 dependencie
+  18277 ms sandbox connected 1
+  22052 ms run 1 3775 ms
