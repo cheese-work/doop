@@ -118,6 +118,35 @@ Probe `s1b/probes/sem/lib/main.dart`: `SemanticsBinding.instance.ensureSemantics
 
 From `evidence-s1b/hosts-erus.txt` (erus Home, one frame): the X99 host, `pub.dev` (32 requests: `pub get` runs in the browser and downloads package metadata), and `fonts.gstatic.com` (1 request, `/s/roboto`: Flutter's fallback font). With `rive`: also 9 `pub.dev` archive downloads and `cdn.jsdelivr.net`. So the viewer needs internet access to `pub.dev` for any package beyond what is in the SDK, and the wasm of `rive`. `worker.js` contains a `pubHostedUrl` field. I did not test whether it redirects `pub get` to a mirror on X99. S2 decision: mirror pub packages and the rive wasm on X99, or accept public fetches.
 
+## Cheese gate reply (2026-11-19 14:19 ICT, decision card)
+
+Chose "đạt". Note: "build quá chậm. Có thể làm near realtime như html được không?" with the page log from the device that opened the link (browser and device not stated):
+
+```
+24267 ms worker session
+25511 ms pub get 576 ms
+41227 ms sandbox connected 1
+44762 ms run 1 3534 ms
+```
+
+So the loop works on at least one real device, but the first frame took about 45 s there against 9 to 11 s on X99. Reading of the log against the X99 runs:
+
+| Phase | Cheese's device | X99 headless Chrome (3 cold runs, load about 10) |
+| --- | ---: | ---: |
+| worker session (fetch `worker.js` and `worker.wasm`, start) | 24.3 s | 1.3 to 2.5 s |
+| pub get | 0.6 s | 0.6 to 1.0 s |
+| sandbox connected (fetch and parse `flutter_web.js`, `dart_sdk.js`) | 15.7 s after pub get | about 9 s |
+| compile of the app (`run 1`) | 3.5 s | 3.8 to 5.8 s |
+
+The compile itself is the same on both. The extra 30 s sits in the two download-and-start phases, which fetch about 13 MB. `tailscale status` and `tailscale ping` from X99 at 14:30 ICT: the MacBook (`macbook-pro`) is reached through DERP relay Singapore (about 100 ms), "direct connection not established". That fits a transfer-bound start. I did not measure the MacBook's throughput, so this is a likely cause, not a proven one.
+
+Near realtime, honest status: after the first load, an edit shows in 0.38 to 1.07 s (p50 658 ms), not HTML-instant. The floor seen is about 0.35 s, and it is the compile in the worker. Cold start is the part that can change a lot. Options for S2, none built here:
+
+1. Reload the page on the same device: the 13 MB should come from the HTTP cache (`max-age=86400`), so the second open should skip most of the 24 s plus 16 s. Not yet measured on Cheese's device.
+2. Start the worker and fetch the framework when the doop canvas opens, before the first Flutter frame is needed, so the wait is hidden.
+3. Serve the assets over a direct path or from a host near the viewer. That is a deploy or public-host decision and stays with Cheese.
+4. Hot reload only (no worker restart) already keeps edits near 0.4 to 0.7 s; the debounce is 20 ms and is not the cost.
+
 ## Caveats
 
 - Headless Chrome on Linux, not a real viewer's machine. Timings come from a busy X99 (load 9 to 52).
