@@ -1546,7 +1546,7 @@ export function buildMcpServer(
          has no card either). The review screenshot after the stream is the
          first card the person sees. */
       description:
-        'Create a new frame on a canvas with an HTML design. A frame is a rectangular artboard that renders a full HTML document (inline <style> and <script> allowed, no external network access needed). If x/y are omitted the frame is auto-placed to the right of existing frames. Everyone viewing the canvas sees it appear live.',
+        'Create a new frame on a canvas with an HTML design. A frame is a rectangular artboard that renders a full HTML document (inline <style> and <script> allowed, no external network access needed). If x/y are omitted the frame is auto-placed to the right of existing frames; a requested position (explicit or defaulted x/y) that would overlap another frame is replaced by free space (see `placement` in the result). Everyone viewing the canvas sees it appear live.',
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       inputSchema: {
         canvas_id: z.string(),
@@ -1568,12 +1568,16 @@ export function buildMcpServer(
       if (!canvasFor(canvas_id, 'edit')) return noCanvas(canvas_id)
       const frame = actions.createFrame(canvas_id, { name, pageId, html, x, y, width, height }, actorFrom(agent_name))
       if (!frame) return noCanvas(canvas_id)
-      const result = withEscapeNote(
-        frame.html.length > 0
-          ? textWithNudge({ ok: true, frame: frameSummary(frame) }, REVIEW_NUDGE)
-          : text({ ok: true, frame: frameSummary(frame) }),
-        html,
-      )
+      const body = {
+        ok: true,
+        frame: frameSummary(frame),
+        ...(actions.wasRelocated(frame)
+          ? {
+              placement: `the requested position would overlap another frame; placed in free space at ${frame.x},${frame.y}`,
+            }
+          : {}),
+      }
+      const result = withEscapeNote(frame.html.length > 0 ? textWithNudge(body, REVIEW_NUDGE) : text(body), html)
       return withGuidelinesNudge(
         withStatusNudge(withFeedback(result, canvas_id, actorFrom(agent_name)), canvas_id, actorFrom(agent_name)),
         canvas_id,
@@ -2424,7 +2428,7 @@ export function buildMcpServer(
       title: 'Rename, move or resize a frame',
       _meta: previewToolMeta('Updating the frame…', 'Frame updated'),
       description:
-        "Update frame metadata in one call: rename it (name), move it on its page (x, y), resize it (width, height), turn it (rotation: degrees clockwise about its centre; 0 straightens it), or move it to another page (pageId from get_canvas; it keeps its x/y unless you pass new ones and lands in front of that page's frames). Set locked to true to lock the frame on the canvas (humans cannot select, move, resize or delete it from the stage until it is unlocked) or false to unlock it. A locked frame refuses every change to its HTML and size (width, height) from everyone, agents included; rename and move still work, and unlocking is its own call (it cannot carry an HTML or size change).",
+        "Update frame metadata in one call: rename it (name), move it on its page (x, y), resize it (width, height), turn it (rotation: degrees clockwise about its centre; 0 straightens it), or move it to another page (pageId from get_canvas; it keeps its x/y unless you pass new ones and lands in front of that page's frames). Set locked to true to lock the frame on the canvas (humans cannot select, move, resize or delete it from the stage until it is unlocked) or false to unlock it. A move or resize that would overlap another frame on the page (or leave less than 40px clear) is refused with the free spot to use. A locked frame refuses every change to its HTML and size (width, height) from everyone, agents included; rename and move still work, and unlocking is its own call (it cannot carry an HTML or size change).",
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: {
         frame_id: z.string(),
