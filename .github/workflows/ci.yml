@@ -3,7 +3,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [cheese/main]
   pull_request:
   # image.yml gates the image build on this exact suite rather than copying it
   workflow_call:
