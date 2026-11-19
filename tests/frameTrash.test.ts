@@ -79,7 +79,7 @@ beforeEach(() => {
 })
 
 describe('frame soft delete', () => {
-  it('hides a deleted frame from the canvas and keeps it restorable', () => {
+  it('hides a deleted frame from the canvas and keeps it restorable', async () => {
     const { a } = seed()
     actions.deleteFrame(a.id, actor)
     expect(store.getFrame(a.id)).toBeUndefined()
@@ -88,7 +88,7 @@ describe('frame soft delete', () => {
     /* the row is kept and marked, never removed */
     expect(saved.frames.at(-1)).toMatchObject({ id: a.id, deletedAt: expect.any(Number) })
 
-    const back = actions.restoreFrame(a.id, actor)
+    const back = await actions.restoreFrame(a.id, actor)
     expect(back?.id).toBe(a.id)
     expect(back?.html).toBe('<h1>a</h1>')
     expect(back?.deletedAt).toBeUndefined()
@@ -143,7 +143,7 @@ describe('a deleted frame refuses every writer', () => {
 })
 
 describe('page soft delete', () => {
-  it('restores a deleted page with its deleted frames', () => {
+  it('restores a deleted page with its deleted frames', async () => {
     const { a, b, c } = seed()
     actions.deleteFrame(a.id, actor)
     actions.deleteFrame(b.id, actor)
@@ -151,7 +151,7 @@ describe('page soft delete', () => {
     expect(canvas.pages!.map((p) => p.id)).toEqual(['p2'])
     expect(store.getDeletedPage(cid, 'p1')?.name).toBe('Page 1')
 
-    const out = actions.restorePage(cid, 'p1', actor)
+    const out = await actions.restorePage(cid, 'p1', actor)
     expect(out?.page.id).toBe('p1')
     expect(out?.frames.map((f) => f.id).sort()).toEqual([a.id, b.id].sort())
     expect(canvas.pages!.map((p) => p.id)).toContain('p1')

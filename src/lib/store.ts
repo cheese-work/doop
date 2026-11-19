@@ -1,8 +1,10 @@
 import { create } from 'zustand'
 import { trimComments } from '../../shared/comments'
 import { canvasPages, framePageId } from '../../shared/pages'
+import { openingPageId } from './pageLink'
 import { sortByStack } from '../../shared/frameStack'
 import type { DesignToken } from '../../shared/designTokens'
+import type { AgentRole } from '../../shared/agents'
 import type {
   ActivityItem,
   AgentTask,
@@ -21,6 +23,7 @@ import type {
 import { roleAllows, type CanvasRole } from '../../shared/canvasRole'
 import type { SnapGuide } from './snap'
 import { isDrawingTool, type Tool } from './tools'
+import { setOutlines } from './frameBridge'
 import { readViewOptions, writeViewOptions, type ViewOption, type ViewOptions } from './viewOptions'
 
 export interface Viewport {
@@ -106,7 +109,7 @@ interface State {
   /** the Layers rail is showing (desktop); the choice sticks across visits */
   layersOpen: boolean
   /** which face the Layers panel shows: the layer tree, or the design tokens */
-  layersTab: 'layers' | 'tokens'
+  layersTab: 'layers' | 'components' | 'tokens'
   /** ⌘. — every panel and toolbar is off screen, leaving only the canvas.
    *  A plain overlay flag: the panels' own open/closed state is untouched
    *  underneath, so toggling back shows exactly what was open before */
@@ -123,6 +126,10 @@ interface State {
   viewOptions: ViewOptions
   /** the ruler guide clicked last, which Delete removes */
   selectedGuideId: string | null
+  /** ⌘Y — frames drawn as outlines, fills off; nothing is saved */
+  outlines: boolean
+  /** ⌥L asks the Layers panel to fold every row; it watches the stamp */
+  layersCollapseAt: number
   connected: boolean
   /** the join for the current canvasId was refused: no such canvas (deleted,
    *  or the id in the URL was never one) — CanvasPage shows a not-found
@@ -154,7 +161,7 @@ interface State {
    *  the Comments panel raises it; the FrameView that owns the root consumes it */
   threadRequest: { id: string; at: number } | null
   /** when the "Design it" composer in the Agents tab was last asked to take
-   *  focus (⌘K) — a timestamp, so a composer that mounts long after an old
+   *  focus (⌘/) — a timestamp, so a composer that mounts long after an old
    *  request does not grab the keyboard */
   composerFocusAt: number
   /** the composer's unsent text per canvas — collapsing the panel or
@@ -200,8 +207,16 @@ interface State {
   renameCanvasLocal(name: string): void
   /** upsert (doc set) or remove (doc null) a style guide on the open canvas */
   setGuidelineLocal(name: string, doc: GuidelineDoc | null): void
+  /** a component changed in the room, or was deleted (null) */
+  setComponentLocal(id: string, component: import('../../shared/components').ComponentDef | null): void
+  /** counts what the workspace's libraries have published or withdrawn since this
+   *  page loaded: the Components panel reads its library again when it moves */
+  libraryTick: number
+  bumpLibrary(): void
   /** replace the open canvas's design tokens and themes (the room sends the whole list) */
   setTokensLocal(tokens: DesignToken[], themes: string[]): void
+  /** the canvas's Doop Agent team changed (a room `team` message) */
+  setTeamLocal(team: AgentRole[]): void
   /** pin (reference set) or unpin (null) a Memory reference on the open canvas */
   setReferenceLocal(id: string, reference: MemoryReference | null): void
   setDecisions(decisions: DesignDecision[]): void
@@ -257,13 +272,15 @@ interface State {
   pickElements(frameId: string, selectors: string[]): void
   setElementPanelOpen(v: boolean): void
   setLayersOpen(v: boolean): void
-  setLayersTab(tab: 'layers' | 'tokens'): void
+  setLayersTab(tab: 'layers' | 'components' | 'tokens'): void
   toggleUiHidden(): void
   setPrototypeMode(on: boolean): void
   setViewport(v: Viewport): void
   setSnapGuides(guides: SnapGuide[]): void
   toggleRulers(): void
   toggleViewOption(name: ViewOption): void
+  toggleOutlines(): void
+  requestCollapseLayers(): void
   selectGuide(id: string | null): void
   /** add or move (guide set) or remove (null) a ruler guide on the open canvas */
   setGuideLocal(id: string, guide: CanvasGuide | null): void
@@ -335,6 +352,8 @@ export const useStore = create<State>((set, get) => ({
   rulers: readRulers(),
   viewOptions: readViewOptions(),
   selectedGuideId: null,
+  outlines: false,
+  layersCollapseAt: 0,
   connected: false,
   canvasNotFound: false,
   signInRequired: false,
@@ -354,7 +373,9 @@ export const useStore = create<State>((set, get) => ({
       activePageId: canvas
         ? canvas.id === s.canvas?.id && canvasPages(canvas).some((p) => p.id === s.activePageId)
           ? s.activePageId
-          : canvasPages(canvas)[0]!.id
+          : /* a canvas being opened starts on the page its URL asks for, so
+               the first paint is already that page */
+            openingPageId(canvas, typeof location === 'undefined' ? '' : location.search)
         : null,
     })),
   setActivePage: (id) =>
@@ -532,6 +553,14 @@ export const useStore = create<State>((set, get) => ({
       }
     }),
   renameCanvasLocal: (name) => set((s) => (s.canvas ? { canvas: { ...s.canvas, name } } : {})),
+  setComponentLocal: (id, component) =>
+    set((s) => {
+      if (!s.canvas) return {}
+      const others = (s.canvas.components ?? []).filter((def) => def.id !== id)
+      return { canvas: { ...s.canvas, components: component ? [...others, component] : others } }
+    }),
+  libraryTick: 0,
+  bumpLibrary: () => set((s) => ({ libraryTick: s.libraryTick + 1 })),
   setGuidelineLocal: (name, doc) =>
     set((s) => {
       if (!s.canvas) return {}
@@ -544,6 +573,7 @@ export const useStore = create<State>((set, get) => ({
     }),
   setTokensLocal: (tokens, themes) =>
     set((s) => (s.canvas ? { canvas: { ...s.canvas, tokens, tokenThemes: themes } } : {})),
+  setTeamLocal: (team) => set((s) => (s.canvas ? { canvas: { ...s.canvas, team } } : {})),
   setReferenceLocal: (id, reference) =>
     set((s) => {
       if (!s.canvas) return {}
@@ -736,6 +766,12 @@ export const useStore = create<State>((set, get) => ({
       }
       return { rulers: !s.rulers, ...(s.rulers ? { selectedGuideId: null } : {}) }
     }),
+  toggleOutlines: () =>
+    set((s) => {
+      setOutlines(!s.outlines)
+      return { outlines: !s.outlines }
+    }),
+  requestCollapseLayers: () => set({ layersCollapseAt: Date.now() }),
   toggleViewOption: (name) =>
     set((s) => {
       const viewOptions = { ...s.viewOptions, [name]: !s.viewOptions[name] }
