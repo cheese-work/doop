@@ -8,6 +8,11 @@
 //   conflict     a concurrent writer bumps the target issue's revision first
 //   kill         SIGKILL the caller (our parent) before the call is applied
 //   kill-after   apply the call, then SIGKILL the caller
+// N may also be `group.sub` or `group.sub#k` (the k-th call of that command, default 1st).
+// FAKE_MULTICA_INJECT='[{"when":"autopilot.update","autopilot":ID,"patch":{...},"run":{...,"offset_ms":500}}]'
+// applies a patch to an autopilot, or adds a run created offset_ms after its updated_at, once,
+// just before the first call of `when` (a concurrent writer, or a run that starts mid-cutover).
+// Every call's argv is kept in state.log.
 // Only what the upstream-watch scripts use is covered; anything else exits 2.
 import { createHash } from 'node:crypto'
 import { closeSync, existsSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
@@ -68,7 +73,17 @@ const unlock = () => {
 }
 const load = () => {
   const s = existsSync(STATE) ? JSON.parse(readFileSync(STATE, 'utf8')) : {}
-  return { calls: 0, nextNumber: 8000, issues: [], autopilots: {}, wakeups: [], ...s }
+  return {
+    calls: 0,
+    nextNumber: 8000,
+    issues: [],
+    autopilots: {},
+    wakeups: [],
+    log: [],
+    cmdCounts: {},
+    injected: [],
+    ...s,
+  }
 }
 const save = (s) => {
   writeFileSync(`${STATE}.tmp`, JSON.stringify(s, null, 2))
@@ -186,6 +201,12 @@ function issueCmd(s, sub, pos, f) {
       return i
     }
     case 'wakeup': {
+      if (pos[0] === 'get') {
+        return (
+          s.wakeups.find((w) => w.id === pos[2] && w.issue === need(s, pos[1]).id) ??
+          fail(`wakeup not found: ${pos[2]}`)
+        )
+      }
       if (pos[0] !== 'create') break
       const w = { id: `wk-${s.calls}`, issue: need(s, pos[1]).id, flags: f }
       s.wakeups.push(w)
@@ -203,7 +224,9 @@ function autopilotCmd(s, sub, pos, f) {
       .replace('.000Z', 'Z'))
   switch (sub) {
     case 'get':
-      return { autopilot: ap() }
+      return { autopilot: ap(), triggers: ap().triggers }
+    case 'list':
+      return { autopilots: Object.values(s.autopilots) }
     case 'update': {
       const a = ap()
       if (f['if-description-sha256'] !== undefined && sha256(a.description ?? '') !== f['if-description-sha256']) {
@@ -232,7 +255,14 @@ function autopilotCmd(s, sub, pos, f) {
     }
     case 'trigger-add': {
       const a = ap()
-      const t = { id: `tr-${s.calls}`, kind: f.kind ?? 'schedule', cron: f.cron, timezone: f.timezone ?? 'UTC' }
+      const t = {
+        id: `tr-${s.calls}`,
+        kind: f.kind ?? 'schedule',
+        cron: f.cron,
+        cron_expression: f.cron,
+        timezone: f.timezone ?? 'UTC',
+        enabled: true,
+      }
       a.triggers.push(t)
       return t
     }
@@ -253,11 +283,27 @@ const faults = Object.fromEntries(
     .filter(Boolean)
     .map((x) => x.split(':')),
 )
+const injects = JSON.parse(process.env.FAKE_MULTICA_INJECT ?? '[]')
 const killCaller = () => process.kill(process.ppid, 'SIGKILL')
 
 lock()
 const s = load()
-const fault = faults[++s.calls]
+++s.calls
+s.log.push(process.argv.slice(2))
+const cmd = `${group}.${sub}`
+const nth = (s.cmdCounts[cmd] = (s.cmdCounts[cmd] ?? 0) + 1)
+const fault = faults[s.calls] ?? faults[`${cmd}#${nth}`] ?? (nth === 1 ? faults[cmd] : undefined)
+injects.forEach((inj, k) => {
+  if (inj.when !== cmd || s.injected.includes(k)) return
+  s.injected.push(k)
+  const a = s.autopilots[inj.autopilot]
+  if (inj.patch) Object.assign(a, inj.patch)
+  if (inj.run) {
+    const { offset_ms = 500, ...run } = inj.run
+    const created_at = new Date(Date.parse(a.updated_at) + offset_ms).toISOString()
+    a.runs.unshift({ id: `inj-${k}`, created_at, task_id: `task-inj-${k}`, ...run })
+  }
+})
 let out
 let error
 try {

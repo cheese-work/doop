@@ -21,3 +21,4 @@ storybook-static/
 # agent worktrees (git worktrees under the repo)
 .claude/
 scripts/upstream-watch/legacy-before.md
+scripts/upstream-watch/legacy-after.md
