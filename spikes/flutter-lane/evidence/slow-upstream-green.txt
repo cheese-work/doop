@@ -1,0 +1,4 @@
+# green: devproxy.ts with idleTimeout 255, 19 Nov 2026 10:54 ICT
+devproxy https://127.0.0.1:18472 -> http://127.0.0.1:18471
+upstream delay 12s -> status 200 after 12.1s
+exit=0

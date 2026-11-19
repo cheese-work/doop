@@ -19,6 +19,7 @@ type WsData = { peer: WebSocket; queue: (string | Buffer)[] }
 Bun.serve<WsData>({
   hostname,
   port: Number(port),
+  idleTimeout: 255, // Bun drops a quiet request after 10 s by default: the browser then shows "didn't send any data" while DDC compiles on a busy X99
   tls: { cert: Bun.file(join(tls, 'x99.crt')), key: Bun.file(join(tls, 'x99.key')) },
   async fetch(req, server) {
     const u = new URL(req.url)

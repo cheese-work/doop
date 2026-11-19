@@ -214,3 +214,21 @@ or a build host; that is a product-direction choice, put to Cheese on the decisi
 
 **Not fixed, not measured:** the first load still pulls 9.4 MB; icon libraries (about 12 MB raw) dominate and could shrink with
 a smaller icon set. A release build is 7.8 MB raw but has no hot reload (section 6). Cheese's own second load was not measured.
+
+## 12. Round 3: "didn't send any data" (19 Nov 2026 10:55 ICT)
+
+Cheese's second "chưa đạt" quoted Chrome's message "congvc-x99.taila6fa8a.ts.net didn't send any data" (ERR_EMPTY_RESPONSE). Cheese then chose "Keep Flutter, fix the link first" (decision card, 19 Nov 2026 10:13 ICT).
+
+**Cause (reproduced, not guessed).** `Bun.serve` closes a request that is quiet for 10 seconds (its default `idleTimeout`). `devproxy.ts` sends nothing until the dev server answers, and on X99 at load average 60 to 80 the first cold requests take longer: `dart_sdk.js` is 17 MB and the proxy gzips it before it replies. The connection closed with no bytes, which Chrome shows as "didn't send any data". Bun printed this line in the live run before the fix: `request timed out after 10 seconds. Pass idleTimeout to configure.`
+
+**Test-first.** `harness/slow-upstream-check.mjs` starts a fake upstream that answers after 12 s behind `devproxy.ts` and expects a 200.
+
+- Red (`evidence/slow-upstream-red.txt`, 10:54 ICT): `error ECONNRESET after 12.0s`, exit 1.
+- Fix: `idleTimeout: 255` in `devproxy.ts` (Bun's maximum, in seconds).
+- Green (`evidence/slow-upstream-green.txt`, 10:54 ICT): `status 200 after 12.1s`, exit 0.
+
+**Live check after restarting the proxy** (`evidence/real-link-after-idle-fix.txt`): the real link through `tailscale serve` 19451 and the proxy 18451, headless Chrome on X99, load average 84: ready after 43.4 s, 10.5 MB on the wire in 942 requests, within the 20 MB budget, exit 0.
+
+**Not verified:** reach from Cheese's MacBook Pro. No agent session has a path to that machine, and the first-load time over the `sin` relay is unmeasured. The card asks Cheese to load the link once more and say what happens. If it still fails, the next candidates are the relay (tailscale serve closing idle streams) or a Chrome-side cert error; both need a HAR or the DevTools Network tab from the MacBook.
+
+**DartPad / FlutLab note.** Both compile Dart on a server and run the result in the browser; they cannot edit this repository's files and cannot read X99 files, so they are the same architecture as the X99 dev server, hosted by someone else. Not tested.
