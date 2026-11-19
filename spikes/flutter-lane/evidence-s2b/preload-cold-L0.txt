@@ -1,0 +1,13 @@
+# 2026-11-19 21:04:14 ICT server=s2b mode=sw preload=0 runs=3 load=5.6 7.1 10.8
+preload=0 frame opens 0 ms after page, run 1: open->first frame 11854 ms (page->first frame 11985 ms)
+preload=0 frame opens 0 ms after page, run 2: open->first frame 11976 ms (page->first frame 12097 ms)
+preload=0 frame opens 0 ms after page, run 3: open->first frame 72857 ms (page->first frame 74306 ms)
+SUMMARY preload=0 delay=0: open->frame p50 11976 ms max 72857 ms
+preload=0 frame opens 5000 ms after page, run 1: open->first frame 12514 ms (page->first frame 17617 ms)
+preload=0 frame opens 5000 ms after page, run 2: open->first frame 13915 ms (page->first frame 19055 ms)
+preload=0 frame opens 5000 ms after page, run 3: open->first frame 65067 ms (page->first frame 76574 ms)
+SUMMARY preload=0 delay=5000: open->frame p50 13915 ms max 65067 ms
+preload=0 frame opens 15000 ms after page, run 1: open->first frame 12791 ms (page->first frame 27908 ms)
+preload=0 frame opens 15000 ms after page, run 2: open->first frame 150789 ms (page->first frame 190491 ms)
+preload=0 frame opens 15000 ms after page, run 3: open->first frame 44622 ms (page->first frame 75240 ms)
+SUMMARY preload=0 delay=15000: open->frame p50 44622 ms max 150789 ms

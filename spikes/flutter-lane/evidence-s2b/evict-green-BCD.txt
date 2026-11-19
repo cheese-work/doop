@@ -1,0 +1,25 @@
+# 2026-11-19 23:25:45 ICT server=s2b mode=sw load=4.9 8.8 14.8
+A cold: ttf 48247 ms; toolkit 44244865 B in 77 req; cache entries 12; storage 252.52 MB
+A warm: ttf 12316 ms; toolkit 0 B in 0 req; cache entries 12; storage 327.88 MB
+PASS  A warm visit downloads nothing  0.00 MB
+B after Cache Storage cleared: ttf 12286 ms; toolkit 31329091 B in 12 req; cache entries 12; storage 252.52 MB
+PASS  B page still reaches a first frame  
+PASS  B refilled the cache (entries back)  12 vs 12
+B next visit: ttf 13020 ms; toolkit 0 B in 0 req; cache entries 12; storage 327.88 MB
+PASS  B next visit is warm again  0.00 MB
+C after all site data cleared: ttf 20428 ms; toolkit 31329091 B in 12 req; cache entries 12; storage 252.52 MB
+PASS  C page still reaches a first frame  
+C next visit: ttf 15362 ms; toolkit 0 B in 0 req; cache entries 12; storage 327.96 MB
+PASS  C next visit is warm again  0.00 MB
+D after 5 entries evicted: ttf 8516 ms; toolkit 3698692 B in 5 req; cache entries 12; storage 327.42 MB
+PASS  D page still reaches a first frame  
+PASS  D only the evicted files download  3.70 MB
+node:internal/modules/run_main:123
+    triggerUncaughtException(
+    ^
+
+page.waitForTimeout: Target page, context or browser has been closed
+    at visit (/mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-7630-5f14e2c9f470/workdir/doop/spikes/flutter-lane/s2b/check.mjs:113:16)
+    at async file:///mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-7630-5f14e2c9f470/workdir/doop/spikes/flutter-lane/s2b/check.mjs:317:16
+
+Node.js v22.23.5

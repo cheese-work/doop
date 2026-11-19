@@ -1,0 +1,19 @@
+# 2026-11-19 20:42:19 ICT server=s2b mode=sw runs=5 load=13.1 12.9 15.2
+run 1 cold: ttf 67474 ms; toolkit 44244865 B (77 req, playwright saw 12865749 B); third-party 0 B ; storage 252520112; ran-new-toolkit true
+run 1 warm: ttf 12589 ms; toolkit 0 B (0 req, playwright saw 0 B); third-party 0 B ; storage 327880624; ran-new-toolkit true
+run 1 bump: ttf 8603 ms; toolkit 12136 B (2 req, playwright saw 0 B); third-party 0 B ; storage 328691632; ran-new-toolkit true
+run 2 cold: ttf 12959 ms; toolkit 44244865 B (77 req, playwright saw 12865749 B); third-party 0 B ; storage 252520112; ran-new-toolkit true
+run 2 warm: ttf 54046 ms; toolkit 0 B (0 req, playwright saw 0 B); third-party 0 B ; storage 327877808; ran-new-toolkit true
+run 2 bump: ttf 100309 ms; toolkit 12136 B (2 req, playwright saw 0 B); third-party 0 B ; storage 328665520; ran-new-toolkit true
+run 3 cold: ttf 12762 ms; toolkit 44244865 B (77 req, playwright saw 12865749 B); third-party 0 B ; storage 252520112; ran-new-toolkit true
+run 3 warm: ttf 12444 ms; toolkit 0 B (0 req, playwright saw 0 B); third-party 0 B ; storage 327882928; ran-new-toolkit true
+run 3 bump: ttf 8293 ms; toolkit 12136 B (2 req, playwright saw 0 B); third-party 0 B ; storage 328688304; ran-new-toolkit true
+run 4 cold: ttf 12798 ms; toolkit 44244865 B (77 req, playwright saw 12865749 B); third-party 0 B ; storage 252520112; ran-new-toolkit true
+run 4 warm: ttf 12197 ms; toolkit 0 B (0 req, playwright saw 0 B); third-party 0 B ; storage 327880624; ran-new-toolkit true
+run 4 bump: ttf 8538 ms; toolkit 12136 B (2 req, playwright saw 0 B); third-party 0 B ; storage 328668336; ran-new-toolkit true
+run 5 cold: ttf 16701 ms; toolkit 44244865 B (77 req, playwright saw 12865749 B); third-party 0 B ; storage 252520112; ran-new-toolkit true
+run 5 warm: ttf 13101 ms; toolkit 0 B (0 req, playwright saw 0 B); third-party 0 B ; storage 327880368; ran-new-toolkit true
+run 5 bump: ttf 7839 ms; toolkit 12136 B (2 req, playwright saw 0 B); third-party 0 B ; storage 329352112; ran-new-toolkit true
+SUMMARY cold: ttf p50 12959 ms max 67474 ms; toolkit bytes p50 44244865 max 44244865
+SUMMARY warm: ttf p50 12589 ms max 54046 ms; toolkit bytes p50 0 max 0
+SUMMARY bump: ttf p50 8538 ms max 100309 ms; toolkit bytes p50 12136 max 12136

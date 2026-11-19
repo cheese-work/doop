@@ -1,0 +1,5 @@
+# 2026-11-19 23:17:34 ICT server=s2b mode=sw load=6.5 15.3 19.8
+E quota 100 MB, first visit: ttf 87913 ms; toolkit 44244865 B in 77 req; cache entries 9; storage 99.83 MB
+PASS  E page still reaches a first frame when the cache is full  
+E quota 100 MB, second visit: ttf 11261 ms; toolkit 12664112 B in 3 req; cache entries 9; storage 99.90 MB
+PASS  E second visit reaches a first frame  

@@ -1,0 +1,8 @@
+# 2026-11-19 23:04:12 ICT server=s2b mode=sw load=22.7 25.4 22.7
+A cold: ttf 96090 ms; toolkit 44244865 B in 77 req; cache entries 12; storage 252.52 MB
+A warm: ttf 23634 ms; toolkit 0 B in 0 req; cache entries 12; storage 327.24 MB
+PASS  A warm visit downloads nothing  0.00 MB
+D after 5 entries evicted: ttf 8644 ms; toolkit 3698692 B in 5 req; cache entries 12; storage 327.08 MB
+PASS  D page still reaches a first frame  
+PASS  D only the evicted files download  3.70 MB
+PASS  D next visit is warm again  0.00 MB
