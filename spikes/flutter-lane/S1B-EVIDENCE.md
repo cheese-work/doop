@@ -5,15 +5,15 @@ Run on X99, 2026-11-19, 13:00 to 13:50 ICT. Browser measured: headless Chrome 15
 
 ## Verdict by step
 
-| Step | Result |
-| --- | --- |
-| 1 pin + assets | Done. `package:dartpad 0.1.4`, Dart 3.14.0, Flutter 3.50.0. Sizes and SHA-256 below. |
-| 2 serve | Done. Static from X99, tailnet IP only, TLS from `tailscale cert`. CanvasKit self-hosted. Two public origins still hit by the viewer's browser: `pub.dev` and `fonts.gstatic.com` (see "Network the viewer's browser makes"). |
-| 3 frame form 2 | Works. erus Home from `app/lib/` arrives as text, one worker per page, one sandbox per frame. |
-| 4 timing | Cold first frame 9.3 to 10.9 s (3 runs, load about 10). 20 of 20 edits visible, p50 658 ms, max 1071 ms, state kept (taps=2 every run). |
-| 5 many frames | 1, 2, 3 sandboxes on one worker all work. Cost per extra frame is about 0.3 s per reload and about 0.7 GB Chrome RSS. |
-| 6 browsers | Chrome on X99 only. MacBook Chrome/Edge, MacBook Safari, iPhone Safari NOT run: no access from X99. Blocked on a person with the devices. |
-| 7 limits | `rive` compiles and draws. `FontLoader` from URL bytes works. `Semantics(identifier)` gives `flt-semantics-identifier`. |
+| Step           | Result                                                                                                                                                                                                                        |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 pin + assets | Done. `package:dartpad 0.1.4`, Dart 3.14.0, Flutter 3.50.0. Sizes and SHA-256 below.                                                                                                                                          |
+| 2 serve        | Done. Static from X99, tailnet IP only, TLS from `tailscale cert`. CanvasKit self-hosted. Two public origins still hit by the viewer's browser: `pub.dev` and `fonts.gstatic.com` (see "Network the viewer's browser makes"). |
+| 3 frame form 2 | Works. erus Home from `app/lib/` arrives as text, one worker per page, one sandbox per frame.                                                                                                                                 |
+| 4 timing       | Cold first frame 9.3 to 10.9 s (3 runs, load about 10). 20 of 20 edits visible, p50 658 ms, max 1071 ms, state kept (taps=2 every run).                                                                                       |
+| 5 many frames  | 1, 2, 3 sandboxes on one worker all work. Cost per extra frame is about 0.3 s per reload and about 0.7 GB Chrome RSS.                                                                                                         |
+| 6 browsers     | Chrome on X99 only. MacBook Chrome/Edge, MacBook Safari, iPhone Safari NOT run: no access from X99. Blocked on a person with the devices.                                                                                     |
+| 7 limits       | `rive` compiles and draws. `FontLoader` from URL bytes works. `Semantics(identifier)` gives `flt-semantics-identifier`.                                                                                                       |
 
 No stop rule was triggered: dartpad runs Flutter in the browser end to end.
 
@@ -30,17 +30,17 @@ What `dart run dartpad setup` does (observed; log in `/mnt/ssd2/scratch/che-7478
 
 Sizes. gzip level 9, brotli quality 9, taken on X99 (`/mnt/ssd2/scratch/che-7478/br-sizes.txt`).
 
-| File | raw | gzip | brotli | SHA-256 |
-| --- | ---: | ---: | ---: | --- |
-| `worker.js` | 21,747 | 5,532 | 5,213 | `84d633a69e12f96cb61a46aac4f95e664cd9d779875665795ab701e80892dd21` |
-| `worker.wasm` | 9,758,441 | 3,383,267 | 2,947,613 | `a7cab6f3036ad024adb6f5b77443735a527b2d736eb05f0877ac501577e9675e` |
-| `dart_sdk.js` | 17,352,655 | 2,419,155 | 2,004,163 | `1d43dc0affb9ac248f674645c8aefc339f00dc2330f66b1016d31e4778f27005` |
-| `flutter_web.js` | 129,868,847 | 13,419,410 | 8,890,551 | `5d5d5c3c105efc27bf0dbc57d683059c79fc4c0549da89151fe688122fb0f15c` |
-| `sdk.tar` | 87,753,216 | 17,567,107 | 13,702,443 | `5529c55a7c27d3110c8c71a1b5f96c3bc1b9c05dbeaa5b8fccc5b4cfc3115299` |
-| `sandbox.js` | 24,127 | 7,246 | 6,883 | `040a85950acd2bb468108360982ba5fd8dc36903f9511264e8dc0b12fe1d864b` |
-| `sandbox_runtime.js` | 268,743 | 78,136 | 73,533 | `f9bbbf7e58b623fa9a5f88d7a6d4c2d3d958119b46e7dec6273b4d8435c18476` |
-| `canvaskit/canvaskit.wasm` | 7,315,452 | 2,927,996 | 2,576,499 | `f3c2ff164f324217ebe1d84900110e425c0195fc63f34e8b58de842a047e0c1c` |
-| `canvaskit/canvaskit.js` | 87,031 | 27,528 | 26,467 | `4719b51c8e2a4e2371c3b35286db039efdf76dcf7459fb810bf5fccaa22ee36c` |
+| File                       |         raw |       gzip |     brotli | SHA-256                                                            |
+| -------------------------- | ----------: | ---------: | ---------: | ------------------------------------------------------------------ |
+| `worker.js`                |      21,747 |      5,532 |      5,213 | `84d633a69e12f96cb61a46aac4f95e664cd9d779875665795ab701e80892dd21` |
+| `worker.wasm`              |   9,758,441 |  3,383,267 |  2,947,613 | `a7cab6f3036ad024adb6f5b77443735a527b2d736eb05f0877ac501577e9675e` |
+| `dart_sdk.js`              |  17,352,655 |  2,419,155 |  2,004,163 | `1d43dc0affb9ac248f674645c8aefc339f00dc2330f66b1016d31e4778f27005` |
+| `flutter_web.js`           | 129,868,847 | 13,419,410 |  8,890,551 | `5d5d5c3c105efc27bf0dbc57d683059c79fc4c0549da89151fe688122fb0f15c` |
+| `sdk.tar`                  |  87,753,216 | 17,567,107 | 13,702,443 | `5529c55a7c27d3110c8c71a1b5f96c3bc1b9c05dbeaa5b8fccc5b4cfc3115299` |
+| `sandbox.js`               |      24,127 |      7,246 |      6,883 | `040a85950acd2bb468108360982ba5fd8dc36903f9511264e8dc0b12fe1d864b` |
+| `sandbox_runtime.js`       |     268,743 |     78,136 |     73,533 | `f9bbbf7e58b623fa9a5f88d7a6d4c2d3d958119b46e7dec6273b4d8435c18476` |
+| `canvaskit/canvaskit.wasm` |   7,315,452 |  2,927,996 |  2,576,499 | `f3c2ff164f324217ebe1d84900110e425c0195fc63f34e8b58de842a047e0c1c` |
+| `canvaskit/canvaskit.js`   |      87,031 |     27,528 |     26,467 | `4719b51c8e2a4e2371c3b35286db039efdf76dcf7459fb810bf5fccaa22ee36c` |
 
 Whole SDK folder 405 MB raw (includes `.map` files and `devtools/`, not fetched at run time). Measured on the wire for a cold load: 13.4 MB in 19 requests (`evidence-s1b/cold-warm.txt`). Second load in the same browser profile: 0.0 MB on the wire, 10 of 19 from disk cache (HTTP cache, `max-age=86400`).
 
@@ -60,11 +60,11 @@ Test first. `s1b/check.mjs` and `s1b/probe.mjs` were run against an empty page o
 
 Cold first frame, empty HTTP cache, from `page.goto` to the first `doop:flutter-frame` message (`evidence-s1b/cold-warm-3x.txt`, load average 9 to 12):
 
-| Round | cold | second load (same context) |
-| --- | ---: | ---: |
-| 1 | 9,440 ms | 9,947 ms |
-| 2 | 9,338 ms | 10,493 ms |
-| 3 | 10,943 ms | 9,026 ms |
+| Round |      cold | second load (same context) |
+| ----- | --------: | -------------------------: |
+| 1     |  9,440 ms |                   9,947 ms |
+| 2     |  9,338 ms |                  10,493 ms |
+| 3     | 10,943 ms |                   9,026 ms |
 
 Earlier runs under load 44 to 52 gave 10.5 s / 10.9 s and 18.4 s / 22.8 s (`timing-1frame.txt`, `cold-warm.txt`). Warm is not faster than cold: the time is CPU (parse of the 130 MB framework JS, wasm compile, DDC compile of the app), not download. The disk cache only removes the 13.4 MB transfer, which is small on a tailnet.
 
@@ -76,11 +76,11 @@ How the edit was timed: `check.mjs edit` rewrites `kBuildStamp = 'run-i'` in `ma
 
 `s1b/multi.mjs`, 5 edits each (`evidence-s1b/multi.txt`, load average 43.7, busy host).
 
-| Frames | all ready after | reload of frame 0 / 1 / 2 (typical) | JS heap | Chrome RSS (all processes of the run) |
-| ---: | ---: | --- | ---: | ---: |
-| 1 | 15.9 s | 0.4 to 0.7 s | 306 MB | 1,984 MB |
-| 2 | 16.5 s | 0.35 to 0.57 s / 0.6 to 1.2 s | 405 MB | 2,718 MB |
-| 3 | 18.0 s | 0.4 to 0.8 s / 0.65 to 1.0 s / 0.82 to 1.2 s | 444 MB | 2,674 MB |
+| Frames | all ready after | reload of frame 0 / 1 / 2 (typical)          | JS heap | Chrome RSS (all processes of the run) |
+| -----: | --------------: | -------------------------------------------- | ------: | ------------------------------------: |
+|      1 |          15.9 s | 0.4 to 0.7 s                                 |  306 MB |                              1,984 MB |
+|      2 |          16.5 s | 0.35 to 0.57 s / 0.6 to 1.2 s                |  405 MB |                              2,718 MB |
+|      3 |          18.0 s | 0.4 to 0.8 s / 0.65 to 1.0 s / 0.82 to 1.2 s |  444 MB |                              2,674 MB |
 
 - One worker and one `pub get` serve all frames. Adding a frame adds about 1.5 to 2 s to the ready time.
 - Does one compile feed all frames? Not observed. `hotReload` is a call per sandbox, and the time to reload frame k grows by about 0.25 to 0.3 s per frame. That points to one compile per sandbox, run in sequence. I did not read the worker's internals to confirm. S2 can test a parallel call if this matters.
@@ -89,12 +89,12 @@ How the edit was timed: `check.mjs edit` rewrites `kBuildStamp = 'run-i'` in `ma
 
 ## 6. Browsers
 
-| Browser | Result |
-| --- | --- |
-| Chrome headless 158 on X99 | Works, all numbers above. |
-| Chrome / Edge on MacBook | NOT RUN. No access from X99. |
-| Safari on MacBook | NOT RUN. Same. |
-| Safari on iPhone | NOT RUN. Same. |
+| Browser                    | Result                       |
+| -------------------------- | ---------------------------- |
+| Chrome headless 158 on X99 | Works, all numbers above.    |
+| Chrome / Edge on MacBook   | NOT RUN. No access from X99. |
+| Safari on MacBook          | NOT RUN. Same.               |
+| Safari on iPhone           | NOT RUN. Same.               |
 
 Reachability probe from X99: the MacBook SSH login was refused (`Permission denied (publickey)`; I did not work around it). `tailscale status`: `macbook-pro` shows active but this agent has no login on it, `macbook-air-ca-trn` offline 51 minutes, `iphone` listed with no live connection. Only a person holding the device can open the link. The URL is in the Cheese gate comment; the page runs with `?edit=1` for an edit check. What to report from Safari: does the frame appear, does the log line at the bottom say `FAILED`, and the error text. Known risk, not tested: `SharedArrayBuffer` and wasm GC support differ in Safari, and the worker is dart2wasm.
 
@@ -131,12 +131,12 @@ Chose "đạt". Note: "build quá chậm. Có thể làm near realtime như html
 
 So the loop works on at least one real device, but the first frame took about 45 s there against 9 to 11 s on X99. Reading of the log against the X99 runs:
 
-| Phase | Cheese's device | X99 headless Chrome (3 cold runs, load about 10) |
-| --- | ---: | ---: |
-| worker session (fetch `worker.js` and `worker.wasm`, start) | 24.3 s | 1.3 to 2.5 s |
-| pub get | 0.6 s | 0.6 to 1.0 s |
-| sandbox connected (fetch and parse `flutter_web.js`, `dart_sdk.js`) | 15.7 s after pub get | about 9 s |
-| compile of the app (`run 1`) | 3.5 s | 3.8 to 5.8 s |
+| Phase                                                               |      Cheese's device | X99 headless Chrome (3 cold runs, load about 10) |
+| ------------------------------------------------------------------- | -------------------: | -----------------------------------------------: |
+| worker session (fetch `worker.js` and `worker.wasm`, start)         |               24.3 s |                                     1.3 to 2.5 s |
+| pub get                                                             |                0.6 s |                                     0.6 to 1.0 s |
+| sandbox connected (fetch and parse `flutter_web.js`, `dart_sdk.js`) | 15.7 s after pub get |                                        about 9 s |
+| compile of the app (`run 1`)                                        |                3.5 s |                                     3.8 to 5.8 s |
 
 The compile itself is the same on both. The extra 30 s sits in the two download-and-start phases, which fetch about 13 MB. `tailscale status` and `tailscale ping` from X99 at 14:30 ICT: the MacBook (`macbook-pro`) is reached through DERP relay Singapore (about 100 ms), "direct connection not established". That fits a transfer-bound start. I did not measure the MacBook's throughput, so this is a likely cause, not a proven one.
 
