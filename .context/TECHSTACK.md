@@ -1027,7 +1027,9 @@ data-doop-webfonts>` for the roster families the frame names and does not load i
   over one page (recon inventory `doop-recon` with `data-recon-ref` per Keep/Change item, wireframe,
   states, `data-doop-motion` blocks, prototype wiring and reachability; ruleset `g3-r6` (CHE-6853) adds a motion block
   per transition, the `Motion` page with the issue's `<KEY> · motion` spec frame whose rows each name an animated frame,
-  and a `<screen> · doc` frame with the 7 filled headings per hi-fi screen) and stores the result in
+  and a `<screen> · doc` frame with the 7 filled headings per hi-fi screen; `g3-r7` (CHE-6854) adds a Hallmark `sloplint`
+  result per design frame at its `updatedAt` (the reviewer's JSON with its SHA256, checked in `server/sloplintInput.ts`),
+  the `Components` page (tokens frame, components, `component_unknown`, variants and states, motion per micro-interaction)) and stores the result in
   `design_attestations`, one row per design frame at its `updatedAt`, append-only. The route
   `/api/design-attestations/:id` reads a run with `current` (false once any frame changed).
   `extraChecks` is the plug-in point for the requirement ledger. Tests: `designCompleteness.test.ts`,

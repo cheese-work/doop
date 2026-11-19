@@ -4,7 +4,7 @@ import { afterAll, beforeAll, expect, it } from 'vitest'
 import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { Canvas, Frame } from '../shared/types'
-import { addMotionAndDocs } from './motionFixtures.ts'
+import { addMotionAndDocs, sloplintFor } from './motionFixtures.ts'
 import { Client, freePort, startServer, type Server } from './harness.ts'
 
 /* CHE-6629: the minimap L1 ledger as a row of the real check_design_completeness
@@ -127,7 +127,12 @@ it('blocks a dropped minimap line on the real G3 tool, and the stored attestatio
     html: `<div data-doop-stage="wireframe"><a data-doop-on="click" data-doop-action="navigate:${design.id}">next</a></div>`,
   })
   await callTool('set_prototype_start', { canvas_id: canvas.id, frame_id: wire.id, agent_name: 'Designer' })
-  const check = () => callTool('check_design_completeness', { canvas_id: canvas.id, agent_name: 'Designer' })
+  const check = async () =>
+    callTool('check_design_completeness', {
+      canvas_id: canvas.id,
+      sloplint: await sloplintFor(owner, canvas.id),
+      agent_name: 'Designer',
+    })
   const current = async (id: string) => (await (await owner.get(`/api/design-attestations/${id}`)).json()).current
 
   /* v2.1: the ledger has no minimap line. Blocked, and the stored run says so. */
