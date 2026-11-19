@@ -1,3 +1,4 @@
+/* global addEventListener */
 // Cold then warm load in ONE persistent Chrome profile (real HTTP disk cache across two browser launches).
 // Prints per load: first-frame ms, bytes over the wire, requests served from cache, the page's phase log.
 // usage: node wire.mjs <url> <profileDir>

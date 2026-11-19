@@ -1,3 +1,4 @@
+/* global s1b */
 // S1b step 7 limit probes. usage: node probe.mjs <url> <font|sem|riv> [png]
 // Each probe app posts one doop:flutter-probe message; this prints it plus the page state and asserts the per-kind claim.
 import { open, waitMsg } from '../harness/lib.mjs'

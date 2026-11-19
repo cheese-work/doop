@@ -1,3 +1,4 @@
+/* global Event */
 // The ?edit=1 box: type a new kBuildStamp into the textarea, the frame must show it. usage: node typeedit.mjs <url-with-edit=1>
 import { open, waitMsg } from '../harness/lib.mjs'
 const { browser, page } = await open(process.argv[2], { viewport: { width: 1250, height: 900 }, dpr: 1 })

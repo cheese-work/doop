@@ -1,3 +1,4 @@
+/* global s1b */
 // Open the page, wait for the first frame, print the page log + worker state, save a screenshot. usage: node inspect.mjs <url> <png> [n]
 import { open, waitMsg } from '../harness/lib.mjs'
 const [url, png] = process.argv.slice(2)

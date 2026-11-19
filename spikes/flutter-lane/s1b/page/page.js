@@ -1,3 +1,4 @@
+/* global URLSearchParams, location, performance, Worker, Blob, removeEventListener, addEventListener, fetch, EventSource, setInterval */
 // Drives the DartPad SDK worker protocol (sdk/doc/worker-protocol.md in package:dartpad 0.1.4) from plain JS:
 // one worker per page, one sandbox iframe per Flutter frame. The Dart source reaches the browser as text
 // (/src.json, then /events on every save). Nothing is compiled by this server: DDC runs in the worker, here.

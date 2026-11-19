@@ -1,3 +1,4 @@
+/* global s1b, performance */
 // One worker, N sandboxes. Records: time until every frame is ready, which frames get each edit (and when),
 // state kept in frame 0, Chrome memory (sum of RSS of this profile's processes), console errors.
 // usage: node multi.mjs <url-without-n> <n> <file> [edits=5]
