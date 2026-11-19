@@ -6,7 +6,9 @@ import * as thumbs from './thumbs.ts'
 import { colorFor } from '../shared/types.ts'
 import type { StackWrite } from '../shared/frameStack.ts'
 import { DEFAULT_ROLE_ID, mentionedRole, normalizePipeline, roleByAgentName, roleName } from '../shared/agents.ts'
-import { canvasPages, framePageId } from '../shared/pages.ts'
+import { canvasPages, framePageId, pageFrames } from '../shared/pages.ts'
+import { conflicts, defaultSpot, freeSpot, visibleBox } from './frameLayout.ts'
+import { normalizeRotation } from '../shared/frameRotation.ts'
 import { SnapshotError, capturePage, compareFrames, sameState, signature, stateOf } from './pageSnapshots.ts'
 import { FRAME_COMMENT_SELECTOR, isCanvasComment, trimComments, type CommentAnchorInput } from '../shared/comments.ts'
 import { isElementId } from '../shared/elementId.ts'
@@ -2156,6 +2158,35 @@ export async function duplicatePage(canvasId: string, pageId: string, actor: Act
   return copy
 }
 
+/** Frames `createFrame` moved to free space because the requested spot overlapped another frame (CHE-6119). */
+const relocated = new WeakSet<Frame>()
+export const wasRelocated = (frame: Frame) => relocated.has(frame)
+
+/** CHE-6119: an agent's frame whose box (explicit x/y, or the store's default for a missing one) would sit on
+ *  another frame goes to free space instead. */
+function clearOfOverlap<
+  T extends { pageId?: string; x?: number; y?: number; width?: number; height?: number; rotation?: number },
+>(canvasId: string, input: T): { input: T; moved: boolean } {
+  const canvas = store.getCanvas(canvasId)
+  const pageId = canvas && (input.pageId ?? canvasPages(canvas)[0]?.id)
+  if (!canvas || !pageId) return { input, moved: false }
+  const frames = pageFrames(canvas, pageId)
+  const at = defaultSpot(frames)
+  const shown = visibleBox({
+    x: input.x ?? at.x,
+    y: input.y ?? at.y,
+    width: input.width ?? 640,
+    height: input.height ?? 480,
+    rotation: normalizeRotation(input.rotation),
+  })
+  if (!conflicts(shown, frames).length) return { input, moved: false }
+  /* the free spot is for the visible box, so the unrotated rect sits where its turned bounds would */
+  const spot = freeSpot(frames)
+  const w = input.width ?? 640
+  const h = input.height ?? 480
+  return { input: { ...input, x: spot.x + (shown.width - w) / 2, y: spot.y + (shown.height - h) / 2 }, moved: true }
+}
+
 export function createFrame(
   canvasId: string,
   input: {
@@ -2175,8 +2206,11 @@ export function createFrame(
   actor: Actor,
 ): Frame | undefined {
   if (input.html !== undefined) input = { ...input, html: withLibraryFaces(canvasId, repairEscapedHtml(input.html)) }
+  let moved = false
+  if (actor.kind === 'agent') ({ input, moved } = clearOfOverlap(canvasId, input))
   const frame = store.createFrame(canvasId, input, actor.name)
   if (!frame) return undefined
+  if (moved) relocated.add(frame)
   bursts.set(frame.id, { actor, lastAt: frame.createdAt })
   if (actor.kind === 'agent' && frame.html.length > 0) {
     /* agent one-shot creation still plays back as a reveal */

@@ -120,26 +120,45 @@ describe('scripts/doop-s1-admin.sh initial mirror (C-1.3)', () => {
 describe('scripts/doop-s1-admin.sh upstream-main seeding gate (C-1.3)', () => {
   let dir: string
   const MUTATION = /rulesets|environments|default_branch|PATCH|PUT/
+  // id 1 = organization ruleset `protect main` (not editable on the repo endpoint); id 2 = repo ruleset
+  const ORG_PLUS_REPO = JSON.stringify([
+    { id: 1, name: 'protect main', source_type: 'Organization' },
+    { id: 2, name: 'protect default branches', source_type: 'Repository' },
+  ])
+  // FAKE_RULESETS mimics the repo ruleset list, which includes organization rulesets (source_type).
+  // PUT to an organization ruleset id on the repo endpoint returns 404, as on GitHub (CHE-5543 v4).
   const fakeGh = `#!/usr/bin/env bash
 echo "$*" >> "$FAKE_LOG"
-case "$*" in *--input*) cat >/dev/null ;; esac
+jqx=""; prev=""
+for a in "$@"; do [ "$prev" = --jq ] && jqx="$a"; prev="$a"; done
+out() { if [ -n "$jqx" ]; then jq -r "$jqx" 2>/dev/null || true; else cat; fi; }
+case "$*" in *--input*) cat >> "$FAKE_LOG.in" ;; esac
 case "$*" in
   *"git/ref/heads/upstream-main"*) [ "$FAKE_EXISTS" = 1 ] && { echo sha-mirror; exit 0; } || exit 1 ;;
   *"kgoedecke/doop/git/ref/heads/main"*) echo sha-up; exit 0 ;;
   *"git/refs"*) [ "$FAKE_CREATE" = ok ] && exit 0 || exit 1 ;;
   *"/compare/"*) echo "$FAKE_COMPARE"; exit 0 ;;
-  *"rulesets/1"*) echo '{"name":"n","target":"branch","enforcement":"active","rules":[],"conditions":{"ref_name":{"include":[],"exclude":[]}}}'; exit 0 ;;
-  *"/rulesets"*"--jq"*) echo 1; exit 0 ;;
+  *"-X PUT"*"rulesets/1 "*) echo '{"message":"Not Found","status":"404"}' >&2; echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+  *"rulesets/1") echo '{"name":"protect main","target":"branch","enforcement":"active","rules":[{"type":"deletion"},{"type":"pull_request"}],"conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}}}'; exit 0 ;;
+  *"rulesets/"[0-9]*) echo '{"name":"n","target":"branch","enforcement":"active","rules":[],"conditions":{"ref_name":{"include":[],"exclude":[]}}}' | out; exit 0 ;;
+  *"/rulesets"*) echo "\${FAKE_RULESETS:-$DEFAULT_RULESETS}" | out; exit 0 ;;
 esac
 exit 0
 `
   const sh = (cmd: string, env: Record<string, string>) => {
     const r = spawnSync('bash', [resolve('scripts/doop-s1-admin.sh'), cmd], {
       encoding: 'utf8',
-      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, FAKE_LOG: join(dir, 'log'), ...env },
+      env: {
+        ...process.env,
+        PATH: `${dir}:${process.env.PATH}`,
+        FAKE_LOG: join(dir, 'log'),
+        DEFAULT_RULESETS: ORG_PLUS_REPO,
+        ...env,
+      },
     })
     const log = existsSync(join(dir, 'log')) ? readFileSync(join(dir, 'log'), 'utf8') : ''
-    return { ...r, log }
+    const body = existsSync(join(dir, 'log.in')) ? readFileSync(join(dir, 'log.in'), 'utf8') : ''
+    return { ...r, log, body }
   }
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'admin-'))
@@ -177,5 +196,70 @@ exit 0
     const r = sh('verify', { FAKE_EXISTS: '0' })
     expect(r.status).not.toBe(0)
     expect(r.stderr).toContain('upstream-main')
+  })
+
+  it('apply never writes an organization ruleset (repo endpoint 404s) and retargets the repo ruleset', () => {
+    const r = sh('apply', { FAKE_EXISTS: '1', FAKE_COMPARE: 'identical' })
+    expect(r.status).toBe(0)
+    expect(r.log).not.toMatch(/-X PUT repos\/cheese-work\/doop\/rulesets\/1( |$)/m)
+    expect(r.log).toMatch(/-X PUT repos\/cheese-work\/doop\/rulesets\/2 /)
+    expect(r.body).toContain('"refs/heads/main"')
+    expect(r.log).toMatch(/PATCH/)
+    expect(r.stderr).toMatch(/organization ruleset/)
+  })
+  it('apply still retargets a repo ruleset named protect main', () => {
+    const list = JSON.stringify([
+      { id: 1, name: 'protect main', source_type: 'Organization' },
+      { id: 3, name: 'protect main', source_type: 'Repository' },
+      { id: 2, name: 'protect default branches', source_type: 'Repository' },
+    ])
+    const r = sh('apply', { FAKE_EXISTS: '1', FAKE_COMPARE: 'identical', FAKE_RULESETS: list })
+    expect(r.status).toBe(0)
+    expect(r.log).toMatch(/-X PUT repos\/cheese-work\/doop\/rulesets\/3 /)
+    expect(r.log).not.toMatch(/-X PUT repos\/cheese-work\/doop\/rulesets\/1( |$)/m)
+  })
+  it('apply stops before any ruleset write when a named ruleset is absent', () => {
+    const list = JSON.stringify([{ id: 2, name: 'protect default branches', source_type: 'Repository' }])
+    const r = sh('apply', { FAKE_EXISTS: '1', FAKE_COMPARE: 'identical', FAKE_RULESETS: list })
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toContain('protect main')
+    expect(r.log).not.toMatch(/-X (PUT|POST|PATCH)/)
+  })
+  it('rollback restores the default branch and retargets only repo rulesets', () => {
+    const r = sh('rollback', {})
+    expect(r.status).toBe(0)
+    expect(r.log).toMatch(/PATCH repos\/cheese-work\/doop -f default_branch=main/)
+    expect(r.log).not.toMatch(/-X PUT repos\/cheese-work\/doop\/rulesets\/1( |$)/m)
+    expect(r.log).toMatch(/-X PUT repos\/cheese-work\/doop\/rulesets\/2 /)
+    expect(r.body).toContain('~DEFAULT_BRANCH')
+  })
+  it('apply keeps main protected: copies the org ruleset rules to a repo ruleset on main', () => {
+    const r = sh('apply', { FAKE_EXISTS: '1', FAKE_COMPARE: 'identical' })
+    expect(r.status).toBe(0)
+    expect(r.log).toMatch(/-X POST repos\/cheese-work\/doop\/rulesets /)
+    const copy = r.body.split('\n').find((l) => l.includes('protect main (repo copy)')) ?? ''
+    expect(copy).toContain('"refs/heads/main"')
+    expect(copy).toContain('"deletion"')
+    expect(copy).toContain('"pull_request"')
+  })
+  it('apply does not duplicate the repo copy when it already exists', () => {
+    const list = JSON.stringify([
+      { id: 1, name: 'protect main', source_type: 'Organization' },
+      { id: 2, name: 'protect default branches', source_type: 'Repository' },
+      { id: 4, name: 'protect main (repo copy)', source_type: 'Repository' },
+    ])
+    const r = sh('apply', { FAKE_EXISTS: '1', FAKE_COMPARE: 'identical', FAKE_RULESETS: list })
+    expect(r.status).toBe(0)
+    expect(r.body).not.toContain('protect main (repo copy)')
+  })
+  it('rollback deletes the repo copy', () => {
+    const list = JSON.stringify([
+      { id: 1, name: 'protect main', source_type: 'Organization' },
+      { id: 2, name: 'protect default branches', source_type: 'Repository' },
+      { id: 4, name: 'protect main (repo copy)', source_type: 'Repository' },
+    ])
+    const r = sh('rollback', { FAKE_RULESETS: list })
+    expect(r.status).toBe(0)
+    expect(r.log).toMatch(/-X DELETE repos\/cheese-work\/doop\/rulesets\/4( |$)/m)
   })
 })

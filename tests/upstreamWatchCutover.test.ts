@@ -217,7 +217,7 @@ async function cut(args: string[], env: Obj = {}): Promise<Out> {
   } catch {
     // not JSON: the assertions below fail with stderr in the message
   }
-  const log: string[][] = ((await read()).log ?? []).slice(base)
+  const log: string[][] = ((await read()).log ?? []).slice(base).map((l: Obj) => l.argv)
   return { code: r.status, signal: r.signal, json, log, writes: log.filter(isWrite), stderr: r.stderr }
 }
 const admitLog = async () => {
