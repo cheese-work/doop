@@ -179,3 +179,38 @@ byte-identical, so the frame adds no visual change.
 - Nothing public: every listener is on the tailnet IP or `127.0.0.1`; `tailscale serve` is tailnet-only; no funnel; no C00 change.
 - `df -B1 /mnt/ssd2`: before 02:00 ICT, used 330,347,008,000, available 146,953,166,848. After cleanup: see the PR comment on
   the issue.
+
+## 11. Round 2: Cheese answered "chưa đạt" (19 Nov 2026 08:57 ICT)
+
+Cheese's words: the load time is over 5 minutes; Flutter code must be compiled somewhere; compile in the client's browser, not on our servers.
+
+**Cause found (measured 09:00 to 09:17 ICT, X99 load average 55 to 62).** The first load of the dev build is 942 requests and
+about 56 MB on the wire (`evidence/load-budget-red.txt`; `dart_sdk.js` alone 17.3 MB, `material/icons.dart.lib.js` 8.2 MB).
+The dev server sends no compression. Cheese's MacBook Pro reaches X99 through the Tailscale relay `sin` (`tailscale status`, not
+a direct path), so the wire is the bottleneck, not X99. On X99 itself the same load is 22 s. Section 7 had measured release
+builds only (7.8 MB); nobody had measured the dev build's first load before this round.
+
+**Fix:** `harness/devproxy.ts`, an HTTPS proxy on the tailnet IP in front of the dev server (which now binds `127.0.0.1:18461`,
+plain http). It gzips text responses (cached per URL and etag), passes websockets through and rewrites the address DWDS bakes into
+`main_module.bootstrap.js`. `live.sh` starts it.
+
+|                             | before                                                   | after                                                     |
+| --------------------------- | -------------------------------------------------------- | --------------------------------------------------------- |
+| Wire bytes, cold first load | 55,792,161 (`load-budget-red.txt`, exit 1, budget 20 MB) | 9,439,418 (`load-budget-green.txt`, exit 0)               |
+| Ready on X99, load 55 to 62 | 21.9 s (warm server)                                     | 49.3 s (first load after a server restart; includes gzip) |
+
+Test-first: `harness/load-budget.mjs` (new) asserts wire bytes under a budget and the ready signal. Red 09:03 ICT, exit 1; green
+09:16 ICT, exit 0. Both with the budget 20,000,000.
+
+**Edit loop after the proxy** (`evidence/timing-form2-proxy.txt`, `evidence/state-proxy.txt`): state is kept (taps 2 → 2).
+20 saves: **p50 2020 ms, max 4025 ms**, at load average 62. Round 1 was p50 348 ms at load 11 to 14. The Flutter log reports its own
+reload at 870 to 3020 ms for the same saves, so the time is the compile on a loaded host, not the proxy. Same machine, not the
+same load: this is not a like-for-like comparison.
+
+**On "compile in the client's browser".** Not possible with stock Flutter: the build tools (`frontend_server`, `dartdevc`,
+`dart2js`) run on the Dart VM, and there is no browser-side Dart compiler in the SDK. The browser runs the compiled JavaScript or
+wasm. Compiling somewhere else than X99 means the MacBook (the client machine runs the Flutter SDK and serves the dev server)
+or a build host; that is a product-direction choice, put to Cheese on the decision card.
+
+**Not fixed, not measured:** the first load still pulls 9.4 MB; icon libraries (about 12 MB raw) dominate and could shrink with
+a smaller icon set. A release build is 7.8 MB raw but has no hot reload (section 6). Cheese's own second load was not measured.

@@ -56,7 +56,12 @@ Bun.serve<WsData>({
       await r.body?.cancel()
       return new Response(hit.body, { headers: hit.headers })
     }
-    const body = Bun.gzipSync(new Uint8Array(await r.arrayBuffer()), { level: 6 })
+    let raw = new Uint8Array(await r.arrayBuffer())
+    // DWDS bakes its own address (ws://127.0.0.1:<upstream>/$dwdsSseHandler) into the bootstrap script; point it at this proxy
+    if (raw.length < 1_000_000 && u.pathname.endsWith('.bootstrap.js')) {
+      raw = new TextEncoder().encode(new TextDecoder().decode(raw).replaceAll(up, req.headers.get('host') ?? up))
+    }
+    const body = Bun.gzipSync(raw, { level: 6 })
     out.set('content-encoding', 'gzip')
     out.set('vary', 'accept-encoding')
     if (etag) cache.set(u.pathname, { etag, body, headers: [...out] })
