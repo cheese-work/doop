@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import {
   COMPLETENESS_RULESET,
+  SLOPLINT_SHA,
   attestationRowsFor,
   checkPageCompleteness,
   type CheckOptions,
   currentAttestation,
+  designFrames,
   type CompletenessReport,
+  type SloplintEntry,
 } from '../shared/designCompleteness.ts'
 import type { Canvas, Frame } from '../shared/types.ts'
 
@@ -60,7 +63,20 @@ const docHtml = (skip: string[] = [], body: Record<string, string> = {}) =>
     .map((h) => `<h3>${h}</h3><p>${body[h] ?? `${h} is written here.`}</p>`)
     .join('')
 const SPEC = `<table><tr><th>Name</th><th>Animated frame</th></tr>
-<tr><td>push</td><td>anim</td></tr></table>`
+<tr><td>push</td><td>anim</td></tr>
+<tr><td>Button · hover</td><td>anim</td></tr>
+<tr><td>Button · focus</td><td>anim</td></tr></table>`
+
+/* g3-r7 (CHE-6854): the Components page, its tokens frame and one component, Button, with every state drawn or n/a */
+const COMPONENTS_PAGE = 'c1:components'
+const TOKENS = `<style>:root{--color-ink:#111;--type-body:14px;--space-2:8px;--radius-md:6px}</style><div data-doop-tokens></div>`
+const BUTTON = `<div data-doop-component="Button">
+  <button data-doop-variant="primary" data-doop-state="default">Go</button>
+  <button data-doop-variant="primary" data-doop-state="hover" data-doop-motion='${MOTION}'>Go</button>
+  <button data-doop-variant="primary" data-doop-state="focus" data-doop-motion='${MOTION}'>Go</button>
+  <i data-doop-state-na="disabled: always enabled"></i><i data-doop-state-na="loading: no async work"></i>
+  <i data-doop-state-na="error: cannot fail"></i>
+</div>`
 const ANIM = `<style>@keyframes slide{from{opacity:0}to{opacity:1}} .b{animation:slide 240ms ease-out}</style><div class="b"></div>`
 
 function frame(id: string, html: string, updatedAt = 100, name = id, pageId?: string): Frame {
@@ -81,13 +97,24 @@ function frame(id: string, html: string, updatedAt = 100, name = id, pageId?: st
 }
 
 function page(overrides: Record<string, string> = {}, startFrameId: string | null = 'wire'): Canvas {
-  const html = { recon: reconHtml(), wire: WIRE, hifi: HIFI, doc: docHtml(), spec: SPEC, anim: ANIM, ...overrides }
+  const html = {
+    recon: reconHtml(),
+    wire: WIRE,
+    hifi: HIFI,
+    doc: docHtml(),
+    spec: SPEC,
+    anim: ANIM,
+    tokens: TOKENS,
+    button: BUTTON,
+    ...overrides,
+  }
   return {
     id: 'c1',
     name: 'Proposal',
     pages: [
       { id: PAGE, name: 'Direction A', ...(startFrameId ? { startFrameId } : {}) },
       { id: MOTION_PAGE, name: 'Motion' },
+      { id: COMPONENTS_PAGE, name: 'Components' },
     ],
     frames: [
       frame('recon', html.recon),
@@ -96,13 +123,25 @@ function page(overrides: Record<string, string> = {}, startFrameId: string | nul
       frame('hifidoc', html.doc, 100, 'hifi · doc'),
       frame('spec', html.spec, 100, `${KEY} · motion`, MOTION_PAGE),
       frame('anim', html.anim, 100, 'push', MOTION_PAGE),
+      frame('tokens', html.tokens, 100, 'Tokens', COMPONENTS_PAGE),
+      frame('button', html.button, 100, 'Button', COMPONENTS_PAGE),
     ],
   } as Canvas
 }
 
-/* every check in this file knows the page's issue key, as the server does */
+/** A sloplint result for each design frame at its current version, as the reviewer would send them. */
+const slop = (canvas: Canvas, pageId: string): SloplintEntry[] =>
+  designFrames(canvas, pageId).map((f) => ({
+    frameId: f.id,
+    updatedAt: f.updatedAt,
+    toolSha: SLOPLINT_SHA,
+    sha256: 'a'.repeat(64),
+    status: 'ok',
+  }))
+
+/* every check in this file knows the page's issue key and has a sloplint result per frame, as the server does */
 const check = (canvas: Canvas, pageId: string, opts: CheckOptions = {}) =>
-  checkPageCompleteness(canvas, pageId, { issueKey: KEY, ...opts })
+  checkPageCompleteness(canvas, pageId, { issueKey: KEY, sloplint: slop(canvas, pageId), ...opts })
 
 const codes = (r: CompletenessReport) => r.missing.map((m) => m.code)
 const details = (r: CompletenessReport, code: string) => r.missing.filter((m) => m.code === code).map((m) => m.detail)
@@ -288,8 +327,8 @@ describe('g3-r6 motion per transition', () => {
   const PUSH = '<a data-doop-on="click" data-doop-action="navigate:wire" data-doop-transition="push-left">Back</a>'
   const withPush = (hifi: string) => page({ hifi: HIFI.replace(/<a data-doop-on.*?<\/a>/, hifi) })
 
-  it('names the ruleset g3-r6', () => {
-    expect(COMPLETENESS_RULESET).toBe('g3-r6')
+  it('names the ruleset g3-r7', () => {
+    expect(COMPLETENESS_RULESET).toBe('g3-r7')
   })
 
   it('reports a transition that has no motion block on its element or its frame', () => {
@@ -351,7 +390,8 @@ describe('g3-r6 Motion page', () => {
   })
 
   it('fails closed when the issue key is not known', () => {
-    const report = checkPageCompleteness(page(), PAGE)
+    const canvas = page()
+    const report = checkPageCompleteness(canvas, PAGE, { sloplint: slop(canvas, PAGE) })
     expect(codes(report)).toEqual(['motion_page_missing'])
     expect(details(report, 'motion_page_missing')[0]).toMatch(/issue key/)
   })
@@ -370,12 +410,13 @@ describe('g3-r6 motion frame per spec row', () => {
   })
 
   it('reports a frame that holds no animation', () => {
-    expect(codes(check(page({ anim: '<div>still</div>' }), PAGE))).toEqual(['motion_frame_missing'])
+    /* every spec row of the fixture names this frame, so each reports it */
+    expect(new Set(codes(check(page({ anim: '<div>still</div>' }), PAGE)))).toEqual(new Set(['motion_frame_missing']))
   })
 
   it('does not count a zero duration, but accepts @keyframes, animation or transition', () => {
     const zero = '<style>.b{transition:opacity 0ms;animation:none}</style>'
-    expect(codes(check(page({ anim: zero }), PAGE))).toEqual(['motion_frame_missing'])
+    expect(new Set(codes(check(page({ anim: zero }), PAGE)))).toEqual(new Set(['motion_frame_missing']))
     const inline = '<div style="transition: opacity .3s ease"></div>'
     expect(check(page({ anim: inline }), PAGE).missing).toEqual([])
     const css = '<style>.b{animation-duration:1.2s}</style>'
@@ -387,9 +428,9 @@ describe('g3-r6 motion frame per spec row', () => {
     expect(details(check(page({ spec: two }), PAGE), 'motion_frame_missing')).toEqual([
       expect.stringContaining('missing'),
     ])
-    expect(codes(check(page({ spec: '<table><tr><th>Name</th></tr></table>' }), PAGE))).toEqual([
+    expect(codes(check(page({ spec: '<table><tr><th>Name</th></tr></table>' }), PAGE))).toContain(
       'motion_frame_missing',
-    ])
+    )
   })
 
   it('finds the frame by name as well as by id', () => {
@@ -443,6 +484,271 @@ describe('g3-r6 screen doc', () => {
     const doc =
       docHtml(['Purpose']) + '<style>/* <h3>Purpose</h3> */</style><script>"<h3>Purpose</h3><p>x</p>"</script>'
     expect(codes(check(page({ doc }), PAGE))).toEqual(['screen_doc_missing'])
+  })
+})
+
+/* CHE-6854, ruleset g3-r7: sloplint per frame version and references to the Components page (CHE-6849 gate map, items 1 and 4) */
+const frameOf = (canvas: Canvas, id: string) => canvas.frames.find((f) => f.id === id)!
+const withHifi = (extra: string) => page({ hifi: HIFI.replace('</main>', `${extra}</main>`) })
+const slopCheck = (canvas: Canvas, sloplint: SloplintEntry[]) => check(canvas, PAGE, { sloplint })
+
+describe('g3-r7 sloplint_missing', () => {
+  it('passes when every design frame has a result at its current version', () => {
+    expect(check(page(), PAGE).missing).toEqual([])
+  })
+
+  it('reports each design frame with no result', () => {
+    const canvas = page()
+    const report = slopCheck(canvas, [])
+    expect(codes(report)).toEqual(['sloplint_missing', 'sloplint_missing', 'sloplint_missing'])
+    expect(report.missing.map((m) => m.frameId).sort()).toEqual(['hifi', 'hifidoc', 'wire'])
+  })
+
+  it('reports a frame whose result is NOT-RUN, and only that frame', () => {
+    const canvas = page()
+    const entries = slop(canvas, PAGE).map((e) => (e.frameId === 'hifi' ? { ...e, status: 'NOT-RUN' as const } : e))
+    const report = slopCheck(canvas, entries)
+    expect(report.missing).toEqual([expect.objectContaining({ code: 'sloplint_missing', frameId: 'hifi' })])
+    expect(report.missing[0]!.detail).toContain('NOT-RUN')
+  })
+
+  it('reports a result for an older version of the frame', () => {
+    const canvas = page()
+    const entries = slop(canvas, PAGE).map((e) => (e.frameId === 'wire' ? { ...e, updatedAt: 99 } : e))
+    expect(slopCheck(canvas, entries).missing).toEqual([
+      expect.objectContaining({ code: 'sloplint_missing', frameId: 'wire' }),
+    ])
+  })
+
+  it('reports a result from another sloplint version, naming the pinned one', () => {
+    const canvas = page()
+    const entries = slop(canvas, PAGE).map((e) => ({ ...e, toolSha: 'b'.repeat(40) }))
+    const report = slopCheck(canvas, entries)
+    expect(codes(report)).toEqual(['sloplint_missing', 'sloplint_missing', 'sloplint_missing'])
+    expect(report.missing[0]!.detail).toContain(SLOPLINT_SHA)
+  })
+
+  it('reports a result with no sha256', () => {
+    const canvas = page()
+    const entries = slop(canvas, PAGE).map((e) => (e.frameId === 'hifi' ? { ...e, sha256: '' } : e))
+    expect(slopCheck(canvas, entries).missing).toEqual([expect.objectContaining({ frameId: 'hifi' })])
+  })
+
+  it('does not ask for the recon frame, a hidden frame or a frame of another page', () => {
+    const canvas = page()
+    canvas.frames.push({ ...frame('ghost', '<p>draft</p>'), hidden: true })
+    expect(check(canvas, PAGE).missing).toEqual([])
+  })
+
+  it('stores the results with the attestation, so they name the frames they covered', () => {
+    const canvas = page()
+    const report = check(canvas, PAGE)
+    expect(report.inputs.sloplint?.map((e) => e.frameId).sort()).toEqual(['hifi', 'hifidoc', 'wire'])
+    expect(attestationRowsFor(canvas, report, 'run-1', 1000, 'R')[0]!.inputs.sloplint).toHaveLength(3)
+  })
+})
+
+describe('g3-r7 components_page_missing', () => {
+  const noComponents = (edit: (c: Canvas) => void) => {
+    const canvas = page()
+    edit(canvas)
+    return codes(check(canvas, PAGE))
+  }
+
+  it('reports a canvas with no Components page, and nothing else for the component names it cannot resolve', () => {
+    const canvas = withHifi('<b data-doop-component="Button"></b>')
+    canvas.pages = canvas.pages!.filter((p) => p.name !== 'Components')
+    canvas.frames = canvas.frames.filter((f) => f.pageId !== COMPONENTS_PAGE)
+    expect(codes(check(canvas, PAGE))).toEqual(['components_page_missing'])
+  })
+
+  it('reports a Components page with no tokens frame, or a hidden one', () => {
+    expect(noComponents((c) => (frameOf(c, 'tokens').html = '<style>:root{--color-ink:#111}</style>'))).toEqual([
+      'components_page_missing',
+    ])
+    expect(noComponents((c) => (frameOf(c, 'tokens').hidden = true))).toEqual(['components_page_missing'])
+  })
+
+  it('names the token group that has no CSS variable', () => {
+    for (const [group, drop] of [
+      ['color', '--color-ink:#111;'],
+      ['type', '--type-body:14px;'],
+      ['spacing', '--space-2:8px;'],
+      ['radius', '--radius-md:6px'],
+    ] as const) {
+      const canvas = page({ tokens: TOKENS.replace(drop, '') })
+      const report = check(canvas, PAGE)
+      expect(codes(report), group).toEqual(['components_page_missing'])
+      expect(details(report, 'components_page_missing')[0], group).toContain(group)
+    }
+  })
+
+  it('accepts the other spellings of the type and spacing groups', () => {
+    const tokens = TOKENS.replace('--type-body', '--font-body').replace('--space-2', '--spacing-2')
+    expect(check(page({ tokens }), PAGE).missing).toEqual([])
+  })
+
+  it('reports a Components page with no component, and ignores a component that is hidden', () => {
+    expect(noComponents((c) => (c.frames = c.frames.filter((f) => f.id !== 'button')))).toEqual([
+      'components_page_missing',
+    ])
+    expect(noComponents((c) => (frameOf(c, 'button').hidden = true))).toEqual(['components_page_missing'])
+  })
+
+  it('does not count a component drawn on another page', () => {
+    expect(noComponents((c) => (frameOf(c, 'button').pageId = PAGE))).toContain('components_page_missing')
+  })
+})
+
+describe('g3-r7 component_unknown', () => {
+  it('accepts a component that the Components page defines', () => {
+    expect(check(withHifi('<b data-doop-component="Button"></b>'), PAGE).missing).toEqual([])
+  })
+
+  it('reports a component the Components page does not define, once per frame', () => {
+    const report = check(withHifi('<b data-doop-component="Card"></b><i data-doop-component="Card"></i>'), PAGE)
+    expect(codes(report)).toEqual(['component_unknown'])
+    expect(report.missing[0]).toMatchObject({ frameId: 'hifi' })
+    expect(report.missing[0]!.detail).toContain('Card')
+  })
+
+  it('matches the name exactly', () => {
+    expect(codes(check(withHifi('<b data-doop-component="button"></b>'), PAGE))).toEqual(['component_unknown'])
+  })
+
+  it('looks at wireframes and doc frames too', () => {
+    const wire = WIRE.replace('<button', '<button data-doop-component="Ghost"')
+    expect(check(page({ wire }), PAGE).missing).toEqual([
+      expect.objectContaining({ code: 'component_unknown', frameId: 'wire' }),
+    ])
+  })
+})
+
+describe('g3-r7 component_states_missing', () => {
+  const stateFindings = (canvas: Canvas) => details(check(canvas, PAGE), 'component_states_missing')
+
+  it('reports a state that is neither drawn nor n/a, naming the component and the state', () => {
+    const button = BUTTON.replace(/<button[^>]*data-doop-state="hover"[^>]*>Go<\/button>/, '')
+    const found = stateFindings(page({ button }))
+    expect(found).toHaveLength(1)
+    expect(found[0]).toContain('Button')
+    expect(found[0]).toContain('hover')
+    expect(found[0]).not.toContain('focus')
+  })
+
+  it('reports every state a component lacks in one finding', () => {
+    const button = '<div data-doop-component="Button"><b data-doop-variant="a" data-doop-state="default"></b></div>'
+    const found = stateFindings(page({ button }))
+    expect(found).toHaveLength(1)
+    for (const s of ['hover', 'focus', 'disabled', 'loading', 'error']) expect(found[0]).toContain(s)
+  })
+
+  it('needs a reason on an n/a state', () => {
+    const button = BUTTON.replace('disabled: always enabled', 'disabled:  ')
+    expect(stateFindings(page({ button }))[0]).toContain('disabled')
+  })
+
+  it('reports a component that shows no variant', () => {
+    const button = BUTTON.replaceAll(' data-doop-variant="primary"', '')
+    expect(stateFindings(page({ button }))[0]).toContain('variant')
+  })
+
+  it('counts the states of every instance of the same component', () => {
+    const button = `<div data-doop-component="Button"><b data-doop-variant="a" data-doop-state="default"></b></div>
+      <div data-doop-component="Button">
+        <b data-doop-state="hover" data-doop-motion='${MOTION}'></b><b data-doop-state="focus" data-doop-motion='${MOTION}'></b>
+        <i data-doop-state-na="disabled: x"></i><i data-doop-state-na="loading: x"></i><i data-doop-state-na="error: x"></i>
+      </div>`
+    expect(stateFindings(page({ button }))).toEqual([])
+  })
+
+  it('does not count a state drawn outside the component markup, or on another component', () => {
+    const outside =
+      BUTTON.replace('<i data-doop-state-na="error: cannot fail"></i>\n</div>', '</div>') +
+      '<i data-doop-state-na="error: cannot fail"></i>'
+    expect(stateFindings(page({ button: outside }))[0]).toContain('error')
+    const card = '<div data-doop-component="Card"><b data-doop-variant="a" data-doop-state="default"></b></div>'
+    const found = stateFindings(page({ button: BUTTON + card }))
+    expect(found).toHaveLength(1)
+    expect(found[0]).toContain('Card')
+  })
+
+  it('reads a component whose markup is a void element', () => {
+    const input = '<input data-doop-component="Field" data-doop-variant="a" data-doop-state="default">'
+    expect(stateFindings(page({ button: BUTTON + input }))[0]).toContain('Field')
+  })
+
+  it('does not ask a component used in a design frame to show its states', () => {
+    expect(stateFindings(withHifi('<b data-doop-component="Button"></b>'))).toEqual([])
+  })
+})
+
+describe('g3-r7 motion_per_micro_interaction', () => {
+  const found = (canvas: Canvas) => details(check(canvas, PAGE), 'motion_per_micro_interaction')
+  const noBlock = (state: string) =>
+    BUTTON.replace(new RegExp(`(data-doop-state="${state}") data-doop-motion='[^']*'`), '$1')
+
+  it('reports a non-default component state with no motion block, naming it', () => {
+    const f = found(page({ button: noBlock('hover') }))
+    expect(f).toHaveLength(1)
+    expect(f[0]).toContain('Button · hover')
+  })
+
+  it('does not ask the default state for motion', () => {
+    expect(found(page())).toEqual([])
+  })
+
+  it('reports a block with an empty field', () => {
+    const empty = JSON.stringify({
+      trigger: 'hover',
+      property: 'x',
+      duration: '',
+      easing: 'ease',
+      reducedMotion: 'none',
+    })
+    const button = BUTTON.replace(`data-doop-motion='${MOTION}'`, `data-doop-motion='${empty}'`)
+    expect(found(page({ button }))).toEqual([expect.stringContaining('duration')])
+  })
+
+  it('accepts data-doop-motion-na with a reason, not without one', () => {
+    const na = (reason: string) =>
+      BUTTON.replace(
+        `data-doop-state="focus" data-doop-motion='${MOTION}'`,
+        `data-doop-state="focus" data-doop-motion-na="${reason}"`,
+      )
+    expect(found(page({ button: na('instant ring') }))).toEqual([])
+    expect(found(page({ button: na(' ') }))).toHaveLength(1)
+  })
+
+  it('reports a micro-interaction whose name has no row in the motion spec', () => {
+    const spec = SPEC.replace('<tr><td>Button · focus</td><td>anim</td></tr>', '')
+    const f = found(page({ spec }))
+    expect(f).toHaveLength(1)
+    expect(f[0]).toContain('Button · focus')
+  })
+
+  it('matches the row name ignoring extra spaces', () => {
+    expect(found(page({ spec: SPEC.replace('Button · hover', ' Button  ·  hover ') }))).toEqual([])
+  })
+
+  it('covers each element marked data-doop-interaction in a design frame', () => {
+    const marked = `<div data-doop-interaction="toggle" data-doop-motion='${MOTION}'></div>`
+    const row = SPEC.replace('</table>', '<tr><td>toggle</td><td>anim</td></tr></table>')
+    expect(found(page({ hifi: HIFI.replace('</main>', `${marked}</main>`), spec: row }))).toEqual([])
+    const bare = '<div data-doop-interaction="toggle"></div>'
+    const noBlock = found(page({ hifi: HIFI.replace('</main>', `${bare}</main>`), spec: row }))
+    expect(noBlock).toHaveLength(1)
+    expect(noBlock[0]).toContain('toggle')
+    const noRow = found(page({ hifi: HIFI.replace('</main>', `${marked}</main>`) }))
+    expect(noRow).toHaveLength(1)
+    expect(noRow[0]).toContain('row')
+  })
+
+  it('stays quiet about spec rows when the Motion page itself is missing', () => {
+    const canvas = page()
+    canvas.pages = canvas.pages!.filter((p) => p.name !== 'Motion')
+    canvas.frames = canvas.frames.filter((f) => f.pageId !== MOTION_PAGE)
+    expect(codes(check(canvas, PAGE))).toEqual(['motion_page_missing'])
   })
 })
 
@@ -546,6 +852,35 @@ describe('attestation validity', () => {
         (c) => {
           c.pages = c.pages!.filter((p) => p.id !== MOTION_PAGE)
           c.frames = c.frames.filter((f) => f.pageId !== MOTION_PAGE)
+        },
+      ],
+    ]
+    it.each(edits)('when %s', (_name, edit) => {
+      const canvas = page()
+      const rows = stored(canvas)
+      expect(currentAttestation(canvas, PAGE, rows)?.runId).toBe('run-1')
+      edit(canvas)
+      expect(currentAttestation(canvas, PAGE, rows)).toBeNull()
+    })
+  })
+
+  describe('stops counting when the Components page changes (g3-r7)', () => {
+    const edits: [string, (c: Canvas) => void][] = [
+      [
+        'the tokens frame is edited',
+        (c) => Object.assign(frameOf(c, 'tokens'), { html: TOKENS + ' ', updatedAt: 101 }),
+      ],
+      [
+        'a component frame is edited',
+        (c) => Object.assign(frameOf(c, 'button'), { html: BUTTON + ' ', updatedAt: 101 }),
+      ],
+      ['a component frame is hidden', (c) => (frameOf(c, 'button').hidden = true)],
+      ['the Components page is renamed', (c) => (c.pages!.find((p) => p.id === COMPONENTS_PAGE)!.name = 'Parts')],
+      [
+        'the Components page is deleted',
+        (c) => {
+          c.pages = c.pages!.filter((p) => p.id !== COMPONENTS_PAGE)
+          c.frames = c.frames.filter((f) => f.pageId !== COMPONENTS_PAGE)
         },
       ],
     ]

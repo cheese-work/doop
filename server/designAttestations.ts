@@ -16,6 +16,7 @@ import {
   checkPageCompleteness,
   currentAttestation,
   type CompletenessReport,
+  type SloplintEntry,
 } from '../shared/designCompleteness.ts'
 import { canvasPages } from '../shared/pages.ts'
 import { resolvePageIssue } from '../shared/pageIssue.ts'
@@ -69,11 +70,13 @@ export async function attestPage(
   pageId: string,
   by: string,
   source: RequirementSource | undefined = multicaRequirementSource(env),
+  sloplint: SloplintEntry[] = [],
 ): Promise<AttestedReport> {
   const requirements = await readRequirements(canvas, pageId, source)
   let ledger: ReturnType<typeof ledgerReport> | undefined
   const report = checkPageCompleteness(canvas, pageId, {
     issueKey: requirements.kind === 'lines' ? requirements.key : null,
+    sloplint,
     extraChecks: [
       (ctx) => {
         if (requirements.kind === 'unavailable')
