@@ -138,7 +138,7 @@ const cells: Record<Point, Record<Event, Cell>> = {
     E4: async (s) => {
       w.crashMultica()
       w.restartMultica()
-      expect(await s.resume()).toMatchObject({ P3: { ok: true }, P7: { ok: true } })
+      expect(await s.resume(['P3', 'P4', 'P5', 'P6', 'P7'])).toMatchObject({ P3: { ok: true }, P7: { ok: true } })
       expect(multica.status(s.cardRequestId)).toBe('open')
     },
     E5: async (s) => {
@@ -172,7 +172,7 @@ const cells: Record<Point, Record<Event, Cell>> = {
       w.crashMultica()
       w.restartMultica()
       expect(multica.status(s.cardRequestId)).toBe('pending') // the row is durable
-      expect(await s.resume()).toMatchObject({ P4: { ok: true }, P7: { ok: true } })
+      expect(await s.resume(['P4', 'P5', 'P6', 'P7'])).toMatchObject({ P4: { ok: true }, P7: { ok: true } })
       expect(multica.status(s.cardRequestId)).toBe('open')
     },
     E5: async (s) => {
@@ -207,15 +207,6 @@ const cells: Record<Point, Record<Event, Cell>> = {
   G5: {
     E1: e1Pinned,
     E2: async (s) => {
-      /* the other way round first: a pin on a card that never opens is let go by Multica's own answer */
-      const reconcileFirst = await w.atPoint('G5')
-      clock.advance(WEEK)
-      expect(await reconcileFirst.reconcile()).toMatchObject([{ action: 'released', aborted: true }])
-      expect(await reconcileFirst.unlock()).toMatchObject({ ok: true })
-      expect(await reconcileFirst.step('P7')).toMatchObject({ ok: false })
-      expect(multica.status(reconcileFirst.cardRequestId)).toBe('void')
-      await w.assertInvariants(reconcileFirst)
-
       /* unlock first: pinned at any age, the late P7 still opens the card, reconcile then changes nothing */
       clock.advance(WEEK)
       expect(await s.unlock()).toMatchObject({ ok: false, error: 'pinned' })
@@ -224,6 +215,14 @@ const cells: Record<Point, Record<Event, Cell>> = {
       expect(multica.status(s.cardRequestId)).toBe('open')
       expect(s.pin()?.state).toBe('HELD')
       await stillPinned(s)
+      /* reconcile first: a pin on a card that never opens is let go by Multica's own answer */
+      const reconcileFirst = await w.atPoint('G5')
+      clock.advance(WEEK)
+      expect(await reconcileFirst.reconcile()).toMatchObject([{ action: 'released', aborted: true }])
+      expect(await reconcileFirst.unlock()).toMatchObject({ ok: true })
+      expect(await reconcileFirst.step('P7')).toMatchObject({ ok: false })
+      expect(multica.status(reconcileFirst.cardRequestId)).toBe('void')
+      await w.assertInvariants(reconcileFirst)
     },
     E3: e3Void,
     E4: async (s) => {
@@ -413,7 +412,7 @@ const cells: Record<Point, Record<Event, Cell>> = {
       expect(await s.unlock()).toMatchObject({ ok: true }) // nothing here depends on Multica
     },
     E5: async (s) => {
-      expect(await s.release()).toMatchObject({ ok: true, raw: { already: true } })
+      expect(await s.step('K5')).toMatchObject({ ok: true, raw: { already: true } })
     },
   },
   /* V1: after C1. a pin still held, card `void` */
