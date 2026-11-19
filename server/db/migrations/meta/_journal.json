@@ -299,8 +299,15 @@
     {
       "idx": 43,
       "version": "7",
-      "when": 1795054848844,
-      "tag": "0043_project_bindings",
+      "when": 1794970997360,
+      "tag": "0043_frame_pins",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1795077375842,
+      "tag": "0044_project_bindings",
       "breakpoints": true
     }
   ]

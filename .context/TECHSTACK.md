@@ -182,7 +182,9 @@
 
 - Design completeness (G3, CHE-6078): MCP `check_design_completeness` runs `shared/designCompleteness.ts`
   over one page (recon inventory `doop-recon` with `data-recon-ref` per Keep/Change item, wireframe,
-  states, `data-doop-motion` blocks, prototype wiring and reachability) and stores the result in
+  states, `data-doop-motion` blocks, prototype wiring and reachability; ruleset `g3-r6` (CHE-6853) adds a motion block
+  per transition, the `Motion` page with the issue's `<KEY> · motion` spec frame whose rows each name an animated frame,
+  and a `<screen> · doc` frame with the 7 filled headings per hi-fi screen) and stores the result in
   `design_attestations`, one row per design frame at its `updatedAt`, append-only. The route
   `/api/design-attestations/:id` reads a run with `current` (false once any frame changed).
   `extraChecks` is the plug-in point for the requirement ledger. Tests: `designCompleteness.test.ts`,
@@ -236,6 +238,18 @@
   `append_frame_html` and `update_frame` (`VersionChanged`, `version_changed`). REST answers a refusal 423 and a lost
   fence 409. `tests/frameLockPolicy.test.ts` covers it. `tests/writePolicy.test.ts` also scans `server/` so a new
   writer outside `store.ts` and `db/persist.ts` fails CI.
+
+- Lock pins (G5b, CHE-7062, `server/framePins.ts`, `server/pinState.ts`, table `frame_pins` + `frame_pin_frames`,
+  migration 0043): a decision card holds the frames it shows. States RESERVED -> HELD -> SEALED -> RELEASED; no clock
+  moves a pin. Steps: `reserveLock` (P4, all or none, idempotent on `cardRequestId`), `confirmPin` (P6, receipt R1),
+  `pinForPick` (K2, one transaction HELD -> SEALED, receipt R2), `releasePin` (K5/C2: doop asks Multica itself through
+  `MulticaPort` and releases only on `decided` or `void`), `forceRelease` (F1: a lock owner; `abort_ref` first; a `void`
+  raises `lockEpoch`). Receipts are HMAC-SHA256 over card, pin, state, epochs (+ pick) with `DOOP_PIN_SECRET`; unset =
+  no receipt. `store.unlockFrame` (async) answers `pinned` while a pin exists and writes the row before memory changes;
+  the synchronous unlock in `updateFrame` refuses a pinned frame too. `store.lockIfVersionDurable` (MCP
+  `lock_frame_if_version`) answers only after its row is written and reverts memory if that write fails. Pins are read
+  back at boot (`loadPins`). Not wired yet: the Multica port itself (A1 `ref_status`/`abort_ref`) and an HTTP/MCP route
+  for P4/P6/K2/K5/F1. Tests: `framePins.test.ts` (temporary pglite).
 
 ## 6. Build and Dependency Management
 

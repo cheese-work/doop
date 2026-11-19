@@ -1,5 +1,5 @@
 {
-  "id": "229ce3ba-453a-462e-9eb6-b9c5ad173b26",
+  "id": "01e9b2b0-93f8-4a70-a54d-0b29f7eb34d6",
   "prevId": "82a317f8-d81f-4e90-aabe-1a4445d746cc",
   "version": "7",
   "dialect": "postgresql",
@@ -1282,6 +1282,126 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.frame_pin_frames": {
+      "name": "frame_pin_frames",
+      "schema": "",
+      "columns": {
+        "frame_id": {
+          "name": "frame_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "card_request_id": {
+          "name": "card_request_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "frame_pin_frames_card_request_id_frame_pins_card_request_id_fk": {
+          "name": "frame_pin_frames_card_request_id_frame_pins_card_request_id_fk",
+          "tableFrom": "frame_pin_frames",
+          "tableTo": "frame_pins",
+          "columnsFrom": ["card_request_id"],
+          "columnsTo": ["card_request_id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.frame_pins": {
+      "name": "frame_pins",
+      "schema": "",
+      "columns": {
+        "card_request_id": {
+          "name": "card_request_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "pin_id": {
+          "name": "pin_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "frames": {
+          "name": "frames",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pick_request_id": {
+          "name": "pick_request_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "picked_frame_id": {
+          "name": "picked_frame_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "r1": {
+          "name": "r1",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "r2": {
+          "name": "r2",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "release_reason": {
+          "name": "release_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "state_changed_at": {
+          "name": "state_changed_at",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "frame_pins_pin_id_unique": {
+          "name": "frame_pins_pin_id_unique",
+          "nullsNotDistinct": false,
+          "columns": ["pin_id"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.frame_versions": {
       "name": "frame_versions",
       "schema": "",
@@ -2547,43 +2667,6 @@
         },
         "updated_at": {
           "name": "updated_at",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.project_bindings": {
-      "name": "project_bindings",
-      "schema": "",
-      "columns": {
-        "project_id": {
-          "name": "project_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "canvas_id": {
-          "name": "canvas_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "bound_by": {
-          "name": "bound_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "bound_at": {
-          "name": "bound_at",
           "type": "bigint",
           "primaryKey": false,
           "notNull": true

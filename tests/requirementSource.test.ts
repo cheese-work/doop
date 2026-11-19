@@ -24,6 +24,22 @@ const json =
   () =>
     new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 
+describe('httpRequirementSource issueKey', () => {
+  it('reads the issue identifier, the key the Motion spec frame is named after (CHE-6853)', async () => {
+    const { impl } = fakeFetch({ [`/api/issues/${ISSUE}`]: json({ id: ISSUE, identifier: ' CHE-6853 ' }) })
+    expect(await httpRequirementSource(CONFIG, impl).issueKey(ISSUE)).toBe('CHE-6853')
+  })
+
+  it('fails closed on a missing identifier or a Multica error', async () => {
+    for (const body of [{ id: ISSUE }, { id: ISSUE, identifier: '  ' }, { id: ISSUE, identifier: 7 }]) {
+      const { impl } = fakeFetch({ [`/api/issues/${ISSUE}`]: json(body) })
+      await expect(httpRequirementSource(CONFIG, impl).issueKey(ISSUE)).rejects.toThrow(/identifier/)
+    }
+    const { impl } = fakeFetch({ [`/api/issues/${ISSUE}`]: json({}, 500) })
+    await expect(httpRequirementSource(CONFIG, impl).issueKey(ISSUE)).rejects.toThrow(/500/)
+  })
+})
+
 describe('httpRequirementSource', () => {
   it('reads the description and every comment, and keeps only the description and member lines', async () => {
     const { impl, asked } = fakeFetch({

@@ -1,5 +1,5 @@
 import { canvasPages, pageFrames } from './pages.ts'
-import { readAttributes, scanInteractions, targetsFrame } from './prototype.ts'
+import { PROTO_ATTRS, parseInteractions, readAttributes, scanInteractions, targetsFrame } from './prototype.ts'
 import type { Canvas, Frame } from './types.ts'
 
 /**
@@ -13,10 +13,20 @@ import type { Canvas, Frame } from './types.ts'
  */
 
 /** Bump when a rule changes: older attestations then stop counting. */
-export const COMPLETENESS_RULESET = 'g3-r5.1'
+export const COMPLETENESS_RULESET = 'g3-r6'
 
+export const MOTION_PAGE_NAME = 'Motion'
 export const REQUIRED_STATES = ['loading', 'empty', 'error', 'disconnected'] as const
 export const MOTION_FIELDS = ['trigger', 'property', 'duration', 'easing', 'reducedMotion'] as const
+export const DOC_HEADINGS = [
+  'Purpose',
+  'UX reasoning',
+  'UI reasoning',
+  'Ergonomics',
+  'States',
+  'Motion',
+  'Accessibility',
+] as const
 export const RECON_DECISIONS = ['keep', 'change', 'remove', 'n/a'] as const
 
 const REVIEWER_NOTE =
@@ -42,9 +52,17 @@ export interface CompletenessReport {
   reviewerNotes: string[]
 }
 
+export interface MotionInput {
+  pageId: string
+  name: string
+  frames: { id: string; name: string; updatedAt: number; hidden: boolean }[]
+}
+
 export interface AttestedInputs {
   recon: { id: string; updatedAt: number }[]
   start: string | null
+  /** the Motion page (g3-r6) and each of its frames at the version, name and visibility the run saw; a change to any ends the attestation */
+  motion?: MotionInput | null
   /** hash of the requirement lines the ledger row read (CHE-6373); absent when that row did not run */
   requirements?: string | null
   /** the Multica issue those lines came from; a rebind to another issue ends the attestation */
@@ -75,6 +93,8 @@ export interface CheckContext {
   designFrames: Frame[]
 }
 export interface CheckOptions {
+  /** the Multica key of the page's issue (CHE-123); without it the Motion page cannot be named */
+  issueKey?: string | null
   extraChecks?: ((ctx: CheckContext) => Missing[])[]
 }
 
@@ -159,21 +179,94 @@ function attestedInputs(canvas: Canvas, pageId: string, scanned = scanPage(canva
     .filter((s) => s.isRecon)
     .map((s) => ({ id: s.frame.id, updatedAt: s.frame.updatedAt }))
     .sort((a, b) => a.id.localeCompare(b.id))
-  return { recon, start: canvasPages(canvas).find((p) => p.id === pageId)?.startFrameId ?? null }
+  const motionPage = canvasPages(canvas).find((p) => p.name === MOTION_PAGE_NAME)
+  const motion = motionPage
+    ? {
+        pageId: motionPage.id,
+        name: motionPage.name,
+        frames: pageFrames(canvas, motionPage.id)
+          .map((f) => ({ id: f.id, name: f.name, updatedAt: f.updatedAt, hidden: !!f.hidden }))
+          .sort((a, b) => a.id.localeCompare(b.id)),
+      }
+    : null
+  return { recon, start: canvasPages(canvas).find((p) => p.id === pageId)?.startFrameId ?? null, motion }
 }
+
+const sameMotion = (a: MotionInput | null | undefined, b: MotionInput | null) =>
+  !a || !b
+    ? !a && !b
+    : a.pageId === b.pageId &&
+      a.name === b.name &&
+      a.frames.length === b.frames.length &&
+      a.frames.every((f, i) => {
+        const g = b.frames[i]
+        /* field by field: Postgres jsonb does not keep key order, so a stringified compare would never match a stored row */
+        return f.id === g?.id && f.name === g.name && f.updatedAt === g.updatedAt && f.hidden === g.hidden
+      })
 
 const sameInputs = (a: AttestedInputs, b: AttestedInputs) =>
   a.start === b.start &&
+  sameMotion(a.motion, b.motion ?? null) &&
   a.recon.length === b.recon.length &&
   a.recon.every((r, i) => r.id === b.recon[i]?.id && r.updatedAt === b.recon[i]?.updatedAt)
 
 /* ---- the check ---- */
+
+/* ---- g3-r6: motion page, spec rows and screen docs (CHE-6853) ---- */
+
+const DOC_SUFFIX = ' · doc'
+const isDocFrame = (f: Frame) => f.name.endsWith(DOC_SUFFIX)
+
+const plainText = (html: string) =>
+  html
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .trim()
+
+/** Heading text to the trimmed text under it, up to the next heading. Script and style bodies are ignored; the first of a repeated heading wins. */
+function docSections(html: string): Map<string, string> {
+  const clean = html.replace(/<!--[\s\S]*?-->/g, '').replace(/<(script|style)\b[\s\S]*?<\/\1\s*>/gi, '')
+  const parts = clean.split(/<h[1-6]\b[^>]*>([\s\S]*?)<\/h[1-6]\s*>/i)
+  const out = new Map<string, string>()
+  for (let i = 1; i < parts.length; i += 2) {
+    const name = plainText(parts[i]!)
+      .toLowerCase()
+      .replace(/[:.\s]+$/, '')
+    if (!out.has(name)) out.set(name, plainText(parts[i + 1] ?? ''))
+  }
+  return out
+}
+
+/** Nothing, or only TBD, TODO, an ellipsis or a dash. */
+const isPlaceholder = (text: string) => text === '' || /^(tbd|todo|\.{3}|…|[-–—])[\s.:]*$/i.test(text)
+
+/** The last cell of each body row of the motion spec table: the animated frame, by id or name. */
+function specRows(html: string): string[] {
+  const clean = html.replace(/<(script|style)\b[\s\S]*?<\/\1\s*>/gi, '')
+  const rows: string[] = []
+  for (const [, row = ''] of clean.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr\s*>/gi)) {
+    const cells = [...row.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td\s*>/gi)]
+    if (cells.length) rows.push(plainText(cells[cells.length - 1]![1] ?? ''))
+  }
+  return rows
+}
+
+/** True when the frame has @keyframes, or an animation or transition with a duration above zero. */
+function animates(els: El[]): boolean {
+  const css = els.flatMap((el) => [el.body, el.attrs.get('style')]).join('\n')
+  if (/@keyframes\b/i.test(css)) return true
+  for (const [, , , value = ''] of css.matchAll(/\b(animation|transition)(-duration)?\s*:\s*([^;}]*)/gi))
+    for (const [, n = '0'] of value.matchAll(/(?:^|[\s,(])(\d*\.?\d+)(?:ms|s)\b/gi)) if (Number(n) > 0) return true
+  return false
+}
 
 const str = (v: unknown) => (typeof v === 'string' ? v.trim() : typeof v === 'number' ? String(v) : '')
 
 export function checkPageCompleteness(canvas: Canvas, pageId: string, opts: CheckOptions = {}): CompletenessReport {
   const scanned = scanPage(canvas, pageId)
   const design = scanned.filter(isDesign)
+  /* a doc frame is attested with the page but is not a screen: no wireframe, flow or doc rule applies to it */
+  const screens = design.filter((s) => !isDocFrame(s.frame))
   const missing: Missing[] = []
   const frames = design.map((s) => ({ id: s.frame.id, updatedAt: s.frame.updatedAt }))
   const report = (scanHash: string | null = null): CompletenessReport => ({
@@ -187,11 +280,11 @@ export function checkPageCompleteness(canvas: Canvas, pageId: string, opts: Chec
     reviewerNotes: [REVIEWER_NOTE],
   })
 
-  if (!design.length) {
+  if (!screens.length) {
     missing.push({ code: 'no_design_frames', detail: 'the page has no design frame besides the recon frame' })
     return report()
   }
-  const designEls = design.flatMap((s) => s.els.map((el) => ({ el, frameId: s.frame.id })))
+  const designEls = screens.flatMap((s) => s.els.map((el) => ({ el, frameId: s.frame.id })))
 
   /* recon: every inventory item is handled, and kept or changed items are drawn */
   let scanHash: string | null = null
@@ -255,9 +348,9 @@ export function checkPageCompleteness(canvas: Canvas, pageId: string, opts: Chec
 
   /* wireframe before hi-fi */
   const isWire = (s: ScannedFrame) => s.els.some((el) => el.attrs.get('data-doop-stage') === 'wireframe')
-  if (!design.some(isWire))
+  if (!screens.some(isWire))
     missing.push({ code: 'wireframe_missing', detail: 'no frame has an element with data-doop-stage="wireframe"' })
-  else if (design.every(isWire))
+  else if (screens.every(isWire))
     missing.push({ code: 'hifi_missing', detail: 'every frame is a wireframe; a hi-fi frame is required too' })
 
   /* states: drawn, or marked not applicable with a reason */
@@ -284,17 +377,18 @@ export function checkPageCompleteness(canvas: Canvas, pageId: string, opts: Chec
   const motion = designEls.filter(({ el }) => el.attrs.has('data-doop-motion'))
   if (!motion.length)
     missing.push({ code: 'motion_missing', detail: `no element has data-doop-motion (${MOTION_FIELDS.join(', ')})` })
-  for (const { el, frameId } of motion) {
+  const lackingFields = (raw: string) => {
     let block: Record<string, unknown> = {}
     try {
-      const parsed: unknown = JSON.parse(el.attrs.get('data-doop-motion')!)
+      const parsed: unknown = JSON.parse(raw)
       if (parsed && typeof parsed === 'object') block = parsed as Record<string, unknown>
     } catch {
       /* every field then reads as absent */
     }
-    const lacking = MOTION_FIELDS.filter(
-      (f) => !str(block[f] ?? (f === 'reducedMotion' ? block['reduced-motion'] : undefined)),
-    )
+    return MOTION_FIELDS.filter((f) => !str(block[f] ?? (f === 'reducedMotion' ? block['reduced-motion'] : undefined)))
+  }
+  for (const { el, frameId } of motion) {
+    const lacking = lackingFields(el.attrs.get('data-doop-motion')!)
     if (lacking.length)
       missing.push({
         code: 'motion_incomplete',
@@ -303,10 +397,101 @@ export function checkPageCompleteness(canvas: Canvas, pageId: string, opts: Chec
       })
   }
 
+  /* g3-r6 1: every transition has a complete block on its element or in its frame */
+  const complete = (el: El) =>
+    el.attrs.has('data-doop-motion') && !lackingFields(el.attrs.get('data-doop-motion')!).length
+  for (const s of screens) {
+    const frameCovered = s.els.some(complete)
+    for (const el of s.els) {
+      if (frameCovered || complete(el)) continue
+      const moves = parseInteractions({
+        on: el.attrs.get(PROTO_ATTRS.on),
+        action: el.attrs.get(PROTO_ATTRS.action),
+        transition: el.attrs.get(PROTO_ATTRS.transition),
+        duration: el.attrs.get(PROTO_ATTRS.duration),
+        interactions: el.attrs.get(PROTO_ATTRS.interactions),
+      }).filter((i) => i.transition !== 'instant')
+      if (moves.length)
+        missing.push({
+          code: 'motion_per_transition',
+          frameId: s.frame.id,
+          detail: `<${el.tag}${el.attrs.has('id') ? ` id="${el.attrs.get('id')}"` : ''}> in frame ${s.frame.id} has a ${moves[0]!.transition} transition and no complete data-doop-motion (${MOTION_FIELDS.join(', ')}) on it or in its frame`,
+        })
+    }
+  }
+
+  /* g3-r6 2 and 4: the Motion page, the issue's spec frame, and an animated frame per spec row */
+  const specName = `${opts.issueKey ?? '<ISSUE-KEY>'} · motion`
+  const motionPage = canvasPages(canvas).find((p) => p.name === MOTION_PAGE_NAME)
+  const motionFrames = motionPage ? pageFrames(canvas, motionPage.id).filter((f) => !f.hidden) : []
+  const spec = opts.issueKey ? motionFrames.find((f) => f.name === specName) : undefined
+  if (!spec)
+    missing.push({
+      code: 'motion_page_missing',
+      detail: !opts.issueKey
+        ? 'the page has no issue key (it is not bound to a Multica issue), so the frame "<ISSUE-KEY> · motion" on the Motion page cannot be looked for'
+        : `no visible frame "${specName}" on a page named Motion`,
+    })
+  else {
+    const rows = specRows(spec.html)
+    if (!rows.length)
+      missing.push({
+        code: 'motion_frame_missing',
+        frameId: spec.id,
+        detail: `"${specName}" has no spec row (a table row whose last cell names the animated frame)`,
+      })
+    for (const ref of rows) {
+      const target = motionFrames.find((f) => f.id === ref || f.name === ref)
+      if (!target)
+        missing.push({
+          code: 'motion_frame_missing',
+          frameId: spec.id,
+          detail: `spec row names the animated frame "${ref}", which is not a visible frame on the Motion page`,
+        })
+      else if (!animates(scanElements(target.html)))
+        missing.push({
+          code: 'motion_frame_missing',
+          frameId: target.id,
+          detail: `animated frame "${ref}" holds no @keyframes, and no animation or transition with a duration above zero`,
+        })
+    }
+  }
+
+  /* g3-r6 3: every hi-fi screen has a doc frame with the 7 headings filled */
+  for (const s of screens) {
+    if (isWire(s)) continue
+    const docName = `${s.frame.name}${DOC_SUFFIX}`
+    const doc = design.find((d) => d.frame.name === docName)
+    if (!doc) {
+      missing.push({
+        code: 'screen_doc_missing',
+        frameId: s.frame.id,
+        detail: `hi-fi frame ${s.frame.id} has no doc frame "${docName}" on its page`,
+      })
+      continue
+    }
+    const sections = docSections(doc.frame.html)
+    for (const h of DOC_HEADINGS) {
+      const text = sections.get(h.toLowerCase())
+      if (text === undefined)
+        missing.push({
+          code: 'screen_doc_missing',
+          frameId: s.frame.id,
+          detail: `"${docName}" lacks the heading "${h}"`,
+        })
+      else if (isPlaceholder(text))
+        missing.push({
+          code: 'screen_doc_missing',
+          frameId: s.frame.id,
+          detail: `"${docName}" has no text under "${h}" (empty or a placeholder)`,
+        })
+    }
+  }
+
   /* prototype: a start, wiring that lands on a frame of this page, every frame reachable */
   const page = canvasPages(canvas).find((p) => p.id === pageId)
-  const byId = new Map(design.map((s) => [s.frame.id, s.frame]))
-  const readingOrder = [...design].sort((a, b) => a.frame.y - b.frame.y || a.frame.x - b.frame.x)
+  const byId = new Map(screens.map((s) => [s.frame.id, s.frame]))
+  const readingOrder = [...screens].sort((a, b) => a.frame.y - b.frame.y || a.frame.x - b.frame.x)
   const explicitStart = page?.startFrameId && byId.has(page.startFrameId) ? page.startFrameId : null
   if (!explicitStart)
     missing.push({
@@ -315,7 +500,7 @@ export function checkPageCompleteness(canvas: Canvas, pageId: string, opts: Chec
     })
   const edges = new Map<string, Set<string>>()
   let interactions = 0
-  for (const s of design) {
+  for (const s of screens) {
     for (const el of scanInteractions(s.frame.html)) {
       for (const i of el.interactions) {
         interactions++
@@ -346,7 +531,7 @@ export function checkPageCompleteness(canvas: Canvas, pageId: string, opts: Chec
         queue.push(next)
       }
     }
-    for (const s of design)
+    for (const s of screens)
       if (!seen.has(s.frame.id))
         missing.push({
           code: 'flow_unreachable',
