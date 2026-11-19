@@ -3,6 +3,7 @@ import { afterAll, beforeAll, expect, it } from 'vitest'
 import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { Canvas, Frame } from '../shared/types'
+import { addMotionAndDocs } from './motionFixtures.ts'
 import { Client, freePort, startServer, type Server } from './harness.ts'
 
 /* G3 end to end (CHE-6078 r5): the check_design_completeness tool, the stored
@@ -32,7 +33,8 @@ async function connectAgent(client: Client) {
 beforeAll(async () => {
   multica = createServer((req, res) => {
     res.setHeader('Content-Type', 'application/json')
-    if (req.url === `/api/issues/${ISSUE}`) return void res.end(JSON.stringify({ id: ISSUE, description: null }))
+    if (req.url === `/api/issues/${ISSUE}`)
+      return void res.end(JSON.stringify({ id: ISSUE, identifier: 'CHE-77', description: null }))
     if (req.url === `/api/issues/${ISSUE}/comments`) return void res.end('[]')
     res.statusCode = 404
     res.end('{}')
@@ -106,6 +108,7 @@ it('stores an attestation per run and ends it when a frame changes', async () =>
     '<div data-doop-stage="wireframe"><a data-doop-on="click" data-doop-action="navigate:HIFI">next</a></div>',
   )
   const design = await addFrame(canvas.id, 'Hi-fi', hifi(false))
+  await addMotionAndDocs(owner, canvas.id, 'CHE-77', ['Hi-fi'])
   await owner.patch(`/api/frames/${wire.id}`, {
     html: `<div data-doop-stage="wireframe"><a data-doop-on="click" data-doop-action="navigate:${design.id}">next</a></div>`,
   })
@@ -167,8 +170,24 @@ it('stores an attestation per run and ends it when a frame changes', async () =>
   expect(await read()).toBe(false)
   const fourth = await callTool('check_design_completeness', { canvas_id: canvas.id, agent_name: 'Reviewer' })
   expect(fourth.complete).toBe(true)
+  const readRun = async (id: string) => (await (await owner.get(`/api/design-attestations/${id}`)).json()).current
+  expect(await readRun(fourth.attestation_id)).toBe(true)
+
+  /* the Motion page is an input too (Terra P1, 9ebc904): an edit to its animated frame ends the run */
+  const fade: Frame = (await (await owner.get(`/api/canvases/${canvas.id}`)).json()).frames.find(
+    (f: Frame) => f.name === 'Fade',
+  )
+  await owner.patch(`/api/frames/${fade.id}`, { html: '<div></div>' })
+  expect(await readRun(fourth.attestation_id)).toBe(false)
+  const broken = await callTool('check_design_completeness', { canvas_id: canvas.id, agent_name: 'Reviewer' })
+  expect(broken.missing.map((m: { code: string }) => m.code)).toEqual(['motion_frame_missing'])
+  await owner.patch(`/api/frames/${fade.id}`, { html: fade.html })
+  const fifth = await callTool('check_design_completeness', { canvas_id: canvas.id, agent_name: 'Reviewer' })
+  expect(fifth.complete).toBe(true)
+  expect(await readRun(fifth.attestation_id)).toBe(true)
+
   await callTool('set_prototype_start', { canvas_id: canvas.id, frame_id: design.id, agent_name: 'Reviewer' })
-  expect((await (await owner.get(`/api/design-attestations/${fourth.attestation_id}`)).json()).current).toBe(false)
+  expect(await readRun(fifth.attestation_id)).toBe(false)
 
   /* nobody else can read it, and nothing writes to it */
   expect((await stranger.get(`/api/design-attestations/${second.attestation_id}`)).status).toBe(403)
