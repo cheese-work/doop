@@ -10,9 +10,19 @@ import { deleteLayer, duplicateLayer, setLayerHidden, setLayerLocked, shiftLayer
 import { buildLayerTree, elementHtml, findLayer, isElementHidden, isElementLocked, layerName } from '../lib/layers'
 import { MOD_KEY } from '../lib/keys'
 import { useT } from '../lib/i18n'
+import { useStore } from '../lib/store'
+import {
+  changeInstance,
+  componentContextOf,
+  goToMain,
+  promptMakeComponent,
+  restoreDeletedComponent,
+} from '../lib/components'
+import { isDeleted } from '../../shared/components'
 import { ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from './ui/context-menu'
 import { MenuHint } from './ui/menu'
 import { FrameExportModal } from './FrameExportModal'
+import { trackPngCopy } from '../lib/exportEvents'
 
 /** What the live document said about a right-clicked element; a Layers row
  *  has none, its selector comes from the saved HTML itself. */
@@ -75,6 +85,9 @@ function ElementMenuItems({ frame, selector, hit, onRename, onExport }: ElementI
   const ownLock = selector ? isElementLocked(frame.html, selector, true) : false
   const locked = !!frame.locked || (selector ? isElementLocked(frame.html, selector) : false)
   const t = useT()
+  const component = selector
+    ? componentContextOf(frame.html, selector, useStore.getState().canvas?.components ?? [])
+    : null
   const { scale } = useExportSettings()
   /* a copied standalone shape is a frame on the clipboard: its paste lands
      a second element on the canvas, as ⌘V does, not a layer in this frame */
@@ -116,6 +129,49 @@ function ElementMenuItems({ frame, selector, hit, onRename, onExport }: ElementI
             <MenuHint>{MOD_KEY}⇧H</MenuHint>
           </ContextMenuItem>
           <ContextMenuSeparator />
+          {!component && (
+            <ContextMenuItem disabled={locked} onSelect={() => promptMakeComponent(frame, selector)}>
+              {t('components.create')}
+              <MenuHint>{MOD_KEY}⌥K</MenuHint>
+            </ContextMenuItem>
+          )}
+          {component && !isDeleted(component.def) && (
+            <ContextMenuItem onSelect={() => goToMain(component.def)}>
+              {t('components.goToMainComponent')}
+            </ContextMenuItem>
+          )}
+          {component && isDeleted(component.def) && (
+            <ContextMenuItem onSelect={() => void restoreDeletedComponent(component.def)}>
+              {t('components.restoreComponent')}
+            </ContextMenuItem>
+          )}
+          {component?.kind === 'instance' && (
+            <>
+              {component.part && component.overriddenParts.includes(component.part) && (
+                <ContextMenuItem
+                  disabled={locked}
+                  onSelect={() =>
+                    void changeInstance(frame, { instanceId: component.instanceId, reset: [component.part!] })
+                  }
+                >
+                  {t('components.resetElement')}
+                </ContextMenuItem>
+              )}
+              <ContextMenuItem
+                disabled={locked || isDeleted(component.def)}
+                onSelect={() => void changeInstance(frame, { instanceId: component.instanceId, reset: true })}
+              >
+                {t('components.resetOverrides')}
+              </ContextMenuItem>
+              <ContextMenuItem
+                disabled={locked}
+                onSelect={() => void changeInstance(frame, { instanceId: component.instanceId, detach: true })}
+              >
+                {t('components.detachInstance')}
+              </ContextMenuItem>
+            </>
+          )}
+          <ContextMenuSeparator />
           <ContextMenuItem
             onSelect={() => {
               const html = elementHtml(frame.html, selector)
@@ -134,7 +190,12 @@ function ElementMenuItems({ frame, selector, hit, onRename, onExport }: ElementI
           <ContextMenuItem onSelect={() => onExport(exportTarget(frame, selector))}>
             {t('stage.exportEllipsis')}
           </ContextMenuItem>
-          <ContextMenuItem onSelect={() => void copyElementPng(frame, exportTarget(frame, selector), scale)}>
+          <ContextMenuItem
+            onSelect={() => {
+              trackPngCopy('element', 'element_menu')
+              void copyElementPng(frame, exportTarget(frame, selector), scale)
+            }}
+          >
             {t('stage.copyAsPng')}
           </ContextMenuItem>
           <ContextMenuSeparator />

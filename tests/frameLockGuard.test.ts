@@ -39,6 +39,7 @@ vi.mock('../server/distill.ts', () => ({ onDecision: () => {} }))
 
 const actions = await import('../server/actions.ts')
 const { store } = await import('../server/store.ts')
+const { detached } = await import('../server/journal.ts')
 
 const AGENT = { name: 'Claude', kind: 'agent' as const, color: '#7c3aed' }
 const HUMAN = { name: 'Ada', kind: 'user' as const, color: '#0177d3' }
@@ -165,7 +166,8 @@ describe('restore over a locked frame', () => {
     frame.locked = false
     mocks.versions.set('v1', version)
     mocks.duringVersionRead = () => {
-      store.updateFrame('f1', { locked: true }, 'Ada')
+      /* another request's write: its own transaction, so this restore's rollback cannot take it back */
+      detached(() => store.updateFrame('f1', { locked: true }, 'Ada'))
       mocks.saved.length = 0
     }
     await expect(actions.restoreFrameVersion('f1', 'v1', AGENT)).rejects.toThrow(/locked/)

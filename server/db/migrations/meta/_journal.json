@@ -379,6 +379,83 @@
       "when": 1794488857038,
       "tag": "0054_frame_rotation",
       "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1794488857039,
+      "tag": "0055_image_descriptions",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1794488857040,
+      "tag": "0056_instance_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1794488857041,
+      "tag": "0057_custom_providers",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1794488857042,
+      "tag": "0058_components",
+      "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1794488857043,
+      "tag": "0059_library_components",
+      "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1794488857044,
+      "tag": "0060_library_publish_policy",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1794488857045,
+      "tag": "0061_library_nested_sources",
+      "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1794488857046,
+      "tag": "0062_work_replies",
+      "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1794488857047,
+      "tag": "0063_custom_agents",
+      "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1794488857048,
+      "tag": "0064_component_soft_delete",
+      "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1794488857049,
+      "tag": "0065_workspace_seats_bought",
+      "breakpoints": true
     }
   ]
 }
