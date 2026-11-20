@@ -1193,6 +1193,7 @@ export function saveTask(canvasId: string, task: AgentTask) {
     frameIds: task.frameIds?.join(',') ?? null,
     runner: task.runner ? JSON.stringify(task.runner) : null,
     reply: task.reply ?? null,
+    multicaTaskId: task.multicaTaskId ?? null,
   }
   const write = () =>
     db
@@ -1745,6 +1746,7 @@ export async function hydrate(): Promise<Hydrated> {
       ...(row.frameIds ? { frameIds: row.frameIds.split(',').filter(Boolean) } : {}),
       ...runnerField(row.runner),
       ...(row.reply != null ? { reply: row.reply } : {}),
+      ...(row.multicaTaskId ? { multicaTaskId: row.multicaTaskId } : {}),
     })
     tasks.set(row.canvasId, list)
   }

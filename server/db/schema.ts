@@ -471,6 +471,8 @@ export const tasks = pgTable(
     runner: text('runner'),
     /** a card's agent answer: the latest run's closing words */
     reply: text('reply'),
+    /** the Multica task (run) whose MCP calls made this task; null for humans and other clients */
+    multicaTaskId: text('multica_task_id'),
   },
   (t) => [index('tasks_canvas_idx').on(t.canvasId)],
 )

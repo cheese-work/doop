@@ -8,6 +8,7 @@ import { db } from './db/index.ts'
 import * as authSchema from './db/auth-schema.ts'
 import { ARCHIVE_PAGE_ID, canvasPages, framePageId, MAX_PAGE_NAME } from '../shared/pages.ts'
 import { normalizePageBackground } from '../shared/pageBackground.ts'
+import { MULTICA_TASK_HEADER, parseMulticaTaskId } from '../shared/pageIssue.ts'
 import { prototypeReport, prototypeUrl, setPrototypeStart } from './prototypeTools.ts'
 import { attestPage } from './designAttestations.ts'
 import { sloplintEntries } from './sloplintInput.ts'
@@ -427,10 +428,22 @@ function frameSummary(
  *  same isolation the web UI gets. clientName names the connecting client
  *  (handleMcpRequest builds one server per stateless request, so it is the
  *  name remembered from initialize, else the OAuth application's): feedback
- *  records it and agent presence reads its brand from it. */
-export function buildMcpServer(owner?: string, ownerId?: string, clientName?: string): McpServer {
+ *  records it and agent presence reads its brand from it. multicaTaskId is
+ *  the Multica run (X-Multica-Task-Id) the calls belong to. */
+export function buildMcpServer(
+  owner?: string,
+  ownerId?: string,
+  clientName?: string,
+  multicaTaskId?: string,
+): McpServer {
   const actorFrom = (agent_name?: string) =>
-    actions.resolveActor({ name: agent_name, kind: 'agent', owner, brand: resolveAgentBrand(clientName, agent_name) })
+    actions.resolveActor({
+      name: agent_name,
+      kind: 'agent',
+      owner,
+      brand: resolveAgentBrand(clientName, agent_name),
+      multicaTaskId,
+    })
   /* Canvas access for agents mirrors the web UI: the OAuth user's id runs
      through the same canvasRole gate as browser sessions, so an agent
      connected by someone holding a view or comment link reads but cannot
@@ -3268,7 +3281,12 @@ export async function handleMcpRequest(req: Request, res: Response) {
   const clientName =
     (bearer ? clientNamesByCredential.get(credentialKey(bearer)) : undefined) ??
     (oauthClientId ? await oauthClientName(oauthClientId) : undefined)
-  const server = buildMcpServer(owner, session?.userId ?? undefined, clientName)
+  const server = buildMcpServer(
+    owner,
+    session?.userId ?? undefined,
+    clientName,
+    parseMulticaTaskId(req.headers[MULTICA_TASK_HEADER]),
+  )
   /* Stateless, and plain JSON rather than an SSE stream per response: no
      tool here sends notifications mid-call, so a stream carries nothing a
      JSON body does not, and JSON is what every client — including ChatGPT's
