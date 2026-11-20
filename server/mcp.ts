@@ -1,7 +1,7 @@
 import { env } from './env.ts'
 import { canvasPages, framePageId, pageFrames, samePages } from '../shared/pages.ts'
 import { conflicts, freeSpot, FRAME_GAP } from './frameLayout.ts'
-import { MULTICA_TASK_HEADER, parseMulticaTaskId } from '../shared/pageIssue.ts'
+import { MULTICA_TASK_HEADER, isUuid, parseMulticaTaskId } from '../shared/pageIssue.ts'
 import { prototypeReport, prototypeUrl, setPrototypeStart } from './prototypeTools.ts'
 import { attestPage } from './designAttestations.ts'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
@@ -16,6 +16,7 @@ import { warmTaskIdentity, writeContextFor } from './writePolicy.ts'
 import { canvasRole } from './access.ts'
 import { roleAllows, type CanvasRole } from '../shared/canvasRole.ts'
 import { isAgentKeySecret, verifyAgentKey } from './agentKeys.ts'
+import { getBinding, listBindings } from './projectBindings.ts'
 import * as workspaces from './workspaces.ts'
 import { auth, getUserName, isBanned } from './auth.ts'
 import { capture, captureThrottled } from './analytics.ts'
@@ -276,7 +277,12 @@ function frameSummary(f: {
 /** owner is the connecting user's display name (for attribution); ownerId is
  *  their user id — canvases the agent creates or lists are scoped to it, the
  *  same isolation the web UI gets. */
-export function buildMcpServer(owner?: string, ownerId?: string, multicaTaskId?: string): McpServer {
+export function buildMcpServer(
+  owner?: string,
+  ownerId?: string,
+  multicaTaskId?: string,
+  viaAgentKey = false,
+): McpServer {
   const actorFrom = (agent_name?: string) =>
     actions.resolveActor({ name: agent_name, kind: 'agent', owner, multicaTaskId, origin: 'mcp' })
   /* Canvas access for agents mirrors the web UI: the OAuth user's id runs
@@ -477,10 +483,25 @@ export function buildMcpServer(owner?: string, ownerId?: string, multicaTaskId?:
       inputSchema: {
         name: z.string().describe('Canvas name'),
         workspace_id: z.string().optional().describe('Create inside this shared workspace'),
+        project_id: z
+          .string()
+          .optional()
+          .describe(
+            'The Multica project this canvas is for (UUID). A project that already has a bound canvas is refused (project-bound); with an agent key that can edit a bound canvas this is required (project-required).',
+          ),
         agent_name: agentName.optional(),
       },
     },
-    async ({ name, workspace_id }) => {
+    async ({ name, workspace_id, project_id }) => {
+      /* the project binding table (CHE-5860): found by project UUID, never by canvas name */
+      if (project_id !== undefined) {
+        if (!isUuid(project_id)) return err('project_id must be a Multica project UUID')
+        const bound = await getBinding(project_id.toLowerCase())
+        if (bound) return err(`project-bound: project ${project_id} already has canvas ${bound.canvasId}; use it`)
+      } else if (viaAgentKey) {
+        const editsBound = (await listBindings()).some((b) => roleAllows(roleOn(b.canvasId), 'edit'))
+        if (editsBound) return err('project-required: this key can edit a project canvas; pass project_id')
+      }
       if (workspace_id) {
         const ws = workspaces.getWorkspace(workspace_id)
         if (!ws || !workspaces.isWorkspaceMember(ws.id, ownerId)) return err(`no workspace with id ${workspace_id}`)
@@ -2063,7 +2084,12 @@ export async function handleMcpRequest(req: Request, res: Response) {
   const multicaTaskId = parseMulticaTaskId(req.headers[MULTICA_TASK_HEADER])
   /* the header is the client's word: ask Multica now, so the synchronous store can judge the task */
   if (multicaTaskId) await warmTaskIdentity(multicaTaskId)
-  const server = buildMcpServer(owner, session?.userId ?? undefined, multicaTaskId)
+  const server = buildMcpServer(
+    owner,
+    session?.userId ?? undefined,
+    multicaTaskId,
+    !!bearer && isAgentKeySecret(bearer),
+  )
   /* Stateless, and plain JSON rather than an SSE stream per response: no
      tool here sends notifications mid-call, so a stream carries nothing a
      JSON body does not, and JSON is what every client — including ChatGPT's
