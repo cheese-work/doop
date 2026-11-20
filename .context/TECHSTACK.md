@@ -1023,6 +1023,14 @@ data-doop-webfonts>` for the roster families the frame names and does not load i
   Prototype tab and `PrototypeOverlay.tsx` edit and draw them; MCP has `get_prototype` and
   `set_prototype_start`. `tests/prototypeBrowser.test.ts` drives the player in Chromium.
 
+- Design completeness (G3, CHE-6078): MCP `check_design_completeness` runs `shared/designCompleteness.ts`
+  over one page (recon inventory `doop-recon` with `data-recon-ref` per Keep/Change item, wireframe,
+  states, `data-doop-motion` blocks, prototype wiring and reachability) and stores the result in
+  `design_attestations`, one row per design frame at its `updatedAt`, append-only. The route
+  `/api/design-attestations/:id` reads a run with `current` (false once any frame changed).
+  `extraChecks` is the plug-in point for the requirement ledger. Tests: `designCompleteness.test.ts`,
+  `designAttestation.test.ts`.
+
 ## 5. Security and Secrets
 
 - better-auth 1.6.26 - authentication: email/password, generic OIDC/SSO, and Google / Microsoft /

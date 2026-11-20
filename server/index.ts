@@ -116,6 +116,7 @@ import { resealSecrets } from './secretBackfill.ts'
 import { encryptionConfigured } from './secretBox.ts'
 import * as authSchema from './db/auth-schema.ts'
 import * as persist from './db/persist.ts'
+import { readAttestation } from './designAttestations.ts'
 import { handleMcpRequest } from './mcp.ts'
 import { RendererBusyError } from './renderBrowser.ts'
 import { getAsset, reconcileAssetRefs, beginTicketUpload, endTicketUpload, createAsset } from './assets.ts'
@@ -2898,6 +2899,15 @@ app.patch('/api/frames/:id/instances', (req, res) => {
   if (!current) return
   const changes = Array.isArray(req.body?.changes) ? req.body.changes : []
   componentRoute(res, () => changeInstances(current.canvasId, current.id, changes, userActor(req)))
+})
+
+/* G3 attestations (CHE-6078): read-only. Rows are written by the server's own
+   check run only; there is deliberately no way to edit or delete one here. */
+app.get('/api/design-attestations/:id', async (req, res) => {
+  const view = await readAttestation(req.params.id)
+  if (!view) return res.status(404).json({ error: 'attestation not found' })
+  if (!requireCanvas(req, res, view.canvasId, 'view')) return
+  res.json(view)
 })
 
 app.put('/api/frames/:id/approval', (req, res) => {

@@ -9,6 +9,7 @@ import * as authSchema from './db/auth-schema.ts'
 import { ARCHIVE_PAGE_ID, canvasPages, framePageId, MAX_PAGE_NAME } from '../shared/pages.ts'
 import { normalizePageBackground } from '../shared/pageBackground.ts'
 import { prototypeReport, prototypeUrl, setPrototypeStart } from './prototypeTools.ts'
+import { attestPage } from './designAttestations.ts'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import type { Request, Response } from 'express'
@@ -1623,6 +1624,30 @@ export function buildMcpServer(owner?: string, ownerId?: string, clientName?: st
       if (!canvas) return noCanvas(canvas_id)
       arrive(canvas_id, agent_name)
       return text(prototypeReport(canvas))
+    },
+  )
+
+  server.registerTool(
+    'check_design_completeness',
+    {
+      title: 'Check a design page for completeness',
+      description:
+        'Run the completeness check on one page (one design direction) and store the result as an attestation you cannot edit; the UX verdict cites its attestation_id. A page is complete when it has: a recon inventory (a frame with <script type="application/json" id="doop-recon"> holding {scanHash, candidates:[{id, file, line, decision: keep|change|remove|n/a, reason}]}) where every Keep/Change candidate has an element with data-recon-ref="<id>" in a design frame and every other decision has a reason; a wireframe (data-doop-stage="wireframe") and a hi-fi frame; the states loading, empty, error, disconnected (data-doop-state="<state>", or data-doop-state-na="<state>: <reason>"); at least one motion block (data-doop-motion=\'{"trigger","property","duration","easing","reducedMotion"}\'); prototype wiring with a flow start (set_prototype_start) where every design frame is reachable. Returns complete, the missing list and the attestation_id. A later edit to any frame ends the attestation: run it again. It checks that artefacts exist, not that they are drawn well, which stays the reviewer\'s check.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      inputSchema: {
+        canvas_id: z.string(),
+        page_id: z.string().optional().describe('Page ID from get_canvas; defaults to the first page'),
+        agent_name: agentName,
+      },
+    },
+    async ({ canvas_id, page_id, agent_name }) => {
+      const canvas = canvasFor(canvas_id, 'view')
+      if (!canvas) return noCanvas(canvas_id)
+      const pages = canvasPages(canvas)
+      const page = page_id ? pages.find((p) => p.id === page_id) : pages[0]
+      if (!page) return err(`no page ${page_id} on canvas ${canvas_id} — use a page id from get_canvas`)
+      arrive(canvas_id, agent_name)
+      return text(await attestPage(canvas, page.id, actorFrom(agent_name).name))
     },
   )
 
