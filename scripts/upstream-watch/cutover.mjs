@@ -33,7 +33,6 @@ const RETIRED_TITLE = 'Upstream release watch: sub2api, hindsight-api'
 const NEW_TITLE = 'Upstream release watch: doop'
 const LEDGER_TITLE = 'chore(doop): upstream sync ledger (CHE-7207)'
 const PROJECT_DOOP = 'a8809cf1-12d8-4e75-82ce-f398d6004e24'
-const PROJECT_WATCH = '5e621e12-eeb4-40a5-9571-25657d5b0ec5'
 const AGENT = 'x99-claude-sonnet'
 const CRON = '30 4,10,16,22 * * *'
 const TZ = 'Asia/Ho_Chi_Minh'
@@ -416,7 +415,7 @@ function step8() {
         '--agent',
         AGENT,
         '--project',
-        PROJECT_WATCH,
+        PROJECT_DOOP,
         '--mode',
         'run_only',
       )
