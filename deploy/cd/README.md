@@ -25,11 +25,11 @@ a skip too. This slice approves no deploy: nothing sets the switch to `on`, and 
 
 Repo variable `DOOP_DEPLOY_SUSPENDED` is the one thing that lets a train run. Its value is one of:
 
-| Value                                       | Meaning                                       |
-| ------------------------------------------- | --------------------------------------------- |
-| `clear:<nonce>:<lift run id or restore>`    | the train may run                             |
-| `armed:<nonce>:<run id>:<sha>`              | a train run is changing C00                   |
-| `suspended:<nonce>:<run id>:<sha>:<reason>` | stopped until a lift (slice S3b) writes clear |
+| Value                                       | Meaning                                                     |
+| ------------------------------------------- | ----------------------------------------------------------- |
+| `clear:<nonce>:<lift run id or restore>`    | the train may run                                           |
+| `armed:<nonce>:<run id>:<sha>`              | a train run is changing C00                                 |
+| `suspended:<nonce>:<run id>:<sha>:<reason>` | stopped until the audited lift (`cd-lift.yml`) writes clear |
 
 The nonce is 128 random bits. Absent, unreadable or any other shape reads as suspended; a prefix match is not
 enough. `scripts/deploy-marker.mjs` is the only writer. Every write reads the variable, checks it is the
@@ -46,7 +46,39 @@ value the writer expects, writes, and reads it back; a write it cannot prove fai
   over its own `armed:*`, whatever the rollback itself did.
 - **Reading is read only.** `decide` and every check read the marker and never write it.
 
-Every failure leaves the marker `armed` or `suspended`, so the train stops until a lift. Lifting is S3b.
+Every failure leaves the marker `armed` or `suspended`, so the train stops until a lift. Lifting is `cd-lift.yml` (below).
+
+### The audited lift (`cd-lift.yml`, S3b, C-10.6 and C-10.7)
+
+The only way from `armed:*` or `suspended:*` back to `clear:*`. Dispatch only, one input: `decision_id`, the id of
+a Multica decision. No step is a human-typed command.
+
+1. The dispatcher and the triggering login must both be in repo variable `DOOP_LIFT_DISPATCHERS` (checked first,
+   before any secret is read). The job runs only on `cheese/main`, in environment `doop-lift`, on the C00 runner,
+   in concurrency group `c00-deploy-doop`, and `c00.sh lift` takes the host lock.
+2. Under the lock it refuses unless **all** hold, and a refusal leaves the marker as it was:
+   - the decision is action `doop.deploy_lift` v1, `approved`, by `vars.DOOP_LIFT_APPROVER_ID` (Cheese), not
+     withdrawn, rejected, revoked or expired; unreadable or unknown is a refusal;
+   - its `marker_value` equals the marker that stands now, byte for byte, and its `repo` is `cheese-work/doop`;
+   - migration quiescence is proven (C-8.8), `/healthz` answers 200, and the running digest and revision label read;
+   - the decision and the marker are read again immediately before the write and still hold (a marker that
+     changed, or a decision revoked, during the lift refuses).
+3. It writes `clear:<nonce>:<lift run id>`, reads it back, and records lifter, decision id, approver, health, digest,
+   revision and ICT times in the run summary and the `lift-evidence` artifact (`lift-evidence.json`, outcome
+   `lifted`, `refused` or `failed`; `failed` means the write could not be read back, so check the marker by hand).
+   Two lifts at once serialize on the lock; the second finds the marker changed and is refused.
+
+The lift never reads or writes `DOOP_DEPLOY_TRAIN`: the train stays off until Cheese turns it on.
+
+| Where          | Name                                               | Value                                                                                    |
+| -------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Environment    | `doop-lift`                                        | holds the secrets below; restrict deployment branches to `cheese/main`                   |
+| Env secret     | `DOOP_LIFT_DECISION_READ_TOKEN`                    | read-only token for `GET /api/decisions/{id}/state`                                      |
+| Env secret     | `DOOP_LIFT_MULTICA_SERVER_URL`, `..._WORKSPACE_ID` | the Multica server (tailnet only, so the C00 runner must reach it) and its workspace     |
+| Env var/secret | `DOOP_MARKER_APP_ID`, `DOOP_MARKER_APP_KEY`        | the same marker App as D2: copy both into `doop-lift`, since a job takes one environment |
+| Repo variable  | `DOOP_LIFT_DISPATCHERS`                            | logins that may dispatch a lift                                                          |
+| Repo variable  | `DOOP_LIFT_APPROVER_ID`                            | Cheese's Multica member id; the decision's approver must equal it                        |
+| Repo variable  | `C00_DOOP_HEALTHZ_URL`                             | optional; default `http://127.0.0.1:4400/healthz` (what the app answers on C00 itself)   |
 
 ### Adoption of the 11 Nov failure (one write, by an admin)
 
