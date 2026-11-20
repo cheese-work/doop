@@ -1032,7 +1032,9 @@ data-doop-webfonts>` for the roster families the frame names and does not load i
   the `Components` page (tokens frame, components, `component_unknown`, variants and states, motion per micro-interaction)) and stores the result in
   `design_attestations`, one row per design frame at its `updatedAt`, append-only. The route
   `/api/design-attestations/:id` reads a run with `current` (false once any frame changed).
-  `extraChecks` is the plug-in point for the requirement ledger. Tests: `designCompleteness.test.ts`,
+  On this branch a component's main and instances carry its definition id (`data-doop-component` / `data-doop-instance`), so the check
+  reads names from the canvas's component definitions (`CheckOptions.components`); a hand-written name marker still counts. `readAttestation`
+  loads the canvas first (frame html is lazy). `extraChecks` is the plug-in point for the requirement ledger. Tests: `designCompleteness.test.ts`,
   `designAttestation.test.ts`.
 
 ## 5. Security and Secrets

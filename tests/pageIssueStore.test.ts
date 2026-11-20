@@ -13,6 +13,7 @@ vi.mock('../server/db/persist.ts', () => {
     saveFrame: noop,
     saveGuideline: noop,
     savePageCopy: noop,
+    saveDeletedPages: noop,
     saveMember: noop,
     saveReference: noop,
   }

@@ -21,7 +21,7 @@ const RUN = '01a1d675-3408-7b02-9816-b361c7e895fc'
 const CANVAS: Canvas = { id: 'c1', name: 'Runs', ownerId: OWNER_ID, createdAt: 0, updatedAt: 0, frames: [] }
 
 async function connect(multicaTaskId?: string) {
-  const server = buildMcpServer('Owner', OWNER_ID, multicaTaskId)
+  const server = buildMcpServer('Owner', OWNER_ID, undefined, multicaTaskId)
   const client = new Client({ name: 'multica-task-test', version: '1.0.0' })
   const [a, b] = InMemoryTransport.createLinkedPair()
   await server.connect(b)

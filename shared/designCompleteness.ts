@@ -123,6 +123,8 @@ export interface CheckOptions {
   issueKey?: string | null
   /** sloplint results the caller vouches for (the server checks their digests); none means every frame is missing one */
   sloplint?: SloplintEntry[]
+  /** the canvas's component definitions: a main or instance carries its component's id, so this is how the name is read */
+  components?: { id: string; name: string }[]
   extraChecks?: ((ctx: CheckContext) => Missing[])[]
 }
 
@@ -570,7 +572,7 @@ export function checkPageCompleteness(canvas: Canvas, pageId: string, opts: Chec
   }
 
   missing.push(...sloplintFindings(design, opts.sloplint ?? []))
-  missing.push(...componentFindings(canvas, design, spec, opts.issueKey ? specName : null))
+  missing.push(...componentFindings(canvas, design, spec, opts.issueKey ? specName : null, opts.components))
 
   for (const extra of opts.extraChecks ?? [])
     missing.push(...extra({ canvas, pageId, designFrames: design.map((s) => s.frame) }))
@@ -629,13 +631,17 @@ interface Component {
   els: El[]
 }
 
-function componentsIn({ frame, els }: ScannedFrame): Component[] {
+type ComponentNames = ReadonlyMap<string, string>
+
+/** A main (`data-doop-component`) or an instance (`data-doop-instance`): both name their component by id, or by name in a hand-written frame. */
+function componentsIn({ frame, els }: ScannedFrame, names: ComponentNames): Component[] {
   return els
-    .filter((el) => el.attrs.has('data-doop-component'))
+    .filter((el) => el.attrs.has('data-doop-component') || el.attrs.has('data-doop-instance'))
     .map((root) => {
       const end = elementEnd(frame.html, root)
+      const ref = str(root.attrs.get('data-doop-component') ?? root.attrs.get('data-doop-instance'))
       return {
-        name: str(root.attrs.get('data-doop-component')),
+        name: names.get(ref) ?? ref,
         frameId: frame.id,
         els: els.filter((e) => e.pos >= root.pos && e.pos < end),
       }
@@ -668,12 +674,14 @@ function componentFindings(
   design: ScannedFrame[],
   spec: Frame | undefined,
   specName: string | null,
+  components: CheckOptions['components'] = [],
 ): Missing[] {
   const out: Missing[] = []
+  const compNames: ComponentNames = new Map(components.map((c) => [c.id, c.name]))
   const page = canvasPages(canvas).find((p) => p.name === COMPONENTS_PAGE_NAME)
   const pageFramesVisible = page ? pageFrames(canvas, page.id).filter((f) => !f.hidden) : []
   const scanned = pageFramesVisible.map((frame) => ({ frame, els: scanElements(frame.html), isRecon: false }))
-  const library = scanned.flatMap(componentsIn).filter((c) => c.name)
+  const library = scanned.flatMap((s) => componentsIn(s, compNames)).filter((c) => c.name)
 
   /* components_page_missing: the page, a tokens frame with each group, and at least one component */
   const pageMissing = (detail: string) => out.push({ code: 'components_page_missing', detail })
@@ -698,7 +706,7 @@ function componentFindings(
   if (known.size)
     for (const s of design) {
       const unknown = new Set(
-        componentsIn(s)
+        componentsIn(s, compNames)
           .map((c) => c.name)
           .filter((n) => !known.has(n)),
       )
@@ -738,7 +746,7 @@ function componentFindings(
   const micro: { name: string; el: El; frameId: string }[] = []
   for (const s of scanned) {
     const owner = new Map<El, Component>()
-    for (const c of componentsIn(s)) for (const el of c.els) owner.set(el, c)
+    for (const c of componentsIn(s, compNames)) for (const el of c.els) owner.set(el, c)
     for (const el of s.els) {
       const state = str(el.attrs.get('data-doop-state')).toLowerCase()
       const c = owner.get(el)

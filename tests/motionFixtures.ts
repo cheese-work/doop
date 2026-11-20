@@ -52,11 +52,7 @@ export async function addMotionAndDocs(owner: Client, canvasId: string, key: str
   const put = await owner.req(`/api/canvases/${canvasId}/pages`, {
     method: 'PUT',
     body: JSON.stringify({
-      pages: [
-        ...pages,
-        { id: `${canvasId}:motion`, name: 'Motion' },
-        { id: `${canvasId}:components`, name: 'Components' },
-      ],
+      pages: [...pages, { id: `${canvasId}:motion`, name: 'Motion' }],
       expectedPages: pages,
     }),
   })
@@ -64,7 +60,14 @@ export async function addMotionAndDocs(owner: Client, canvasId: string, key: str
   const motion = `${canvasId}:motion`
   await post(`${key} · motion`, SPEC_HTML, motion)
   await post('Fade', ANIM_HTML, motion)
-  await post('Tokens', TOKENS_HTML, `${canvasId}:components`)
-  await post('Button', BUTTON_HTML, `${canvasId}:components`)
+  /* a real component: its main carries the definition's id (the engine drops a name-keyed marker), and making it adds the Components page */
+  const made = await owner.post(`/api/canvases/${canvasId}/components`, {
+    name: 'Button',
+    html: BUTTON_HTML.replace(' data-doop-component="Button"', ''),
+    autoProps: false,
+  })
+  if (made.status !== 200 && made.status !== 201) throw new Error(`could not create Button: ${made.status}`)
+  const after = (await (await owner.get(`/api/canvases/${canvasId}`)).json()).pages as { id: string; name: string }[]
+  await post('Tokens', TOKENS_HTML, after.find((p) => p.name === 'Components')!.id)
   for (const name of hifiNames) await post(`${name} · doc`, DOC_HTML)
 }

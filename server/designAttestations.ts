@@ -18,6 +18,7 @@ import {
   type CompletenessReport,
   type SloplintEntry,
 } from '../shared/designCompleteness.ts'
+import { activeComponents } from '../shared/components.ts'
 import { canvasPages } from '../shared/pages.ts'
 import { resolvePageIssue } from '../shared/pageIssue.ts'
 import type { Canvas } from '../shared/types.ts'
@@ -77,6 +78,7 @@ export async function attestPage(
   const report = checkPageCompleteness(canvas, pageId, {
     issueKey: requirements.kind === 'lines' ? requirements.key : null,
     sloplint,
+    components: activeComponents(store.getComponents(canvas.id)),
     extraChecks: [
       (ctx) => {
         if (requirements.kind === 'unavailable')
@@ -120,28 +122,30 @@ export async function readAttestation(
   const rows = await persist.listAttestationRun(runId)
   const head = rows[0]
   if (!head) return null
-  const canvas = store.getCanvas(head.canvasId)
-  /* current needs a run that read the lines of this issue, and the source must still say the same; anything else (legacy, unchecked, rebound, unreadable) is not current */
-  let requirementsNow: RequirementsNow | null = null
-  if (canvas) {
-    const now = await readRequirements(canvas, head.pageId, source)
-    if (now.kind === 'lines') requirementsNow = { issue: now.issue, hash: now.hash }
-  }
-  const requirementsHold = requirementsStillHold(head.inputs, requirementsNow)
-  return {
-    id: runId,
-    canvasId: head.canvasId,
-    pageId: head.pageId,
-    ruleset: head.ruleset,
-    scanHash: head.scanHash,
-    complete: head.result === 'complete',
-    missing: head.missing,
-    frames: rows.map((r) => ({ frameId: r.frameId, updatedAt: r.frameUpdatedAt })),
-    createdAt: head.createdAt,
-    createdBy: head.createdBy,
-    current:
-      !!canvas &&
-      requirementsHold &&
-      currentAttestation(canvas, head.pageId, rows, requirementsNow?.hash ?? null)?.runId === runId,
-  }
+  /* the frames' html is what `current` compares: load the canvas (it is not in memory after a restart or an idle drop) and keep it for the read */
+  return store.withCanvas(head.canvasId, async (canvas) => {
+    /* current needs a run that read the lines of this issue, and the source must still say the same; anything else (legacy, unchecked, rebound, unreadable) is not current */
+    let requirementsNow: RequirementsNow | null = null
+    if (canvas) {
+      const now = await readRequirements(canvas, head.pageId, source)
+      if (now.kind === 'lines') requirementsNow = { issue: now.issue, hash: now.hash }
+    }
+    const requirementsHold = requirementsStillHold(head.inputs, requirementsNow)
+    return {
+      id: runId,
+      canvasId: head.canvasId,
+      pageId: head.pageId,
+      ruleset: head.ruleset,
+      scanHash: head.scanHash,
+      complete: head.result === 'complete',
+      missing: head.missing,
+      frames: rows.map((r) => ({ frameId: r.frameId, updatedAt: r.frameUpdatedAt })),
+      createdAt: head.createdAt,
+      createdBy: head.createdBy,
+      current:
+        !!canvas &&
+        requirementsHold &&
+        currentAttestation(canvas, head.pageId, rows, requirementsNow?.hash ?? null)?.runId === runId,
+    }
+  })
 }
