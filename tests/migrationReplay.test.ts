@@ -60,6 +60,54 @@ async function rewriteJournal(dir: string, edit: (j: Journal) => void) {
   await writeFile(path.join(dir, 'meta/_journal.json'), JSON.stringify(j))
 }
 
+// A two-entry journal small enough to read: 0000 makes `t` with a CHECK, 0001 adds `note` with a text default.
+// The 0001 snapshot says what drizzle-kit would have written, which the cases below then bend one way at a time.
+async function tiny(snapshot: { check: string; noteDefault: string }) {
+  const sql0 =
+    'CREATE TABLE "t" (\n\t"status" text NOT NULL,\n\tCONSTRAINT "t_status_ck" CHECK ("t"."status" in (\'open\',\'done\'))\n);\n'
+  const sql1 = 'ALTER TABLE "t" ADD COLUMN "note" text DEFAULT \'OPEN\' NOT NULL;\n'
+  const entry = (idx: number, when: number, tag: string): Entry => ({ idx, version: '7', when, tag, breakpoints: true })
+  const journal = (n: number): Journal => ({
+    version: '7',
+    dialect: 'postgresql',
+    entries: [entry(0, 1_000, '0000_t'), entry(1, 2_000, '0001_note')].slice(0, n),
+  })
+  const col = (name: string, def?: string) => ({ name, type: 'text', primaryKey: false, notNull: true, default: def })
+  const table = (columns: object, check: string) => ({
+    name: 't',
+    schema: '',
+    columns,
+    indexes: {},
+    foreignKeys: {},
+    compositePrimaryKeys: {},
+    uniqueConstraints: {},
+    policies: {},
+    checkConstraints: { t_status_ck: { name: 't_status_ck', value: check } },
+    isRLSEnabled: false,
+  })
+  const snap = (columns: object, check: string) => ({
+    version: '7',
+    dialect: 'postgresql',
+    tables: { 'public.t': table(columns, check) },
+  })
+  const make = async (n: number) => {
+    const dir = await fresh()
+    await writeFile(path.join(dir, '0000_t.sql'), sql0)
+    if (n > 1) await writeFile(path.join(dir, '0001_note.sql'), sql1)
+    await writeFile(path.join(dir, 'meta/_journal.json'), JSON.stringify(journal(n)))
+    return dir
+  }
+  const baseDir = await make(1)
+  const headDir = await make(2)
+  await writeFile(
+    path.join(headDir, 'meta/0001_snapshot.json'),
+    JSON.stringify(snap({ status: col('status'), note: col('note', snapshot.noteDefault) }, snapshot.check)),
+  )
+  return { baseDir, headDir }
+}
+const TRUE_CHECK = `"t"."status" in ('open','done')`
+const TRUE_DEFAULT = `'OPEN'`
+
 beforeAll(async () => {
   root = await mkdtemp(path.join(tmpdir(), 'doop-replay-test-'))
 })
@@ -120,6 +168,28 @@ describe('replayMigrations: fixtures that must fail', () => {
     await rewriteJournal(head.dir, (j) => void (j.entries[3]!.when += 1))
     const result = await replayMigrations({ baseDir: base.dir, headDir: head.dir })
     expect(result).toMatchObject({ ok: false, step: 1 })
+  }, 300_000)
+})
+
+describe('replayMigrations: step 4 reads check expressions and literal case', () => {
+  it('passes when the snapshot says what the database holds (drizzle spelling against the catalog spelling)', async () => {
+    const result = await replayMigrations(await tiny({ check: TRUE_CHECK, noteDefault: TRUE_DEFAULT }))
+    expect(result).toEqual({ ok: true, base: 1, appended: 1 })
+  }, 300_000)
+
+  it('fails at step 4 when only the check expression differs, the name being equal', async () => {
+    const result = await replayMigrations(
+      await tiny({ check: `"t"."status" in ('open','closed')`, noteDefault: TRUE_DEFAULT }),
+    )
+    expect(result).toMatchObject({ ok: false, step: 4 })
+    expect(result.reason).toMatch(/0001_/)
+    expect(result.reason).toMatch(/checks\.t_status_ck/)
+  }, 300_000)
+
+  it("fails at step 4 when a default literal differs only in case ('OPEN' against 'open')", async () => {
+    const result = await replayMigrations(await tiny({ check: TRUE_CHECK, noteDefault: `'open'` }))
+    expect(result).toMatchObject({ ok: false, step: 4 })
+    expect(result.reason).toMatch(/columns\.note\.default/)
   }, 300_000)
 })
 

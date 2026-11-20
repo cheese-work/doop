@@ -79,7 +79,17 @@ const CONSTRAINTS = `
 
 const ACTION = { a: 'no action', r: 'restrict', c: 'cascade', n: 'set null', d: 'set default' }
 
-// `'x'::text` and `x` are the same default; so are `(0)` and `0`. Lowercased, casts and wrapping parens gone.
+// Runs `fn` on an expression with its string literals set aside, so what the author wrote between quotes (its case,
+// its spaces) is never touched; only the SQL around it is.
+function outsideLiterals(value, fn) {
+  const literals = []
+  const skeleton = value.replace(/'(?:[^']|'')*'/g, (m) => `§${literals.push(m) - 1}§`)
+  return fn(skeleton).replace(/§(\d+)§/g, (_, i) => literals[Number(i)])
+}
+const stripCasts = (s) => s.replace(/::[a-z_][a-z0-9_ ]*(\([0-9, ]*\))?(\[\])*/gi, '')
+
+// `'x'::text` and `x` are the same default; so are `(0)` and `0`. Casts and wrapping parens gone, keywords lowercased;
+// a string literal is kept exactly (`'OPEN'` and `'open'` are different defaults).
 export function normalizeDefault(value) {
   if (value === undefined || value === null) return null
   let s = String(value).trim()
@@ -92,18 +102,50 @@ export function normalizeDefault(value) {
       // not JSON after all: normalized as plain text below
     }
   }
-  for (;;) {
-    const next = s
-      .replace(/::[a-z_][a-z0-9_ ]*(\([0-9, ]*\))?(\[\])*/gi, '')
-      .replace(/^\((.*)\)$/s, '$1')
-      .trim()
-    if (next === s) break
-    s = next
-  }
-  s = s.replace(/\s+/g, ' ').toLowerCase()
-  if (s === 'current_timestamp') s = 'now()'
-  return s
+  return outsideLiterals(s, (k) => {
+    for (;;) {
+      const next = stripCasts(k)
+        .replace(/^\((.*)\)$/s, '$1')
+        .trim()
+      if (next === k) break
+      k = next
+    }
+    k = k.replace(/\s+/g, ' ').toLowerCase()
+    return k === 'current_timestamp' ? 'now()' : k
+  })
 }
+
+// A check constraint's expression as the catalog prints it (`CHECK ((status = ANY (ARRAY['open'::text, ...])))`)
+// and as drizzle-kit stores it (`"t"."status" in ('open','done')`): quotes, table qualifiers, casts, redundant outer
+// parens and spacing gone, `x in (a, b)` spelled as the catalog spells it. String literals stay exactly as written.
+export function normalizeCheck(expr) {
+  return outsideLiterals(String(expr), (k) => {
+    k = k.replace(/^\s*check\s*/i, '').replace(/"/g, '')
+    k = stripCasts(k).replace(/\b[a-z_][a-z0-9_]*\.(?=[a-z_])/gi, '')
+    k = k.replace(/([a-z_][a-z0-9_]*)\s+in\s*\(([^()]*)\)/gi, '$1 = any (array[$2])')
+    k = k
+      .replace(/\s*([(),[\]])\s*/g, '$1')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase()
+    while (/^\((.*)\)$/s.test(k) && balanced(k.slice(1, -1))) k = k.slice(1, -1)
+    return k
+  })
+}
+const balanced = (s) => {
+  let depth = 0
+  for (const ch of s) {
+    if (ch === '(') depth++
+    else if (ch === ')' && --depth < 0) return false
+  }
+  return depth === 0
+}
+const checksOf = (checks) =>
+  Object.fromEntries(
+    Object.entries(checks)
+      .map(([name, expr]) => [name, normalizeCheck(expr)])
+      .sort(([a], [b]) => (a < b ? -1 : 1)),
+  )
 
 // What the catalog calls a type, from what a snapshot calls it.
 export function normalizeType(type) {
@@ -189,7 +231,7 @@ export function reduceSchema(full) {
       primaryKey: t.primaryKey,
       unique: byShape(Object.values(t.unique).map((cols) => cols.join(','))),
       foreignKeys: byShape(Object.values(t.foreignKeys), fkKey),
-      checks: Object.keys(t.checks).sort(),
+      checks: checksOf(t.checks),
     }
   }
   return out
@@ -241,7 +283,7 @@ export function snapshotSchema(snapshot) {
       primaryKey: pk,
       unique,
       foreignKeys,
-      checks: Object.keys(table.checkConstraints ?? {}).sort(),
+      checks: checksOf(Object.fromEntries(Object.values(table.checkConstraints ?? {}).map((c) => [c.name, c.value]))),
     }
   }
   return out
