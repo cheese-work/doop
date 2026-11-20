@@ -13,6 +13,7 @@ const SHA = 'c'.repeat(40)
 
 const STUB = `#!/usr/bin/env bash
 echo "docker $*" >> "$STUB_DIR/log"
+case "$*" in *" ps -q "*) echo "doop-db"; exit 0 ;; esac
 case "$1" in compose) echo "DOOP_IMAGE=\${DOOP_IMAGE:-}" >> "$STUB_DIR/log"; exit 0 ;; esac
 say() { [ -f "$STUB_DIR/$1" ] && cat "$STUB_DIR/$1" || exit 1; }
 case "$*" in
@@ -615,5 +616,65 @@ describe('c00.sh confirm decides under the lock (C-5 confirm check)', () => {
 
   it.each(['DEPLOY_MODE', 'MARKER_EXPECT'])('refuses without %s', (name) => {
     expect(c00('confirm', { ...confirmEnv, [name]: '' }).status).not.toBe(0)
+  })
+})
+
+/* The jobs' own env blocks drive c00.sh: the C00 runner holds nothing but what the workflow gives each job
+   (CHE-5549 review: confirm lacked C00_COMPOSE_DIR, so every healthy deploy rolled back). `vars.*` resolve to
+   their defaults (an unset variable is empty), job outputs and context values are given by the test. */
+describe('workflow job env reaches c00.sh with the default runner configuration', () => {
+  const wf = readFileSync(resolve('.github/workflows/cd-deploy.yml'), 'utf8')
+  const jobEnv = (name: string): Record<string, string> => {
+    const j = new RegExp(`^  ${name}:\\n([\\s\\S]*?)(?=^  [a-z][a-z0-9-]*:\\n|(?![\\s\\S]))`, 'm').exec(wf)?.[1] ?? ''
+    const block = /^ {4}env:\n((?: {6}.*\n|\s*\n)*)/m.exec(j)?.[1] ?? ''
+    const out: Record<string, string> = {}
+    for (const line of block.split('\n')) {
+      const m = /^ {6}([A-Z0-9_]+): (.*)$/.exec(line)
+      if (!m) continue
+      const v = m[2]!.trim()
+      const dflt = /^\$\{\{ vars\.\w+ \|\| '([^']*)' \}\}$/.exec(v)
+      if (dflt) out[m[1]!] = dflt[1]!
+      else if (/^\$\{\{ vars\.\w+ \}\}$/.test(v)) out[m[1]!] = ''
+      else if (!v.includes('${{')) out[m[1]!] = v
+    }
+    return out
+  }
+  // What the workflow expressions that need other jobs would give (these tests are not about them).
+  const given = { DEPLOY_REF: REF, DEPLOY_SHA: SHA, DEPLOY_MODE: 'train', MARKER_EXPECT: 'armed:n1:99:' + SHA }
+  const runnerEnv = (name: string, extra: Record<string, string>) => ({
+    PATH: `${join(dir, 'bin')}:${process.env.PATH}`,
+    STUB_DIR: dir,
+    C00_LOCK_FILE: join(dir, 'lock'),
+    C00_LOCK_WAIT: '2',
+    C00_POLL_SECONDS: '0',
+    ...given,
+    ...extra,
+    ...jobEnv(name),
+  })
+  const run = (cmd: string, name: string, extra: Record<string, string>) =>
+    spawnSync('bash', [SCRIPT, cmd], { encoding: 'utf8', env: runnerEnv(name, extra) })
+
+  it.each(['deploy', 'readback-confirm', 'rollback'])(
+    '%s sets the compose dir and the database container the same way',
+    (name) => {
+      const e = jobEnv(name)
+      expect(e.C00_COMPOSE_DIR, name).toBeTruthy()
+      expect(e).toHaveProperty('C00_PG_CONTAINER')
+      expect(wf).toMatch(/DOOP_DEPLOY_TRAIN: \$\{\{ vars\.DOOP_DEPLOY_TRAIN \}\}/)
+      expect(e.C00_COMPOSE_DIR).toBe(jobEnv('deploy').C00_COMPOSE_DIR)
+    },
+  )
+
+  it('a healthy deploy confirms with only the confirm job env: the database is found by default discovery', () => {
+    const old = String(Math.floor(Date.now() / 1000) - 2000)
+    const r = run('confirm', 'readback-confirm', { RESTART_T0: '0', T0_EPOCH: old })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stderr).not.toContain('C00_COMPOSE_DIR is not set')
+    expect(log()).toMatch(/docker compose .* ps -q db/)
+  })
+
+  it('rollback runs with only the rollback job env', () => {
+    const r = run('rollback', 'rollback', { PREDECESSOR_DIGEST: DIGEST, PREDECESSOR_SHA: SHA })
+    expect(r.stderr).not.toContain('C00_COMPOSE_DIR is not set')
   })
 })
