@@ -89,8 +89,8 @@ export async function liveVerdict({ body, deployed, isAncestor }) {
 // The last successful D2 SHA. `recorded` is the newest successful deployment record, `{ sha, runId }` (runId: the D2 run
 // that wrote it, or null), or null. A record alone is not the answer: if a later confirmed deploy failed to write its
 // own record, the record is stale. So the runs newer than the record's run are checked first, newest first: a confirmed
-// one that is not the record, or a green one whose evidence is gone (it could have been that deploy), makes the history
-// unknown; a failed run that left no evidence cannot have confirmed. Runs from the record's run on are older and are
+// one that is not the record, or any one whose evidence is gone, green or not (it could have been that deploy, with
+// the evidence upload failing after the confirm), makes the history unknown. Runs from the record's run on are older and are
 // not read. With no record the whole history is scanned for the first `confirmed` run. At most `maxScan` runs are read.
 // Reaching the end of the history with every run readable and none confirmed, and no record, is the one proof of
 // "none". `listRuns(page)` gives completed D2 runs, newest first, an empty page at the end; `read(id)` gives a run's
@@ -114,8 +114,11 @@ export async function lastDeployed({ recorded, listRuns, read, maxScan = 100 }) 
       }
       const evidence = await read(run.id)
       if (evidence === null || evidence === undefined) {
-        if (run.conclusion === 'success') return unknown(`D2 run ${run.id} ended green but its evidence is gone`)
-        continue
+        // Evidence is written on every run, so a run without it is unproven, whatever its conclusion: a deploy can
+        // confirm and then fail (or be cancelled) before the evidence upload. Only evidence says it did not confirm.
+        return unknown(
+          `D2 run ${run.id} (${run.conclusion ?? 'unfinished'}) has no evidence: it could have confirmed a deploy`,
+        )
       }
       if (evidence.outcome !== 'confirmed') continue
       if (!SHA40.test(evidence.candidate_sha ?? '')) {

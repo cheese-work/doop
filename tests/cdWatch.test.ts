@@ -263,9 +263,27 @@ describe('lastDeployed: the last successful D2 SHA, from a durable record first 
     expect(out.state).toBe('unknown')
   })
 
-  it('skips a newer failed run that left no evidence: it failed before it could confirm', async () => {
+  it('is unknown when a newer failed run left no evidence: it could have confirmed a deploy before its evidence upload failed', async () => {
     const out = await lastDeployed({ recorded: rec(A), listRuns: pages([failed(51), skip(50)]), read: reader({}) })
-    expect(out).toMatchObject({ state: 'known', sha: A })
+    expect(out.state).toBe('unknown')
+    expect(out.reason).toContain('51')
+    expect(out.reason).toContain('no evidence')
+  })
+
+  it('is unknown when a newer cancelled run left no evidence', async () => {
+    const out = await lastDeployed({
+      recorded: rec(A),
+      listRuns: pages([{ id: 51, conclusion: 'cancelled' }, skip(50)]),
+      read: reader({}),
+    })
+    expect(out.state).toBe('unknown')
+  })
+
+  it('fails the live watcher on confirm B, evidence upload failed, record A, live A', async () => {
+    const deployed = await lastDeployed({ recorded: rec(A), listRuns: pages([failed(52), skip(50)]), read: reader({}) })
+    const out = await liveVerdict({ body: { ok: true, revision: A }, deployed, isAncestor: async () => false })
+    expect(out.ok).toBe(false)
+    expect(out.reason).toContain('unknown')
   })
 
   it('without the record run id, takes the record only if the newest confirmed evidence agrees with it', async () => {
@@ -334,9 +352,11 @@ describe('lastDeployed: the last successful D2 SHA, from a durable record first 
   })
 
   it('is none, a proven first deployment, only when every run is readable and none was confirmed', async () => {
-    const runs = [skip(2), { id: 1, conclusion: 'failure' }]
-    const evidence: Record<number, Ev> = { 2: { outcome: 'not_deployed', candidate_sha: C } }
-    // run 1 failed and left no evidence: a failed run cannot have confirmed, so it does not make the history unknown
+    const runs = [skip(2), failed(1)]
+    const evidence: Record<number, Ev> = {
+      2: { outcome: 'not_deployed', candidate_sha: C },
+      1: { outcome: 'failed', candidate_sha: B },
+    }
     expect(await lastDeployed({ recorded: null, listRuns: pages(runs), read: reader(evidence) })).toEqual({
       state: 'none',
     })

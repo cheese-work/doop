@@ -146,10 +146,11 @@ running before the switch can turn on. The last successful D2 SHA has three stat
    JSON booleans), with a `success` status, read back before the step passes. A write that fails turns the D2 run red.
    Neither artifact expiry nor any number of skipped D2 slots can lose it. The watchers read it with
    `deployments: read`. The record is not trusted alone: the D2 runs newer than the record's run are checked first. A
-   newer run whose evidence confirms another SHA (its record write failed), or a newer green run whose evidence is
-   gone, is `unknown`; a newer failed run with no evidence is skipped. The record's own run and older are not read.
+   newer run whose evidence confirms another SHA (its record write failed), or a newer run whose evidence is gone
+   (green, failed or cancelled: a deploy can confirm and then lose its evidence upload), is `unknown`. The record's own
+   run and older are not read.
 2. Without a record: the `deploy-evidence` artifact (`outcome: confirmed`) of the newest D2 runs, newest first, up to
-   100 runs (a skipped D2 ends green, so a run conclusion is not used). A green run whose artifact is gone or
+   100 runs (a skipped D2 ends green, so a run conclusion is not used). A run whose artifact is gone or
    unreadable, a confirmed artifact with a bad SHA, or hitting the scan limit is `unknown`.
 
 `unknown` fails visibly: the freshness watch alarms at once when a candidate exists, and the live watch fails. A
