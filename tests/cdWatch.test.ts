@@ -4,17 +4,25 @@ import * as watch from '../scripts/cd-watch.mjs'
 
 /* CHE-5550 (train S7, plan CHE-5474 C-7): the two watchers' decisions as pure functions. The CLI and the
    workflows only feed them facts read from GitHub and from C00's /healthz. */
-const { lastSlot, freshness, liveVerdict, lastDeployed, deploymentRecord } = watch as {
+const { lastSlot, freshness, liveVerdict, lastDeployed, deploymentRecord, ghPostArgs, recordDeployment } = watch as {
   lastSlot: (nowMs: number) => number
   freshness: (f: Record<string, unknown>) => { action: string; reason: string; rerunD1: boolean }
   liveVerdict: (f: Record<string, unknown>) => Promise<{ ok: boolean; reason: string }>
   lastDeployed: (h: {
-    recorded: string | null
+    recorded: { sha: string; runId: number | null } | null
     listRuns: (page: number) => Promise<{ id: number; conclusion: string }[]>
     read: (id: number) => Promise<{ outcome?: string; candidate_sha?: string } | null>
     maxScan?: number
   }) => Promise<{ state: string; sha?: string; reason?: string }>
   deploymentRecord: (evidence: Record<string, unknown>) => { ref: string; environment: string } | null
+  ghPostArgs: (repo: string, route: string, fields: Record<string, string | boolean>) => string[]
+  recordDeployment: (h: {
+    repo: string
+    evidence: Record<string, unknown>
+    runId: string
+    gh: (args: string[]) => string
+    recordedSha: () => { sha: string; runId: number | null } | null
+  }) => string
 }
 
 const A = 'a'.repeat(40)
@@ -199,17 +207,108 @@ describe('lastDeployed: the last successful D2 SHA, from a durable record first 
   const reader = (evidence: Record<number, Ev>) => async (id: number) => evidence[id] ?? null
   const skip = (id: number) => ({ id, conclusion: 'success' })
 
-  it('is the deployment record when there is one, without reading a single artifact', async () => {
+  const rec = (sha: string, runId: number | null = 50) => ({ sha, runId })
+  const failed = (id: number) => ({ id, conclusion: 'failure' })
+
+  it('is the deployment record when no run is newer than it, without reading a single artifact', async () => {
     const out = await lastDeployed({
-      recorded: A,
-      listRuns: async () => {
-        throw new Error('must not list runs')
-      },
+      recorded: rec(A),
+      listRuns: pages([skip(50), skip(49)]),
       read: async () => {
         throw new Error('must not read evidence')
       },
     })
     expect(out).toEqual({ state: 'known', sha: A, source: 'deployment record' })
+  })
+
+  it('is the record when the runs newer than it deployed nothing, and does not read the record run or older', async () => {
+    const read = reader({
+      52: { outcome: 'not_deployed', candidate_sha: C },
+      51: { outcome: 'failed', candidate_sha: B },
+    })
+    const seen: number[] = []
+    const out = await lastDeployed({
+      recorded: rec(A),
+      listRuns: pages([skip(52), failed(51), skip(50), skip(49)]),
+      read: async (id) => (seen.push(id), read(id)),
+    })
+    expect(out).toMatchObject({ state: 'known', sha: A })
+    expect(seen).toEqual([52, 51])
+  })
+
+  it('is unknown, not the older record, when a newer run confirmed a deploy that has no record (record A, confirmed B, record of B failed)', async () => {
+    const out = await lastDeployed({
+      recorded: rec(A),
+      listRuns: pages([failed(52), skip(50)]),
+      read: reader({ 52: { outcome: 'confirmed', candidate_sha: B } }),
+    })
+    expect(out.state).toBe('unknown')
+    expect(out.reason).toContain('52')
+    expect(out.reason).toContain('bbbbbbb')
+    expect(out.reason).toContain('no deployment record')
+  })
+
+  it('is unknown when a newer green run has expired or unreadable evidence: it could have been that deploy', async () => {
+    const out = await lastDeployed({ recorded: rec(A), listRuns: pages([skip(51), skip(50)]), read: reader({}) })
+    expect(out.state).toBe('unknown')
+    expect(out.reason).toContain('51')
+  })
+
+  it('is unknown when a newer confirmed run has no usable SHA', async () => {
+    const out = await lastDeployed({
+      recorded: rec(A),
+      listRuns: pages([skip(51)]),
+      read: reader({ 51: { outcome: 'confirmed', candidate_sha: 'nope' } }),
+    })
+    expect(out.state).toBe('unknown')
+  })
+
+  it('skips a newer failed run that left no evidence: it failed before it could confirm', async () => {
+    const out = await lastDeployed({ recorded: rec(A), listRuns: pages([failed(51), skip(50)]), read: reader({}) })
+    expect(out).toMatchObject({ state: 'known', sha: A })
+  })
+
+  it('without the record run id, takes the record only if the newest confirmed evidence agrees with it', async () => {
+    const ok = await lastDeployed({
+      recorded: rec(A, null),
+      listRuns: pages([skip(2)]),
+      read: reader({ 2: { outcome: 'confirmed', candidate_sha: A } }),
+    })
+    expect(ok).toMatchObject({ state: 'known', sha: A })
+    const newer = await lastDeployed({
+      recorded: rec(A, null),
+      listRuns: pages([skip(2)]),
+      read: reader({ 2: { outcome: 'confirmed', candidate_sha: B } }),
+    })
+    expect(newer.state).toBe('unknown')
+    expect(await lastDeployed({ recorded: rec(A, null), listRuns: pages([]), read: reader({}) })).toMatchObject({
+      state: 'known',
+      sha: A,
+    })
+  })
+
+  it('is unknown when the scan limit is hit before the record run is reached', async () => {
+    const runs = Array.from({ length: 12 }, (_, i) => skip(100 - i))
+    const evidence: Record<number, Ev> = {}
+    for (const r of runs) evidence[r.id] = { outcome: 'not_deployed', candidate_sha: C }
+    const out = await lastDeployed({
+      recorded: rec(A, 10),
+      listRuns: pages(runs, 5),
+      read: reader(evidence),
+      maxScan: 10,
+    })
+    expect(out.state).toBe('unknown')
+  })
+
+  it('fails the live watcher when the record is older than a confirmed deploy and live is still the record', async () => {
+    const deployed = await lastDeployed({
+      recorded: rec(A),
+      listRuns: pages([failed(52), skip(50)]),
+      read: reader({ 52: { outcome: 'confirmed', candidate_sha: B } }),
+    })
+    const out = await liveVerdict({ body: { ok: true, revision: A }, deployed, isAncestor: async () => false })
+    expect(out.ok).toBe(false)
+    expect(out.reason).toContain('unknown')
   })
 
   it('finds a confirmed deployment behind 30+ skipped runs, which a 30-run window missed', async () => {
@@ -271,7 +370,7 @@ describe('lastDeployed: the last successful D2 SHA, from a durable record first 
 
   it('ignores a malformed deployment record and falls back to the artifacts', async () => {
     const out = await lastDeployed({
-      recorded: 'not-a-sha',
+      recorded: rec('not-a-sha'),
       listRuns: pages([skip(1)]),
       read: reader({ 1: { outcome: 'confirmed', candidate_sha: A } }),
     })
@@ -292,5 +391,87 @@ describe('deploymentRecord: what D2 writes durably after a confirmed deploy', ()
       expect(deploymentRecord({ outcome, candidate_sha: A }), outcome).toBeNull()
     expect(deploymentRecord({ outcome: 'confirmed', candidate_sha: 'nope' })).toBeNull()
     expect(deploymentRecord({ outcome: 'confirmed' })).toBeNull()
+  })
+})
+
+describe('the deployment record request (typed fields, read back)', () => {
+  it('sends strings with -f and booleans with -F, so auto_merge and production_environment are JSON booleans', () => {
+    expect(
+      ghPostArgs('o/r', 'deployments', {
+        ref: A,
+        environment: 'c00-doop',
+        auto_merge: false,
+        production_environment: true,
+      }),
+    ).toEqual([
+      'api',
+      '-X',
+      'POST',
+      'repos/o/r/deployments',
+      '-f',
+      `ref=${A}`,
+      '-f',
+      'environment=c00-doop',
+      '-F',
+      'auto_merge=false',
+      '-F',
+      'production_environment=true',
+    ])
+  })
+
+  const evidence = { outcome: 'confirmed', candidate_sha: A }
+  const fake = (recorded: { sha: string; runId: number | null } | null) => {
+    const calls: string[][] = []
+    const gh = (args: string[]) => (calls.push(args), JSON.stringify({ id: 7 }))
+    return { calls, gh, recordedSha: () => recorded }
+  }
+
+  it('posts the deployment with typed booleans, then the success status, then reads it back', () => {
+    const f = fake({ sha: A, runId: 123 })
+    const out = recordDeployment({ repo: 'o/r', evidence, runId: '123', gh: f.gh, recordedSha: f.recordedSha })
+    expect(out).toContain('recorded')
+    expect(f.calls).toHaveLength(2)
+    const [deployment, status] = f.calls as [string[], string[]]
+    expect(deployment).toContain('repos/o/r/deployments')
+    expect(deployment.join(' ')).toContain('-F auto_merge=false')
+    expect(deployment.join(' ')).toContain('-F production_environment=true')
+    expect(deployment.join(' ')).not.toMatch(/-f (auto_merge|production_environment)=/)
+    expect(deployment.join(' ')).toContain('D2 run 123')
+    expect(status).toContain('repos/o/r/deployments/7/statuses')
+    expect(status.join(' ')).toContain('state=success')
+  })
+
+  it('fails when the record does not read back, so the D2 run goes red instead of losing the deploy', () => {
+    const f = fake({ sha: B, runId: 99 })
+    expect(() =>
+      recordDeployment({ repo: 'o/r', evidence, runId: '123', gh: f.gh, recordedSha: f.recordedSha }),
+    ).toThrow(/did not read back/)
+    const none = fake(null)
+    expect(() =>
+      recordDeployment({ repo: 'o/r', evidence, runId: '123', gh: none.gh, recordedSha: none.recordedSha }),
+    ).toThrow(/did not read back/)
+  })
+
+  it('fails when the write itself is refused, and posts no status for a deployment that was not created', () => {
+    const calls: string[][] = []
+    const gh = (args: string[]) => {
+      calls.push(args)
+      throw new Error('HTTP 403')
+    }
+    expect(() => recordDeployment({ repo: 'o/r', evidence, runId: '123', gh, recordedSha: () => null })).toThrow(/403/)
+    expect(calls).toHaveLength(1)
+  })
+
+  it('records nothing for a run that did not confirm a deploy', () => {
+    const f = fake(null)
+    const out = recordDeployment({
+      repo: 'o/r',
+      evidence: { outcome: 'not_deployed', candidate_sha: A },
+      runId: '123',
+      gh: f.gh,
+      recordedSha: f.recordedSha,
+    })
+    expect(out).toContain('nothing to record')
+    expect(f.calls).toHaveLength(0)
   })
 })

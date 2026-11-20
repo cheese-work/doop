@@ -1130,8 +1130,9 @@ data-doop-webfonts>` for the roster families the frame names and does not load i
     `/healthz` `revision` is not behind the last successful D2 SHA. Both idle while `DOOP_DEPLOY_TRAIN` is not `on`.
     Logic in `scripts/cd-watch.mjs`; `/healthz` reads the commit baked into the image (`server/revision.ts`).
     The last successful D2 SHA is read from a GitHub deployment (environment `c00-doop`) that D2's evidence job
-    writes on each confirmed deploy, falling back to a paginated scan of `deploy-evidence` artifacts; unreadable
-    history is `unknown` and fails visibly, never "nothing deployed".
+    writes on each confirmed deploy (typed JSON booleans, read back), reconciled with the D2 runs newer than the
+    record (a confirmed deploy without a record is `unknown`), and without a record a paginated scan of
+    `deploy-evidence` artifacts; unreadable history is `unknown` and fails visibly, never "nothing deployed".
   - `.github/workflows/cla.yml` - CLA check (this is an AGPL-3.0 project with CLA-based
     contribution).
   - `.github/workflows/desktop.yml` / `desktop-release.yml` - Tauri desktop app CI and installer

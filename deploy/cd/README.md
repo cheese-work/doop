@@ -142,11 +142,15 @@ running before the switch can turn on. The last successful D2 SHA has three stat
 
 1. The deployment record. The `evidence` job of D2 (`permissions: deployments: write`, after the artifact upload) runs
    `node scripts/cd-watch.mjs record deploy-evidence.json` on a confirmed deploy: a GitHub deployment in environment
-   `c00-doop` at the candidate SHA, with a `success` status, read back before the step passes. Neither artifact expiry
-   nor any number of skipped D2 slots can lose it. The watchers read it with `deployments: read`.
-2. Fallback: the `deploy-evidence` artifact (`outcome: confirmed`) of the newest D2 runs, newest first, up to 100 runs
-   (a skipped D2 ends green, so a run conclusion is not used). A green run whose artifact is gone or unreadable, a
-   confirmed artifact with a bad SHA, or hitting the scan limit is `unknown`.
+   `c00-doop` at the candidate SHA (description `... (D2 run <id>)`, `auto_merge` and `production_environment` sent as
+   JSON booleans), with a `success` status, read back before the step passes. A write that fails turns the D2 run red.
+   Neither artifact expiry nor any number of skipped D2 slots can lose it. The watchers read it with
+   `deployments: read`. The record is not trusted alone: the D2 runs newer than the record's run are checked first. A
+   newer run whose evidence confirms another SHA (its record write failed), or a newer green run whose evidence is
+   gone, is `unknown`; a newer failed run with no evidence is skipped. The record's own run and older are not read.
+2. Without a record: the `deploy-evidence` artifact (`outcome: confirmed`) of the newest D2 runs, newest first, up to
+   100 runs (a skipped D2 ends green, so a run conclusion is not used). A green run whose artifact is gone or
+   unreadable, a confirmed artifact with a bad SHA, or hitting the scan limit is `unknown`.
 
 `unknown` fails visibly: the freshness watch alarms at once when a candidate exists, and the live watch fails. A
 deployed candidate is never treated as overdue, and an unreachable `/healthz` never passes, because of missing history.

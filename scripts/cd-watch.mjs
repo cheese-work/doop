@@ -86,22 +86,31 @@ export async function liveVerdict({ body, deployed, isAncestor }) {
   return { ok: false, reason: `live ${short(live)} and the last successful D2 ${short(last)} have diverged` }
 }
 
-// The last successful D2 SHA. `recorded` is the SHA of the newest successful deployment record (or null). Without a
-// usable record the evidence artifacts are scanned, newest run first, at most `maxScan` runs: the first `confirmed` one
-// wins. A green run whose evidence is gone (expired, never written) could have been the deployment, so it makes the
-// history unknown; a failed run cannot have been confirmed, so it does not. Reaching the end of the history with every
-// run readable and none confirmed is the one proof of "none". `listRuns(page)` gives completed D2 runs, newest first, an
-// empty page at the end; `read(id)` gives a run's deploy-evidence, or null when it has none.
+// The last successful D2 SHA. `recorded` is the newest successful deployment record, `{ sha, runId }` (runId: the D2 run
+// that wrote it, or null), or null. A record alone is not the answer: if a later confirmed deploy failed to write its
+// own record, the record is stale. So the runs newer than the record's run are checked first, newest first: a confirmed
+// one that is not the record, or a green one whose evidence is gone (it could have been that deploy), makes the history
+// unknown; a failed run that left no evidence cannot have confirmed. Runs from the record's run on are older and are
+// not read. With no record the whole history is scanned for the first `confirmed` run. At most `maxScan` runs are read.
+// Reaching the end of the history with every run readable and none confirmed, and no record, is the one proof of
+// "none". `listRuns(page)` gives completed D2 runs, newest first, an empty page at the end; `read(id)` gives a run's
+// deploy-evidence, or null when it has none.
 export async function lastDeployed({ recorded, listRuns, read, maxScan = 100 }) {
-  if (SHA40.test(recorded ?? '')) return { state: 'known', sha: recorded, source: 'deployment record' }
+  const record = SHA40.test(recorded?.sha ?? '') ? recorded : null
   const unknown = (reason) => ({ state: 'unknown', reason })
   let scanned = 0
   for (let page = 1; ; page++) {
     const runs = await listRuns(page)
-    if (runs.length === 0) return { state: 'none' }
+    if (runs.length === 0) {
+      return record ? { state: 'known', sha: record.sha, source: 'deployment record' } : { state: 'none' }
+    }
     for (const run of runs) {
+      if (record && Number.isInteger(record.runId) && run.id <= record.runId) {
+        return { state: 'known', sha: record.sha, source: 'deployment record' }
+      }
       if (scanned++ >= maxScan) {
-        return unknown(`no deployment record, and no confirmed D2 run in the newest ${maxScan} runs`)
+        const what = record ? `the record of ${short(record.sha)} is not reached` : 'no deployment record'
+        return unknown(`${what}, and no confirmed D2 run in the newest ${maxScan} runs`)
       }
       const evidence = await read(run.id)
       if (evidence === null || evidence === undefined) {
@@ -112,7 +121,12 @@ export async function lastDeployed({ recorded, listRuns, read, maxScan = 100 }) 
       if (!SHA40.test(evidence.candidate_sha ?? '')) {
         return unknown(`D2 run ${run.id} is confirmed but its evidence has no usable candidate SHA`)
       }
-      return { state: 'known', sha: evidence.candidate_sha, source: `evidence of D2 run ${run.id}` }
+      if (!record) return { state: 'known', sha: evidence.candidate_sha, source: `evidence of D2 run ${run.id}` }
+      if (evidence.candidate_sha === record.sha) return { state: 'known', sha: record.sha, source: 'deployment record' }
+      return unknown(
+        `D2 run ${run.id} confirmed ${short(evidence.candidate_sha)} but there is no deployment record of it ` +
+          `(the newest record is ${short(record.sha)}): its record write failed`,
+      )
     }
   }
 }
@@ -153,12 +167,16 @@ function evidenceOf(repo, id) {
   }
 }
 
-// The SHA of the newest deployment record whose newest status is success, from the newest 30 records; or null.
+// The newest deployment record whose newest status is success, from the newest 30 records, as `{ sha, runId }` (runId
+// from the description `... (D2 run <id>)`, null when absent); or null.
 function recordedSha(repo) {
   const found = api(repo, `deployments?environment=${RECORD_ENV}&per_page=30`)
   for (const d of found) {
     const [status] = api(repo, `deployments/${d.id}/statuses?per_page=1`)
-    if (status?.state === 'success') return d.sha
+    if (status?.state === 'success') {
+      const runId = Number(/\(D2 run (\d+)\)/.exec(d.description ?? '')?.[1])
+      return { sha: d.sha, runId: Number.isInteger(runId) ? runId : null }
+    }
   }
   return null
 }
@@ -171,33 +189,46 @@ const deployedSha = (repo) =>
     read: async (id) => evidenceOf(repo, id),
   })
 
-// D2's evidence job: record a confirmed deploy as a successful deployment, then read it back.
-function record(repo, file) {
-  const payload = deploymentRecord(JSON.parse(readFileSync(file, 'utf8')))
-  if (!payload) return console.log('cd-watch record: this run did not confirm a deploy; nothing to record')
-  const post = (route, fields) =>
-    JSON.parse(gh(['api', '-X', 'POST', `repos/${repo}/${route}`, ...fields.flatMap(([k, v]) => ['-f', `${k}=${v}`])]))
-  const created = post('deployments', [
-    ['ref', payload.ref],
-    ['environment', payload.environment],
-    ['description', 'doop deploy train: confirmed on C00'],
-    ['auto_merge', 'false'],
-    ['production_environment', 'true'],
-  ])
-  post(`deployments/${created.id}/statuses`, [
-    ['state', 'success'],
-    ['environment', payload.environment],
-  ])
-  if (recordedSha(repo) !== payload.ref)
+// `gh api -X POST` arguments: a string field goes with -f, a boolean with -F so that GitHub gets a JSON boolean.
+export function ghPostArgs(repo, route, fields) {
+  return [
+    'api',
+    '-X',
+    'POST',
+    `repos/${repo}/${route}`,
+    ...Object.entries(fields).flatMap(([k, v]) => [typeof v === 'string' ? '-f' : '-F', `${k}=${v}`]),
+  ]
+}
+
+// D2's evidence job: record a confirmed deploy as a successful deployment of the candidate SHA, then read it back.
+// Throws when GitHub refuses a write or the record is not what was written, which turns the D2 run red.
+export function recordDeployment({ repo, evidence, runId, gh, recordedSha }) {
+  const payload = deploymentRecord(evidence)
+  if (!payload) return 'cd-watch record: this run did not confirm a deploy; nothing to record'
+  const post = (route, fields) => JSON.parse(gh(ghPostArgs(repo, route, fields)))
+  const created = post('deployments', {
+    ref: payload.ref,
+    environment: payload.environment,
+    description: `doop deploy train: confirmed on C00 (D2 run ${runId})`,
+    auto_merge: false,
+    production_environment: true,
+  })
+  post(`deployments/${created.id}/statuses`, { state: 'success', environment: payload.environment })
+  if (recordedSha()?.sha !== payload.ref) {
     throw new Error(`the deployment record of ${short(payload.ref)} did not read back`)
-  console.log(`cd-watch record: recorded ${short(payload.ref)} as a ${payload.environment} deployment`)
+  }
+  return `cd-watch record: recorded ${short(payload.ref)} as a ${payload.environment} deployment`
 }
 
 async function cli(argv, env) {
   const [command] = argv
   const repo = env.REPO ?? env.GITHUB_REPOSITORY
   const trainOn = env.DOOP_DEPLOY_TRAIN === 'on'
-  if (command === 'record') return record(repo, argv[1])
+  if (command === 'record') {
+    const evidence = JSON.parse(readFileSync(argv[1], 'utf8'))
+    const runId = env.GITHUB_RUN_ID
+    return console.log(recordDeployment({ repo, evidence, runId, gh, recordedSha: () => recordedSha(repo) }))
+  }
   if (command === 'freshness') {
     const nowMs = Date.now()
     if (!trainOn) {
