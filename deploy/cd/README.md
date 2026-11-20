@@ -10,8 +10,8 @@ D1  push to cheese/main -> ci -> image (digest) -> candidate-manifest artifact
 D2  schedule 06:17 / 14:17 / 22:17 ICT, or dispatch
     resolve [hosted] -> admit [hosted] -> deploy [C00]: pre-arm check, ARM, apply, readback (T0)
                                        -> readback-delay [hosted, environment c00-readback-delay, 15 min timer]
-                                       -> readback-confirm [C00]: confirm check, c00.sh confirm, RESTORE (train only)
-                                       \-> rollback [C00] (failure only): check, roll back, read back, SUSPEND, fail
+                                       -> readback-confirm [C00]: c00.sh confirm (lock, quiescence, confirm check), RESTORE (train only)
+                                       \-> rollback [C00] (failure only): c00.sh rollback (lock, quiescence, rollback check, roll back, read back), SUSPEND, fail
     evidence [hosted, every run]: deploy-evidence.json artifact and run summary
 ```
 
@@ -78,20 +78,25 @@ candidate (`scripts/migration-inventory.mjs`). A red D1 run skips a train run an
 
 ## Checks per operation (`deploy-gate.mjs recheck <mode> --op ... --expect ...`)
 
-| Operation   | Where                                           | Passes when                                                                        |
-| ----------- | ----------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `pre-arm`   | `deploy` step 1                                 | switch, pause and marker allow it; the candidate is strictly ahead of C00          |
-| `pre-apply` | `c00.sh apply`, inside `flock`, before `docker` | the same facts, and the marker is this run's own `--expect` value                  |
-| `confirm`   | `readback-confirm`, before `c00.sh confirm`     | marker is this run's own value; C00 runs the candidate digest and label            |
-| `rollback`  | `rollback`, before any change                   | marker is this run's own value; reports `action`: `rollback`, `none`, `superseded` |
+| Operation   | Where                                                                  | Passes when                                                                        |
+| ----------- | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `pre-arm`   | `deploy` step 1                                                        | switch, pause and marker allow it; the candidate is strictly ahead of C00          |
+| `pre-apply` | `c00.sh apply`, inside `flock`, before `docker`                        | the same facts, and the marker is this run's own `--expect` value                  |
+| `confirm`   | `c00.sh confirm`, inside `flock`, after quiescence                     | marker is this run's own value; C00 runs the candidate digest and label            |
+| `rollback`  | `c00.sh rollback`, inside `flock`, after quiescence, before any change | marker is this run's own value; reports `action`: `rollback`, `none`, `superseded` |
 
-Before the arm write a "no" is a skip; after it every "no" fails the job. Migration quiescence is an
-injected hook; slice S4b wires the real proof. An unknown operation exits non-zero.
+Before the arm write a "no" is a skip; after it every "no" fails the job. Every operation proves migration
+quiescence first: the gate runs `c00.sh quiescence` (no migrate container running, no `doop-migrate-%` session,
+advisory key free; a read that fails, a hang or a missing script counts as not proven). An unknown operation exits
+non-zero. `confirm` and `rollback` are decided by `c00.sh` after it holds the lock, never in a workflow step before
+it: a deployment or a marker change that lands while the job waits for the lock is seen, and a `superseded`
+rollback changes nothing.
 
 ## Locks
 
-`c00.sh apply` takes `flock -w 600 /var/lock/doop-deploy.lock` (`C00_LOCK_FILE`, `C00_LOCK_WAIT`), runs the
-`pre-apply` check, then tags the rollback target, pulls and starts. Every C00 job also sits in GitHub
+`c00.sh apply`, `confirm` and `rollback` take `flock -w 600 /var/lock/doop-deploy.lock` (`C00_LOCK_FILE`,
+`C00_LOCK_WAIT`) and run their check under it. `apply` runs the `pre-apply` check, then tags the rollback target,
+pulls and starts. Every C00 job also sits in GitHub
 concurrency group `c00-deploy-doop` with `cancel-in-progress: false`. D2 has no workflow-level concurrency.
 
 ## What the deploy does (`c00.sh`)
@@ -104,13 +109,14 @@ concurrency group `c00-deploy-doop` with `cancel-in-progress: false`. D2 has no 
    It writes T0 to `$GITHUB_OUTPUT`: `restart_count`, `health`, `t0_epoch`. `apply` writes `lock_wait_seconds`.
 3. `readback-delay` (S5, C-9): a hosted job in environment `c00-readback-delay`, whose 15 min wait timer is the
    delay. It holds no runner and no lock while it waits.
-4. `confirm` (job `readback-confirm`, after the `confirm` check): under `flock`, the container restart count is
-   still the T0 count, it is `healthy`, and it still runs the candidate digest and label. It also refuses when
+4. `confirm` (job `readback-confirm`): under `flock`, migration quiescence holds (switch on or off), the `confirm`
+   check passes, the container restart count is still the T0 count, it is `healthy`, and it still runs the candidate digest and label. It also refuses when
    fewer than `C00_CONFIRM_MIN_SECONDS` (900) have passed since T0, so a missing wait timer fails closed. A train
    run then restores the marker.
 5. `rollback` (only when `apply` got as far as starting the change, after a failure in `deploy`, `readback-delay`
-   or `readback-confirm`): the `rollback` check decides from what C00 runs.
-   - The candidate digest: `c00.sh rollback` (under `flock`) first checks the retained `doop-rollback:previous`
+   or `readback-confirm`): `c00.sh rollback` takes `flock`, proves migration quiescence (switch on or off), then the
+   `rollback` check decides from what C00 runs and what the marker says at that moment.
+   - The candidate digest: `c00.sh rollback` first checks the retained `doop-rollback:previous`
      image is the predecessor digest, starts it, waits up to 5 minutes for `healthy`, then reads back the
      predecessor digest, label and health.
    - The predecessor digest: no container change. Any other digest (a newer deploy replaced the candidate): no
@@ -159,7 +165,7 @@ Pure checks the deploy train calls before it changes C00; none runs yet (the tra
 
 Rules C-8.7 and C-8.8. With `DOOP_DEPLOY_TRAIN=on`, `c00.sh apply` no longer lets the app migrate at boot.
 
-**Switch.** Everything below runs only when the deploy job's `DOOP_DEPLOY_TRAIN` (repository variable, passed by `image.yml`) is exactly `on`. Absent, `off` or any other value: `apply` and `rollback` do what they did before the train (no quiescence read, no one-shot container, the app migrates at boot and is not given `compose.supervised.yml`), and `DEPLOY_RUN_ID` and a Postgres container are not needed. The overlay that sets `DOOP_SKIP_MIGRATIONS=1` is `compose.supervised.yml`, added to the compose command only in train mode; `compose.image.yml` is unchanged.
+**Switch.** Everything below runs only when the deploy job's `DOOP_DEPLOY_TRAIN` (repository variable, passed by `image.yml`) is exactly `on`. Absent, `off` or any other value: `apply` does what it did before the train (no one-shot container, the app migrates at boot and is not given `compose.supervised.yml`) and `DEPLOY_RUN_ID` is not needed. `confirm` and `rollback` prove quiescence with the switch off too, because the app migrating at boot can still be running, so a Postgres container is needed for them. The overlay that sets `DOOP_SKIP_MIGRATIONS=1` is `compose.supervised.yml`, added to the compose command only in train mode; `compose.image.yml` is unchanged.
 
 - `apply` first proves quiescence, then pulls, then runs `node server/db/migrate.ts` once in a one-shot container `doop-migrate-<DEPLOY_RUN_ID>` of the candidate image (`docker compose run`, label `doop.migrate.run`). The runner sets `application_name=doop-migrate-<run id>`, holds `pg_advisory_lock(1685025648, 1)` for the whole run, and fails at 120 s (`C00_MIGRATE_SECONDS`). The app is then recreated with `DOOP_SKIP_MIGRATIONS=1` (`compose.supervised.yml`).
 - Timeout or non-zero exit: no app start. `docker kill`, `docker wait`, `pg_terminate_backend` on every session with that name, then within 30 s (`C00_QUIESCE_SECONDS`) the container is `exited`, `pg_stat_activity` has no such session (`(pid, backend_start)` logged before and after) and `pg_locks` shows the key free. The ledger is compared with the pre-apply ledger (`ledger_changed=`). Proven: outcome `migrate_failed`, the running app is untouched. Not proven: outcome `needs_operator`. Both go to `$GITHUB_OUTPUT` as `outcome=`.

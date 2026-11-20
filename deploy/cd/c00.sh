@@ -2,18 +2,22 @@
 # Runs on the C00 deploy runner (CHE-4585). Never builds: it pulls and runs an
 # image that already exists in GHCR, named by digest.
 #
-#   Everything below that mentions migration supervision applies only when DOOP_DEPLOY_TRAIN=on. Absent or
-#   off, apply and rollback behave as before the train (no quiescence check, the app migrates at boot).
+#   Migration supervision in apply applies only when DOOP_DEPLOY_TRAIN=on. Absent or off, apply behaves as before
+#   the train (the app migrates at boot). Confirm and rollback prove quiescence under the lock either way: with the
+#   switch off a migration can still be running (the app migrates at boot) and must not be raced.
 #   c00.sh apply      take the C00 deploy lock, run the pre-apply check, prove migration quiescence, pin the
 #                     running image as the rollback target, pull DEPLOY_REF, run its migrations once in a
 #                     supervised one-shot container (C-8.8), then start it with DOOP_SKIP_MIGRATIONS=1
 #   c00.sh readback   running digest == DEPLOY_REF's, image revision label == DEPLOY_SHA,
 #                     then healthy on 3 consecutive checks inside 90 s; writes T0 (restart_count, t0_epoch, health)
-#   c00.sh confirm    under the lock, after the readback delay (C-9): restart count == RESTART_T0, healthy,
-#                     digest and label still the candidate's, at least C00_CONFIRM_MIN_SECONDS (900) since T0_EPOCH
-#   c00.sh rollback   under the lock: prove migration quiescence, start the pinned previous image, wait for it to
-#                     be healthy; with PREDECESSOR_DIGEST and PREDECESSOR_SHA it first checks the retained image is
-#                     that digest, then reads back the predecessor's digest, label and health
+#   c00.sh confirm    under the lock, after the readback delay (C-9): migration quiescence, the confirm recheck
+#                     (marker is this run's, digest and label are the candidate's), restart count == RESTART_T0,
+#                     healthy, at least C00_CONFIRM_MIN_SECONDS (900) since T0_EPOCH
+#   c00.sh rollback   under the lock: prove migration quiescence, then decide (the rollback recheck: marker is this
+#                     run's, what C00 runs now) as `action=rollback|none|superseded` to $GITHUB_OUTPUT. Only
+#                     `rollback` changes C00: start the pinned previous image, wait for it to be healthy; with
+#                     PREDECESSOR_DIGEST and PREDECESSOR_SHA it first checks the retained image is that digest,
+#                     then reads back the predecessor's digest, label and health
 #   c00.sh quiescence prove migration quiescence and nothing else (compat and lift jobs call this first)
 #   c00.sh guard      refuse (exit 1) while an earlier compat migration's quiescence is unproven; re-proves the three
 #                     facts and clears the guard when they hold. apply, rollback and sweep run it first; the lift
@@ -22,8 +26,8 @@
 #                     zero, print df before and after. Needs no compose dir and no deploy ref (CHE-5474 C-8.5d).
 #
 # Env: DEPLOY_REF (image@sha256:...), DEPLOY_SHA, C00_COMPOSE_DIR (compose project on C00),
-#      apply also needs DEPLOY_MODE (train|recovery|drill) and MARKER_EXPECT (this run's own
-#      DOOP_DEPLOY_SUSPENDED value), plus the GH_TOKEN/REPO/EXTRA env that deploy-gate.mjs reads,
+#      apply, confirm and rollback also need DEPLOY_MODE (train|recovery|drill) and MARKER_EXPECT (this run's own
+#      DOOP_DEPLOY_SUSPENDED value), plus the GH_TOKEN/REPO/EXTRA/PREDECESSOR_DIGEST env that deploy-gate.mjs reads,
 #      C00_PG_CONTAINER (the live Postgres container; read through `docker exec`, read-only; default: the
 #      compose project's `db` service, C00_PG_SERVICE),
 #      DEPLOY_RUN_ID (apply with DOOP_DEPLOY_TRAIN=on only: [a-z0-9-], names the one-shot container and its DB sessions).
@@ -212,6 +216,24 @@ require_quiescent() {
   die "migration quiescence not proven: $why"
 }
 
+# One C-5 recheck, run under the lock (confirm and rollback decide here, never before the lock). The gate's
+# output goes through a private file so this script can read the action it decided, then on to $GITHUB_OUTPUT.
+need_gate_inputs() {
+  mode=${DEPLOY_MODE:-}
+  expect=${MARKER_EXPECT:-}
+  [ -n "$mode" ] && [ -n "$expect" ] || die "DEPLOY_MODE and MARKER_EXPECT are required"
+}
+gate_action=
+gate_recheck() { # $1 = op (confirm | rollback)
+  local gout rc=0
+  gout=$(mktemp) || die "cannot create a temp file for the gate"
+  GITHUB_OUTPUT=$gout node "$here/../../scripts/deploy-gate.mjs" recheck "$mode" --op "$1" --expect "$expect" || rc=$?
+  gate_action=$(sed -n 's/^action=//p' "$gout" | tail -n 1)
+  [ -z "${GITHUB_OUTPUT:-}" ] || cat "$gout" >> "$GITHUB_OUTPUT"
+  rm -f "$gout"
+  return $rc
+}
+
 # Runs the migrations once for this deploy; returns only when they succeeded.
 migrate_supervised() { # $1 = image ref
   local name=${migrate_prefix}$run_id budget=${C00_MIGRATE_SECONDS:-120} qbudget=${C00_QUIESCE_SECONDS:-30}
@@ -337,7 +359,12 @@ case $cmd in
     sha=${DEPLOY_SHA:-}
     [ -n "$ref" ] && [ -n "$sha" ] || die "DEPLOY_REF and DEPLOY_SHA are required"
     [[ ${RESTART_T0:-} =~ ^[0-9]+$ ]] && [[ ${T0_EPOCH:-} =~ ^[0-9]{10}$ ]] || die "RESTART_T0 and T0_EPOCH are required (from the readback)"
+    need_gate_inputs
     take_lock
+    # Under the lock: no migration may be running (switch on or off), and the marker, the quiescence proof and the
+    # running digest are read again right before anything is confirmed.
+    require_quiescent
+    gate_recheck confirm || die "confirm check refused"
     # The wait timer lives in the repository environment, outside this repo; if it is missing the delay is
     # zero, and a confirm that early would prove nothing. Fail closed.
     waited=$(($(date +%s) - T0_EPOCH))
@@ -364,8 +391,21 @@ case $cmd in
         die "PREDECESSOR_DIGEST must be sha256:<64 hex> and PREDECESSOR_SHA a full SHA"
     fi
     guard_check
+    need_gate_inputs
     take_lock
-    ! train_on || require_quiescent
+    # Decided under the lock, on what C00 and the marker say now: a deployment or a marker change that landed while
+    # this waited for the lock is seen here, and nothing is replaced on a stale answer.
+    require_quiescent
+    gate_recheck rollback || die "rollback check refused"
+    set_output action "$gate_action"
+    case $gate_action in
+      rollback) ;;
+      none | superseded)
+        echo "rollback not needed: action=$gate_action, C00 was not changed"
+        exit 0
+        ;;
+      *) die "rollback check returned an unknown action '$gate_action'" ;;
+    esac
     docker image inspect "$rollback_tag" >/dev/null 2>&1 || die "no previous image to roll back to (first deploy?)"
     if [ -n "$pdigest" ]; then
       retained=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$rollback_tag") ||
