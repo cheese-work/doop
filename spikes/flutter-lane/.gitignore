@@ -1,0 +1,6 @@
+*.crt
+*.key
+*.pem
+node_modules
+build/
+.dart_tool/

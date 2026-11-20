@@ -1,0 +1,2 @@
+ready after 49308 ms, 9439418 wire bytes in 942 requests, budget 20000000
+WITHIN BUDGET

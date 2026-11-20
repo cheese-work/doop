@@ -1,0 +1,35 @@
+# bytes on a cold first load, uncompressed. 2026-11-19 03:16:52 ICT+0700
+=== canvaskit (top-level, Chrome 158)
+  2066164  /main.dart.js
+  1567999  /flutter-canvaskit/371f77202a73e8dff57a8b3bff75bca55c090aee/chromium/canvaskit.wasm
+    63498  /s/roboto/v32/KFOmCnqEu92Fr1Me4GZLCzYlKw.woff2
+    24835  /flutter-canvaskit/371f77202a73e8dff57a8b3bff75bca55c090aee/chromium/canvaskit.js
+     1004  /assets/fonts/MaterialIcons-Regular.otf
+      917  /favicon.png
+  3725469  TOTAL (8 requests)
+=== skwasm (top-level, Chrome 158)
+  1631621  /main.dart.wasm
+  1233728  /flutter-canvaskit/371f77202a73e8dff57a8b3bff75bca55c090aee/skwasm.wasm
+    63498  /s/roboto/v32/KFOmCnqEu92Fr1Me4GZLCzYlKw.woff2
+    29220  /main.dart.mjs
+    15167  /flutter-canvaskit/371f77202a73e8dff57a8b3bff75bca55c090aee/skwasm.js
+    14905  /flutter_bootstrap.js
+  2991224  TOTAL (10 requests)
+
+# bytes with --no-web-resources-cdn (all from X99). 2026-11-19 03:20:58 ICT+0700
+=== canvaskit (top-level, Chrome 158)
+  5463539  /canvaskit/chromium/canvaskit.wasm
+  2066091  /main.dart.js
+   171676  /assets/fonts/fallback/Roboto-Regular.ttf
+    86270  /canvaskit/chromium/canvaskit.js
+     1004  /assets/fonts/MaterialIcons-Regular.otf
+      844  /assets/packages/cupertino_icons/assets/CupertinoIcons.ttf
+  7789708  TOTAL (7 requests)
+=== skwasm (top-level, Chrome 158)
+  3612036  /canvaskit/skwasm.wasm
+  1631621  /main.dart.wasm
+   171676  /assets/fonts/fallback/Roboto-Regular.ttf
+    63858  /canvaskit/skwasm.js
+    29220  /main.dart.mjs
+     1116  /assets/fonts/MaterialIcons-Regular.otf
+  5510655  TOTAL (8 requests)

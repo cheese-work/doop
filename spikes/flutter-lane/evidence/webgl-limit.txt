@@ -1,0 +1,45 @@
+# WebGL context limit probe: N iframes of the release app (form 2 policy, 120x260 each), 'ready' = app posted its first frame. 2026-11-19 03:11:30 ICT+0700
+--- canvaskit N=12
+ready: 12 of 12 instances [0,1,10,11,2,3,4,5,6,7,8,9] after 6982 ms
+failed script requests (ERR_INSUFFICIENT_RESOURCES): 0
+WebGL context-limit messages in console ("Too many active WebGL contexts" / lost): 34
+  console: warning: WARNING: Too many active WebGL contexts. Oldest context will be lost.
+--- canvaskit N=20
+ready: 20 of 20 instances [0,1,10,11,12,13,14,15,16,17,18,19,2,3,4,5,6,7,8,9] after 14081 ms
+failed script requests (ERR_INSUFFICIENT_RESOURCES): 0
+WebGL context-limit messages in console ("Too many active WebGL contexts" / lost): 130
+  console: warning: WARNING: Too many active WebGL contexts. Oldest context will be lost.
+--- canvaskit N=40
+ready: 40 of 40 instances [0,1,10,11,12,13,14,15,16,17,18,19,2,20,21,22,23,24,25,26,27,28,29,3,30,31,32,33,34,35,36,37,38,39,4,5,6,7,8,9] after 30688 ms
+failed script requests (ERR_INSUFFICIENT_RESOURCES): 0
+WebGL context-limit messages in console ("Too many active WebGL contexts" / lost): 398
+  console: warning: WARNING: Too many active WebGL contexts. Oldest context will be lost.
+--- skwasm N=12
+ready: 12 of 12 instances [0,1,10,11,2,3,4,5,6,7,8,9] after 4707 ms
+failed script requests (ERR_INSUFFICIENT_RESOURCES): 0
+WebGL context-limit messages in console ("Too many active WebGL contexts" / lost): 0
+--- skwasm N=20
+ready: 20 of 20 instances [0,1,10,11,12,13,14,15,16,17,18,19,2,3,4,5,6,7,8,9] after 7510 ms
+failed script requests (ERR_INSUFFICIENT_RESOURCES): 0
+WebGL context-limit messages in console ("Too many active WebGL contexts" / lost): 16
+  console: warning: WARNING: Too many active WebGL contexts. Oldest context will be lost.
+--- skwasm N=40
+ready: 40 of 40 instances [0,1,10,11,12,13,14,15,16,17,18,19,2,20,21,22,23,24,25,26,27,28,29,3,30,31,32,33,34,35,36,37,38,39,4,5,6,7,8,9] after 16954 ms
+failed script requests (ERR_INSUFFICIENT_RESOURCES): 0
+WebGL context-limit messages in console ("Too many active WebGL contexts" / lost): 94
+  console: warning: WARNING: Too many active WebGL contexts. Oldest context will be lost.
+
+# bisect: first N where 'Too many active WebGL contexts' appears. 2026-11-19 03:13:11 ICT+0700
+canvaskit N=4: ready: 4 of 4 ; 0 limit messages
+canvaskit N=5: ready: 5 of 5 ; 4 limit messages
+canvaskit N=6: ready: 6 of 6 ; 9 limit messages
+canvaskit N=7: ready: 7 of 7 ; 4 limit messages
+canvaskit N=8: ready: 8 of 8 ; 13 limit messages
+canvaskit N=9: ready: 9 of 9 ; 13 limit messages
+canvaskit N=10: ready: 10 of 10 ; 16 limit messages
+skwasm N=13: ready: 13 of 13 ; 0 limit messages
+skwasm N=14: ready: 14 of 14 ; 0 limit messages
+skwasm N=15: ready: 15 of 15 ; 0 limit messages
+skwasm N=16: ready: 16 of 16 ; 0 limit messages
+skwasm N=17: ready: 17 of 17 ; 4 limit messages
+skwasm N=18: ready: 18 of 18 ; 8 limit messages

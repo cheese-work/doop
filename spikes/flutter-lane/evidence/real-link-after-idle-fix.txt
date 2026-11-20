@@ -1,0 +1,4 @@
+# real link through tailscale serve 19451 + devproxy 18451 after the fix, 19 Nov 2026 10:55 ICT, load 83.81 68.72 65.57
+ready after 43407 ms, 10482195 wire bytes in 942 requests, budget 20000000
+WITHIN BUDGET
+exit=0

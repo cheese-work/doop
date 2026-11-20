@@ -15,7 +15,8 @@
     "node_modules/",
     "desktop/src-tauri/target/",
     "public/figma-plugin/",
-    "storybook-static/"
+    "storybook-static/",
+    "spikes/flutter-lane/app/web/flutter_bootstrap.js"
   ],
   "rules": {
     "constructor-super": "error",

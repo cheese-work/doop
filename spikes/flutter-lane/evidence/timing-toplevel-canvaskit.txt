@@ -1,0 +1,22 @@
+2026-11-19 01:55:46 ICT+0700
+run 1: 638 ms
+run 2: 1797 ms
+run 3: 1584 ms
+run 4: 973 ms
+run 5: 784 ms
+run 6: 1058 ms
+run 7: 898 ms
+run 8: 870 ms
+run 9: 768 ms
+run 10: 499 ms
+run 11: 913 ms
+run 12: 738 ms
+run 13: 354 ms
+run 14: 313 ms
+run 15: 276 ms
+run 16: 283 ms
+run 17: 285 ms
+run 18: 281 ms
+run 19: 252 ms
+run 20: 256 ms
+n=20 p50=638 max=1797
