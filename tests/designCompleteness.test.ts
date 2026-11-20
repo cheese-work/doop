@@ -283,6 +283,46 @@ describe('attestation validity', () => {
     ).toBeNull()
   })
 
+  it('stops counting when the recon frame is edited (Terra P1, f60f6d6)', () => {
+    const canvas = page()
+    const rows = stored(canvas)
+    const recon = canvas.frames.find((f) => f.id === 'recon')!
+    recon.html = reconHtml({ ...RECON, candidates: [...RECON.candidates, { id: 'menu', decision: 'keep' }] })
+    recon.updatedAt = 101
+    expect(checkPageCompleteness(canvas, PAGE).complete).toBe(false)
+    expect(currentAttestation(canvas, PAGE, rows)).toBeNull()
+  })
+
+  it('stops counting when the recon frame is deleted', () => {
+    const canvas = page()
+    const rows = stored(canvas)
+    canvas.frames = canvas.frames.filter((f) => f.id !== 'recon')
+    expect(codes(checkPageCompleteness(canvas, PAGE))).toContain('recon_missing')
+    expect(currentAttestation(canvas, PAGE, rows)).toBeNull()
+  })
+
+  it('stops counting when the recon frame is hidden or replaced by another recon frame', () => {
+    const canvas = page()
+    const rows = stored(canvas)
+    canvas.frames.push(frame('recon2', reconHtml({ candidates: [] })))
+    expect(currentAttestation(canvas, PAGE, rows)).toBeNull()
+  })
+
+  it('stops counting when the flow start moves to another frame', () => {
+    const canvas = page()
+    const rows = stored(canvas)
+    canvas.pages![0]!.startFrameId = 'hifi'
+    expect(currentAttestation(canvas, PAGE, rows)).toBeNull()
+  })
+
+  it('stops counting when the flow start is cleared', () => {
+    const canvas = page()
+    const rows = stored(canvas)
+    delete canvas.pages![0]!.startFrameId
+    expect(codes(checkPageCompleteness(canvas, PAGE))).toContain('prototype_start_unset')
+    expect(currentAttestation(canvas, PAGE, rows)).toBeNull()
+  })
+
   it('never counts an incomplete run', () => {
     const canvas = page({ hifi: HIFI.replace(' data-recon-ref="kebab"', '') })
     expect(currentAttestation(canvas, PAGE, stored(canvas))).toBeNull()

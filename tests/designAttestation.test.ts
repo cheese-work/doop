@@ -125,6 +125,21 @@ it('stores an attestation per run and ends it when a frame changes', async () =>
   const stale = await (await owner.get(`/api/design-attestations/${second.attestation_id}`)).json()
   expect(stale).toMatchObject({ complete: true, current: false })
 
+  /* the recon frame and the flow start are inputs too (Terra P1, f60f6d6) */
+  const third = await callTool('check_design_completeness', { canvas_id: canvas.id, agent_name: 'Reviewer' })
+  expect(third.complete).toBe(true)
+  const read = async () => (await (await owner.get(`/api/design-attestations/${third.attestation_id}`)).json()).current
+  expect(await read()).toBe(true)
+  const recon: Frame = (await (await owner.get(`/api/canvases/${canvas.id}`)).json()).frames.find(
+    (f: Frame) => f.name === 'Recon',
+  )
+  await owner.patch(`/api/frames/${recon.id}`, { html: recon.html + '<!-- recon changed -->' })
+  expect(await read()).toBe(false)
+  const fourth = await callTool('check_design_completeness', { canvas_id: canvas.id, agent_name: 'Reviewer' })
+  expect(fourth.complete).toBe(true)
+  await callTool('set_prototype_start', { canvas_id: canvas.id, frame_id: design.id, agent_name: 'Reviewer' })
+  expect((await (await owner.get(`/api/design-attestations/${fourth.attestation_id}`)).json()).current).toBe(false)
+
   /* nobody else can read it, and nothing writes to it */
   expect((await stranger.get(`/api/design-attestations/${second.attestation_id}`)).status).toBe(403)
   expect((await owner.get('/api/design-attestations/nope')).status).toBe(404)
