@@ -20,7 +20,7 @@ name: CD deploy
 # The suspension marker (repo variable DOOP_DEPLOY_SUSPENDED, CHE-5545, plan C-10) is written only by the three
 # C00 jobs, with scripts/deploy-marker.mjs: a train run arms it before its first change and only a passing
 # confirm of that same run restores it; recovery and drill runs, and a rollback, write `suspended:*` and never
-# `clear:*`. Every failure leaves it armed or suspended, which stops the train. Lifting is S3b.
+# `clear:*`. Every failure leaves it armed or suspended, which stops the train. Lifting is cd-lift.yml.
 # The train ships OFF: the repository variable DOOP_DEPLOY_TRAIN is absent or not 'on', so a scheduled run
 # ends at `resolve` as a clean skip.
 # Schedule: 23:17, 07:17 and 15:17 UTC = 06:17, 14:17 and 22:17 ICT.
@@ -392,7 +392,7 @@ jobs:
           repositories: doop
           permission-variables: write
       # Whatever the rollback did, even if it failed: this run's armed value becomes suspended (C-10.3). Only a
-      # lift (S3b) clears it. Not after a refused check, where the marker is no longer this run's own.
+      # lift (cd-lift.yml) clears it. Not after a refused check, where the marker is no longer this run's own.
       - name: Suspend the marker
         if: ${{ !cancelled() && steps.rollback.outputs.go == 'true' }}
         env:

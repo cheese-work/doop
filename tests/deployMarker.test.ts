@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 // @ts-expect-error plain .mjs script, no type declarations
-import { arm, kindOf, restore, suspend, writeMarker } from '../scripts/deploy-marker.mjs'
+import { arm, kindOf, lift, readMarker, restore, suspend, writeMarker } from '../scripts/deploy-marker.mjs'
 
 /* CHE-5545 (train S3a, plan CHE-5474 C-10.1 to C-10.5). One repo variable, DOOP_DEPLOY_SUSPENDED, is the only
    thing that lets the train run. Every write is read, check, write, read back; a write that cannot be proven
@@ -267,5 +267,52 @@ describe('deploy-marker CLI', () => {
   })
   it('exits non-zero without a token or a repo, before any network call', () => {
     expect(run(['arm'], { RUN_ID: '1', SHA }).status).not.toBe(0)
+  })
+})
+
+describe('lift (CHE-5551, C-10.7)', () => {
+  it('writes clear:<nonce>:<lift run id> over exactly the expected suspended value, and reads it back', async () => {
+    const { state, ghApi } = fake(SUSPENDED)
+    const value = await lift({ ghApi, repo: REPO, runId: '777', expected: SUSPENDED })
+    expect(value).toMatch(/^clear:[0-9a-f]{32}:777$/)
+    expect(kindOf(value)).toBe('clear')
+    expect(state.value).toBe(value)
+    expect(state.writes).toHaveLength(1)
+  })
+
+  it('lifts an armed value (a train run that died leaves one)', async () => {
+    const { state, ghApi } = fake(OTHER_ARMED)
+    await lift({ ghApi, repo: REPO, runId: '777', expected: OTHER_ARMED })
+    expect(kindOf(state.value)).toBe('clear')
+  })
+
+  it('refuses when the marker is not the expected value: nothing is written', async () => {
+    const { state, ghApi } = fake(OTHER_ARMED)
+    await expect(lift({ ghApi, repo: REPO, runId: '777', expected: SUSPENDED })).rejects.toThrow(/changed/)
+    expect(state.writes).toEqual([])
+    expect(state.value).toBe(OTHER_ARMED)
+  })
+
+  it.each([CLEAR, null, 'junk'])('refuses to lift %j (nothing to lift)', async (expected) => {
+    const { state, ghApi } = fake(expected)
+    await expect(lift({ ghApi, repo: REPO, runId: '777', expected })).rejects.toThrow(/lift needs/)
+    expect(state.writes).toEqual([])
+  })
+
+  it.each(['', 'x y', '1;2', undefined])('refuses a lift run id of %j', async (runId) => {
+    const { state, ghApi } = fake(SUSPENDED)
+    await expect(lift({ ghApi, repo: REPO, runId, expected: SUSPENDED })).rejects.toThrow(/run id/)
+    expect(state.writes).toEqual([])
+  })
+
+  it('fails when the write cannot be read back', async () => {
+    const { ghApi } = fake(SUSPENDED, { stale: true })
+    await expect(lift({ ghApi, repo: REPO, runId: '777', expected: SUSPENDED })).rejects.toThrow(/read back/)
+  })
+
+  it('readMarker returns the value, null when absent, and throws on anything else', async () => {
+    expect(await readMarker(fake(SUSPENDED).ghApi, REPO)).toBe(SUSPENDED)
+    expect(await readMarker(fake(null).ghApi, REPO)).toBeNull()
+    await expect(readMarker(fake(SUSPENDED, { unreadable: true }).ghApi, REPO)).rejects.toThrow()
   })
 })
