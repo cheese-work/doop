@@ -1,6 +1,6 @@
 // Contract smoke suite for the deploy train (CHE-5474 S4c, C-8.5c): an ordered chain of calls per route group
 // in deploy/cd/smoke-routes.json (real writes that are read back; `contract` calls for routes that need an
-// outside service; `noWrite` states why a group has no write), against a running doop. The compat job runs it from the candidate image,
+// outside service, which may name the body for each allowed status in `expectByStatus`; `noWrite` states why a group has no write), against a running doop. The compat job runs it from the candidate image,
 // on the sandbox network, against the predecessor on the migrated clone. Health 200 and every call passing
 // are required. Run it only against a sandbox: it signs up a throwaway user and writes.
 //
@@ -112,7 +112,8 @@ export async function runSmoke({
         const state = { missing }
         const body = call.body === undefined ? undefined : fillDeep(call.body, saved, state)
         const extra = call.headers === undefined ? {} : fillDeep(call.headers, saved, state)
-        const want = call.expectJson === undefined ? undefined : fillDeep(call.expectJson, saved, state)
+        const byStatus = call.expectByStatus
+        let want = call.expectJson === undefined ? undefined : fillDeep(call.expectJson, saved, state)
         if (state.missing) throw new Error(`needs a captured value "${state.missing}" that was never saved`)
         row.path = url
         const headers = { origin, ...extra }
@@ -125,7 +126,9 @@ export async function runSmoke({
           redirect: 'manual',
         })
         status = res.status
-        const expect = call.expect ?? [200]
+        // `expectByStatus`: each allowed status names the body that goes with it (a feature that is on or off).
+        const expect = byStatus ? Object.keys(byStatus).map(Number) : (call.expect ?? [200])
+        if (byStatus && expect.includes(status)) want = fillDeep(byStatus[String(status)], saved, state)
         if (!expect.includes(status)) error = `status ${status}, expected ${expect.join('/')}`
         else if (call.save || want) {
           const json = await res.json().catch(() => undefined)

@@ -136,12 +136,56 @@
       "group": "/api/agents",
       "calls": [
         {
+          "kind": "write",
+          "method": "POST",
+          "path": "/api/agents",
+          "body": {
+            "name": "Smoke Bot",
+            "handle": "smokebot",
+            "blurb": "Checks a deploy before it ships",
+            "brief": "Reply to every request with one short line.",
+            "color": "#0177D3"
+          },
+          "save": {
+            "agentHandle": "id"
+          },
+          "expectJson": {
+            "id": "smokebot",
+            "name": "Smoke Bot"
+          }
+        },
+        {
           "kind": "read",
           "method": "GET",
-          "path": "/api/agents"
+          "path": "/api/agents",
+          "expectJson": {
+            "0.id": "{agentHandle}",
+            "0.name": "Smoke Bot",
+            "0.blurb": "Checks a deploy before it ships"
+          }
+        },
+        {
+          "kind": "write",
+          "method": "PATCH",
+          "path": "/api/agents/{agentHandle}",
+          "body": {
+            "blurb": "Checks a deploy twice"
+          },
+          "expectJson": {
+            "id": "{agentHandle}",
+            "blurb": "Checks a deploy twice"
+          }
+        },
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/agents",
+          "expectJson": {
+            "0.id": "{agentHandle}",
+            "0.blurb": "Checks a deploy twice"
+          }
         }
-      ],
-      "noWrite": "creating or editing a custom agent stores a prompt and a model choice in the live account"
+      ]
     },
     {
       "group": "/api/auth",
@@ -324,13 +368,21 @@
       "calls": [
         {
           "kind": "contract",
-          "method": "GET",
+          "method": "POST",
           "path": "/api/custom-providers",
-          "expect": [200, 404],
-          "contract": "the group answers 200, or 404 when custom providers are off on this server; never a 5xx"
+          "body": {},
+          "expectByStatus": {
+            "400": {
+              "error": "Give the provider a name"
+            },
+            "404": {
+              "error": "custom providers are off on this server"
+            }
+          },
+          "contract": "an empty provider is refused with the validation text (400) when custom providers are on, or with the off text (404) when they are off; creating one stores a key and probing calls an outside host. An absent route answers neither body"
         }
       ],
-      "noWrite": "creating a provider stores an endpoint and a key, and a probe calls an outside host"
+      "noWrite": "creating a provider stores an endpoint and a key, and a probe calls an outside host; the contract call proves the route and its on/off switch"
     },
     {
       "group": "/api/feedback",
@@ -421,10 +473,31 @@
         {
           "kind": "read",
           "method": "GET",
-          "path": "/api/image-descriptions"
+          "path": "/api/image-descriptions",
+          "expectJson": {
+            "mode": "account"
+          }
+        },
+        {
+          "kind": "write",
+          "method": "PUT",
+          "path": "/api/image-descriptions",
+          "body": {
+            "mode": "off"
+          },
+          "expectJson": {
+            "mode": "off"
+          }
+        },
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/image-descriptions",
+          "expectJson": {
+            "mode": "off"
+          }
         }
-      ],
-      "noWrite": "changing the mode saves a preference on the live account"
+      ]
     },
     {
       "group": "/api/image-model",

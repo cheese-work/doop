@@ -16,6 +16,7 @@ interface Call {
   expect?: number[]
   contract?: string
   expectJson?: Record<string, string>
+  expectByStatus?: Record<string, Record<string, string>>
   body?: unknown
 }
 interface Group {
@@ -82,6 +83,27 @@ describe('route groups', () => {
         if (c.kind === 'contract')
           expect((c.contract ?? '').length, `${g.group} ${c.path} contract reason`).toBeGreaterThanOrEqual(20)
       }
+  })
+
+  it('gives /api/agents and /api/image-descriptions a real write that is read back (C-8.5c: one read, one write per group)', () => {
+    for (const name of ['/api/agents', '/api/image-descriptions']) {
+      const g = routes.groups.find((x) => x.group === name)!
+      expect(g.noWrite, `${name} must not skip its write`).toBeUndefined()
+      const writeAt = g.calls.findIndex((c) => c.kind === 'write')
+      expect(writeAt, `${name} write`).toBeGreaterThanOrEqual(0)
+      expect(
+        g.calls.slice(writeAt + 1).some((c) => c.kind === 'read' && c.expectJson),
+        `${name} read-back after the write`,
+      ).toBe(true)
+    }
+  })
+
+  it('gives /api/custom-providers an enabled/disabled contract that an absent route cannot meet', () => {
+    const g = routes.groups.find((x) => x.group === '/api/custom-providers')!
+    const call = g.calls.find((c) => c.kind === 'contract')!
+    expect(call.method).toBe('POST')
+    expect(Object.keys(call.expectByStatus ?? {}).sort()).toEqual(['400', '404'])
+    for (const want of Object.values(call.expectByStatus ?? {})) expect(want.error?.length ?? 0).toBeGreaterThan(10)
   })
 
   it('writes to at least eleven groups and reads at least ten of those writes back', () => {
@@ -273,6 +295,36 @@ describe('runSmoke against a scripted fetch', () => {
     expect(out.failed[0]).toEqual(expect.objectContaining({ kind: 'write', status: 404 }))
   })
 
+  it('checks the body that goes with the status a call answered (expectByStatus), and fails an unlisted status or body', async () => {
+    const contract = (extra = {}) => ({
+      groups: [
+        {
+          group: '/api/p',
+          noWrite: 'a provider needs an outside endpoint, so only the contract is checked',
+          calls: [
+            {
+              kind: 'contract',
+              method: 'POST',
+              path: '/api/p',
+              body: {},
+              expectByStatus: { '400': { error: 'Give it a name' }, '404': { error: 'it is off here' } },
+              ...extra,
+            },
+          ],
+        },
+      ],
+    })
+    const run = (res: Response) =>
+      runSmoke({ ...base, routes: contract(), fetchImpl: scripted({ ...ok, 'POST /api/p': res }) })
+    expect((await run(reply(400, {}, '{"error":"Give it a name"}'))).ok).toBe(true)
+    expect((await run(reply(404, {}, '{"error":"it is off here"}'))).ok).toBe(true)
+    // a route that is not there: the generic 404 body, a 200 or a 500 are all a failure
+    expect((await run(reply(404, {}, '{"error":"Not found"}'))).ok).toBe(false)
+    expect((await run(reply(404, {}, 'not json'))).ok).toBe(false)
+    expect((await run(reply(200, {}, '{"error":"Give it a name"}'))).ok).toBe(false)
+    expect((await run(reply(500, {}, '{"error":"Give it a name"}'))).ok).toBe(false)
+  })
+
   it('fails a group with neither a write nor a noWrite reason, and one with no read', async () => {
     const noWriteChain = { groups: [{ group: '/api/c', calls: [{ kind: 'read', method: 'GET', path: '/api/c' }] }] }
     const f = scripted({ ...ok, 'GET /api/c': reply(200) })
@@ -312,5 +364,75 @@ describe('the smoke suite against a real server', () => {
     expect(bad.ok).toBe(false)
     expect(bad.failed.map((f: { group: string }) => f.group)).toContain('/api/canvases')
     expect(out.results.length).toBe(routes.groups.reduce((n, g) => n + g.calls.length, 0))
+  }, 120_000)
+
+  const breakCall = (group: string, method: string, patch: Partial<Call>) => {
+    const broken = JSON.parse(JSON.stringify(routes)) as typeof routes
+    const call = broken.groups.find((g) => g.group === group)!.calls.find((c) => c.method === method)!
+    Object.assign(call, patch)
+    return broken
+  }
+
+  it('fails smoke when the /api/agents write is refused, and when it is not stored', async () => {
+    const refused = await runSmoke({
+      baseUrl: server.base,
+      origin: server.base,
+      routes: breakCall('/api/agents', 'POST', { body: { name: 'x' } }),
+    })
+    expect(refused.ok).toBe(false)
+    expect(refused.failed.map((f: { group: string; kind: string }) => `${f.group} ${f.kind}`)).toContain(
+      '/api/agents write',
+    )
+    const notStored = await runSmoke({
+      baseUrl: server.base,
+      origin: server.base,
+      routes: breakCall('/api/agents', 'PATCH', { body: { blurb: 'A different line from the one read back' } }),
+    })
+    expect(notStored.ok).toBe(false)
+    expect(notStored.failed.map((f: { group: string }) => f.group)).toContain('/api/agents')
+  }, 120_000)
+
+  it('fails smoke when the /api/image-descriptions write is refused, and when it is not stored', async () => {
+    const refused = await runSmoke({
+      baseUrl: server.base,
+      origin: server.base,
+      routes: breakCall('/api/image-descriptions', 'PUT', { body: { mode: 'nonsense' } }),
+    })
+    expect(refused.ok).toBe(false)
+    expect(refused.failed.map((f: { group: string; kind: string }) => `${f.group} ${f.kind}`)).toContain(
+      '/api/image-descriptions write',
+    )
+    const notStored = await runSmoke({
+      baseUrl: server.base,
+      origin: server.base,
+      routes: breakCall('/api/image-descriptions', 'PUT', { body: { mode: 'server' } }),
+    })
+    expect(notStored.ok).toBe(false)
+    expect(notStored.failed.map((f: { group: string }) => f.group)).toContain('/api/image-descriptions')
+  }, 120_000)
+
+  it('meets the /api/custom-providers contract on a booted server with the feature on, and fails a wrong contract', async () => {
+    const only = { groups: routes.groups.filter((g) => g.group === '/api/custom-providers') }
+    const on = await runSmoke({ baseUrl: server.base, origin: server.base, routes: only })
+    expect(on.failed).toEqual([])
+    expect(on.results).toEqual([expect.objectContaining({ group: '/api/custom-providers', status: 400, ok: true })])
+    const wrong = JSON.parse(JSON.stringify(only)) as typeof only
+    wrong.groups[0]!.calls[0]!.expectByStatus = { '400': { error: 'some other text' }, '404': { error: 'nope' } }
+    expect((await runSmoke({ baseUrl: server.base, origin: server.base, routes: wrong })).ok).toBe(false)
+  }, 120_000)
+})
+
+describe('the /api/custom-providers contract with the feature switched off', () => {
+  let off: Server
+  beforeAll(async () => {
+    off = await startServer({ DOOP_CUSTOM_PROVIDERS: 'false' })
+  }, 70_000)
+  afterAll(() => off?.stop())
+
+  it('answers 404 with the off message, and the contract accepts it', async () => {
+    const only = { groups: routes.groups.filter((g) => g.group === '/api/custom-providers') }
+    const out = await runSmoke({ baseUrl: off.base, origin: off.base, routes: only })
+    expect(out.failed).toEqual([])
+    expect(out.results).toEqual([expect.objectContaining({ status: 404, ok: true })])
   }, 120_000)
 })
