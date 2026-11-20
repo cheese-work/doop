@@ -1125,6 +1125,11 @@ data-doop-webfonts>` for the roster families the frame names and does not load i
   - `.github/workflows/cd-deploy.yml` - D2, the only workflow that deploys to C00: schedule (3 a day) and
     dispatch, off unless repo variable `DOOP_DEPLOY_TRAIN` is `on`; the `DOOP_DEPLOY_SUSPENDED` marker is written
     only by `scripts/deploy-marker.mjs`. See `deploy/cd/README.md`.
+  - `.github/workflows/cd-lift.yml` - S3b, the audited lift: dispatch only (`decision_id`), allowlisted dispatcher,
+    C00 runner under the deploy lock. Writes `clear:*` only for an approved `doop.deploy_lift` Multica decision whose
+    `marker_value` equals the standing marker, with quiescence and `/healthz` proven and the decision and marker
+    re-read before the write; evidence in `lift-evidence.json`. Logic in `scripts/deploy-lift.mjs`
+    (`c00.sh lift` supplies the C00 facts). Never touches `DOOP_DEPLOY_TRAIN`.
   - `.github/workflows/cd-freshness-watch.yml` and `cd-live-revision.yml` - the two D2 watchers (every 15 min):
     a backup `schedule_backup` dispatch when D2 is 45 min late (alarm at 90 min), and a check that C00's
     `/healthz` `revision` is not behind the last successful D2 SHA. Both idle while `DOOP_DEPLOY_TRAIN` is not `on`.
