@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.14.0](https://github.com/cheese-work/doop/compare/desktop-v0.13.0...desktop-v0.14.0) (2026-11-20)
+
+
+### Features
+
+* **canvas:** action registry with ⌘K palette, main menu and editor shortcuts ([#448](https://github.com/cheese-work/doop/issues/448)) ([1970798](https://github.com/cheese-work/doop/commit/1970798b4f13c65c90654116d1dcf0ae634856c0))
+* **canvas:** add rulers and draggable snapping guides ([#372](https://github.com/cheese-work/doop/issues/372)) ([fdbb07e](https://github.com/cheese-work/doop/commit/fdbb07e562dbe4d4bd89396d778a9af219314be6))
+* **claude:** add direct connector setup and desktop extension ([#280](https://github.com/cheese-work/doop/issues/280)) ([d058f12](https://github.com/cheese-work/doop/commit/d058f123b831949725f87654148401b0d1cc1301))
+* **desktop:** add automatic Codex MCP setup ([#289](https://github.com/cheese-work/doop/issues/289)) ([3b5b090](https://github.com/cheese-work/doop/commit/3b5b0906a932d1381c713ca9b7fb020553151ea5))
+* **desktop:** add macOS check for updates menu ([#350](https://github.com/cheese-work/doop/issues/350)) ([f16644a](https://github.com/cheese-work/doop/commit/f16644a1fc8e6b758bd85fb7d8355e5d2b939b28))
+* **desktop:** build and release the app for Linux ([#295](https://github.com/cheese-work/doop/issues/295)) ([56d1174](https://github.com/cheese-work/doop/commit/56d1174ca3214dcb263c2a0cb7fa76a961fa3331))
+* **desktop:** choose the Doop server from the sign-in screen ([#452](https://github.com/cheese-work/doop/issues/452)) ([f98867a](https://github.com/cheese-work/doop/commit/f98867a0917c36fcb2e1139b2f984a3ef9b4f0da))
+* **desktop:** follow new Claude models by alias, and pick the effort ([#251](https://github.com/cheese-work/doop/issues/251)) ([bfcec7d](https://github.com/cheese-work/doop/commit/bfcec7d318cf03df440a852844fd0033a05e5e47))
+* **desktop:** offer downloaded updates in an in-app card ([#297](https://github.com/cheese-work/doop/issues/297)) ([c089fd6](https://github.com/cheese-work/doop/commit/c089fd61b4bb2bc2cfb013c2f950050010d60b05))
+* **desktop:** ship the macOS app on Chromium (CEF), replacing the WebKit app in place ([#423](https://github.com/cheese-work/doop/issues/423)) ([ddea86b](https://github.com/cheese-work/doop/commit/ddea86b528b585246000ca1b9cae8ce16635afcd))
+* **desktop:** sign the Windows app and installer with Azure Artifact Signing ([#273](https://github.com/cheese-work/doop/issues/273)) ([d47def3](https://github.com/cheese-work/doop/commit/d47def3382a5080123722c16306c56ada33a04d9))
+* **desktop:** update the app automatically from a signed feed ([#285](https://github.com/cheese-work/doop/issues/285)) ([3298742](https://github.com/cheese-work/doop/commit/329874207677d7cf4790b3231aab46fc7f9462e7))
+* **fonts:** hosted fonts in the Design panel, and fonts from this computer on the desktop ([#352](https://github.com/cheese-work/doop/issues/352)) ([fcbdb5f](https://github.com/cheese-work/doop/commit/fcbdb5fef89610246b3cb4f1f68177e972f9fb0e))
+
+
+### Bug Fixes
+
+* **agent:** raise the resident step limit and finish runs whose work is done ([#517](https://github.com/cheese-work/doop/issues/517)) ([e17dc2b](https://github.com/cheese-work/doop/commit/e17dc2b940fb49e18a330cec96008112f2af5233))
+* **desktop:** crisp Windows window icon ([#364](https://github.com/cheese-work/doop/issues/364)) ([37214b8](https://github.com/cheese-work/doop/commit/37214b8aa43fec5cb1f03eb1e1fd55655049ead8))
+* **desktop:** give up on a stalled update download ([#430](https://github.com/cheese-work/doop/issues/430)) ([0b1c1e1](https://github.com/cheese-work/doop/commit/0b1c1e11becdf299df9a3edeebdb553f6c9748cb))
+* **desktop:** run the Claude Code the login shell runs, and let Settings choose one ([#271](https://github.com/cheese-work/doop/issues/271)) ([eaf183b](https://github.com/cheese-work/doop/commit/eaf183ba852bc078c89ed06ad5d8488c9543e4d2))
+* **desktop:** run the newest Claude Code found, and say when it is too old ([#254](https://github.com/cheese-work/doop/issues/254)) ([ba7b602](https://github.com/cheese-work/doop/commit/ba7b6025450fc77b0390e50f145ee8ea67a090f8))
+* **sync:** preserve OSS migrations and complete shared font support ([7148e73](https://github.com/cheese-work/doop/commit/7148e73675aa8eaa036987d932674a32962a8049))
+
 ## [0.13.0](https://github.com/kgoedecke/doop/compare/desktop-v0.12.0...desktop-v0.13.0) (2026-11-08)
 
 
