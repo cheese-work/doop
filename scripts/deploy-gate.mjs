@@ -44,6 +44,9 @@ const MODES = {
   drill: { sw: 'off', pause: '' },
 }
 const OPS = ['pre-arm', 'pre-apply', 'confirm', 'rollback']
+const DRILL_FAULTS = ['none', 'fail-readback']
+const DRILL_MAX_MS = 24 * 3_600_000 + 5 * 60_000 // 24 h, plus 5 min for clock skew between the writer and the runner
+const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/
 const SHA40 = /^[0-9a-f]{40}$/
 const DIGEST = /^sha256:[0-9a-f]{64}$/
 
@@ -60,11 +63,27 @@ async function readVar(ghApi, repo, name) {
   }
 }
 
-async function readState(ghApi, repo) {
-  const [sw, paused, marker] = await Promise.all(
-    ['DOOP_DEPLOY_TRAIN', 'MAIN_RED_PAUSED', 'DOOP_DEPLOY_SUSPENDED'].map((n) => readVar(ghApi, repo, n)),
-  )
-  return { sw, paused, marker }
+async function readState(ghApi, repo, mode) {
+  const names = ['DOOP_DEPLOY_TRAIN', 'MAIN_RED_PAUSED', 'DOOP_DEPLOY_SUSPENDED']
+  if (mode === 'drill') names.push('DOOP_DRILL_AUTH')
+  const [sw, paused, marker, drillAuth] = await Promise.all(names.map((n) => readVar(ghApi, repo, n)))
+  return { sw, paused, marker, drillAuth }
+}
+
+// The drill authorization (C-11.1): repo variable DOOP_DRILL_AUTH = <candidate sha>:<expiry, ISO-8601 UTC, 24 h at
+// most>, written after Cheese's approval is recorded. Scoped to one candidate, and it expires. Unreadable is no.
+function drillAuthProblem(auth, sha, now) {
+  if (auth === undefined) return 'DOOP_DRILL_AUTH is unreadable'
+  if (auth === null || auth === '') return 'DOOP_DRILL_AUTH is not set'
+  const m = /^([0-9a-f]{40}):(.+)$/.exec(auth)
+  if (!m || !ISO_UTC.test(m[2]) || !Number.isFinite(Date.parse(m[2]))) {
+    return 'DOOP_DRILL_AUTH is not <sha>:<ISO-8601 UTC expiry>'
+  }
+  if (m[1] !== sha) return `DOOP_DRILL_AUTH is for ${m[1].slice(0, 7)}, not ${String(sha).slice(0, 7)}`
+  const left = Date.parse(m[2]) - now
+  if (left <= 0) return `DOOP_DRILL_AUTH expired at ${m[2]}`
+  if (left > DRILL_MAX_MS) return 'DOOP_DRILL_AUTH lasts longer than 24 h'
+  return null
 }
 
 // The switch and the pause for a mode. Unreadable is never "off", never "clear".
@@ -98,19 +117,31 @@ function entryOf({ event, actor, trigger, attempt, inputs = {}, extra }) {
     if (event !== 'workflow_dispatch') return refuse(`${mode} runs only by dispatch`)
     if (who.endsWith('[bot]') || !logins(extra).has(who))
       return refuse(`${who || 'an unknown login'} may not dispatch ${mode}`)
-    if (mode === 'drill') return refuse('drill mode lands in slice S6')
+  }
+  const fault = inputs.fault ?? ''
+  if (mode === 'drill') {
+    // Drill is for one run, one candidate, one fault; a rerun would reuse an authorization it no longer matches.
+    if (Number(attempt) !== 1) return refuse('a drill run is never rerun: attempt must be 1')
+    if (!SHA40.test(inputs.candidate_sha ?? ''))
+      return refuse(`a drill needs a full candidate_sha, got '${inputs.candidate_sha ?? ''}'`)
+    if (!DRILL_FAULTS.includes(fault)) return refuse(`unknown drill fault '${fault}'`)
+  } else if (fault !== '' && fault !== 'none') {
+    return refuse(`fault '${fault}' is only for a drill`)
   }
   return go({ mode })
 }
 
-export async function decideRun({ event, actor, trigger, attempt, inputs = {}, extra, repo, ghApi }) {
+export async function decideRun({ event, actor, trigger, attempt, inputs = {}, extra, repo, ghApi, now = Date.now() }) {
   const entered = entryOf({ event, actor, trigger, attempt, inputs, extra })
   if (!entered.go) return entered
   const { mode } = entered
 
-  const state = await readState(ghApi, repo)
-  const problem = switchProblem(mode, state)
-  if (problem) return skip(problem)
+  const state = await readState(ghApi, repo, mode)
+  // A drill is a human dispatch: a "no" is a refusal the dispatcher sees, never a quiet skip.
+  const problem =
+    switchProblem(mode, state) ??
+    (mode === 'drill' ? drillAuthProblem(state.drillAuth, inputs.candidate_sha, now) : null)
+  if (problem) return mode === 'drill' ? refuse(problem) : skip(problem)
   if (mode === 'train' && !isClear(state.marker)) return skip(markerWords(state.marker))
   return go({ mode })
 }
@@ -169,11 +200,13 @@ export async function recheckOp({
   trigger,
   attempt,
   inputs = {},
+  now = Date.now(),
 }) {
   if (!(mode in MODES)) throw new Error(`unknown mode '${mode}'`)
   if (!OPS.includes(op)) throw new Error(`unknown operation '${op}'`)
   const armed = op !== 'pre-arm'
-  const no = armed ? refuse : skip
+  // After the arm write every "no" is a refusal; a drill is a human dispatch, so before it too.
+  const no = armed || mode === 'drill' ? refuse : skip
 
   // Before a change, this attempt's own entry facts must pass the entry rules again. Confirm and
   // rollback skip this: they must still run on a rerun to undo or confirm what an earlier attempt did.
@@ -181,12 +214,14 @@ export async function recheckOp({
     const entered = entryOf({ event, actor, trigger, attempt, inputs, extra })
     if (!entered.go) return entered
     if (entered.mode !== mode) return refuse(`this run entered as ${entered.mode}, not ${mode}`)
+    if (mode === 'drill' && inputs.candidate_sha !== candidate?.sha)
+      return refuse('the drill authorization was dispatched for another candidate')
   }
 
   const q = await quiescent()
   if (!q.ok) return refuse(`migration quiescence not proven: ${q.reason ?? 'unknown'}`)
 
-  const state = await readState(ghApi, repo)
+  const state = await readState(ghApi, repo, mode)
   if (armed) {
     if (!expect) return refuse('no --expect marker value for a post-arm operation')
     if (state.marker !== expect)
@@ -198,38 +233,40 @@ export async function recheckOp({
   }
 
   if (op === 'pre-arm' || op === 'pre-apply') {
-    const problem = switchProblem(mode, state)
+    // Rechecked here, not only at the top of the run: the switch can be set, or the authorization expire, since.
+    const problem =
+      switchProblem(mode, state) ?? (mode === 'drill' ? drillAuthProblem(state.drillAuth, candidate?.sha, now) : null)
     if (problem) return no(problem)
   }
 
-  const now = await running()
+  const live = await running()
   if (op === 'confirm') {
-    if (now?.digest !== candidate.digest || now.label !== candidate.sha)
+    if (live?.digest !== candidate.digest || live.label !== candidate.sha)
       return refuse('C00 does not run the candidate digest and label')
     return go()
   }
   if (op === 'rollback') {
-    if (!now?.digest) return refuse('no running container to decide a rollback from')
+    if (!live?.digest) return refuse('no running container to decide a rollback from')
     const action =
-      now.digest === candidate.digest ? 'rollback' : now.digest === predecessorDigest ? 'none' : 'superseded'
+      live.digest === candidate.digest ? 'rollback' : live.digest === predecessorDigest ? 'none' : 'superseded'
     return go({ action })
   }
 
   // pre-arm and pre-apply: the candidate must be strictly ahead of what C00 runs.
-  if (!SHA40.test(now?.label ?? '')) return refuse('the running container has no revision label')
-  if (now.label === candidate.sha) return no('the candidate is already the running revision')
-  if (!(await isAncestor(now.label, candidate.sha)))
-    return refuse(`running ${now.label.slice(0, 7)} is not an ancestor of the candidate`)
+  if (!SHA40.test(live?.label ?? '')) return refuse('the running container has no revision label')
+  if (live.label === candidate.sha) return no('the candidate is already the running revision')
+  if (!(await isAncestor(live.label, candidate.sha)))
+    return refuse(`running ${live.label.slice(0, 7)} is not an ancestor of the candidate`)
   if (op === 'pre-arm') {
-    for (const sha of await firstParent(now.label, candidate.sha)) {
+    for (const sha of await firstParent(live.label, candidate.sha)) {
       const merger = await mergerOf({ repo, sha, ghApi })
-      if (merger.error) return skip(merger.error)
+      if (merger.error) return no(merger.error)
       if (!MERGERS.has(lower(merger.login)) && !logins(extra).has(lower(merger.login))) {
-        return skip(`${sha.slice(0, 7)} was merged by ${merger.login}, who is not on the deploy allowlist`)
+        return no(`${sha.slice(0, 7)} was merged by ${merger.login}, who is not on the deploy allowlist`)
       }
     }
   }
-  return go({ predecessorDigest: now.digest, predecessorSha: now.label })
+  return go({ predecessorDigest: live.digest, predecessorSha: live.label })
 }
 
 // C00 and git facts for the CLI.
@@ -306,6 +343,13 @@ const flag = (args, name) => {
   return i < 0 ? undefined : args[i + 1]
 }
 
+const inputsOf = (env) => ({
+  mode: env.INPUT_MODE,
+  schedule_backup: env.INPUT_SCHEDULE_BACKUP,
+  candidate_sha: env.INPUT_CANDIDATE_SHA,
+  fault: env.INPUT_FAULT,
+})
+
 async function cli(argv, env) {
   const [command, ...rest] = argv
   const repo = env.REPO
@@ -315,7 +359,7 @@ async function cli(argv, env) {
       actor: env.ACTOR,
       trigger: env.TRIGGER,
       attempt: env.ATTEMPT,
-      inputs: { mode: env.INPUT_MODE, schedule_backup: env.INPUT_SCHEDULE_BACKUP },
+      inputs: inputsOf(env),
       extra: env.EXTRA,
       repo,
       ghApi: gh,
@@ -380,7 +424,7 @@ async function cli(argv, env) {
       actor: env.ACTOR,
       trigger: env.TRIGGER,
       attempt: env.ATTEMPT,
-      inputs: { mode: env.INPUT_MODE, schedule_backup: env.INPUT_SCHEDULE_BACKUP },
+      inputs: inputsOf(env),
       candidate: { sha: env.DEPLOY_SHA, digest: String(env.DEPLOY_REF ?? '').split('@')[1] },
       predecessorDigest: env.PREDECESSOR_DIGEST,
       running: () => dockerRunning(),

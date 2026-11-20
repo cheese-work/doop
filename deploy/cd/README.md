@@ -97,7 +97,16 @@ The agent that wrote S3a holds no token that can write repo variables, so this w
 - A train run is attempt 1 only; a rerun is refused. A train dispatch is allowed only as the schedule
   backup (`schedule_backup=true` from `github-actions[bot]`).
 - `recovery` and `drill` are dispatch-only, by `congvc-dev` or a login in `C00_DEPLOY_AUTHORIZERS`, never by a
-  bot. `drill` is refused until slice S6.
+  bot.
+- `drill` (CHE-5552, C-11) also needs all of these, and a "no" is a refusal, never a skip: `DOOP_DEPLOY_TRAIN` is exactly
+  `off` (a drill is refused while it is `on`, absent or unreadable), `MAIN_RED_PAUSED` is empty, attempt 1, a full
+  `candidate_sha`, and `fault` is `none` or `fail-readback`. Repo variable `DOOP_DRILL_AUTH` must read
+  `<candidate sha>:<expiry>` (expiry ISO-8601 UTC, for example `2026-11-22T06:00:00Z`, at most 24 h ahead): the SHA must
+  be the dispatched candidate and the expiry must lie ahead. An agent writes it only after Cheese's approval is recorded
+  on CHE-4586. `pre-arm` and `pre-apply` read it again. A drill writes `suspended:*` and never `clear:*`; only a lift
+  clears it. `fault=fail-readback` sets `DOOP_DRILL_FAULT=1` on the readback step only; `c00.sh readback` then fails
+  after its real checks, so the rollback by digest runs on a real deploy. `c00.sh` never honours the fault outside a drill: it
+  refuses it.
 - `MAIN_RED_PAUSED` set skips a train run. A skip is a clean exit; a refusal fails the job.
 
 ## Candidate and pin (`resolve`, `admit`)
@@ -217,6 +226,7 @@ C00's tailnet, no scheme) must be set before the switch too: the live watcher fa
 | Repo variable | `C00_DOOP_COMPOSE_DIR`    | optional; default `/home/congvc/.local/share/doop` (`compose.yaml`, service `app`, its `.env`)                                                                                                                                           |
 | Repo variable | `C00_DEPLOY_AUTHORIZERS`  | extra logins, e.g. the agent-merge identity                                                                                                                                                                                              |
 | Repo variable | `DOOP_C00_HOST`           | doop's host name on C00's tailnet, no scheme; read by `cd-live-revision.yml`                                                                                                                                                             |
+| Repo variable | `DOOP_DRILL_AUTH`         | absent until Cheese approves the CHE-4586 drill; then `<candidate sha>:<ISO-8601 UTC expiry, 24 h>`; remove or let it expire after the drill                                                                                             |
 | Repo variable | `MAIN_RED_PAUSED`         | empty, or a reason to pause                                                                                                                                                                                                              |
 | Environment   | `c00-readback-delay`      | on `cheese-work/doop`, with a **15 minute wait timer** and no secret. Created by hand before the C-11 drill: GitHub creates a missing environment with no timer, and `c00.sh confirm` then refuses (delay not honoured)                  |
 | Environment   | `doop-deploy-marker`      | on `cheese-work/doop`; holds the marker App's key. The three C00 jobs run in it; no hosted job does                                                                                                                                      |

@@ -25,7 +25,12 @@ const CLEAR_LIFT = 'clear:' + '9'.repeat(32) + ':4242'
 const BOT = 'github-actions[bot]'
 
 const httpError = (status: number) => Object.assign(new Error(`GitHub ${status}`), { status })
-type Vars = { sw?: string | null | Error; paused?: string | null | Error; marker?: string | null | Error }
+type Vars = {
+  sw?: string | null | Error
+  paused?: string | null | Error
+  marker?: string | null | Error
+  auth?: string | null | Error
+}
 const val = (v: string | null | Error | undefined, dflt: string | null) => () => {
   const x = v === undefined ? dflt : v
   if (x instanceof Error) throw x
@@ -38,6 +43,7 @@ function api(vars: Vars, mergers: Record<string, string | null> = { [MID]: 'cong
     [`repos/${REPO}/actions/variables/DOOP_DEPLOY_TRAIN`]: () => val(vars.sw, 'on')(),
     [`repos/${REPO}/actions/variables/MAIN_RED_PAUSED`]: () => val(vars.paused, null)(),
     [`repos/${REPO}/actions/variables/DOOP_DEPLOY_SUSPENDED`]: () => val(vars.marker, CLEAR)(),
+    [`repos/${REPO}/actions/variables/DOOP_DRILL_AUTH`]: () => val(vars.auth, null)(),
   }
   let n = 10
   for (const [sha, login] of Object.entries(mergers)) {
@@ -135,12 +141,80 @@ describe('decideRun: entry rules (C-4, Done when 1)', () => {
     expect(await rerun('someone')).toMatchObject({ go: false, skip: false })
     expect(await rerun(BOT)).toMatchObject({ go: false, skip: false })
   })
+})
 
-  it('drill mode is refused until S6', async () => {
-    const r = await decideRun(
-      entry({ event: 'workflow_dispatch', inputs: { mode: 'drill' }, actor: 'congvc-dev', trigger: 'congvc-dev' }),
+/* CHE-5552 (train S6, plan CHE-5474 C-4 drill column, C-11). Drill is a human dispatch with the switch off and
+   a scoped, 24 h authorization for this exact candidate. Every "no" is a refusal, never a quiet skip. */
+const NOW = Date.parse('2026-11-22T00:00:00Z')
+const auth = (sha = CAND, hours = 23) => `${sha}:${new Date(NOW + hours * 3_600_000).toISOString().replace('.000', '')}`
+const drill = (over: Record<string, unknown> = {}, vars: Vars = {}, inputs: Record<string, string> = {}) =>
+  decideRun(
+    entry({
+      event: 'workflow_dispatch',
+      actor: 'congvc-dev',
+      trigger: 'congvc-dev',
+      inputs: { mode: 'drill', candidate_sha: CAND, fault: 'none', ...inputs },
+      ghApi: api({ sw: 'off', auth: auth(), marker: 'suspended:x', ...vars }),
+      now: NOW,
+      ...over,
+    }),
+  )
+
+describe('decideRun: drill entry (C-4, C-11, Done when 10)', () => {
+  it('passes for an allowlisted login, switch off, and an unexpired authorization for this candidate', async () => {
+    expect(await drill()).toMatchObject({ go: true, mode: 'drill' })
+  })
+  it('accepts either drill fault, and any marker', async () => {
+    expect(await drill({}, { marker: CLEAR }, { fault: 'fail-readback' })).toMatchObject({ go: true })
+    expect(await drill({}, { marker: null })).toMatchObject({ go: true })
+  })
+
+  it.each([
+    ['the switch is on', { sw: 'on' }],
+    ['the switch is absent', { sw: null }],
+    ['the switch is unreadable', { sw: httpError(500) }],
+    ['the pause is set', { paused: 'main red' }],
+    ['the authorization is absent', { auth: null }],
+    ['the authorization is unreadable', { auth: httpError(500) }],
+    ['the authorization is expired', { auth: auth(CAND, -1) }],
+    ['the authorization expires this second', { auth: auth(CAND, 0) }],
+    ['the authorization is for another SHA', { auth: auth('d'.repeat(40)) }],
+    ['the authorization lasts more than 24 h', { auth: auth(CAND, 25) }],
+    ['the authorization has no expiry', { auth: CAND }],
+    ['the authorization has a non-ISO expiry', { auth: `${CAND}:tomorrow` }],
+    ['the authorization has an epoch expiry', { auth: `${CAND}:${Math.floor(NOW / 1000) + 3600}` }],
+    ['the authorization has trailing text', { auth: auth() + ' extra' }],
+    ['the authorization is empty', { auth: '' }],
+  ])('refuses when %s', async (_n, vars) => {
+    expect(await drill({}, vars as Vars)).toMatchObject({ go: false, skip: false })
+  })
+
+  it('refuses a candidate_sha that is missing, short or not the authorized one', async () => {
+    for (const candidate_sha of ['', 'ccc', 'd'.repeat(40)])
+      expect(await drill({}, {}, { candidate_sha }), candidate_sha).toMatchObject({ go: false, skip: false })
+  })
+
+  it('refuses an unknown fault, and any fault outside a drill', async () => {
+    expect(await drill({}, {}, { fault: 'kill-db' })).toMatchObject({ go: false, skip: false })
+    expect(await drill({}, {}, { fault: '' })).toMatchObject({ go: false, skip: false })
+    const recovery = await decideRun(
+      entry({
+        event: 'workflow_dispatch',
+        actor: 'congvc-dev',
+        trigger: 'congvc-dev',
+        inputs: { mode: 'recovery', fault: 'fail-readback' },
+        ghApi: api({ sw: 'off' }),
+      }),
     )
-    expect(r).toMatchObject({ go: false, skip: false })
+    expect(recovery).toMatchObject({ go: false, skip: false })
+  })
+
+  it('refuses a bot, a stranger and a rerun; a schedule event never becomes a drill', async () => {
+    expect(await drill({ actor: BOT, trigger: BOT, extra: BOT })).toMatchObject({ go: false, skip: false })
+    expect(await drill({ actor: 'someone', trigger: 'someone' })).toMatchObject({ go: false, skip: false })
+    // A schedule event is a train run whatever the inputs say; with the switch off it never deploys.
+    expect(await drill({ event: 'schedule' })).toMatchObject({ go: false, skip: true })
+    expect(await drill({ attempt: '2' })).toMatchObject({ go: false, skip: false })
   })
 })
 
@@ -486,22 +560,28 @@ describe('recheckOp after the arm write (Done when 3)', () => {
     expect(await ops({ marker: ARMED })('confirm', undefined)).toMatchObject({ go: false, skip: false })
   })
 
-  // Drill cannot enter until S6 (the entry rules refuse it), so only recovery reaches these checks now.
-  it('recovery passes only with its own suspended value', async () => {
-    const own = 'suspended:n5:7:' + CAND + ':recovery'
-    for (const mode of ['recovery']) {
-      const base = { mode, ...dispatched(mode), running: async () => ({ digest: D_PRED, label: RUNNING }) }
-      const sw = mode === 'drill' ? 'off' : 'on'
-      expect(await ops({ marker: own, sw }, base)('pre-apply', own)).toMatchObject({ go: true })
-      expect(await ops({ marker: 'suspended:n6:8:' + CAND + ':recovery', sw }, base)('pre-apply', own)).toMatchObject({
-        go: false,
-        skip: false,
-      })
-      expect(await ops({ marker: CLEAR_LIFT, sw }, base)('pre-apply', own)).toMatchObject({
-        go: false,
-        skip: false,
-      })
+  it.each(['recovery', 'drill'])('%s passes only with its own suspended value', async (mode) => {
+    const own = 'suspended:n5:7:' + CAND + ':' + mode
+    const base = {
+      mode,
+      ...dispatched(mode),
+      inputs: { mode, candidate_sha: CAND, fault: 'none' },
+      now: NOW,
+      running: async () => ({ digest: D_PRED, label: RUNNING }),
     }
+    const sw = mode === 'drill' ? 'off' : 'on'
+    const vars = { sw, auth: auth() }
+    expect(await ops({ ...vars, marker: own }, base)('pre-apply', own)).toMatchObject({ go: true })
+    expect(await ops({ ...vars, marker: 'suspended:n6:8:' + CAND + ':' + mode }, base)('pre-apply', own)).toMatchObject(
+      {
+        go: false,
+        skip: false,
+      },
+    )
+    expect(await ops({ ...vars, marker: CLEAR_LIFT }, base)('pre-apply', own)).toMatchObject({
+      go: false,
+      skip: false,
+    })
   })
 
   it.each(['pre-arm', 'pre-apply', 'confirm', 'rollback'])('%s refuses when quiescence is not proven', async (op) => {
@@ -514,6 +594,50 @@ describe('recheckOp after the arm write (Done when 3)', () => {
 
   it('an unknown operation is refused', async () => {
     await expect(ops()('explode', ARMED)).rejects.toThrow()
+  })
+})
+
+/* A drill re-reads the switch and its authorization right before the arm and the apply (the switch can be set,
+   or the authorization expire, after `decide`), and refuses: the marker already reads suspended. */
+describe('recheckOp drill (C-4, C-11, Done when 10)', () => {
+  const own = 'suspended:n5:7:' + CAND + ':drill'
+  const base = {
+    mode: 'drill',
+    ...dispatched('drill'),
+    inputs: { mode: 'drill', candidate_sha: CAND, fault: 'none' },
+    now: NOW,
+  }
+  const run = (vars: Vars, op: string, more: Record<string, unknown> = {}) =>
+    ops({ sw: 'off', auth: auth(), marker: 'suspended:x', ...vars }, { ...base, ...more })(
+      op,
+      op === 'pre-arm' ? undefined : own,
+    )
+
+  it('pre-arm passes with the switch off and an unexpired authorization for the candidate', async () => {
+    expect(await run({}, 'pre-arm')).toMatchObject({ go: true })
+  })
+
+  it.each(['pre-arm', 'pre-apply'])('%s refuses, not skips, with the switch on', async (op) => {
+    expect(await run({ sw: 'on', marker: own }, op)).toMatchObject({ go: false, skip: false })
+  })
+  it.each(['pre-arm', 'pre-apply'])('%s refuses an expired or wrong-SHA authorization', async (op) => {
+    for (const a of [auth(CAND, -1), auth('d'.repeat(40)), null, '']) {
+      expect(await run({ auth: a, marker: own }, op), String(a)).toMatchObject({ go: false, skip: false })
+    }
+  })
+  it('refuses an authorization that expires between decide and the apply', async () => {
+    const late = NOW + 24 * 3_600_000
+    expect(await run({ auth: auth(CAND, 23), marker: own }, 'pre-apply', { now: late })).toMatchObject({
+      go: false,
+      skip: false,
+    })
+  })
+  it('confirm and rollback do not read the switch or the authorization', async () => {
+    const dead = { sw: 'on', auth: null, marker: own }
+    expect(await run(dead, 'confirm', { running: async () => ({ digest: D_CAND, label: CAND }) })).toMatchObject({
+      go: true,
+    })
+    expect(await run(dead, 'rollback')).toMatchObject({ go: true, action: 'none' })
   })
 })
 

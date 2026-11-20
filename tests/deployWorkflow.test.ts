@@ -60,6 +60,13 @@ describe('D2 cd-deploy.yml: triggers (C-2, C-3)', () => {
     for (const m of ['train', 'recovery', 'drill']) expect(inputs).toContain(`- ${m}`)
   })
 
+  it('the drill fault is a choice: none or fail-readback', () => {
+    const fault = d2.slice(d2.indexOf('      fault:'), d2.indexOf('\npermissions:'))
+    expect(fault).toMatch(/type: choice/)
+    expect(fault).toMatch(/- none\n\s+- fail-readback\n/)
+    expect(fault).toMatch(/default: none/)
+  })
+
   it('has no workflow-level concurrency; the lock is per C00 job', () => {
     expect(d2).not.toMatch(/^concurrency:/m)
   })
@@ -110,6 +117,22 @@ describe('D2 C00 jobs: deploy, readback-confirm, rollback', () => {
   it('only the C00 jobs name the C00 runner', () => {
     expect(job(d2, 'resolve')).not.toContain('cheese-c00-deploy')
     expect(job(d2, 'admit')).not.toContain('cheese-c00-deploy')
+  })
+
+  it('passes the drill inputs to the decision and to the deploy rechecks, as env, never inlined', () => {
+    for (const j of [job(d2, 'resolve').slice(job(d2, 'resolve').indexOf('id: decide')), job(d2, 'deploy')]) {
+      expect(j).toMatch(/INPUT_CANDIDATE_SHA: \$\{\{ inputs\.candidate_sha \}\}/)
+      expect(j).toMatch(/INPUT_FAULT: \$\{\{ inputs\.fault \}\}/)
+    }
+  })
+
+  it('DOOP_DRILL_FAULT is set on the readback step alone, and only for a drill with fault=fail-readback', () => {
+    const j = job(d2, 'deploy')
+    const step = j.slice(j.indexOf('- name: Read back')).split('\n      - ')[0] ?? ''
+    expect(step).toMatch(
+      /DOOP_DRILL_FAULT: \$\{\{ needs\.admit\.outputs\.mode == 'drill' && inputs\.fault == 'fail-readback' && '1' \|\| '' \}\}/,
+    )
+    expect(d2.match(/DOOP_DRILL_FAULT/g)).toHaveLength(1)
   })
 
   it('deploy runs only when admit said go, and deploys the admitted digest, never a tag or a build', () => {

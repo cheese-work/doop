@@ -257,6 +257,39 @@ describe('c00.sh readback', () => {
   })
 })
 
+/* CHE-5552 (train S6, C-11): the drill's fault is injected at the end of the readback, after the real checks, so
+   the rollback that follows is real. It fires only in a drill, only for the exact value 1. */
+describe('c00.sh readback drill fault (C-11)', () => {
+  it('DOOP_DRILL_FAULT=1 in a drill fails the readback after the real checks, with no T0 recorded', () => {
+    const out = join(dir, 'gh_output')
+    const r = c00('readback', { DEPLOY_MODE: 'drill', DOOP_DRILL_FAULT: '1', GITHUB_OUTPUT: out })
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toMatch(/drill fault/)
+    expect(log()).toContain('State.Health')
+    expect(existsSync(out) ? readFileSync(out, 'utf8') : '').not.toMatch(/t0_epoch|health=/)
+  })
+
+  it('a drill without the fault reads back normally', () => {
+    for (const fault of [undefined, '']) {
+      const r = c00('readback', { DEPLOY_MODE: 'drill', ...(fault === undefined ? {} : { DOOP_DRILL_FAULT: fault }) })
+      expect(r.status, r.stderr).toBe(0)
+    }
+  })
+
+  it.each(['train', 'recovery', ''])('refuses the fault in mode %j, before any check', (mode) => {
+    const r = c00('readback', { DEPLOY_MODE: mode, DOOP_DRILL_FAULT: '1' })
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toMatch(/only in a drill/)
+    expect(log()).not.toContain('State.Health')
+  })
+
+  it.each(['0', 'true', 'fail-readback', ' 1'])('refuses the unknown fault value %j', (fault) => {
+    const r = c00('readback', { DEPLOY_MODE: 'drill', DOOP_DRILL_FAULT: fault })
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toMatch(/DOOP_DRILL_FAULT/)
+  })
+})
+
 describe('c00.sh rollback', () => {
   it('restarts the pinned previous image, without building, and waits for health', () => {
     put('rollback_tag', 'x')

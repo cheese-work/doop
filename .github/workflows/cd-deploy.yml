@@ -46,8 +46,11 @@ on:
         type: boolean
         default: false
       fault:
-        description: Drill fault to inject (used from slice S6)
-        type: string
+        description: Drill only. fail-readback makes the readback fail on purpose, so the rollback runs
+        type: choice
+        options:
+          - none
+          - fail-readback
         default: none
 
 permissions:
@@ -85,6 +88,8 @@ jobs:
           ATTEMPT: ${{ github.run_attempt }}
           INPUT_MODE: ${{ inputs.mode }}
           INPUT_SCHEDULE_BACKUP: ${{ inputs.schedule_backup }}
+          INPUT_CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          INPUT_FAULT: ${{ inputs.fault }}
           EXTRA: ${{ vars.C00_DEPLOY_AUTHORIZERS }}
         run: node scripts/deploy-gate.mjs decide
       - id: pick
@@ -194,6 +199,8 @@ jobs:
       ATTEMPT: ${{ github.run_attempt }}
       INPUT_MODE: ${{ inputs.mode }}
       INPUT_SCHEDULE_BACKUP: ${{ inputs.schedule_backup }}
+      INPUT_CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      INPUT_FAULT: ${{ inputs.fault }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -249,6 +256,9 @@ jobs:
       - name: Read back (digest, SHA, health)
         id: readback
         if: ${{ steps.prearm.outputs.go == 'true' }}
+        env:
+          # Drill run A only (C-11.2): the readback fails on purpose after its real checks, so the rollback runs.
+          DOOP_DRILL_FAULT: ${{ needs.admit.outputs.mode == 'drill' && inputs.fault == 'fail-readback' && '1' || '' }}
         run: bash deploy/cd/c00.sh readback
       - name: Log out of GHCR
         if: always()
