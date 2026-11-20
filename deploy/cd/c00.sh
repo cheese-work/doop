@@ -350,8 +350,16 @@ case $cmd in
     ref=${DEPLOY_REF:-}
     sha=${DEPLOY_SHA:-}
     [ -n "$ref" ] && [ -n "$sha" ] || die "DEPLOY_REF and DEPLOY_SHA are required"
+    # The drill's injected fault (CHE-5474 C-11): exactly `1`, and only in a drill. Anything else fails closed.
+    case "${DOOP_DRILL_FAULT:-}" in
+      "") ;;
+      1) [ "${DEPLOY_MODE:-}" = drill ] || die "DOOP_DRILL_FAULT is honoured only in a drill (mode '${DEPLOY_MODE:-}')" ;;
+      *) die "DOOP_DRILL_FAULT must be empty or 1" ;;
+    esac
     check_running "${ref##*@}" "$sha"
     wait_healthy "${C00_READBACK_SECONDS:-90}"
+    # After the real checks, so the rollback that follows works on a deploy that did happen. No T0 is recorded.
+    [ -z "${DOOP_DRILL_FAULT:-}" ] || die "drill fault injected: readback fails on purpose (DOOP_DRILL_FAULT=1)"
     # T0 for the delayed confirm (C-9): when the candidate proved healthy, and how often it had restarted.
     set_output restart_count "$(restart_count)"
     set_output health healthy
