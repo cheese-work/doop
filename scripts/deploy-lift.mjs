@@ -100,6 +100,9 @@ export function refusalFor(d, { marker, repo, approverId, now, id }) {
   if (!str(d.params?.marker_value) || !str(d.params?.repo))
     return 'unreadable decision: params lack marker_value or repo'
   if (d.answered_at == null || instant(d.answered_at) === null) return 'unreadable decision: no answered_at'
+  // The API always sends these three, null when unset. An absent key is a malformed answer, not "unset".
+  for (const f of ['withdrawn_at', 'revoked_at', 'expires_at'])
+    if (!(f in d)) return `unreadable decision: no ${f} field`
   if (d.expires_at != null && instant(d.expires_at) === null) return 'unreadable decision: expires_at is not a time'
   if (Number(d.action_version) !== ACTION_VERSION)
     return `wrong action version '${d.action_version}', need ${ACTION_VERSION}`

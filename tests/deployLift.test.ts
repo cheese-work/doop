@@ -48,6 +48,12 @@ const decisionOf = (over: Decision = {}): Decision => ({
   ...over,
 })
 
+/** A well-formed decision with one API field left out of the body (not null: absent). */
+const withoutField = (field: string): Decision => {
+  const { [field]: _omitted, ...rest } = decisionOf()
+  return rest
+}
+
 type World = {
   marker: string | null
   /** What the decision API answers on read n (1-based); a function may change the world first. */
@@ -230,6 +236,9 @@ describe('refused: the decision (C-10.6, C-10.7)', () => {
     ['no answered_at', () => ({ status: 200, body: decisionOf({ answered_at: null }) })],
     ['another decision id', () => ({ status: 200, body: decisionOf({ decision_id: 'someone-else' }) })],
     ['an unparsable deadline', () => ({ status: 200, body: decisionOf({ expires_at: 'soon' }) })],
+    ['no withdrawn_at field', () => ({ status: 200, body: withoutField('withdrawn_at') })],
+    ['no revoked_at field', () => ({ status: 200, body: withoutField('revoked_at') })],
+    ['no expires_at field', () => ({ status: 200, body: withoutField('expires_at') })],
   ])('unreadable decision: %s', async (_name, decision) => {
     await refused(world({ marker: SUSPENDED, decision }), undefined, /unreadable|no such decision/)
   })
