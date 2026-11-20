@@ -16,7 +16,7 @@
 // (a check expression, an index's sort order), so that side uses the reduced form.
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -451,5 +451,3 @@ export async function replayFromEnv({ env, headDir, git = realGit }) {
     await rm(dest, { recursive: true, force: true })
   }
 }
-
-export const listMigrationFiles = (dir) => readdir(dir)
