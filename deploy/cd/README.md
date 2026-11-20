@@ -137,7 +137,7 @@ read-back values to CHE-2752.
 Two scheduled workflows watch D2. Both do nothing (a clean skip, exit 0) while `DOOP_DEPLOY_TRAIN` is not `on`, so
 they cost no alarm while the train is off, and both are scheduled from the merge of this slice, so they are seen
 running before the switch can turn on. The last successful D2 SHA has four states, never a guess:
-`known` (a SHA), `pending` (a D2 run under 3 h old is unfinished and may confirm any minute: freshness idles and live is not judged that time), `none` (a proven first deployment: no D2 run exists, or every one was read and none confirmed) and
+`known` (a SHA), `pending` (a D2 run under 3 h old is unfinished and may confirm any minute: only the SHA comparison waits: freshness still alarms at 90 min after the slot and live still needs a healthy `/healthz`), `none` (a proven first deployment: no D2 run exists, or every one was read and none confirmed) and
 `unknown` (the history cannot be read). Where it comes from, in order:
 
 1. The deployment record. The `evidence` job of D2 (`permissions: deployments: write`, after the artifact upload) runs

@@ -5,7 +5,7 @@
 //              fail the run. A failed D1 build is rerun once.
 //   live       (cd-live-revision.yml, on cheese-x99-gate)      C-7.2: C00's /healthz revision must not be behind
 //              the last successful D2 SHA.
-// "Last successful D2 SHA" has four answers: known (a SHA), pending (a young D2 run may still confirm: not judged this time), none (a proven first deployment: every D2 run is readable
+// "Last successful D2 SHA" has four answers: known (a SHA), pending (a young D2 run may still confirm: the SHA comparison waits, the 90 min alarm and the health check do not), none (a proven first deployment: every D2 run is readable
 // and none was confirmed) and unknown (the history cannot be read). Unknown fails both watchers visibly; it is never
 // read as none. D2's evidence job records every confirmed deploy as a GitHub deployment (`record`), which outlives the
 // 90 day artifacts and any number of skipped runs; the deploy-evidence artifacts are the fallback before the first record.
@@ -51,7 +51,18 @@ export function freshness({ trainOn, nowMs, candidate, deployed, d2RunsSinceSlot
   if (deployed.state === 'unknown') {
     return { action: 'alarm', rerunD1, reason: `the last successful D2 SHA is unknown: ${deployed.reason}` }
   }
-  if (deployed.state === 'pending') return idle(deployed.reason)
+  if (deployed.state === 'pending') {
+    // The run may be the deploy, but a queued or stuck one must not hide a missed window: the 90 min alarm still fires.
+    if (age >= ALARM_AFTER) {
+      const mins = Math.floor(age / MIN)
+      return {
+        action: 'alarm',
+        rerunD1,
+        reason: `${deployed.reason}, still unfinished ${mins} min after the slot (limit ${ALARM_AFTER / MIN})`,
+      }
+    }
+    return idle(deployed.reason)
+  }
   const deployedSha = deployed.state === 'known' ? deployed.sha : null
   if (candidate.sha === deployedSha) return idle(`candidate ${short(candidate.sha)} is already deployed`)
   const behind = `candidate ${short(candidate.sha)} is ahead of the last successful D2 ${short(deployedSha)}`
@@ -71,13 +82,14 @@ export async function liveVerdict({ body, deployed, isAncestor }) {
   if (deployed.state === 'unknown') {
     return { ok: false, reason: `the last successful D2 SHA is unknown: ${deployed.reason}` }
   }
-  if (deployed.state === 'pending') {
-    return { ok: true, reason: `${deployed.reason}: not judged this time, the next run reads the result` }
-  }
   if (!body || body.ok !== true) return { ok: false, reason: `/healthz did not report ok: ${JSON.stringify(body)}` }
   const live = body.revision
   if (typeof live !== 'string' || !SHA40.test(live)) {
     return { ok: false, reason: `/healthz revision is not a full commit SHA: ${JSON.stringify(live)}` }
+  }
+  if (deployed.state === 'pending') {
+    // Only the SHA comparison waits for the run; the health check above never does.
+    return { ok: true, reason: `${deployed.reason}: live ${short(live)} is healthy, the comparison waits for the run` }
   }
   if (deployed.state === 'none') {
     return { ok: true, reason: `no successful D2 yet: nothing to compare live ${short(live)} with` }

@@ -493,11 +493,24 @@ describe('lastDeployed: the last successful D2 SHA, ordered by confirmation time
 
 describe('a pending D2 run (a young unfinished run that may confirm a deploy)', () => {
   const pending = { state: 'pending', reason: 'D2 run 9 is in_progress: it may confirm a deploy' }
-  it('is not an alarm for freshness and not judged by the live watcher', async () => {
-    expect(freshness({ ...base, nowMs: SLOT + 100 * MIN, deployed: pending })).toMatchObject({ action: 'none' })
+  it('freshness idles before 90 min and still alarms at 90 min while a D2 run is queued or unfinished', () => {
+    expect(freshness({ ...base, nowMs: SLOT + 60 * MIN, deployed: pending })).toMatchObject({ action: 'none' })
+    const late = freshness({ ...base, nowMs: SLOT + 100 * MIN, deployed: pending })
+    expect(late.action).toBe('alarm')
+    expect(late.reason).toContain('D2 run 9')
+  })
+
+  it('live defers only the SHA comparison: a healthy /healthz passes', async () => {
     const out = await liveVerdict({ body: { ok: true, revision: A }, deployed: pending, isAncestor: async () => false })
     expect(out.ok).toBe(true)
     expect(out.reason).toContain('D2 run 9')
+  })
+
+  it('live fails an unreachable, unhealthy or malformed /healthz while a D2 run is pending', async () => {
+    for (const body of [null, { ok: false, revision: A }, { ok: true }, { ok: true, revision: 'nope' }]) {
+      const out = await liveVerdict({ body, deployed: pending, isAncestor: async () => false })
+      expect(out.ok, JSON.stringify(body)).toBe(false)
+    }
   })
 })
 
