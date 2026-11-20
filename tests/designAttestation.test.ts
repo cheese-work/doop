@@ -1,9 +1,10 @@
+import { createHash } from 'node:crypto'
 import { createServer, type Server as HttpServer } from 'node:http'
 import { afterAll, beforeAll, expect, it } from 'vitest'
 import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { Canvas, Frame } from '../shared/types'
-import { addMotionAndDocs } from './motionFixtures.ts'
+import { addMotionAndDocs, sloplintFor } from './motionFixtures.ts'
 import { Client, freePort, startServer, type Server } from './harness.ts'
 
 /* G3 end to end (CHE-6078 r5): the check_design_completeness tool, the stored
@@ -114,8 +115,38 @@ it('stores an attestation per run and ends it when a frame changes', async () =>
   })
   await callTool('set_prototype_start', { canvas_id: canvas.id, frame_id: wire.id, agent_name: 'Reviewer' })
 
+  /* g3-r7: no sloplint result, or one whose digest does not match what was sent, leaves every design frame without one */
+  const codesOf = (r: { missing: { code: string }[] }) => r.missing.map((m) => m.code)
+  const bare = await callTool('check_design_completeness', { canvas_id: canvas.id, agent_name: 'Reviewer' })
+  expect(codesOf(bare).filter((c) => c === 'sloplint_missing')).toHaveLength(3)
+  const forged = (await sloplintFor(owner, canvas.id)).map((e) => ({ ...e, sha256: 'f'.repeat(64) }))
+  const tampered = await callTool('check_design_completeness', {
+    canvas_id: canvas.id,
+    sloplint: forged,
+    agent_name: 'Reviewer',
+  })
+  expect(codesOf(tampered).filter((c) => c === 'sloplint_missing')).toHaveLength(3)
+  /* a NOT-RUN marker or a null with a matching digest is still no result */
+  for (const body of ['null', '{"status":"NOT-RUN"}']) {
+    const sha256 = createHash('sha256').update(body).digest('hex')
+    const hollow = (await sloplintFor(owner, canvas.id)).map((e) => ({ ...e, result_json: body, sha256 }))
+    const r = await callTool('check_design_completeness', {
+      canvas_id: canvas.id,
+      sloplint: hollow,
+      agent_name: 'Reviewer',
+    })
+    expect(
+      codesOf(r).filter((c) => c === 'sloplint_missing'),
+      body,
+    ).toHaveLength(3)
+  }
+
   /* the kebab is missing: the run is stored as incomplete */
-  const first = await callTool('check_design_completeness', { canvas_id: canvas.id, agent_name: 'Reviewer' })
+  const first = await callTool('check_design_completeness', {
+    canvas_id: canvas.id,
+    sloplint: await sloplintFor(owner, canvas.id),
+    agent_name: 'Reviewer',
+  })
   expect(first.complete).toBe(false)
   expect(first.missing.map((m: { code: string }) => m.code)).toEqual(['recon_ref_missing'])
   expect(first.attestation_id).toEqual(expect.any(String))
@@ -124,9 +155,16 @@ it('stores an attestation per run and ends it when a frame changes', async () =>
 
   /* draw it, run again: a complete, current attestation naming the exact versions */
   const fixed = await (await owner.patch(`/api/frames/${design.id}`, { html: hifi(true) })).json()
-  const second = await callTool('check_design_completeness', { canvas_id: canvas.id, agent_name: 'Reviewer' })
+  const second = await callTool('check_design_completeness', {
+    canvas_id: canvas.id,
+    sloplint: await sloplintFor(owner, canvas.id),
+    agent_name: 'Reviewer',
+  })
   expect(second.missing).toEqual([])
   expect(second.complete).toBe(true)
+  /* the attested inputs keep each verified sloplint result */
+  expect(second.inputs.sloplint).toHaveLength(3)
+  for (const e of second.inputs.sloplint) expect(e).toMatchObject({ status: 'ok', resultJson: '{"findings":[]}' })
   const ok = await (await owner.get(`/api/design-attestations/${second.attestation_id}`)).json()
   expect(ok).toMatchObject({ complete: true, current: true })
   expect(ok.frames).toContainEqual({ frameId: design.id, updatedAt: fixed.updatedAt })
@@ -159,7 +197,11 @@ it('stores an attestation per run and ends it when a frame changes', async () =>
   expect(stale).toMatchObject({ complete: true, current: false })
 
   /* the recon frame and the flow start are inputs too (Terra P1, f60f6d6) */
-  const third = await callTool('check_design_completeness', { canvas_id: canvas.id, agent_name: 'Reviewer' })
+  const third = await callTool('check_design_completeness', {
+    canvas_id: canvas.id,
+    sloplint: await sloplintFor(owner, canvas.id),
+    agent_name: 'Reviewer',
+  })
   expect(third.complete).toBe(true)
   const read = async () => (await (await owner.get(`/api/design-attestations/${third.attestation_id}`)).json()).current
   expect(await read()).toBe(true)
@@ -168,7 +210,11 @@ it('stores an attestation per run and ends it when a frame changes', async () =>
   )
   await owner.patch(`/api/frames/${recon.id}`, { html: recon.html + '<!-- recon changed -->' })
   expect(await read()).toBe(false)
-  const fourth = await callTool('check_design_completeness', { canvas_id: canvas.id, agent_name: 'Reviewer' })
+  const fourth = await callTool('check_design_completeness', {
+    canvas_id: canvas.id,
+    sloplint: await sloplintFor(owner, canvas.id),
+    agent_name: 'Reviewer',
+  })
   expect(fourth.complete).toBe(true)
   const readRun = async (id: string) => (await (await owner.get(`/api/design-attestations/${id}`)).json()).current
   expect(await readRun(fourth.attestation_id)).toBe(true)
@@ -179,10 +225,19 @@ it('stores an attestation per run and ends it when a frame changes', async () =>
   )
   await owner.patch(`/api/frames/${fade.id}`, { html: '<div></div>' })
   expect(await readRun(fourth.attestation_id)).toBe(false)
-  const broken = await callTool('check_design_completeness', { canvas_id: canvas.id, agent_name: 'Reviewer' })
-  expect(broken.missing.map((m: { code: string }) => m.code)).toEqual(['motion_frame_missing'])
+  const broken = await callTool('check_design_completeness', {
+    canvas_id: canvas.id,
+    sloplint: await sloplintFor(owner, canvas.id),
+    agent_name: 'Reviewer',
+  })
+  /* one finding for each spec row that names Fade (the fixture has two) */
+  expect(broken.missing.map((m: { code: string }) => m.code)).toEqual(['motion_frame_missing', 'motion_frame_missing'])
   await owner.patch(`/api/frames/${fade.id}`, { html: fade.html })
-  const fifth = await callTool('check_design_completeness', { canvas_id: canvas.id, agent_name: 'Reviewer' })
+  const fifth = await callTool('check_design_completeness', {
+    canvas_id: canvas.id,
+    sloplint: await sloplintFor(owner, canvas.id),
+    agent_name: 'Reviewer',
+  })
   expect(fifth.complete).toBe(true)
   expect(await readRun(fifth.attestation_id)).toBe(true)
 
