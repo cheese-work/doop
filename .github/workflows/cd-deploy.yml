@@ -6,9 +6,16 @@ name: CD deploy
 #
 #   resolve (hosted)   enter the run, pick the candidate, read the D1 manifest
 #   admit (hosted)     pin: manifest, D1 run, image label and migration inventory all name the candidate
-#   deploy (C00)       pre-arm check, ARM the marker, then apply (flock + pre-apply check) and readback
-#   readback-confirm   confirm check on C00 that the candidate is what runs; a train run then restores the marker
-#   rollback           rollback check, roll back by digest only if C00 still runs the candidate, then suspend
+#   deploy (C00)       pre-arm check, ARM the marker, then apply (flock + pre-apply check) and readback (3 healthy
+#                      checks in 90 s; records T0: restart count, time)
+#   readback-delay     waits 15 min in environment c00-readback-delay (a wait timer); hosted, so no runner is held
+#   readback-confirm   `c00.sh confirm` on C00, under the flock: migration quiescence, the confirm check, restart count
+#                      unchanged since T0, health, digest; a train run then restores the marker
+#   rollback           `c00.sh rollback` on C00, under the flock: migration quiescence, then the rollback check on what
+#                      C00 runs at that moment. The candidate rolls back to the retained predecessor by digest and the
+#                      predecessor is read back; a predecessor or a newer deploy is left alone; then suspend, and the
+#                      job fails
+#   evidence           every run: deploy-evidence.json (artifact) and the run summary (CHE-5549, C-12)
 #
 # The suspension marker (repo variable DOOP_DEPLOY_SUSPENDED, CHE-5545, plan C-10) is written only by the three
 # C00 jobs, with scripts/deploy-marker.mjs: a train run arms it before its first change and only a passing
@@ -157,8 +164,14 @@ jobs:
     outputs:
       go: ${{ steps.prearm.outputs.go }}
       predecessor_digest: ${{ steps.prearm.outputs.predecessor_digest }}
+      predecessor_sha: ${{ steps.prearm.outputs.predecessor_sha }}
       attempted: ${{ steps.apply.outputs.attempted }}
       marker: ${{ steps.arm.outputs.marker }}
+      lock_wait_seconds: ${{ steps.apply.outputs.lock_wait_seconds }}
+      # T0 of the readback (C-9): what readback-confirm compares with.
+      restart_count: ${{ steps.readback.outputs.restart_count }}
+      health: ${{ steps.readback.outputs.health }}
+      t0_epoch: ${{ steps.readback.outputs.t0_epoch }}
     env:
       DEPLOY_REF: ${{ format('ghcr.io/{0}@{1}', github.repository, needs.admit.outputs.digest) }}
       DEPLOY_SHA: ${{ needs.admit.outputs.candidate }}
@@ -234,15 +247,29 @@ jobs:
           MARKER_EXPECT: ${{ steps.arm.outputs.marker }}
         run: bash deploy/cd/c00.sh apply
       - name: Read back (digest, SHA, health)
+        id: readback
         if: ${{ steps.prearm.outputs.go == 'true' }}
         run: bash deploy/cd/c00.sh readback
       - name: Log out of GHCR
         if: always()
         run: docker logout ghcr.io
 
-  readback-confirm:
+  # The 15-minute wait is the environment's wait timer (repository setting, see deploy/cd/README.md). A job that
+  # waits on an environment holds no runner, so this one is hosted and does nothing once released.
+  readback-delay:
     needs: [admit, deploy]
     if: ${{ needs.deploy.result == 'success' && needs.deploy.outputs.attempted == 'true' && github.repository == 'cheese-work/doop' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: c00-readback-delay
+    permissions: {}
+    steps:
+      - name: Delay over
+        run: echo "readback delay over; readback-confirm checks the candidate on C00"
+
+  readback-confirm:
+    needs: [admit, deploy, readback-delay]
+    if: ${{ needs.readback-delay.result == 'success' && needs.deploy.result == 'success' && needs.deploy.outputs.attempted == 'true' && github.repository == 'cheese-work/doop' }}
     runs-on: [self-hosted, cheese-c00-deploy]
     timeout-minutes: 20
     environment: doop-deploy-marker
@@ -251,13 +278,24 @@ jobs:
     concurrency:
       group: c00-deploy-doop
       cancel-in-progress: false
+    outputs:
+      restart_count_confirm: ${{ steps.confirm.outputs.restart_count_confirm }}
+      confirmed_epoch: ${{ steps.confirm.outputs.confirmed_epoch }}
     env:
       DEPLOY_REF: ${{ format('ghcr.io/{0}@{1}', github.repository, needs.admit.outputs.digest) }}
       DEPLOY_SHA: ${{ needs.admit.outputs.candidate }}
       DEPLOY_MODE: ${{ needs.admit.outputs.mode }}
+      # T0 of the readback in the deploy job: the restart count and the time the delay is measured from.
+      RESTART_T0: ${{ needs.deploy.outputs.restart_count }}
+      T0_EPOCH: ${{ needs.deploy.outputs.t0_epoch }}
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
       EXTRA: ${{ vars.C00_DEPLOY_AUTHORIZERS }}
+      # Quiescence reads the live database (C-8.8), so confirm needs what deploy and rollback have: the compose
+      # project and, when set, the Postgres container (empty: c00.sh finds the project's `db` service).
+      C00_COMPOSE_DIR: ${{ vars.C00_DOOP_COMPOSE_DIR || '/home/congvc/.local/share/doop' }}
+      DOOP_DEPLOY_TRAIN: ${{ vars.DOOP_DEPLOY_TRAIN }}
+      C00_PG_CONTAINER: ${{ vars.C00_DOOP_PG_CONTAINER }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -268,10 +306,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Confirm check
+      # Everything is decided under the flock: quiescence, the confirm check (this run's marker, the candidate's digest
+      # and label), the delay, and that the container did not restart since T0 and is healthy. A failure here leaves
+      # the marker armed and starts the rollback job.
+      - name: Confirm on C00 (quiescence, marker, restarts, health, digest)
+        id: confirm
         env:
           MARKER_EXPECT: ${{ needs.deploy.outputs.marker }}
-        run: node scripts/deploy-gate.mjs recheck "$DEPLOY_MODE" --op confirm --expect "$MARKER_EXPECT"
+        run: bash deploy/cd/c00.sh confirm
       # The marker is a repository variable; `github.token` cannot write one, so a GitHub App token does. It is
       # minted in the environment that holds the App key, only for variables, and just before its first use.
       - name: Mint the marker token
@@ -292,8 +334,8 @@ jobs:
         run: node scripts/deploy-marker.mjs restore
 
   rollback:
-    needs: [admit, deploy, readback-confirm]
-    if: ${{ always() && needs.deploy.outputs.attempted == 'true' && (needs.deploy.result == 'failure' || needs.readback-confirm.result == 'failure') && github.repository == 'cheese-work/doop' }}
+    needs: [admit, deploy, readback-delay, readback-confirm]
+    if: ${{ always() && needs.deploy.outputs.attempted == 'true' && (needs.deploy.result == 'failure' || needs.readback-delay.result == 'failure' || needs.readback-confirm.result == 'failure') && github.repository == 'cheese-work/doop' }}
     runs-on: [self-hosted, cheese-c00-deploy]
     timeout-minutes: 20
     environment: doop-deploy-marker
@@ -302,11 +344,15 @@ jobs:
     concurrency:
       group: c00-deploy-doop
       cancel-in-progress: false
+    outputs:
+      action: ${{ steps.rollback.outputs.action }}
+      applied: ${{ steps.rollback.outcome }}
     env:
       DEPLOY_REF: ${{ format('ghcr.io/{0}@{1}', github.repository, needs.admit.outputs.digest) }}
       DEPLOY_SHA: ${{ needs.admit.outputs.candidate }}
       DEPLOY_MODE: ${{ needs.admit.outputs.mode }}
       PREDECESSOR_DIGEST: ${{ needs.deploy.outputs.predecessor_digest }}
+      PREDECESSOR_SHA: ${{ needs.deploy.outputs.predecessor_sha }}
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
       EXTRA: ${{ vars.C00_DEPLOY_AUTHORIZERS }}
@@ -325,19 +371,20 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # Acts on what C00 runs: the candidate rolls back; the predecessor or a newer deploy is left alone.
-      - name: Rollback check
-        id: check
+      # One step, all under the C00 flock: migration quiescence, then the rollback check on what C00 runs and what the
+      # marker says at that moment. Only a candidate that is still running rolls back; the predecessor already running
+      # (`none`) or a newer deploy (`superseded`) changes nothing. A decision made before the lock could replace a
+      # newer deployment, so none is made here.
+      - name: Roll back by digest
+        id: rollback
         env:
           MARKER_EXPECT: ${{ needs.deploy.outputs.marker }}
-        run: node scripts/deploy-gate.mjs recheck "$DEPLOY_MODE" --op rollback --expect "$MARKER_EXPECT"
-      - name: Roll back by digest
-        if: ${{ steps.check.outputs.action == 'rollback' }}
         run: bash deploy/cd/c00.sh rollback
       # The marker is a repository variable; `github.token` cannot write one, so a GitHub App token does. It is
       # minted in the environment that holds the App key, only for variables, and just before its first use.
       - name: Mint the marker token
         id: app
+        if: ${{ !cancelled() && steps.rollback.outputs.go == 'true' }}
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ vars.DOOP_MARKER_APP_ID }}
@@ -347,11 +394,70 @@ jobs:
       # Whatever the rollback did, even if it failed: this run's armed value becomes suspended (C-10.3). Only a
       # lift (S3b) clears it. Not after a refused check, where the marker is no longer this run's own.
       - name: Suspend the marker
-        if: ${{ !cancelled() && steps.check.outputs.go == 'true' }}
+        if: ${{ !cancelled() && steps.rollback.outputs.go == 'true' }}
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           MARKER_EXPECT: ${{ needs.deploy.outputs.marker }}
           RUN_ID: ${{ github.run_id }}
           SHA: ${{ needs.admit.outputs.candidate }}
-          ACTION: ${{ steps.check.outputs.action }}
+          ACTION: ${{ steps.rollback.outputs.action }}
         run: node scripts/deploy-marker.mjs suspend --reason "rollback-$ACTION"
+      # The run ends red whatever the rollback did: a readback or confirm failure is a failed deploy (C-9).
+      - name: Fail the run
+        if: ${{ !cancelled() }}
+        env:
+          ACTION: ${{ steps.rollback.outputs.action }}
+        run: |
+          echo "deploy failed after the change started; rollback action: ${ACTION:-none (check refused)}; the marker is suspended or armed"
+          exit 1
+
+  # Every run, whatever happened above: deploy-evidence.json and the run summary (C-12). Hosted, read only.
+  evidence:
+    needs: [resolve, admit, deploy, readback-delay, readback-confirm, rollback]
+    if: ${{ always() && github.repository == 'cheese-work/doop' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      deployments: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Write the evidence
+        env:
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          MODE: ${{ needs.resolve.outputs.mode }}
+          CANDIDATE: ${{ needs.admit.outputs.candidate }}
+          DIGEST: ${{ needs.admit.outputs.digest }}
+          PREDECESSOR_SHA: ${{ needs.deploy.outputs.predecessor_sha }}
+          PREDECESSOR_DIGEST: ${{ needs.deploy.outputs.predecessor_digest }}
+          RESOLVE_RESULT: ${{ needs.resolve.result }}
+          ADMIT_RESULT: ${{ needs.admit.result }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+          DELAY_RESULT: ${{ needs.readback-delay.result }}
+          CONFIRM_RESULT: ${{ needs.readback-confirm.result }}
+          ROLLBACK_RESULT: ${{ needs.rollback.result }}
+          ROLLBACK_ACTION: ${{ needs.rollback.outputs.action }}
+          ROLLBACK_APPLIED: ${{ needs.rollback.outputs.applied }}
+          HEALTH: ${{ needs.deploy.outputs.health }}
+          RESTART_COUNT: ${{ needs.deploy.outputs.restart_count }}
+          RESTART_COUNT_CONFIRM: ${{ needs.readback-confirm.outputs.restart_count_confirm }}
+          T0_EPOCH: ${{ needs.deploy.outputs.t0_epoch }}
+          CONFIRMED_EPOCH: ${{ needs.readback-confirm.outputs.confirmed_epoch }}
+          LOCK_WAIT_SECONDS: ${{ needs.deploy.outputs.lock_wait_seconds }}
+        run: node scripts/deploy-evidence.mjs deploy-evidence.json
+      - uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: deploy-evidence
+          path: deploy-evidence.json
+          if-no-files-found: error
+      # After the artifact, so a failed record never loses it: a confirmed deploy is also recorded as a GitHub
+      # deployment. That is the durable last successful D2 SHA the watchers (CHE-5550, C-7) read; neither artifact
+      # expiry nor a run of skipped slots can lose it.
+      - name: Record a confirmed deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: node scripts/cd-watch.mjs record deploy-evidence.json

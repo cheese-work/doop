@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
    (`cd-deploy.yml`) is the only workflow that touches C00. */
 const d1 = readFileSync('.github/workflows/image.yml', 'utf8')
 const d2 = readFileSync('.github/workflows/cd-deploy.yml', 'utf8')
+const c00sh = readFileSync('deploy/cd/c00.sh', 'utf8')
 
 /* The text of one top-level job, up to the next job or end of file. */
 function job(wf: string, name: string): string {
@@ -152,14 +153,28 @@ describe('D2 C00 jobs: deploy, readback-confirm, rollback', () => {
     expect(job(d2, 'deploy')).toMatch(/outputs:[\s\S]*predecessor_digest:/)
   })
 
-  it('confirm runs the confirm check; rollback runs the rollback check before any change', () => {
+  it('confirm and rollback decide inside c00.sh, under the lock, not in a step before it (CHE-5549 review)', () => {
     const confirm = job(d2, 'readback-confirm')
-    expect(confirm).toMatch(/needs: \[admit, deploy\]/)
-    expect(confirm).toContain('--op confirm')
+    expect(confirm).toMatch(/needs: \[admit, deploy, readback-delay\]/)
     const rb = job(d2, 'rollback')
-    expect(rb).toContain('--op rollback')
-    expect(rb.indexOf('--op rollback')).toBeLessThan(rb.indexOf('c00.sh rollback'))
+    // A workflow step before c00.sh would decide before the flock is taken, on a state that can change.
+    for (const j of [confirm, rb]) expect(j).not.toContain('deploy-gate.mjs')
     expect(rb).toMatch(/if: \$\{\{ always\(\) && /)
+    for (const op of ['confirm', 'rollback']) {
+      const body = new RegExp(`^  ${op}\\)\\n([\\s\\S]*?)^    ;;`, 'm').exec(c00sh)?.[1] ?? ''
+      expect(body, op).not.toBe('')
+      const lock = body.indexOf('take_lock')
+      const quiet = body.indexOf('require_quiescent')
+      const gate = body.indexOf(`gate_recheck ${op}`)
+      expect(lock, `${op} takes the lock`).toBeGreaterThan(-1)
+      expect(quiet, `${op} proves quiescence after the lock`).toBeGreaterThan(lock)
+      expect(gate, `${op} rechecks after quiescence`).toBeGreaterThan(quiet)
+      // Whatever the train switch says: a migration can run with it off, so the proof is never conditional.
+      expect(body.slice(lock, gate)).not.toMatch(/train_on/)
+      if (op === 'rollback') {
+        for (const change of ['compose_up', 'docker image inspect']) expect(body.indexOf(change)).toBeGreaterThan(gate)
+      }
+    }
   })
 
   it('set no job-level timeout past the age bound and never swallow a failure', () => {
@@ -236,7 +251,7 @@ describe('D2 suspension marker wiring (CHE-5545, C-10.1 to C-10.3)', () => {
 
   it('only a passing confirm of a train run restores; the restore is its last step and never runs after a failure', () => {
     const restore = at(confirm, 'deploy-marker.mjs restore')
-    expect(restore).toBeGreaterThan(at(confirm, '--op confirm'))
+    expect(restore).toBeGreaterThan(at(confirm, 'c00.sh confirm'))
     const step = confirm.slice(confirm.lastIndexOf('- name:', restore))
     expect(step).toMatch(/if: \$\{\{ env\.DEPLOY_MODE == 'train' \}\}/)
     expect(step).not.toMatch(/always\(\)|failure\(\)|cancelled\(\)|continue-on-error/)
@@ -244,16 +259,26 @@ describe('D2 suspension marker wiring (CHE-5545, C-10.1 to C-10.3)', () => {
     expect(confirm.slice(restore + 1)).not.toContain('\n      - name:')
   })
 
-  it('rollback suspends over its own arm after the check, whatever the rollback itself did', () => {
+  it('rollback is one c00.sh step that decides under the lock; it suspends over its own arm after it', () => {
     const suspendAt = at(rollback, 'deploy-marker.mjs suspend')
-    expect(suspendAt).toBeGreaterThan(at(rollback, '--op rollback'))
-    expect(suspendAt).toBeGreaterThan(at(rollback, 'c00.sh rollback'))
+    const rollbackAt = at(rollback, 'c00.sh rollback')
+    expect(suspendAt).toBeGreaterThan(rollbackAt)
+    expect(rollback.match(/c00\.sh rollback/g)).toHaveLength(1)
+    const rbStep = rollback.slice(rollback.lastIndexOf('- name:', rollbackAt), rollbackAt)
+    expect(rbStep).toContain('id: rollback')
+    expect(rbStep).not.toMatch(/\n\s+if:/) // never skipped by a decision made before the lock
+    expect(rbStep).toMatch(/MARKER_EXPECT: \$\{\{ needs\.deploy\.outputs\.marker \}\}/)
+    expect(rollback).toMatch(/action: \$\{\{ steps\.rollback\.outputs\.action \}\}/)
+    expect(rollback).not.toContain('steps.check')
     const step = rollback.slice(rollback.lastIndexOf('- name:', suspendAt))
-    expect(step).toMatch(/if: \$\{\{ !cancelled\(\) && steps\.check\.outputs\.go == 'true' \}\}/)
+    expect(step).toMatch(/if: \$\{\{ !cancelled\(\) && steps\.rollback\.outputs\.go == 'true' \}\}/)
     expect(step).toContain('MARKER_EXPECT')
     expect(rollback).not.toMatch(/deploy-marker\.mjs (arm|restore)/)
-    // A failed token mint can never keep a broken deploy from rolling back: it comes after the rollback.
+    // A failed token mint can never keep a broken deploy from rolling back: it comes after the rollback, and a
+    // failed rollback still gets its token, so the suspension is written.
     expect(at(rollback, 'create-github-app-token')).toBeGreaterThan(at(rollback, 'c00.sh rollback'))
+    const mint = rollback.slice(rollback.lastIndexOf('- name:', at(rollback, 'create-github-app-token')))
+    expect(mint).toMatch(/if: \$\{\{ !cancelled\(\) && steps\.rollback\.outputs\.go == 'true' \}\}/)
   })
 
   it('the marker is written by these three C00 jobs only', () => {
@@ -265,6 +290,84 @@ describe('D2 suspension marker wiring (CHE-5545, C-10.1 to C-10.3)', () => {
     for (const j of [deploy, confirm, rollback]) {
       for (const line of j.split('\n').filter((l) => /^\s+run:/.test(l))) expect(line).not.toContain('${{')
     }
+  })
+})
+
+describe('D2 S5: readback delay, confirm, rollback, evidence (CHE-5549, C-9, C-12)', () => {
+  const deploy = job(d2, 'deploy')
+  const delay = job(d2, 'readback-delay')
+  const confirm = job(d2, 'readback-confirm')
+  const rollback = job(d2, 'rollback')
+  const evidence = job(d2, 'evidence')
+  const at = (j: string, needle: string) => {
+    const i = j.indexOf(needle)
+    expect(i, needle).toBeGreaterThan(-1)
+    return i
+  }
+
+  it('readback-delay waits in the c00-readback-delay environment on a hosted runner, so it holds no C00 runner', () => {
+    expect(delay).toMatch(/environment: c00-readback-delay/)
+    expect(delay).toMatch(/runs-on: ubuntu-latest/)
+    expect(delay).not.toContain('cheese-c00-deploy')
+    expect(delay).not.toMatch(/concurrency:/)
+    expect(delay).toMatch(/needs: \[admit, deploy\]/)
+    expect(delay).toContain("needs.deploy.result == 'success'")
+    expect(delay).toContain("needs.deploy.outputs.attempted == 'true'")
+    expect(delay).not.toMatch(/doop-deploy-marker|secrets\./)
+  })
+
+  it('confirm follows the delay, under the lock group, and runs the checks before the restore', () => {
+    expect(confirm).toContain("needs.readback-delay.result == 'success'")
+    const cmd = at(confirm, 'c00.sh confirm')
+    expect(at(confirm, 'deploy-marker.mjs restore')).toBeGreaterThan(cmd)
+    // The in-lock confirm check compares the marker with this run's own value.
+    expect(confirm.slice(confirm.lastIndexOf('- name:', cmd), cmd)).toMatch(
+      /MARKER_EXPECT: \$\{\{ needs\.deploy\.outputs\.marker \}\}/,
+    )
+    expect(confirm).toMatch(/RESTART_T0: \$\{\{ needs\.deploy\.outputs\.restart_count \}\}/)
+    expect(confirm).toMatch(/T0_EPOCH: \$\{\{ needs\.deploy\.outputs\.t0_epoch \}\}/)
+    expect(confirm).toMatch(/outputs:[\s\S]*restart_count_confirm:[\s\S]*confirmed_epoch:/)
+  })
+
+  it('the deploy job reports T0, the lock wait and the predecessor for the later jobs and the evidence', () => {
+    for (const o of ['restart_count:', 'health:', 't0_epoch:', 'lock_wait_seconds:', 'predecessor_sha:'])
+      expect(deploy, o).toMatch(new RegExp(`outputs:[\\s\\S]*${o}`))
+    expect(deploy).toMatch(/- name: Read back[\s\S]*id: readback/)
+  })
+
+  it('rollback also runs after a failed delay, reads back the predecessor, and fails the run', () => {
+    expect(rollback).toMatch(/needs: \[admit, deploy, readback-delay, readback-confirm\]/)
+    expect(rollback).toContain("needs.readback-delay.result == 'failure'")
+    expect(rollback).toMatch(/PREDECESSOR_SHA: \$\{\{ needs\.deploy\.outputs\.predecessor_sha \}\}/)
+    expect(rollback).toMatch(/outputs:[\s\S]*action:[\s\S]*applied:/)
+    const suspend = at(rollback, 'deploy-marker.mjs suspend')
+    const last = rollback.slice(rollback.lastIndexOf('- name:'))
+    expect(rollback.lastIndexOf('- name:')).toBeGreaterThan(suspend)
+    expect(last).toMatch(/if: \$\{\{ !cancelled\(\) \}\}/)
+    expect(last).toMatch(/exit 1/)
+  })
+
+  it('evidence runs on every run, hosted, with no deploy power, and writes deploy-evidence.json and the summary', () => {
+    expect(evidence).toMatch(/needs: \[resolve, admit, deploy, readback-delay, readback-confirm, rollback\]/)
+    expect(evidence).toMatch(/if: \$\{\{ always\(\) && /)
+    expect(evidence).toMatch(/runs-on: ubuntu-latest/)
+    expect(evidence).not.toMatch(/cheese-c00-deploy|environment:|secrets\.|create-github-app-token|deploy-marker/)
+    expect(evidence).toContain('scripts/deploy-evidence.mjs deploy-evidence.json')
+    expect(evidence).toMatch(/actions\/upload-artifact@[0-9a-f]{40}/)
+    expect(evidence).toContain('name: deploy-evidence')
+    for (const need of ['deploy', 'readback-delay', 'readback-confirm', 'rollback'])
+      expect(evidence).toContain(`needs.${need}.result`)
+    for (const line of evidence.split('\n').filter((l) => /^\s+run:/.test(l))) expect(line).not.toContain('${{')
+  })
+
+  it('evidence does not decide a run it did not see: it never fails the run itself', () => {
+    expect(evidence).not.toMatch(/continue-on-error/)
+    expect(evidence).toMatch(/timeout-minutes: \d+/)
+  })
+
+  it('the delay wait is not a C00 job: the lock group and the marker environment stay on the three C00 jobs', () => {
+    expect(d2.match(/group: c00-deploy-doop/g)).toHaveLength(3)
+    expect(d2.match(/environment: doop-deploy-marker/g)).toHaveLength(3)
   })
 })
 

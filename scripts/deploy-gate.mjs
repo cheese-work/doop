@@ -8,7 +8,7 @@
 // The marker itself is written only by deploy-marker.mjs.
 import { spawnSync } from 'node:child_process'
 import { appendFileSync, readFileSync } from 'node:fs'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { inventory } from './migration-inventory.mjs'
 
 const OWNER = 'congvc-dev'
@@ -245,6 +245,17 @@ export const gitFirstParent = async (from, to, cwd = '.') =>
     .split('\n')
     .filter(Boolean)
 // The doop container's image digest and revision label, or null when there is no container.
+// The real migration quiescence proof (C-8.8): no migrate container running, no doop-migrate session, advisory key
+// free, read by `c00.sh quiescence` on this host. Anything but a clean pass (a read that fails, a hang, a missing
+// script) is "not proven".
+const C00_SH = fileURLToPath(new URL('../deploy/cd/c00.sh', import.meta.url))
+export async function c00Quiescent(script = process.env.C00_SH || C00_SH, timeoutMs = 120_000) {
+  const r = spawnSync('bash', [script, 'quiescence'], { encoding: 'utf8', timeout: timeoutMs })
+  if (r.status === 0) return { ok: true }
+  const said = `${r.stderr ?? ''}${r.stdout ?? ''}`.trim().split('\n').filter(Boolean).pop()
+  return { ok: false, reason: said || r.error?.message || `c00.sh quiescence exited ${r.status ?? r.signal}` }
+}
+
 export async function dockerRunning(container = process.env.C00_CONTAINER || 'doop') {
   const id = spawnSync('docker', ['inspect', '--format', '{{.Image}}', container], { encoding: 'utf8' })
   if (id.status !== 0 || !id.stdout.trim()) return null
@@ -375,9 +386,7 @@ async function cli(argv, env) {
       running: () => dockerRunning(),
       isAncestor: gitIsAncestor,
       firstParent: gitFirstParent,
-      // S4b wires the real proof (container exited, no sessions, advisory lock free). Until then no apply can
-      // leave an unproven migration behind, so there is nothing to refuse on.
-      quiescent: async () => ({ ok: true }),
+      quiescent: () => c00Quiescent(),
     })
     return settle(out, {
       action: out.action ?? '',

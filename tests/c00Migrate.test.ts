@@ -65,9 +65,14 @@ case "$*" in
 esac
 `
 
-/* `apply` runs the pre-apply gate through `node` (CHE-5544); the stub accepts it. */
+/* `apply`, `confirm` and `rollback` run their gate check through `node` (CHE-5544); the stub accepts it and,
+   for the rollback check, decides to roll back like the real gate does for a running candidate. */
 const NODE_STUB = `#!/usr/bin/env bash
 echo "node $*" >> "$STUB_DIR/nodelog"
+if [ -n "\${GITHUB_OUTPUT:-}" ]; then
+  echo "go=true" >> "$GITHUB_OUTPUT"
+  case "$*" in *"--op rollback"*) echo "action=rollback" >> "$GITHUB_OUTPUT" ;; esac
+fi
 exit 0
 `
 
@@ -483,13 +488,23 @@ describe('the real deploy workflow environment', () => {
       expect(r.status, r.stderr).toBe(0)
     })
 
-    it('rollback with the switch off does not read the database', () => {
+    it('rollback with the switch off still proves quiescence, and goes ahead when nothing migrates (CHE-5549)', () => {
       put('rollback_tag', 'x')
-      put('sessions', '1|2026-11-16 06:00:01+00\n') // a survivor would refuse under the train
       const r = run('rollback', {}, { DOOP_DEPLOY_TRAIN: 'off' }, 'rollback')
       expect(r.status, r.stderr).toBe(0)
-      expect(log()).not.toMatch(/docker exec/)
+      expect(log()).toMatch(/docker exec/)
       expect(log()).toMatch(/up -d/)
+      expect(log()).not.toContain('compose.supervised.yml')
+    })
+
+    it('rollback with the switch off refuses while a migration session is live (CHE-5549)', () => {
+      put('rollback_tag', 'x')
+      put('sessions', '1|2026-11-16 06:00:01+00\n')
+      const r = run('rollback', {}, { DOOP_DEPLOY_TRAIN: 'off' }, 'rollback')
+      expect(r.status).not.toBe(0)
+      expect(r.stderr).toMatch(/quiescence not proven/)
+      expect(ghOut()).toContain('outcome=needs_operator')
+      expect(log()).not.toMatch(/up -d/)
     })
 
     it('the same deploy with the switch on takes the supervised path', () => {
