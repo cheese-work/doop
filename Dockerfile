@@ -59,6 +59,11 @@ COPY shared ./shared
 COPY scripts/deploy-smoke.mjs ./scripts/deploy-smoke.mjs
 COPY deploy/cd/smoke-routes.json ./deploy/cd/smoke-routes.json
 
+# The commit this image was built from, read by /healthz (CHE-5550). Declared last so a new commit busts only this
+# layer; image.yml passes it, and a local build without it reads `unknown`.
+ARG DOOP_REVISION=unknown
+RUN printf '%s\n' "$DOOP_REVISION" > /app/REVISION
+
 EXPOSE 4400
 HEALTHCHECK --interval=30s --timeout=5s CMD node -e "fetch('http://localhost:'+process.env.PORT+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 # the installed binary rather than npx: npm is not what resolves packages here

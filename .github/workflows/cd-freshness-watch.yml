@@ -1,0 +1,40 @@
+# ci-policy: class=scheduled
+name: CD freshness watch
+
+# C-7.1 of the deploy train (CHE-5550, plan CHE-5474). D2 (`cd-deploy.yml`) runs at 06:17, 14:17 and 22:17 ICT; this
+# watcher is its backup. Every 15 minutes it asks, in `scripts/cd-watch.mjs freshness`: is the last D2 slot 45 min
+# old, is a qualified candidate ahead of the last successful D2 SHA, and does no D2 run exist since the slot? Then it
+# sends one `schedule_backup` dispatch. At 90 min it fails this run with `::error::`. A failed D1 build is rerun once.
+# The last successful D2 SHA is read from the deployment record D2 writes after each confirmed deploy (artifacts are the
+# fallback), not from a run conclusion: a skipped D2 ends green. An unreadable history fails this run.
+#
+# The dispatch is made with the workflow token, so D2 sees `github-actions[bot]`, the one actor it admits for
+# `schedule_backup`. It does nothing while repo variable DOOP_DEPLOY_TRAIN is not `on`.
+on:
+  schedule:
+    - cron: '12,27,42,57 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+  deployments: read
+
+# Deliberately no concurrency group and no self-hosted runner: a dead deploy runner or a stuck queue must not
+# silence the alarm. Public repo: GitHub-hosted minutes are free.
+jobs:
+  freshness:
+    if: github.repository == 'cheese-work/doop'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # Via env, never inlined into the script.
+      - name: Check D2 freshness
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DOOP_DEPLOY_TRAIN: ${{ vars.DOOP_DEPLOY_TRAIN }}
+        run: node scripts/cd-watch.mjs freshness

@@ -132,6 +132,56 @@ health, restart counts, delay, lock wait, and the read-back time, confirm time a
 beside it. Values that are not the exact shape they should be are dropped. Tofu or c00-hermes-devops copies the
 read-back values to CHE-2752.
 
+## Watchers (S7, C-7)
+
+Two scheduled workflows watch D2. Both do nothing (a clean skip, exit 0) while `DOOP_DEPLOY_TRAIN` is not `on`, so
+they cost no alarm while the train is off, and both are scheduled from the merge of this slice, so they are seen
+running before the switch can turn on. The last successful D2 SHA has four states, never a guess:
+`known` (a SHA), `pending` (a D2 run under 3 h old is unfinished and may confirm any minute: only the SHA comparison waits: freshness still alarms at 90 min after the slot and live still needs a healthy `/healthz`), `none` (a proven first deployment: no D2 run exists, or every one was read and none confirmed) and
+`unknown` (the history cannot be read). Where it comes from, in order:
+
+1. The deployment record. The `evidence` job of D2 (`permissions: deployments: write`, after the artifact upload) runs
+   `node scripts/cd-watch.mjs record deploy-evidence.json` on a confirmed deploy: a GitHub deployment in environment
+   `c00-doop` at the candidate SHA (description `... (D2 run <id>, confirmed <UTC time>)`, `auto_merge` and `production_environment` sent as
+   JSON booleans), with a `success` status, read back before the step passes. A write that fails turns the D2 run red.
+   Neither artifact expiry nor any number of skipped D2 slots can lose it. The watchers read it with
+   `deployments: read`. Deploys are ordered by their confirmation time, never by run ID: runs queue independently, so
+   an older run can confirm after a newer one, and a run can be rerun days later. The record is not trusted alone: every
+   D2 run whose last activity (`updated_at`, which a rerun moves) is not before the record's confirmation is checked,
+   newest created first. A run with no evidence (green, failed or cancelled: a deploy can confirm and then lose its
+   evidence upload), or whose evidence confirms another SHA after the record (its record write failed), is `unknown`;
+   one that confirmed before the record is older and ignored. A run that ended before the record's confirmation is
+   not read. A run created over 30 days (GitHub's rerun limit) before the record ends the scan. A confirmed deploy
+   without a confirmation time cannot be ordered: the record step fails the D2 run.
+2. Without a record: the `deploy-evidence` artifact (`outcome: confirmed`), the latest confirmation winning, up to
+   100 evidence reads (a skipped D2 ends green, so a run conclusion is not used). A run whose artifact is gone or
+   unreadable, a confirmed artifact with a bad SHA, or hitting the scan limit is `unknown`.
+
+`unknown` fails visibly: the freshness watch alarms at once when a candidate exists, and the live watch fails. A
+deployed candidate is never treated as overdue, and an unreachable `/healthz` never passes, because of missing history.
+The decisions are pure functions in `scripts/cd-watch.mjs`, tested in `tests/cdWatch.test.ts`.
+
+- `cd-freshness-watch.yml` (hosted, `12,27,42,57 * * * *`): the newest D2 slot is at least 45 min old, a qualified
+  candidate (`pickCandidate`: the newest `cheese/main` commit with a successful D1 push run) differs from the last
+  successful D2 SHA, and no D2 run was created since the slot: one `workflow_dispatch` of `cd-deploy.yml` with
+  `mode=train`, `schedule_backup=true`, made with the workflow token (`github-actions[bot]`, the one actor D2 admits
+  for it). Once a D2 run exists there is no second dispatch. At 90 min with a candidate still ahead the run fails with
+  `::error::`, whether or not a D2 run exists (a skipped, suspended or forward-only run left C00 behind all the same).
+  A failed D1 run on `cheese/main` is rerun once (`gh run rerun --failed` while `run_attempt` is 1).
+- `cd-live-revision.yml` (on `cheese-x99-gate`, schedule only, `7,22,37,52 * * * *`): reads
+  `https://$DOOP_C00_HOST/healthz` over the tailnet and fails when the revision is behind the last successful D2 SHA.
+  Ahead is fine (a deploy whose evidence is not written yet); a diverged, missing, malformed or `unknown` revision
+  fails. With a proven `none` (no successful D2 yet) there is no SHA to compare with, but `/healthz` must still answer
+  `ok: true` with a 40-hex revision; with `unknown` it fails.
+- `/healthz` answers `{ ok, revision }`. `image.yml` passes `DOOP_REVISION=${{ github.sha }}` as a build arg; the
+  `Dockerfile` writes it to `/app/REVISION` (last layer) and `server/revision.ts` reads it once at start. A build
+  without the arg, or a dev run, reports `unknown`.
+
+Read-back before the switch: before `DOOP_DEPLOY_TRAIN` is set to `on`, each watcher shows a green scheduled run on
+the Actions page (`gh run list --workflow cd-freshness-watch.yml --event schedule`, and the same for
+`cd-live-revision.yml`) from after the merge of this slice. Repo variable `DOOP_C00_HOST` (the doop host name on
+C00's tailnet, no scheme) must be set before the switch too: the live watcher fails when it is `on` and the host is unset.
+
 ## Prerequisites (set once; not in this repo)
 
 | Where         | Name                      | Value                                                                                                                                                                                                                                    |
@@ -139,6 +189,7 @@ read-back values to CHE-2752.
 | Runner        | label `cheese-c00-deploy` | self-hosted runner on C00 with Docker and `docker compose` (node 22 comes from `actions/setup-node`; the runner needs egress to download it), in runner group `c00-deploy` (D1), limited to `cheese-work/doop` and `cheese-work/multica` |
 | Repo variable | `C00_DOOP_COMPOSE_DIR`    | optional; default `/home/congvc/.local/share/doop` (`compose.yaml`, service `app`, its `.env`)                                                                                                                                           |
 | Repo variable | `C00_DEPLOY_AUTHORIZERS`  | extra logins, e.g. the agent-merge identity                                                                                                                                                                                              |
+| Repo variable | `DOOP_C00_HOST`           | doop's host name on C00's tailnet, no scheme; read by `cd-live-revision.yml`                                                                                                                                                             |
 | Repo variable | `MAIN_RED_PAUSED`         | empty, or a reason to pause                                                                                                                                                                                                              |
 | Environment   | `c00-readback-delay`      | on `cheese-work/doop`, with a **15 minute wait timer** and no secret. Created by hand before the C-11 drill: GitHub creates a missing environment with no timer, and `c00.sh confirm` then refuses (delay not honoured)                  |
 | Environment   | `doop-deploy-marker`      | on `cheese-work/doop`; holds the marker App's key. The three C00 jobs run in it; no hosted job does                                                                                                                                      |

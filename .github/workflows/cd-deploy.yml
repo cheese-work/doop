@@ -419,6 +419,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      deployments: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -452,3 +453,11 @@ jobs:
           name: deploy-evidence
           path: deploy-evidence.json
           if-no-files-found: error
+      # After the artifact, so a failed record never loses it: a confirmed deploy is also recorded as a GitHub
+      # deployment. That is the durable last successful D2 SHA the watchers (CHE-5550, C-7) read; neither artifact
+      # expiry nor a run of skipped slots can lose it.
+      - name: Record a confirmed deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: node scripts/cd-watch.mjs record deploy-evidence.json
