@@ -136,8 +136,20 @@ read-back values to CHE-2752.
 
 Two scheduled workflows watch D2. Both do nothing (a clean skip, exit 0) while `DOOP_DEPLOY_TRAIN` is not `on`, so
 they cost no alarm while the train is off, and both are scheduled from the merge of this slice, so they are seen
-running before the switch can turn on. The last successful D2 SHA is the `candidate_sha` of the newest D2 run whose
-`deploy-evidence` artifact says `outcome: confirmed` (a skipped D2 ends green, so a run conclusion is not used).
+running before the switch can turn on. The last successful D2 SHA has three states, never a guess:
+`known` (a SHA), `none` (a proven first deployment: no D2 run exists, or every one was read and none confirmed) and
+`unknown` (the history cannot be read). Where it comes from, in order:
+
+1. The deployment record. The `evidence` job of D2 (`permissions: deployments: write`, after the artifact upload) runs
+   `node scripts/cd-watch.mjs record deploy-evidence.json` on a confirmed deploy: a GitHub deployment in environment
+   `c00-doop` at the candidate SHA, with a `success` status, read back before the step passes. Neither artifact expiry
+   nor any number of skipped D2 slots can lose it. The watchers read it with `deployments: read`.
+2. Fallback: the `deploy-evidence` artifact (`outcome: confirmed`) of the newest D2 runs, newest first, up to 100 runs
+   (a skipped D2 ends green, so a run conclusion is not used). A green run whose artifact is gone or unreadable, a
+   confirmed artifact with a bad SHA, or hitting the scan limit is `unknown`.
+
+`unknown` fails visibly: the freshness watch alarms at once when a candidate exists, and the live watch fails. A
+deployed candidate is never treated as overdue, and an unreachable `/healthz` never passes, because of missing history.
 The decisions are pure functions in `scripts/cd-watch.mjs`, tested in `tests/cdWatch.test.ts`.
 
 - `cd-freshness-watch.yml` (hosted, `12,27,42,57 * * * *`): the newest D2 slot is at least 45 min old, a qualified
@@ -150,7 +162,8 @@ The decisions are pure functions in `scripts/cd-watch.mjs`, tested in `tests/cdW
 - `cd-live-revision.yml` (on `cheese-x99-gate`, schedule only, `7,22,37,52 * * * *`): reads
   `https://$DOOP_C00_HOST/healthz` over the tailnet and fails when the revision is behind the last successful D2 SHA.
   Ahead is fine (a deploy whose evidence is not written yet); a diverged, missing, malformed or `unknown` revision
-  fails. Before the first successful D2 there is nothing to compare with and it passes.
+  fails. With a proven `none` (no successful D2 yet) there is no SHA to compare with, but `/healthz` must still answer
+  `ok: true` with a 40-hex revision; with `unknown` it fails.
 - `/healthz` answers `{ ok, revision }`. `image.yml` passes `DOOP_REVISION=${{ github.sha }}` as a build arg; the
   `Dockerfile` writes it to `/app/REVISION` (last layer) and `server/revision.ts` reads it once at start. A build
   without the arg, or a dev run, reports `unknown`.

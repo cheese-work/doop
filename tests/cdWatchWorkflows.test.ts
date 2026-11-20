@@ -36,6 +36,10 @@ describe('cd-freshness-watch.yml (C-7.1)', () => {
     expect(noComments(freshness)).not.toMatch(/secrets\./)
   })
 
+  it('may read the deployment record: deployments read', () => {
+    expect(freshness).toMatch(/permissions:[\s\S]*\n\s*deployments: read/)
+  })
+
   it('reads the switch from the repo variable and runs the decision script', () => {
     expect(freshness).toMatch(/DOOP_DEPLOY_TRAIN: \$\{\{ vars\.DOOP_DEPLOY_TRAIN \}\}/)
     expect(freshness).toContain('node scripts/cd-watch.mjs freshness')
@@ -69,8 +73,25 @@ describe('cd-live-revision.yml (C-7.2)', () => {
     expect(noComments(live)).not.toMatch(/secrets\.|docker (build|push)|build-push-action|actions: write/)
   })
 
+  it('may read the deployment record: deployments read', () => {
+    expect(live).toMatch(/permissions:[\s\S]*\n\s*deployments: read/)
+  })
+
   it('reads the switch from the repo variable', () => {
     expect(live).toMatch(/DOOP_DEPLOY_TRAIN: \$\{\{ vars\.DOOP_DEPLOY_TRAIN \}\}/)
+  })
+})
+
+describe('D2 records each confirmed deploy durably (the last successful D2 SHA outlives artifacts and skipped runs)', () => {
+  const d2 = read('.github/workflows/cd-deploy.yml')
+  const evidence = d2.slice(d2.indexOf('\n  evidence:'))
+
+  it('the evidence job writes the deployment record with the workflow token, hosted, after the evidence', () => {
+    expect(evidence).toMatch(/permissions:\s*\n\s*contents: read\s*\n\s*deployments: write/)
+    expect(evidence).toContain('node scripts/cd-watch.mjs record deploy-evidence.json')
+    expect(evidence).toMatch(/GH_TOKEN: \$\{\{ github\.token \}\}/)
+    expect(evidence.indexOf('cd-watch.mjs record')).toBeGreaterThan(evidence.indexOf('deploy-evidence.mjs'))
+    expect(evidence).toMatch(/runs-on: ubuntu-latest/)
   })
 })
 

@@ -4,7 +4,8 @@ name: CD live revision
 # C-7.2 of the deploy train (CHE-5550, plan CHE-5474). Every 15 minutes, on the gate runner (which is on the
 # tailnet), `scripts/cd-watch.mjs live` reads `https://$DOOP_C00_HOST/healthz` and fails when the revision C00 serves
 # is behind the last successful D2 SHA. `/healthz` answers `{ ok, revision }`; the revision is the DOOP_REVISION
-# build arg of `image.yml`. The last successful D2 SHA comes from the `deploy-evidence` artifact.
+# build arg of `image.yml`. The last successful D2 SHA comes from the deployment record D2 writes after each confirmed deploy (the `deploy-evidence`
+# artifacts are the fallback); an unreadable history fails this run too.
 #
 # Read only: no deploy secret, no build, no write to C00. Schedule only. It does nothing while repo variable
 # DOOP_DEPLOY_TRAIN is not `on`.
@@ -15,6 +16,7 @@ on:
 permissions:
   contents: read
   actions: read
+  deployments: read
 
 jobs:
   live-revision:

@@ -5,7 +5,10 @@
 //              fail the run. A failed D1 build is rerun once.
 //   live       (cd-live-revision.yml, on cheese-x99-gate)      C-7.2: C00's /healthz revision must not be behind
 //              the last successful D2 SHA.
-// "Last successful D2 SHA" is the candidate of the newest D2 run whose deploy-evidence artifact says `confirmed`.
+// "Last successful D2 SHA" has three answers: known (a SHA), none (a proven first deployment: every D2 run is readable
+// and none was confirmed) and unknown (the history cannot be read). Unknown fails both watchers visibly; it is never
+// read as none. D2's evidence job records every confirmed deploy as a GitHub deployment (`record`), which outlives the
+// 90 day artifacts and any number of skipped runs; the deploy-evidence artifacts are the fallback before the first record.
 // A D2 run that skips ends green, so a run conclusion says nothing about what was deployed.
 // Both watchers do nothing while DOOP_DEPLOY_TRAIN is not `on`: with the train off nothing is due, so an alarm
 // would only be noise. They are scheduled before the switch can turn on, so that their first runs are already seen.
@@ -18,6 +21,7 @@ import { gitIsAncestor, pickCandidate } from './deploy-gate.mjs'
 
 const MIN = 60_000
 const BRANCH = 'cheese/main'
+const RECORD_ENV = 'c00-doop'
 const SHA40 = /^[0-9a-f]{40}$/
 // D2's slots: cron `17 23,7,15 * * *`, as minutes after midnight UTC (06:17, 14:17 and 22:17 ICT).
 const SLOT_MINUTES = [7 * 60 + 17, 15 * 60 + 17, 23 * 60 + 17]
@@ -35,12 +39,16 @@ export function lastSlot(nowMs) {
 // C-7.1. Facts: switch, clock, the qualified candidate (or null), the last successful D2 SHA (or null), how many D2
 // runs were created since the slot, and the newest D1 run (conclusion null while it runs).
 // Result: what to do, why, and whether to rerun the failed D1 build.
-export function freshness({ trainOn, nowMs, candidate, deployedSha, d2RunsSinceSlot, head }) {
+export function freshness({ trainOn, nowMs, candidate, deployed, d2RunsSinceSlot, head }) {
   if (!trainOn) return { action: 'none', rerunD1: false, reason: 'DOOP_DEPLOY_TRAIN is not on: nothing is due' }
   const rerunD1 = head?.conclusion === 'failure' && head?.attempt === 1
   const age = nowMs - lastSlot(nowMs)
   const idle = (reason) => ({ action: 'none', rerunD1, reason })
   if (!candidate) return idle('no qualified candidate')
+  if (deployed.state === 'unknown') {
+    return { action: 'alarm', rerunD1, reason: `the last successful D2 SHA is unknown: ${deployed.reason}` }
+  }
+  const deployedSha = deployed.state === 'known' ? deployed.sha : null
   if (candidate.sha === deployedSha) return idle(`candidate ${short(candidate.sha)} is already deployed`)
   const behind = `candidate ${short(candidate.sha)} is ahead of the last successful D2 ${short(deployedSha)}`
   if (age >= ALARM_AFTER) {
@@ -53,38 +61,70 @@ export function freshness({ trainOn, nowMs, candidate, deployedSha, d2RunsSinceS
 }
 
 // C-7.2. `body` is what /healthz answered (null when it did not answer or was not JSON), `deployed` the last
-// successful D2 SHA, `isAncestor(a, b)` whether a is an ancestor of b. Fails closed on anything unusable.
+// successful D2 SHA (known, none or unknown), `isAncestor(a, b)` whether a is an ancestor of b. Fails closed on anything
+// unusable: an unknown history, and a /healthz that does not answer, even before any D2 succeeded.
 export async function liveVerdict({ body, deployed, isAncestor }) {
-  if (deployed === null || deployed === undefined) {
-    return { ok: true, reason: 'no successful D2 yet: nothing to compare the live revision with' }
+  if (deployed.state === 'unknown') {
+    return { ok: false, reason: `the last successful D2 SHA is unknown: ${deployed.reason}` }
   }
   if (!body || body.ok !== true) return { ok: false, reason: `/healthz did not report ok: ${JSON.stringify(body)}` }
   const live = body.revision
   if (typeof live !== 'string' || !SHA40.test(live)) {
     return { ok: false, reason: `/healthz revision is not a full commit SHA: ${JSON.stringify(live)}` }
   }
-  if (live === deployed) return { ok: true, reason: `live ${short(live)} is the last successful D2` }
-  if (await isAncestor(live, deployed)) {
-    return { ok: false, reason: `live ${short(live)} is behind the last successful D2 ${short(deployed)}` }
+  if (deployed.state === 'none') {
+    return { ok: true, reason: `no successful D2 yet: nothing to compare live ${short(live)} with` }
   }
-  if (await isAncestor(deployed, live)) {
-    return { ok: true, reason: `live ${short(live)} is ahead of the last successful D2 ${short(deployed)}` }
+  const last = deployed.sha
+  if (live === last) return { ok: true, reason: `live ${short(live)} is the last successful D2` }
+  if (await isAncestor(live, last)) {
+    return { ok: false, reason: `live ${short(live)} is behind the last successful D2 ${short(last)}` }
   }
-  return { ok: false, reason: `live ${short(live)} and the last successful D2 ${short(deployed)} have diverged` }
+  if (await isAncestor(last, live)) {
+    return { ok: true, reason: `live ${short(live)} is ahead of the last successful D2 ${short(last)}` }
+  }
+  return { ok: false, reason: `live ${short(live)} and the last successful D2 ${short(last)} have diverged` }
 }
 
-// The candidate of the newest run (newest first) whose evidence says confirmed; null when none did.
-// `read(id)` gives that run's deploy-evidence, or null when it has none (expired, never written).
-export async function lastDeployed(runs, read) {
-  for (const run of runs) {
-    const evidence = await read(run.id)
-    if (evidence?.outcome === 'confirmed' && SHA40.test(evidence.candidate_sha ?? '')) return evidence.candidate_sha
+// The last successful D2 SHA. `recorded` is the SHA of the newest successful deployment record (or null). Without a
+// usable record the evidence artifacts are scanned, newest run first, at most `maxScan` runs: the first `confirmed` one
+// wins. A green run whose evidence is gone (expired, never written) could have been the deployment, so it makes the
+// history unknown; a failed run cannot have been confirmed, so it does not. Reaching the end of the history with every
+// run readable and none confirmed is the one proof of "none". `listRuns(page)` gives completed D2 runs, newest first, an
+// empty page at the end; `read(id)` gives a run's deploy-evidence, or null when it has none.
+export async function lastDeployed({ recorded, listRuns, read, maxScan = 100 }) {
+  if (SHA40.test(recorded ?? '')) return { state: 'known', sha: recorded, source: 'deployment record' }
+  const unknown = (reason) => ({ state: 'unknown', reason })
+  let scanned = 0
+  for (let page = 1; ; page++) {
+    const runs = await listRuns(page)
+    if (runs.length === 0) return { state: 'none' }
+    for (const run of runs) {
+      if (scanned++ >= maxScan) {
+        return unknown(`no deployment record, and no confirmed D2 run in the newest ${maxScan} runs`)
+      }
+      const evidence = await read(run.id)
+      if (evidence === null || evidence === undefined) {
+        if (run.conclusion === 'success') return unknown(`D2 run ${run.id} ended green but its evidence is gone`)
+        continue
+      }
+      if (evidence.outcome !== 'confirmed') continue
+      if (!SHA40.test(evidence.candidate_sha ?? '')) {
+        return unknown(`D2 run ${run.id} is confirmed but its evidence has no usable candidate SHA`)
+      }
+      return { state: 'known', sha: evidence.candidate_sha, source: `evidence of D2 run ${run.id}` }
+    }
   }
-  return null
+}
+
+// What D2 records durably after a confirmed deploy: a GitHub deployment of the candidate SHA. Null for anything else.
+export function deploymentRecord(evidence) {
+  if (evidence?.outcome !== 'confirmed' || !SHA40.test(evidence.candidate_sha ?? '')) return null
+  return { ref: evidence.candidate_sha, environment: RECORD_ENV }
 }
 
 // ---------------------------------------------------------------------------------------------
-// CLI: node scripts/cd-watch.mjs freshness | live. Inputs come from env. Any error fails the run.
+// CLI: node scripts/cd-watch.mjs freshness | live | record <deploy-evidence.json>. Inputs come from env. Any error fails the run.
 const gh = (args) => {
   const r = spawnSync('gh', args, { encoding: 'utf8', env: process.env })
   if (r.status !== 0) throw Object.assign(new Error(`gh ${args.join(' ')} failed: ${r.stderr.trim()}`), { r })
@@ -113,16 +153,51 @@ function evidenceOf(repo, id) {
   }
 }
 
-// The last successful D2 SHA, from the newest 30 D2 runs that ended green (a skip and a deploy both do).
+// The SHA of the newest deployment record whose newest status is success, from the newest 30 records; or null.
+function recordedSha(repo) {
+  const found = api(repo, `deployments?environment=${RECORD_ENV}&per_page=30`)
+  for (const d of found) {
+    const [status] = api(repo, `deployments/${d.id}/statuses?per_page=1`)
+    if (status?.state === 'success') return d.sha
+  }
+  return null
+}
+
 const deployedSha = (repo) =>
-  lastDeployed(api(repo, 'actions/workflows/cd-deploy.yml/runs?status=completed&per_page=30').workflow_runs, (id) =>
-    evidenceOf(repo, id),
-  )
+  lastDeployed({
+    recorded: recordedSha(repo),
+    listRuns: async (page) =>
+      api(repo, `actions/workflows/cd-deploy.yml/runs?status=completed&per_page=100&page=${page}`).workflow_runs,
+    read: async (id) => evidenceOf(repo, id),
+  })
+
+// D2's evidence job: record a confirmed deploy as a successful deployment, then read it back.
+function record(repo, file) {
+  const payload = deploymentRecord(JSON.parse(readFileSync(file, 'utf8')))
+  if (!payload) return console.log('cd-watch record: this run did not confirm a deploy; nothing to record')
+  const post = (route, fields) =>
+    JSON.parse(gh(['api', '-X', 'POST', `repos/${repo}/${route}`, ...fields.flatMap(([k, v]) => ['-f', `${k}=${v}`])]))
+  const created = post('deployments', [
+    ['ref', payload.ref],
+    ['environment', payload.environment],
+    ['description', 'doop deploy train: confirmed on C00'],
+    ['auto_merge', 'false'],
+    ['production_environment', 'true'],
+  ])
+  post(`deployments/${created.id}/statuses`, [
+    ['state', 'success'],
+    ['environment', payload.environment],
+  ])
+  if (recordedSha(repo) !== payload.ref)
+    throw new Error(`the deployment record of ${short(payload.ref)} did not read back`)
+  console.log(`cd-watch record: recorded ${short(payload.ref)} as a ${payload.environment} deployment`)
+}
 
 async function cli(argv, env) {
   const [command] = argv
   const repo = env.REPO ?? env.GITHUB_REPOSITORY
   const trainOn = env.DOOP_DEPLOY_TRAIN === 'on'
+  if (command === 'record') return record(repo, argv[1])
   if (command === 'freshness') {
     const nowMs = Date.now()
     if (!trainOn) {
@@ -139,7 +214,7 @@ async function cli(argv, env) {
       trainOn,
       nowMs,
       candidate,
-      deployedSha: await deployedSha(repo),
+      deployed: await deployedSha(repo),
       d2RunsSinceSlot: d2.total_count,
       head: newest && { conclusion: newest.conclusion, attempt: newest.run_attempt },
     })
