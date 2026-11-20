@@ -1,0 +1,37 @@
+# ci-policy: class=scheduled
+name: CD live revision
+
+# C-7.2 of the deploy train (CHE-5550, plan CHE-5474). Every 15 minutes, on the gate runner (which is on the
+# tailnet), `scripts/cd-watch.mjs live` reads `https://$DOOP_C00_HOST/healthz` and fails when the revision C00 serves
+# is behind the last successful D2 SHA. `/healthz` answers `{ ok, revision }`; the revision is the DOOP_REVISION
+# build arg of `image.yml`. The last successful D2 SHA comes from the `deploy-evidence` artifact.
+#
+# Read only: no deploy secret, no build, no write to C00. Schedule only. It does nothing while repo variable
+# DOOP_DEPLOY_TRAIN is not `on`.
+on:
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  live-revision:
+    if: github.repository == 'cheese-work/doop'
+    runs-on: [self-hosted, Linux, X64, cheese-x99-gate]
+    timeout-minutes: 10
+    steps:
+      # The full history: the live SHA is placed against the last deployed SHA with `git merge-base --is-ancestor`.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # Via env, never inlined into the script.
+      - name: Check the live revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DOOP_DEPLOY_TRAIN: ${{ vars.DOOP_DEPLOY_TRAIN }}
+          DOOP_C00_HOST: ${{ vars.DOOP_C00_HOST }}
+        run: node scripts/cd-watch.mjs live

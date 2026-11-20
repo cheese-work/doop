@@ -132,6 +132,34 @@ health, restart counts, delay, lock wait, and the read-back time, confirm time a
 beside it. Values that are not the exact shape they should be are dropped. Tofu or c00-hermes-devops copies the
 read-back values to CHE-2752.
 
+## Watchers (S7, C-7)
+
+Two scheduled workflows watch D2. Both do nothing (a clean skip, exit 0) while `DOOP_DEPLOY_TRAIN` is not `on`, so
+they cost no alarm while the train is off, and both are scheduled from the merge of this slice, so they are seen
+running before the switch can turn on. The last successful D2 SHA is the `candidate_sha` of the newest D2 run whose
+`deploy-evidence` artifact says `outcome: confirmed` (a skipped D2 ends green, so a run conclusion is not used).
+The decisions are pure functions in `scripts/cd-watch.mjs`, tested in `tests/cdWatch.test.ts`.
+
+- `cd-freshness-watch.yml` (hosted, `12,27,42,57 * * * *`): the newest D2 slot is at least 45 min old, a qualified
+  candidate (`pickCandidate`: the newest `cheese/main` commit with a successful D1 push run) differs from the last
+  successful D2 SHA, and no D2 run was created since the slot: one `workflow_dispatch` of `cd-deploy.yml` with
+  `mode=train`, `schedule_backup=true`, made with the workflow token (`github-actions[bot]`, the one actor D2 admits
+  for it). Once a D2 run exists there is no second dispatch. At 90 min with a candidate still ahead the run fails with
+  `::error::`, whether or not a D2 run exists (a skipped, suspended or forward-only run left C00 behind all the same).
+  A failed D1 run on `cheese/main` is rerun once (`gh run rerun --failed` while `run_attempt` is 1).
+- `cd-live-revision.yml` (on `cheese-x99-gate`, schedule only, `7,22,37,52 * * * *`): reads
+  `https://$DOOP_C00_HOST/healthz` over the tailnet and fails when the revision is behind the last successful D2 SHA.
+  Ahead is fine (a deploy whose evidence is not written yet); a diverged, missing, malformed or `unknown` revision
+  fails. Before the first successful D2 there is nothing to compare with and it passes.
+- `/healthz` answers `{ ok, revision }`. `image.yml` passes `DOOP_REVISION=${{ github.sha }}` as a build arg; the
+  `Dockerfile` writes it to `/app/REVISION` (last layer) and `server/revision.ts` reads it once at start. A build
+  without the arg, or a dev run, reports `unknown`.
+
+Read-back before the switch: before `DOOP_DEPLOY_TRAIN` is set to `on`, each watcher shows a green scheduled run on
+the Actions page (`gh run list --workflow cd-freshness-watch.yml --event schedule`, and the same for
+`cd-live-revision.yml`) from after the merge of this slice. Repo variable `DOOP_C00_HOST` (the doop host name on
+C00's tailnet, no scheme) must be set before the switch too: the live watcher fails when it is `on` and the host is unset.
+
 ## Prerequisites (set once; not in this repo)
 
 | Where         | Name                      | Value                                                                                                                                                                                                                                    |
@@ -139,6 +167,7 @@ read-back values to CHE-2752.
 | Runner        | label `cheese-c00-deploy` | self-hosted runner on C00 with Docker and `docker compose` (node 22 comes from `actions/setup-node`; the runner needs egress to download it), in runner group `c00-deploy` (D1), limited to `cheese-work/doop` and `cheese-work/multica` |
 | Repo variable | `C00_DOOP_COMPOSE_DIR`    | optional; default `/home/congvc/.local/share/doop` (`compose.yaml`, service `app`, its `.env`)                                                                                                                                           |
 | Repo variable | `C00_DEPLOY_AUTHORIZERS`  | extra logins, e.g. the agent-merge identity                                                                                                                                                                                              |
+| Repo variable | `DOOP_C00_HOST`           | doop's host name on C00's tailnet, no scheme; read by `cd-live-revision.yml`                                                                                                                                                             |
 | Repo variable | `MAIN_RED_PAUSED`         | empty, or a reason to pause                                                                                                                                                                                                              |
 | Environment   | `c00-readback-delay`      | on `cheese-work/doop`, with a **15 minute wait timer** and no secret. Created by hand before the C-11 drill: GitHub creates a missing environment with no timer, and `c00.sh confirm` then refuses (delay not honoured)                  |
 | Environment   | `doop-deploy-marker`      | on `cheese-work/doop`; holds the marker App's key. The three C00 jobs run in it; no hosted job does                                                                                                                                      |

@@ -56,6 +56,9 @@ jobs:
           tags: ${{ env.IMAGE }}:${{ github.sha }}
           # The C00 readback compares this label with the SHA it deployed.
           labels: org.opencontainers.image.revision=${{ github.sha }}
+          # /healthz reports it, and the live-revision watcher compares it with the last successful D2 (CHE-5550).
+          build-args: |
+            DOOP_REVISION=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
       # The migration inventory D2's `admit` recomputes from the checked-out candidate (C-6).

@@ -1125,6 +1125,10 @@ data-doop-webfonts>` for the roster families the frame names and does not load i
   - `.github/workflows/cd-deploy.yml` - D2, the only workflow that deploys to C00: schedule (3 a day) and
     dispatch, off unless repo variable `DOOP_DEPLOY_TRAIN` is `on`; the `DOOP_DEPLOY_SUSPENDED` marker is written
     only by `scripts/deploy-marker.mjs`. See `deploy/cd/README.md`.
+  - `.github/workflows/cd-freshness-watch.yml` and `cd-live-revision.yml` - the two D2 watchers (every 15 min):
+    a backup `schedule_backup` dispatch when D2 is 45 min late (alarm at 90 min), and a check that C00's
+    `/healthz` `revision` is not behind the last successful D2 SHA. Both idle while `DOOP_DEPLOY_TRAIN` is not `on`.
+    Logic in `scripts/cd-watch.mjs`; `/healthz` reads the commit baked into the image (`server/revision.ts`).
   - `.github/workflows/cla.yml` - CLA check (this is an AGPL-3.0 project with CLA-based
     contribution).
   - `.github/workflows/desktop.yml` / `desktop-release.yml` - Tauri desktop app CI and installer

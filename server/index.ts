@@ -1,4 +1,5 @@
 import { env } from './env.ts'
+import { readRevision } from './revision.ts'
 import {
   changeInstances,
   componentDetail,
@@ -433,7 +434,9 @@ const app = express()
    and secure cookies see https, and OAuth metadata echoes the right origin */
 app.set('trust proxy', 1)
 
-app.get('/healthz', (_req, res) => res.json({ ok: true }))
+/* the revision is read once: it is baked into the image and cannot change under a running process */
+const revision = readRevision()
+app.get('/healthz', (_req, res) => res.json({ ok: true, revision }))
 
 /* how many canvases have their frame HTML in memory (store.load / evictIdle) */
 app.get('/healthz/store', (_req, res) => {
