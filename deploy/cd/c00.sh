@@ -8,8 +8,12 @@
 #                     running image as the rollback target, pull DEPLOY_REF, run its migrations once in a
 #                     supervised one-shot container (C-8.8), then start it with DOOP_SKIP_MIGRATIONS=1
 #   c00.sh readback   running digest == DEPLOY_REF's, image revision label == DEPLOY_SHA,
-#                     then healthy on consecutive checks inside the window
-#   c00.sh rollback   prove migration quiescence, start the pinned previous image, wait for it to be healthy
+#                     then healthy on 3 consecutive checks inside 90 s; writes T0 (restart_count, t0_epoch, health)
+#   c00.sh confirm    under the lock, after the readback delay (C-9): restart count == RESTART_T0, healthy,
+#                     digest and label still the candidate's, at least C00_CONFIRM_MIN_SECONDS (900) since T0_EPOCH
+#   c00.sh rollback   under the lock: prove migration quiescence, start the pinned previous image, wait for it to
+#                     be healthy; with PREDECESSOR_DIGEST and PREDECESSOR_SHA it first checks the retained image is
+#                     that digest, then reads back the predecessor's digest, label and health
 #   c00.sh quiescence prove migration quiescence and nothing else (compat and lift jobs call this first)
 #   c00.sh guard      refuse (exit 1) while an earlier compat migration's quiescence is unproven; re-proves the three
 #                     facts and clears the guard when they hold. apply, rollback and sweep run it first; the lift
@@ -23,7 +27,7 @@
 #      C00_PG_CONTAINER (the live Postgres container; read through `docker exec`, read-only; default: the
 #      compose project's `db` service, C00_PG_SERVICE),
 #      DEPLOY_RUN_ID (apply with DOOP_DEPLOY_TRAIN=on only: [a-z0-9-], names the one-shot container and its DB sessions).
-# Optional: C00_LOCK_FILE (/var/lock/doop-deploy.lock), C00_LOCK_WAIT (600 seconds), C00_COMPOSE_FILE, C00_CONTAINER, C00_READBACK_SECONDS (900), C00_ROLLBACK_SECONDS (300),
+# Optional: C00_LOCK_FILE (/var/lock/doop-deploy.lock), C00_LOCK_WAIT (600 seconds), C00_COMPOSE_FILE, C00_CONTAINER, C00_READBACK_SECONDS (90), C00_CONFIRM_MIN_SECONDS (900), C00_ROLLBACK_SECONDS (300),
 #           C00_POLL_SECONDS (10), C00_STABLE_CHECKS (3), C00_PG_USER (doop), C00_PG_DB (doop),
 #           C00_MIGRATE_SECONDS (120), C00_QUIESCE_SECONDS (30), C00_QUIESCE_POLL_SECONDS (2),
 #           C00_DF_PATH (sweep df path, /var/lib/docker),
@@ -39,6 +43,27 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 die() { echo "c00.sh: $*" >&2; exit 1; }
 need_dir() { [ -n "${C00_COMPOSE_DIR:-}" ] || die "C00_COMPOSE_DIR is not set"; }
+
+# The host-level lock (C-5): no second deploy, and no other tool taking this lock, changes C00 while this one
+# runs. Released when this process exits. Sets lock_wait_seconds (also written to $GITHUB_OUTPUT).
+take_lock() {
+  local t=$SECONDS
+  exec 9>"${C00_LOCK_FILE:-/var/lock/doop-deploy.lock}"
+  flock -w "${C00_LOCK_WAIT:-600}" 9 || die "could not take the deploy lock within ${C00_LOCK_WAIT:-600}s"
+  lock_wait_seconds=$((SECONDS - t))
+}
+
+# The running container is image <digest> built from <sha>: digest first, then the revision label.
+check_running() { # $1 = sha256:<64 hex>, $2 = SHA
+  local id digests label
+  id=$(docker inspect --format '{{.Image}}' "$container") || die "$container not found"
+  digests=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$id")
+  grep -q "@$1\$" <<<"$digests" || die "running image digest is not $1"
+  label=$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$id")
+  [ "$label" = "$2" ] || die "image revision label '$label' is not the expected SHA $2"
+}
+
+restart_count() { docker inspect --format '{{.RestartCount}}' "$container"; }
 
 # The supervised migration path is the train's. Absent, off or anything but `on` keeps the
 # deploy exactly as it was before the train (the app migrates at boot); CHE-6526.
@@ -269,13 +294,11 @@ case $cmd in
     mode=${DEPLOY_MODE:-}
     expect=${MARKER_EXPECT:-}
     [ -n "$mode" ] && [ -n "$expect" ] || die "DEPLOY_MODE and MARKER_EXPECT are required"
-    # The host-level lock (C-5): no second deploy, and no other tool taking this lock, changes C00 while
-    # this one checks and applies. It is released when this process exits.
-    exec 9>"${C00_LOCK_FILE:-/var/lock/doop-deploy.lock}"
-    flock -w "${C00_LOCK_WAIT:-600}" 9 || die "could not take the deploy lock within ${C00_LOCK_WAIT:-600}s"
+    take_lock
     # Under the lock the answer can no longer change: ask again before anything is tagged, pulled or started.
     node "$here/../../scripts/deploy-gate.mjs" recheck "$mode" --op pre-apply --expect "$expect" ||
       die "pre-apply check refused the deploy"
+    set_output lock_wait_seconds "$lock_wait_seconds"
     # Under the lock, prove quiescence and read the ledger the failure path compares against.
     if train_on; then
       need_run_id
@@ -300,22 +323,63 @@ case $cmd in
     ref=${DEPLOY_REF:-}
     sha=${DEPLOY_SHA:-}
     [ -n "$ref" ] && [ -n "$sha" ] || die "DEPLOY_REF and DEPLOY_SHA are required"
-    id=$(docker inspect --format '{{.Image}}' "$container") || die "$container not found"
-    digests=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$id")
-    grep -q "@${ref##*@}\$" <<<"$digests" || die "running image digest is not ${ref##*@}"
-    label=$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$id")
-    [ "$label" = "$sha" ] || die "image revision label '$label' is not the deployed SHA $sha"
-    wait_healthy "${C00_READBACK_SECONDS:-900}"
+    check_running "${ref##*@}" "$sha"
+    wait_healthy "${C00_READBACK_SECONDS:-90}"
+    # T0 for the delayed confirm (C-9): when the candidate proved healthy, and how often it had restarted.
+    set_output restart_count "$(restart_count)"
+    set_output health healthy
+    set_output t0_epoch "$(date +%s)"
     echo "readback ok: $container runs ${ref##*@} at $sha and is healthy"
     ;;
 
+  confirm)
+    ref=${DEPLOY_REF:-}
+    sha=${DEPLOY_SHA:-}
+    [ -n "$ref" ] && [ -n "$sha" ] || die "DEPLOY_REF and DEPLOY_SHA are required"
+    [[ ${RESTART_T0:-} =~ ^[0-9]+$ ]] && [[ ${T0_EPOCH:-} =~ ^[0-9]{10}$ ]] || die "RESTART_T0 and T0_EPOCH are required (from the readback)"
+    take_lock
+    # The wait timer lives in the repository environment, outside this repo; if it is missing the delay is
+    # zero, and a confirm that early would prove nothing. Fail closed.
+    waited=$(($(date +%s) - T0_EPOCH))
+    [ "$waited" -ge "${C00_CONFIRM_MIN_SECONDS:-900}" ] ||
+      die "readback delay not honoured: ${waited}s since T0, need ${C00_CONFIRM_MIN_SECONDS:-900}s (is the c00-readback-delay wait timer set?)"
+    check_running "${ref##*@}" "$sha"
+    [ "$(docker inspect --format '{{.State.Running}}' "$container" 2>/dev/null || echo false)" = true ] || die "$container is not running"
+    health=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container")
+    [ "$health" = healthy ] || die "$container is not healthy ($health)"
+    now_restarts=$(restart_count)
+    [ "$now_restarts" = "$RESTART_T0" ] || die "$container restarted since T0 (restart count $RESTART_T0 -> $now_restarts)"
+    set_output restart_count_confirm "$now_restarts"
+    set_output confirmed_epoch "$(date +%s)"
+    echo "confirm ok: $container still runs ${ref##*@} at $sha, healthy, $now_restarts restarts, ${waited}s after T0"
+    ;;
+
   rollback)
+    # With PREDECESSOR_DIGEST and PREDECESSOR_SHA (D2 always sets both) the rollback is by digest: the retained
+    # image must be that digest, and its digest, label and health are read back after the restart.
+    pdigest=${PREDECESSOR_DIGEST:-}
+    psha=${PREDECESSOR_SHA:-}
+    if [ -n "$pdigest" ] || [ -n "$psha" ]; then
+      [[ $pdigest =~ ^sha256:[0-9a-f]{64}$ ]] && [[ $psha =~ ^[0-9a-f]{40}$ ]] ||
+        die "PREDECESSOR_DIGEST must be sha256:<64 hex> and PREDECESSOR_SHA a full SHA"
+    fi
     guard_check
+    take_lock
     ! train_on || require_quiescent
     docker image inspect "$rollback_tag" >/dev/null 2>&1 || die "no previous image to roll back to (first deploy?)"
+    if [ -n "$pdigest" ]; then
+      retained=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$rollback_tag") ||
+        die "cannot read the retained image"
+      grep -q "@$pdigest\$" <<<"$retained" || die "the retained image is not the predecessor $pdigest"
+    fi
     compose_up "$rollback_tag"
     wait_healthy "${C00_ROLLBACK_SECONDS:-300}"
-    echo "rollback ok: $container runs the previous image again"
+    if [ -n "$pdigest" ]; then
+      check_running "$pdigest" "$psha"
+      echo "rollback ok: $container runs the predecessor $pdigest at $psha and is healthy"
+    else
+      echo "rollback ok: $container runs the previous image again"
+    fi
     ;;
 
   quiescence)
@@ -345,5 +409,5 @@ case $cmd in
     echo "sweep ok: containers=0 networks=0 volumes=0"
     ;;
 
-  *) die "usage: c00.sh apply|readback|rollback|quiescence|sweep|guard|guard-set" ;;
+  *) die "usage: c00.sh apply|readback|confirm|rollback|quiescence|sweep|guard|guard-set" ;;
 esac

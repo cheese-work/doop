@@ -16,6 +16,7 @@ echo "docker $*" >> "$STUB_DIR/log"
 case "$1" in compose) echo "DOOP_IMAGE=\${DOOP_IMAGE:-}" >> "$STUB_DIR/log"; exit 0 ;; esac
 say() { [ -f "$STUB_DIR/$1" ] && cat "$STUB_DIR/$1" || exit 1; }
 case "$*" in
+  *RestartCount*) say restart ;;
   "image inspect doop-rollback:previous") [ -f "$STUB_DIR/rollback_tag" ] || exit 1 ;;
   *State.Running*) say running ;;
   *State.Health*)
@@ -51,6 +52,7 @@ beforeEach(() => {
   put('container_image', 'sha256:newimageid\n')
   put('repodigests', `ghcr.io/cheese-work/doop@${DIGEST}\n`)
   put('label', SHA + '\n')
+  put('restart', '0\n')
 })
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
@@ -164,7 +166,7 @@ describe('c00.sh apply', () => {
     it('is set after the rollback target is captured, before compose starts the new image', () => {
       put('container_image', 'sha256:oldimageid\n')
       expect(run().status).toBe(0)
-      expect(flag()).toBe('attempted=true\n')
+      expect(flag()).toContain('attempted=true\n')
     })
 
     it('is not set when the pull fails: the running deployment was never touched', () => {
@@ -173,7 +175,7 @@ describe('c00.sh apply', () => {
         STUB.replace('case "$1" in compose)', 'case "$1" in pull) exit 1 ;; compose)'),
       )
       expect(run().status).not.toBe(0)
-      expect(flag()).toBe('')
+      expect(flag()).not.toContain('attempted')
       expect(log()).not.toContain('docker compose')
     })
 
@@ -259,6 +261,148 @@ describe('c00.sh rollback', () => {
     const r = c00('rollback')
     expect(r.status).not.toBe(0)
     expect(r.stderr).toMatch(/no previous image/)
+    expect(log()).not.toContain('docker compose')
+  })
+})
+
+describe('c00.sh readback window and T0 (C-9)', () => {
+  it('defaults to a 90 s window, 3 consecutive healthy checks', () => {
+    expect(readFileSync(SCRIPT, 'utf8')).toMatch(/C00_READBACK_SECONDS:-90\}/)
+  })
+
+  it('records T0 for the later jobs: restart count, health, readback time', () => {
+    const out = join(dir, 'gh_output')
+    put('restart', '2\n')
+    const r = c00('readback', { GITHUB_OUTPUT: out })
+    expect(r.status, r.stderr).toBe(0)
+    const o = readFileSync(out, 'utf8')
+    expect(o).toContain('restart_count=2\n')
+    expect(o).toContain('health=healthy\n')
+    expect(o).toMatch(/t0_epoch=\d{10}\n/)
+  })
+
+  it('records the time spent waiting for the lock', () => {
+    const out = join(dir, 'gh_output')
+    expect(c00('apply', { GITHUB_OUTPUT: out }).status).toBe(0)
+    expect(readFileSync(out, 'utf8')).toMatch(/lock_wait_seconds=\d+\n/)
+  })
+})
+
+describe('c00.sh confirm (C-9 readback-confirm)', () => {
+  const old = String(Math.floor(Date.now() / 1000) - 2000)
+  const confirmEnv = { RESTART_T0: '0', T0_EPOCH: old }
+
+  it('passes: same restart count, healthy, candidate digest and label, delay honoured', () => {
+    const out = join(dir, 'gh_output')
+    const r = c00('confirm', { ...confirmEnv, GITHUB_OUTPUT: out })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('confirm ok')
+    expect(readFileSync(out, 'utf8')).toMatch(/confirmed_epoch=\d{10}\n/)
+  })
+
+  it('fails when the container restarted since T0', () => {
+    put('restart', '1\n')
+    const r = c00('confirm', confirmEnv)
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toMatch(/restart/)
+  })
+
+  it.each([
+    ['unhealthy', { health: 'unhealthy\n' }, /unhealthy/],
+    ['starting', { health: 'starting\n' }, /healthy/],
+    ['a stopped container', { running: 'false\n' }, /not running/],
+    ['another digest', { repodigests: 'ghcr.io/cheese-work/doop@sha256:' + 'b'.repeat(64) + '\n' }, /digest/],
+    ['another label', { label: 'd'.repeat(40) + '\n' }, /SHA|revision/],
+  ])('fails on %s', (_n, files, why) => {
+    for (const [k, v] of Object.entries(files)) put(k, v)
+    const r = c00('confirm', confirmEnv)
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toMatch(why)
+  })
+
+  it('refuses a confirm earlier than the delay after T0 (a missing wait timer fails closed)', () => {
+    const r = c00('confirm', { ...confirmEnv, T0_EPOCH: String(Math.floor(Date.now() / 1000) - 5) })
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toMatch(/delay/)
+  })
+
+  it.each(['RESTART_T0', 'T0_EPOCH'])('refuses without %s', (name) => {
+    expect(c00('confirm', { ...confirmEnv, [name]: '' }).status).not.toBe(0)
+  })
+
+  it('takes the deploy lock, and gives up without a docker call when it is held', () => {
+    const r = spawnSync('flock', [join(dir, 'lock'), '-c', `bash ${SCRIPT} confirm`], {
+      encoding: 'utf8',
+      env: {
+        PATH: `${join(dir, 'bin')}:${process.env.PATH}`,
+        STUB_DIR: dir,
+        C00_COMPOSE_DIR: '/srv/doop',
+        DEPLOY_REF: REF,
+        DEPLOY_SHA: SHA,
+        ...confirmEnv,
+        C00_LOCK_FILE: join(dir, 'lock'),
+        C00_LOCK_WAIT: '1',
+      },
+    })
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toMatch(/lock/)
+    expect(log()).toBe('')
+  })
+})
+
+describe('c00.sh rollback to the predecessor by digest (C-9)', () => {
+  const PRED = 'sha256:' + 'd'.repeat(64)
+  const PSHA = 'b'.repeat(40)
+  const predEnv = { PREDECESSOR_DIGEST: PRED, PREDECESSOR_SHA: PSHA }
+  beforeEach(() => {
+    put('rollback_tag', 'x')
+    put('repodigests', `ghcr.io/cheese-work/doop@${PRED}\n`)
+    put('label', PSHA + '\n')
+  })
+
+  it('starts the retained image and reads back the predecessor digest, label and health', () => {
+    const r = c00('rollback', predEnv)
+    expect(r.status, r.stderr).toBe(0)
+    expect(log()).toContain('DOOP_IMAGE=doop-rollback:previous')
+    expect(r.stdout).toContain('rollback ok')
+    expect(r.stdout).toContain(PSHA)
+  })
+
+  it('refuses before any change when the retained image is not the predecessor digest', () => {
+    put('repodigests', 'ghcr.io/cheese-work/doop@sha256:' + 'b'.repeat(64) + '\n')
+    const r = c00('rollback', predEnv)
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toMatch(/predecessor/)
+    expect(log()).not.toContain('docker compose')
+  })
+
+  it('fails when the predecessor label is wrong after the restart', () => {
+    put('label', 'e'.repeat(40) + '\n')
+    const r = c00('rollback', predEnv)
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toMatch(/SHA|revision/)
+  })
+
+  it('refuses a predecessor digest that is not a sha256 digest', () => {
+    expect(c00('rollback', { ...predEnv, PREDECESSOR_DIGEST: 'latest' }).status).not.toBe(0)
+    expect(c00('rollback', { ...predEnv, PREDECESSOR_SHA: '' }).status).not.toBe(0)
+    expect(log()).not.toContain('docker compose')
+  })
+
+  it('takes the deploy lock first', () => {
+    const r = spawnSync('flock', [join(dir, 'lock'), '-c', `bash ${SCRIPT} rollback`], {
+      encoding: 'utf8',
+      env: {
+        PATH: `${join(dir, 'bin')}:${process.env.PATH}`,
+        STUB_DIR: dir,
+        C00_COMPOSE_DIR: '/srv/doop',
+        ...predEnv,
+        C00_LOCK_FILE: join(dir, 'lock'),
+        C00_LOCK_WAIT: '1',
+      },
+    })
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toMatch(/lock/)
     expect(log()).not.toContain('docker compose')
   })
 })
