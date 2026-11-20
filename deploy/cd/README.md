@@ -136,21 +136,25 @@ read-back values to CHE-2752.
 
 Two scheduled workflows watch D2. Both do nothing (a clean skip, exit 0) while `DOOP_DEPLOY_TRAIN` is not `on`, so
 they cost no alarm while the train is off, and both are scheduled from the merge of this slice, so they are seen
-running before the switch can turn on. The last successful D2 SHA has three states, never a guess:
-`known` (a SHA), `none` (a proven first deployment: no D2 run exists, or every one was read and none confirmed) and
+running before the switch can turn on. The last successful D2 SHA has four states, never a guess:
+`known` (a SHA), `pending` (a D2 run under 3 h old is unfinished and may confirm any minute: freshness idles and live is not judged that time), `none` (a proven first deployment: no D2 run exists, or every one was read and none confirmed) and
 `unknown` (the history cannot be read). Where it comes from, in order:
 
 1. The deployment record. The `evidence` job of D2 (`permissions: deployments: write`, after the artifact upload) runs
    `node scripts/cd-watch.mjs record deploy-evidence.json` on a confirmed deploy: a GitHub deployment in environment
-   `c00-doop` at the candidate SHA (description `... (D2 run <id>)`, `auto_merge` and `production_environment` sent as
+   `c00-doop` at the candidate SHA (description `... (D2 run <id>, confirmed <UTC time>)`, `auto_merge` and `production_environment` sent as
    JSON booleans), with a `success` status, read back before the step passes. A write that fails turns the D2 run red.
    Neither artifact expiry nor any number of skipped D2 slots can lose it. The watchers read it with
-   `deployments: read`. The record is not trusted alone: the D2 runs newer than the record's run are checked first. A
-   newer run whose evidence confirms another SHA (its record write failed), or a newer run whose evidence is gone
-   (green, failed or cancelled: a deploy can confirm and then lose its evidence upload), is `unknown`. The record's own
-   run and older are not read.
-2. Without a record: the `deploy-evidence` artifact (`outcome: confirmed`) of the newest D2 runs, newest first, up to
-   100 runs (a skipped D2 ends green, so a run conclusion is not used). A run whose artifact is gone or
+   `deployments: read`. Deploys are ordered by their confirmation time, never by run ID: runs queue independently, so
+   an older run can confirm after a newer one, and a run can be rerun days later. The record is not trusted alone: every
+   D2 run whose last activity (`updated_at`, which a rerun moves) is not before the record's confirmation is checked,
+   newest created first. A run with no evidence (green, failed or cancelled: a deploy can confirm and then lose its
+   evidence upload), or whose evidence confirms another SHA after the record (its record write failed), is `unknown`;
+   one that confirmed before the record is older and ignored. A run that ended before the record's confirmation is
+   not read. A run created over 30 days (GitHub's rerun limit) before the record ends the scan. A confirmed deploy
+   without a confirmation time cannot be ordered: the record step fails the D2 run.
+2. Without a record: the `deploy-evidence` artifact (`outcome: confirmed`), the latest confirmation winning, up to
+   100 evidence reads (a skipped D2 ends green, so a run conclusion is not used). A run whose artifact is gone or
    unreadable, a confirmed artifact with a bad SHA, or hitting the scan limit is `unknown`.
 
 `unknown` fails visibly: the freshness watch alarms at once when a candidate exists, and the live watch fails. A

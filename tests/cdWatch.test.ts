@@ -9,19 +9,22 @@ const { lastSlot, freshness, liveVerdict, lastDeployed, deploymentRecord, ghPost
   freshness: (f: Record<string, unknown>) => { action: string; reason: string; rerunD1: boolean }
   liveVerdict: (f: Record<string, unknown>) => Promise<{ ok: boolean; reason: string }>
   lastDeployed: (h: {
-    recorded: { sha: string; runId: number | null } | null
-    listRuns: (page: number) => Promise<{ id: number; conclusion: string }[]>
-    read: (id: number) => Promise<{ outcome?: string; candidate_sha?: string } | null>
+    recorded: { sha: string; runId: number | null; confirmedAt: number } | null
+    listRuns: (page: number) => Promise<Record<string, unknown>[]>
+    read: (id: number) => Promise<Record<string, unknown> | null>
     maxScan?: number
+    nowMs?: number
   }) => Promise<{ state: string; sha?: string; reason?: string }>
-  deploymentRecord: (evidence: Record<string, unknown>) => { ref: string; environment: string } | null
+  deploymentRecord: (
+    evidence: Record<string, unknown>,
+  ) => { ref: string; environment: string; confirmedAt: string | null } | null
   ghPostArgs: (repo: string, route: string, fields: Record<string, string | boolean>) => string[]
   recordDeployment: (h: {
     repo: string
     evidence: Record<string, unknown>
     runId: string
     gh: (args: string[]) => string
-    recordedSha: () => { sha: string; runId: number | null } | null
+    recordedSha: () => { sha: string; runId: number | null; confirmedAt?: number } | null
   }) => string
 }
 
@@ -198,17 +201,39 @@ describe('liveVerdict (C-7.2)', () => {
   })
 })
 
-describe('lastDeployed: the last successful D2 SHA, from a durable record first and the evidence artifacts second', () => {
-  type Ev = { outcome: string; candidate_sha: string } | null
+describe('lastDeployed: the last successful D2 SHA, ordered by confirmation time, from a durable record first', () => {
+  type Ev = { outcome: string; candidate_sha: string; times?: { confirmed: { utc: string } } } | null
+  type Run = { id: number; conclusion: string; status: string; created_at: string; updated_at: string }
+  // The record A was confirmed at RT by run 50. A run's id orders its creation here: run N is created (N - 50) h after RT.
+  const RT = Date.UTC(2026, 10, 20, 7, 30)
+  const H = 60 * MIN
+  const iso = (ms: number) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z')
+  const run = (id: number, o: Partial<Run> & { updatedAfterRT?: number } = {}): Run => {
+    const created = RT + (id - 50) * H
+    return {
+      id,
+      conclusion: 'success',
+      status: 'completed',
+      created_at: iso(created),
+      updated_at: iso(o.updatedAfterRT === undefined ? created + 20 * MIN : RT + o.updatedAfterRT),
+      ...o,
+    }
+  }
+  const skip = (id: number) => run(id)
+  const failed = (id: number) => run(id, { conclusion: 'failure' })
   const pages =
-    (all: { id: number; conclusion: string }[], size = 100) =>
+    (all: Run[], size = 100) =>
     async (page: number) =>
       all.slice((page - 1) * size, page * size)
   const reader = (evidence: Record<number, Ev>) => async (id: number) => evidence[id] ?? null
-  const skip = (id: number) => ({ id, conclusion: 'success' })
-
-  const rec = (sha: string, runId: number | null = 50) => ({ sha, runId })
-  const failed = (id: number) => ({ id, conclusion: 'failure' })
+  const confirmed = (sha: string, atMs: number): Ev => ({
+    outcome: 'confirmed',
+    candidate_sha: sha,
+    times: { confirmed: { utc: iso(atMs) } },
+  })
+  // run N confirmed 10 min after its creation
+  const conf = (id: number, sha: string) => confirmed(sha, RT + (id - 50) * H + 10 * MIN)
+  const rec = (sha: string, runId: number | null = 50, confirmedAt: number = RT) => ({ sha, runId, confirmedAt })
 
   it('is the deployment record when no run is newer than it, without reading a single artifact', async () => {
     const out = await lastDeployed({
@@ -221,7 +246,7 @@ describe('lastDeployed: the last successful D2 SHA, from a durable record first 
     expect(out).toEqual({ state: 'known', sha: A, source: 'deployment record' })
   })
 
-  it('is the record when the runs newer than it deployed nothing, and does not read the record run or older', async () => {
+  it('is the record when the runs after it deployed nothing, and reads neither the record run nor a run that ended before it', async () => {
     const read = reader({
       52: { outcome: 'not_deployed', candidate_sha: C },
       51: { outcome: 'failed', candidate_sha: B },
@@ -240,12 +265,66 @@ describe('lastDeployed: the last successful D2 SHA, from a durable record first 
     const out = await lastDeployed({
       recorded: rec(A),
       listRuns: pages([failed(52), skip(50)]),
-      read: reader({ 52: { outcome: 'confirmed', candidate_sha: B } }),
+      read: reader({ 52: conf(52, B) }),
     })
     expect(out.state).toBe('unknown')
     expect(out.reason).toContain('52')
     expect(out.reason).toContain('bbbbbbb')
     expect(out.reason).toContain('no deployment record')
+  })
+
+  // CHE-8873, review of 8933e0df: run ID does not order deployments. Run 40 was created before run 52, queued behind
+  // it, and confirmed B after run 52 recorded A; its evidence upload failed, so there is no record and no evidence.
+  it('is unknown when an OLDER run, by ID, was still active after the record and left no evidence (confirm B after record A, upload failed)', async () => {
+    const out = await lastDeployed({
+      recorded: rec(A, 52, RT),
+      listRuns: pages([run(52), run(40, { conclusion: 'failure', updatedAfterRT: 30 * MIN })]),
+      read: reader({ 52: conf(52, A) }),
+    })
+    expect(out.state).toBe('unknown')
+    expect(out.reason).toContain('40')
+    expect(out.reason).toContain('no evidence')
+  })
+
+  it('fails the live watcher on that sequence: the older run confirmed B, no record or evidence of B, live is A', async () => {
+    const deployed = await lastDeployed({
+      recorded: rec(A, 52, RT),
+      listRuns: pages([run(52), run(40, { conclusion: 'failure', updatedAfterRT: 30 * MIN })]),
+      read: reader({}),
+    })
+    const out = await liveVerdict({ body: { ok: true, revision: A }, deployed, isAncestor: async () => false })
+    expect(out.ok).toBe(false)
+    expect(out.reason).toContain('unknown')
+  })
+
+  it('is unknown when an older run, by ID, has evidence confirming a different SHA after the record', async () => {
+    const out = await lastDeployed({
+      recorded: rec(A, 52, RT),
+      listRuns: pages([run(52), run(40, { updatedAfterRT: 30 * MIN })]),
+      read: reader({ 40: confirmed(B, RT + 20 * MIN) }),
+    })
+    expect(out.state).toBe('unknown')
+    expect(out.reason).toContain('40')
+  })
+
+  it('keeps the record when an older run, rerun after it, confirmed a different SHA BEFORE it', async () => {
+    const out = await lastDeployed({
+      recorded: rec(A, 52, RT),
+      listRuns: pages([run(52), run(40, { updatedAfterRT: 30 * MIN })]),
+      read: reader({ 40: confirmed(B, RT - 3 * H) }),
+    })
+    expect(out).toMatchObject({ state: 'known', sha: A })
+  })
+
+  it('does not read a run that ended before the record was confirmed, whatever its ID', async () => {
+    const out = await lastDeployed({
+      recorded: rec(A, 52, RT),
+      listRuns: pages([run(52), run(40)]),
+      read: async () => {
+        throw new Error('must not read evidence')
+      },
+    })
+    expect(out).toMatchObject({ state: 'known', sha: A })
   })
 
   it('is unknown when a newer green run has expired or unreadable evidence: it could have been that deploy', async () => {
@@ -254,13 +333,12 @@ describe('lastDeployed: the last successful D2 SHA, from a durable record first 
     expect(out.reason).toContain('51')
   })
 
-  it('is unknown when a newer confirmed run has no usable SHA', async () => {
-    const out = await lastDeployed({
-      recorded: rec(A),
-      listRuns: pages([skip(51)]),
-      read: reader({ 51: { outcome: 'confirmed', candidate_sha: 'nope' } }),
-    })
-    expect(out.state).toBe('unknown')
+  it('is unknown when a newer confirmed run has no usable SHA or no confirmation time', async () => {
+    const bad = (e: Ev) => lastDeployed({ recorded: rec(A), listRuns: pages([skip(51)]), read: reader({ 51: e }) })
+    expect((await bad({ outcome: 'confirmed', candidate_sha: 'nope', times: conf(51, B)?.times })).state).toBe(
+      'unknown',
+    )
+    expect((await bad({ outcome: 'confirmed', candidate_sha: B })).state).toBe('unknown')
   })
 
   it('is unknown when a newer failed run left no evidence: it could have confirmed a deploy before its evidence upload failed', async () => {
@@ -273,7 +351,7 @@ describe('lastDeployed: the last successful D2 SHA, from a durable record first 
   it('is unknown when a newer cancelled run left no evidence', async () => {
     const out = await lastDeployed({
       recorded: rec(A),
-      listRuns: pages([{ id: 51, conclusion: 'cancelled' }, skip(50)]),
+      listRuns: pages([run(51, { conclusion: 'cancelled' }), skip(50)]),
       read: reader({}),
     })
     expect(out.state).toBe('unknown')
@@ -286,23 +364,25 @@ describe('lastDeployed: the last successful D2 SHA, from a durable record first 
     expect(out.reason).toContain('unknown')
   })
 
-  it('without the record run id, takes the record only if the newest confirmed evidence agrees with it', async () => {
-    const ok = await lastDeployed({
-      recorded: rec(A, null),
-      listRuns: pages([skip(2)]),
-      read: reader({ 2: { outcome: 'confirmed', candidate_sha: A } }),
+  it('is pending while a young D2 run is unfinished, and unknown once it is stuck', async () => {
+    const live = run(52, { status: 'in_progress', conclusion: null as unknown as string })
+    const young = Date.parse(live.created_at) + H
+    const out = await lastDeployed({ recorded: rec(A), listRuns: pages([live]), read: reader({}), nowMs: young })
+    expect(out).toMatchObject({ state: 'pending' })
+    const stuck = await lastDeployed({
+      recorded: rec(A),
+      listRuns: pages([live]),
+      read: reader({}),
+      nowMs: Date.parse(live.created_at) + 4 * H,
     })
-    expect(ok).toMatchObject({ state: 'known', sha: A })
-    const newer = await lastDeployed({
-      recorded: rec(A, null),
-      listRuns: pages([skip(2)]),
-      read: reader({ 2: { outcome: 'confirmed', candidate_sha: B } }),
-    })
-    expect(newer.state).toBe('unknown')
-    expect(await lastDeployed({ recorded: rec(A, null), listRuns: pages([]), read: reader({}) })).toMatchObject({
-      state: 'known',
-      sha: A,
-    })
+    expect(stuck.state).toBe('unknown')
+    expect(stuck.reason).toContain('52')
+  })
+
+  it('stops at a run created more than 30 days before the record: it cannot be active after it', async () => {
+    const old = { ...run(2), created_at: iso(RT - 31 * 24 * H), updated_at: iso(RT + 5 * MIN) }
+    const out = await lastDeployed({ recorded: rec(A), listRuns: pages([skip(50), old]), read: reader({}) })
+    expect(out).toMatchObject({ state: 'known', sha: A })
   })
 
   it('is unknown when the scan limit is hit before the record run is reached', async () => {
@@ -322,7 +402,7 @@ describe('lastDeployed: the last successful D2 SHA, from a durable record first 
     const deployed = await lastDeployed({
       recorded: rec(A),
       listRuns: pages([failed(52), skip(50)]),
-      read: reader({ 52: { outcome: 'confirmed', candidate_sha: B } }),
+      read: reader({ 52: conf(52, B) }),
     })
     const out = await liveVerdict({ body: { ok: true, revision: A }, deployed, isAncestor: async () => false })
     expect(out.ok).toBe(false)
@@ -333,18 +413,32 @@ describe('lastDeployed: the last successful D2 SHA, from a durable record first 
     const runs = Array.from({ length: 45 }, (_, i) => skip(100 - i)) // 100..56 newest first
     const evidence: Record<number, Ev> = {}
     for (const r of runs) evidence[r.id] = { outcome: 'not_deployed', candidate_sha: C }
-    evidence[56] = { outcome: 'confirmed', candidate_sha: A }
+    evidence[56] = conf(56, A)
     const out = await lastDeployed({ recorded: null, listRuns: pages(runs, 10), read: reader(evidence) })
     expect(out).toMatchObject({ state: 'known', sha: A })
   })
 
+  it('with no record, takes the latest CONFIRMATION, not the newest-created run', async () => {
+    // run 3 was created later but confirmed B before run 2 confirmed A
+    const runs = [skip(3), run(2, { updatedAfterRT: -47 * H + 60 * MIN }), skip(1)]
+    const evidence: Record<number, Ev> = {
+      3: confirmed(B, RT - 47 * H + 10 * MIN),
+      2: confirmed(A, RT - 47 * H + 40 * MIN),
+      1: conf(1, C),
+    }
+    expect(await lastDeployed({ recorded: null, listRuns: pages(runs), read: reader(evidence) })).toMatchObject({
+      state: 'known',
+      sha: A,
+    })
+  })
+
   it('skips a failure and a not_deployed run, and takes the newest confirmed one', async () => {
-    const runs = [skip(4), { id: 3, conclusion: 'failure' }, skip(2), skip(1)]
+    const runs = [skip(4), failed(3), skip(2), skip(1)]
     const evidence: Record<number, Ev> = {
       4: { outcome: 'not_deployed', candidate_sha: C },
       3: { outcome: 'failed', candidate_sha: B },
-      2: { outcome: 'confirmed', candidate_sha: B },
-      1: { outcome: 'confirmed', candidate_sha: A },
+      2: conf(2, B),
+      1: conf(1, A),
     }
     expect(await lastDeployed({ recorded: null, listRuns: pages(runs), read: reader(evidence) })).toMatchObject({
       sha: B,
@@ -388,21 +482,35 @@ describe('lastDeployed: the last successful D2 SHA, from a durable record first 
     expect(out.state).toBe('unknown')
   })
 
-  it('ignores a malformed deployment record and falls back to the artifacts', async () => {
-    const out = await lastDeployed({
-      recorded: rec('not-a-sha'),
-      listRuns: pages([skip(1)]),
-      read: reader({ 1: { outcome: 'confirmed', candidate_sha: A } }),
-    })
-    expect(out).toMatchObject({ state: 'known', sha: A })
+  it('ignores a malformed deployment record (no SHA or no confirmation time) and falls back to the artifacts', async () => {
+    const evidence = { 1: conf(1, A) }
+    for (const recorded of [rec('not-a-sha'), { sha: B, runId: 9, confirmedAt: Number.NaN }]) {
+      const out = await lastDeployed({ recorded, listRuns: pages([skip(1)]), read: reader(evidence) })
+      expect(out).toMatchObject({ state: 'known', sha: A })
+    }
   })
 })
 
+describe('a pending D2 run (a young unfinished run that may confirm a deploy)', () => {
+  const pending = { state: 'pending', reason: 'D2 run 9 is in_progress: it may confirm a deploy' }
+  it('is not an alarm for freshness and not judged by the live watcher', async () => {
+    expect(freshness({ ...base, nowMs: SLOT + 100 * MIN, deployed: pending })).toMatchObject({ action: 'none' })
+    const out = await liveVerdict({ body: { ok: true, revision: A }, deployed: pending, isAncestor: async () => false })
+    expect(out.ok).toBe(true)
+    expect(out.reason).toContain('D2 run 9')
+  })
+})
+
+const CONFIRMED = '2026-11-20T07:30:00Z'
+
 describe('deploymentRecord: what D2 writes durably after a confirmed deploy', () => {
   it('is a c00-doop deployment of the candidate SHA when the outcome is confirmed', () => {
-    expect(deploymentRecord({ outcome: 'confirmed', candidate_sha: A })).toMatchObject({
+    expect(
+      deploymentRecord({ outcome: 'confirmed', candidate_sha: A, times: { confirmed: { utc: CONFIRMED } } }),
+    ).toMatchObject({
       ref: A,
       environment: 'c00-doop',
+      confirmedAt: CONFIRMED,
     })
   })
 
@@ -439,7 +547,7 @@ describe('the deployment record request (typed fields, read back)', () => {
     ])
   })
 
-  const evidence = { outcome: 'confirmed', candidate_sha: A }
+  const evidence = { outcome: 'confirmed', candidate_sha: A, times: { confirmed: { utc: CONFIRMED } } }
   const fake = (recorded: { sha: string; runId: number | null } | null) => {
     const calls: string[][] = []
     const gh = (args: string[]) => (calls.push(args), JSON.stringify({ id: 7 }))
@@ -456,7 +564,7 @@ describe('the deployment record request (typed fields, read back)', () => {
     expect(deployment.join(' ')).toContain('-F auto_merge=false')
     expect(deployment.join(' ')).toContain('-F production_environment=true')
     expect(deployment.join(' ')).not.toMatch(/-f (auto_merge|production_environment)=/)
-    expect(deployment.join(' ')).toContain('D2 run 123')
+    expect(deployment.join(' ')).toContain(`D2 run 123, confirmed ${CONFIRMED}`)
     expect(status).toContain('repos/o/r/deployments/7/statuses')
     expect(status.join(' ')).toContain('state=success')
   })
@@ -480,6 +588,20 @@ describe('the deployment record request (typed fields, read back)', () => {
     }
     expect(() => recordDeployment({ repo: 'o/r', evidence, runId: '123', gh, recordedSha: () => null })).toThrow(/403/)
     expect(calls).toHaveLength(1)
+  })
+
+  it('fails, and posts nothing, when confirmed evidence has no confirmation time: the watchers could not order it', () => {
+    const f = fake(null)
+    expect(() =>
+      recordDeployment({
+        repo: 'o/r',
+        evidence: { outcome: 'confirmed', candidate_sha: A },
+        runId: '123',
+        gh: f.gh,
+        recordedSha: f.recordedSha,
+      }),
+    ).toThrow(/confirmation time/)
+    expect(f.calls).toHaveLength(0)
   })
 
   it('records nothing for a run that did not confirm a deploy', () => {
