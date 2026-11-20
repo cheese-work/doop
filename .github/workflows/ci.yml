@@ -50,6 +50,12 @@ jobs:
       - run: bun run lint
       - run: bun run format:check
       - run: bun run doc-lint
+      # CHE-7207 S2a then S2. The base step fetches its base commit and writes MIGRATION_BASE_SHA to
+      # $GITHUB_ENV; the ledger check fails closed without it. Information until CHE-5543's ruleset lists `lint`.
+      - name: Select the migration base
+        run: node scripts/ci/migration-base.mjs
+      - name: Migration ledger check
+        run: node scripts/migration-ledger-check.mjs
 
   build:
     runs-on: ubuntu-latest
