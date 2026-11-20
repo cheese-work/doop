@@ -70,6 +70,10 @@ jobs:
         shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
+      # First in every shard: picks the migration base and exports MIGRATION_* for
+      # tests/migrationReplay.test.ts, which replays base -> head (CHE-7207 S3b)
+      - name: Select the migration base
+        run: node scripts/ci/migration-base.mjs
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       # The browser tests drive the Chrome named in .chrome-version, not the one
