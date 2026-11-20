@@ -1117,7 +1117,11 @@ data-doop-webfonts>` for the roster families the frame names and does not load i
 - GitHub Actions:
   - `.github/workflows/ci.yml` - gates `typecheck`, `lint` + `format:check` + `doc-lint`, `build`
     and `test` (four vitest shards) as parallel jobs on push to `main` and on PRs, cancelling
-    superseded PR runs; a separate job lints the PR title with commitlint (PRs land on
+    superseded PR runs. `lint` also runs the migration base selection (`scripts/ci/migration-base.mjs`)
+    and `scripts/migration-ledger-check.mjs` (CHE-7207 S2): the base journal stands in for the C00
+    ledger, `checkImmutable` runs on it, appended entries need a strictly increasing `when` and a
+    snapshot whose `prevId` chains from the base tail; marker `migration-ledger-check OK base=<B> head=<H>`;
+    a separate job lints the PR title with commitlint (PRs land on
     `main` as a squash, so the PR title becomes the commit subject).
   - `.github/workflows/image.yml` - D1, on push to `cheese/main`: reuses `ci.yml`, builds the `Dockerfile`
     on a GitHub runner, pushes to GHCR and uploads the candidate manifest (digest, source SHA, migration
