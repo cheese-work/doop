@@ -142,3 +142,13 @@ export async function readAttestation(
       currentAttestation(canvas, head.pageId, rows, requirementsNow?.hash ?? null)?.runId === runId,
   }
 }
+
+/** The view plus the issue the attested page is bound to now (null when unbound): the G4 service route's answer. */
+export async function readServiceAttestation(
+  runId: string,
+): Promise<(AttestationView & { pageIssueId: string | null }) | null> {
+  const view = await readAttestation(runId)
+  if (!view) return null
+  const page = store.getCanvas(view.canvasId)?.pages?.find((p) => p.id === view.pageId)
+  return { ...view, pageIssueId: page?.issueId ?? null }
+}
