@@ -21,7 +21,15 @@
       import '/src/styles.css'
       /* the app's own store, for a test that seeds state the harness has no call for */
       window.commentPositionStore = useStore
+      /* whether the Stage would give the frame a live iframe (false = culled) */
+      let mounted = true
+      let remount = () => {}
       window.elementPanelHarness = {
+        setMounted: (value) => {
+          mounted = value
+          remount()
+        },
+        unselectFrame: () => useStore.setState({ selectedIds: [] }),
         /* one frame, or several stacked in order (later ones on top) */
         seed: (frame) => {
           clearHistory()
@@ -63,6 +71,8 @@
         const zoom = useStore((s) => s.viewport.zoom)
         /* size badges render into a screen-space layer, as the Stage provides */
         const [labelLayer, setLabelLayer] = React.useState(null)
+        const [, force] = React.useState(0)
+        remount = () => force((n) => n + 1)
         if (!frame) return null
         /* the Stage's world: laid out at CSS zoom k, transformed by the rest */
         const k = layoutZoomFor(zoom, 16)
@@ -81,7 +91,7 @@
               { value: labelLayer },
               /* ranked in paint order, the way the Stage's FrameStack stacks them */
               frames.map((f, i) =>
-                React.createElement(FrameView, { key: f.id, frame: f, stack: i + 1, layoutZoom: k }),
+                React.createElement(FrameView, { key: f.id, frame: f, stack: i + 1, layoutZoom: k, mounted }),
               ),
             ),
           ),

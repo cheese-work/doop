@@ -18,6 +18,7 @@ import { sendWs } from '../lib/ws'
 import { throttle } from '../lib/throttle'
 import { getIdentity } from '../lib/identity'
 import { FRAME_BOOTSTRAP } from '../lib/frameRuntime'
+import { FramePreview } from './FramePreview'
 import { FRAME_DOCUMENTS_TAKE_ZOOM_AS_DENSITY, counterZoom } from '../lib/layoutZoom'
 import { dropEntry, recordCreate, recordUpdate, recordUpdates, trackSave, type HistoryEntry } from '../lib/history'
 import { snapFrame } from '../lib/snap'
@@ -256,11 +257,14 @@ export const FrameView = memo(function FrameView({
   frame,
   stack,
   layoutZoom,
+  mounted = true,
 }: {
   frame: Frame
   /** its place in the page's paint order (the Stage's z-index), front highest */
   stack?: number
   layoutZoom: number
+  /** False while the frame is culled (far, small or over the live cap): it keeps its box but holds no iframe (frameCulling). */
+  mounted?: boolean
 }) {
   const t = useT()
   const [menuTarget, setMenuTarget] = useState<
@@ -314,6 +318,11 @@ export const FrameView = memo(function FrameView({
   const [duping, setDuping] = useState(false)
   const dupKeyHeld = useDupModifier()
   const [editing, setEditing] = useState(false)
+  /* A frame that has entered an edit session keeps its iframe for the page's lifetime: the runtime's last
+     text save arrives on a delay and a removed iframe's message is dropped, so there is no safe moment to
+     release it. Frames nobody edited (the bulk of a canvas) are still culled. */
+  const [everEdited, setEverEdited] = useState(false)
+  const keepIframe = mounted || everEdited
   /* after exiting edit mode, hold renders until the final serialized HTML
      lands in the store — otherwise a stale post would morph the edit away */
   const [suspendPost, setSuspendPost] = useState(false)
@@ -818,6 +827,23 @@ export const FrameView = memo(function FrameView({
   const [bleed, setBleed] = useState(0)
   /* the port the runtime relays keys over; see `replayKey` */
   const keyPort = useRef<MessagePort | null>(null)
+  /* a frame that lost its iframe is not ready: the next one starts from the bootstrap */
+  const [wasKept, setWasKept] = useState(keepIframe)
+  if (keepIframe !== wasKept) {
+    setWasKept(keepIframe)
+    if (!keepIframe) {
+      setRuntimeReady(false)
+      setRuntimeDocument(null)
+      setBleed(0)
+    }
+  }
+  useEffect(() => {
+    if (keepIframe) return
+    localHtml.current = null
+    /* the key port belonged to the removed document; the next one is offered a fresh port */
+    keyPort.current?.close()
+    keyPort.current = null
+  }, [keepIframe])
   /* saves a document the runtime serialized after a text edit (set below) */
   const saveEditedRef = useRef<(html: string, discrete: boolean) => void>(() => {})
   useEffect(() => {
@@ -872,6 +898,13 @@ export const FrameView = memo(function FrameView({
         const px = Number((ev.data as { px?: unknown }).px)
         setBleed(Number.isFinite(px) ? Math.min(1024, Math.max(0, px)) : 0)
       }
+      /* the frame posts absolute time; convert with this document's origin (CHE-6942 C1) */
+      if (ev.data?.type === 'doop:paint' && win && ev.source === win && typeof ev.data.time === 'number') {
+        performance.mark('doop:paint', {
+          startTime: ev.data.time - performance.timeOrigin,
+          detail: { frameId: frame.id, name: ev.data.name },
+        })
+      }
     }
     window.addEventListener('message', onMsg)
     return () => {
@@ -879,7 +912,7 @@ export const FrameView = memo(function FrameView({
       keyPort.current?.close()
       keyPort.current = null
     }
-  }, [])
+  }, [frame.id])
   /* the runtime insets its body by the margin once the iframe has grown by it */
   useLayoutEffect(() => {
     if (runtimeReady) iframeRef.current?.contentWindow?.postMessage({ type: 'doop:bleed', px: bleed }, '*')
@@ -898,6 +931,7 @@ export const FrameView = memo(function FrameView({
     noteFrameDocument(frame.id, null)
     let cancelled = false
     void requestFrame(frame.id, 'doop:html', { html }).then((reply) => {
+      if (reply) performance.mark('doop:html-result', { detail: { frameId: frame.id } })
       if (!reply || request !== htmlRequest.current) return
       /* the runtime shows it whether or not this effect is still current */
       noteFrameDocument(frame.id, html)
@@ -1512,6 +1546,7 @@ export const FrameView = memo(function FrameView({
       )
     }
     setEditing(true)
+    setEverEdited(true)
     /* the point goes along so the runtime edits the text under it straight
        away, all of it selected, as a double-click does in Figma */
     iframeRef.current?.contentWindow?.postMessage({ type: 'doop:edit', on: true, x: at?.x, y: at?.y }, '*')
@@ -1904,42 +1939,52 @@ export const FrameView = memo(function FrameView({
                  belong to the canvas, so neither this box nor the iframe takes them */
               style={{ left: -bleed, top: -bleed, ...(bleed ? { pointerEvents: 'none' } : null) }}
             >
-              <iframe
-                ref={iframeRef}
-                className="relative block border-none bg-transparent"
-                data-bleed={bleed || undefined}
-                title={frame.name}
-                data-doop-frame=""
-                sandbox="allow-scripts"
-                srcDoc={FRAME_BOOTSTRAP}
-                /* The world is laid out at CSS zoom k (Stage), which an iframe
-                 passes into its document. Chromium takes it as pixel density:
-                 the document keeps its design-px viewport and rasterizes at
-                 k×, even out of process, where a transform on this element
-                 would only stretch a 1× raster. WebKit instead lays the
-                 document out at the zoomed width, so there the zoom is undone
-                 here (keeping viewport, vh/vw, media queries and runtime rects
-                 in design px) and the scale restores the box. */
-                style={{
-                  width: frame.width + 2 * bleed,
-                  height: frame.height + 2 * bleed,
-                  /* while editing, the document takes the pointer back */
-                  ...(bleed ? { pointerEvents: editing ? 'auto' : 'none' } : null),
-                  ...(FRAME_DOCUMENTS_TAKE_ZOOM_AS_DENSITY
-                    ? null
-                    : { zoom: counterZoom(layoutZoom), transform: `scale(${layoutZoom})` }),
-                  transformOrigin: '0 0',
-                  /* Chromium paints an opaque backdrop behind an iframe whose
-                   colour scheme differs from its document's; the page's dark
-                   scheme reaches this element by inheritance while a
-                   standalone element's document is light, so a shape on the
-                   dark canvas sat on a white square */
-                  ...(isCanvasElement(frame.html) ? { colorScheme: 'light' } : null),
-                }}
-              />
+              {keepIframe && (
+                <iframe
+                  ref={iframeRef}
+                  className="relative block border-none bg-transparent"
+                  data-bleed={bleed || undefined}
+                  title={frame.name}
+                  data-doop-frame=""
+                  sandbox="allow-scripts"
+                  srcDoc={FRAME_BOOTSTRAP}
+                  /* The world is laid out at CSS zoom k (Stage), which an iframe
+                   passes into its document. Chromium takes it as pixel density:
+                   the document keeps its design-px viewport and rasterizes at
+                   k×, even out of process, where a transform on this element
+                   would only stretch a 1× raster. WebKit instead lays the
+                   document out at the zoomed width, so there the zoom is undone
+                   here (keeping viewport, vh/vw, media queries and runtime rects
+                   in design px) and the scale restores the box. */
+                  style={{
+                    width: frame.width + 2 * bleed,
+                    height: frame.height + 2 * bleed,
+                    /* while editing, the document takes the pointer back */
+                    ...(bleed ? { pointerEvents: editing ? 'auto' : 'none' } : null),
+                    ...(FRAME_DOCUMENTS_TAKE_ZOOM_AS_DENSITY
+                      ? null
+                      : { zoom: counterZoom(layoutZoom), transform: `scale(${layoutZoom})` }),
+                    transformOrigin: '0 0',
+                    /* Chromium paints an opaque backdrop behind an iframe whose
+                     colour scheme differs from its document's; the page's dark
+                     scheme reaches this element by inheritance while a
+                     standalone element's document is light, so a shape on the
+                     dark canvas sat on a white square */
+                    ...(isCanvasElement(frame.html) ? { colorScheme: 'light' } : null),
+                  }}
+                />
+              )}
             </div>
             {/* a standalone element is see-through: the paper's grid shows */}
             {!isCanvasElement(frame.html) && <PixelGrid layoutZoom={layoutZoom} />}
+            {/* The stored preview stands in while the frame is culled (far, small or over the live cap),
+                and covers a live frame until its runtime is ready, so zooming in swaps in place with no
+                jump or blank. Same box as the iframe: the surface is absolute inset-0. */}
+            {frame.html && (!keepIframe || !runtimeReady) && (
+              <div className={cn('pointer-events-none absolute inset-0', !isCanvasElement(frame.html) && 'bg-white')}>
+                <FramePreview frameId={frame.id} empty={null} quietFail={keepIframe} />
+              </div>
+            )}
             {!frame.html && (
               <div className="absolute inset-0 grid place-items-center bg-[repeating-linear-gradient(45deg,transparent_0_10px,rgba(28,26,21,0.025)_10px_20px)] text-[13px] text-ink-faint">
                 empty frame — add HTML

@@ -1945,6 +1945,18 @@ export const FRAME_BOOTSTRAP = `<!doctype html>
       }, '*')
     }
   })
-  parent.postMessage({ type: 'doop:frame-ready' }, '*')
+  /* paint timing for the load metric (CHE-6942 C1): first-paint is the signal,
+     first-contentful-paint is diagnostic. The empty bootstrap paints nothing,
+     so neither fires before doop:html. Absolute time: the parent has its own origin. */
+  var paintTiming = false
+  try {
+    paintTiming = PerformanceObserver.supportedEntryTypes.indexOf('paint') !== -1
+    if (paintTiming) new PerformanceObserver(function (list) {
+      list.getEntries().forEach(function (e) {
+        parent.postMessage({ type: 'doop:paint', name: e.name, time: performance.timeOrigin + e.startTime }, '*')
+      })
+    }).observe({ type: 'paint', buffered: true })
+  } catch (e) { paintTiming = false }
+  parent.postMessage({ type: 'doop:frame-ready', paintTiming: paintTiming }, '*')
 })()
 </script></body></html>`
