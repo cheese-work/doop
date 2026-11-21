@@ -100,6 +100,25 @@ describe('agent writes through MCP', () => {
     expect(overlapping(await frames(canvas.id))).toEqual([])
   })
 
+  it('the free-space hint of a refused update is the unrotated x/y: applying it puts the turned frame in that spot', async () => {
+    const canvas: Canvas = await (await owner.post('/api/canvases', { name: 'Hint' })).json()
+    const mk = async (name: string, x: number, y: number, width: number, height: number) =>
+      JSON.parse((await call('create_frame', { canvas_id: canvas.id, name, html: '', x, y, width, height })).text)
+    const a = await mk('A', 0, 0, 400, 100)
+    await mk('B', 150, 200, 100, 100)
+    const refused = await call('update_frame', { frame_id: a.frame.id, rotation: 90 })
+    expect(refused.isError).toBe(true)
+    const hint = /Free space: x (-?[\d.]+), y (-?[\d.]+)/.exec(refused.text)!
+    const spot = { x: Number(hint[1]), y: Number(hint[2]) }
+    const applied = await call('update_frame', { frame_id: a.frame.id, rotation: 90, ...spot })
+    expect(applied.isError).toBe(false)
+    const shown = visibleBox((await frames(canvas.id)).find((f) => f.id === a.frame.id)!)
+    // the hint is where the visible (turned) box should land: left edge 150 (B's), below B (300) plus the 80px gap
+    expect(shown.x).toBeCloseTo(150)
+    expect(shown.y).toBeCloseTo(380)
+    expect(overlapping(await frames(canvas.id))).toEqual([])
+  })
+
   it('create_frame at an overlapping x/y lands in free space and says so', async () => {
     const canvas: Canvas = await (await owner.post('/api/canvases', { name: 'Create' })).json()
     const a = JSON.parse((await call('create_frame', { canvas_id: canvas.id, name: 'A', html: '', x: 0, y: 0 })).text)
