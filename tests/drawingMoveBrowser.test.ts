@@ -23,6 +23,8 @@ describe.skipIf(!findBrowserPath())('drawing on the canvas', { timeout: 30_000 }
     await drag([250, 300], [330, 380])
     const [original] = await waitForFrames(1)
     for (const reason of ['escape', 'pointer', 'page']) {
+      /* Esc returns to Hand (the resting tool); move needs Select again */
+      await page.keyboard.press('v')
       await page.mouse.move(290, 340)
       await page.mouse.down()
       await page.mouse.move(700, 300, { steps: 4 })

@@ -11,6 +11,7 @@
       import { createRoot } from 'react-dom/client'
       import { Stage } from '/src/components/Stage.tsx'
       import { useStore } from '/src/lib/store.ts'
+      useStore.setState({ tool: 'select' }) /* the app opens in Hand; these tests start from Select */
       import { clearHistory, undo, redo } from '/src/lib/history.ts'
       import { TooltipProvider } from '/src/components/ui/tooltip.tsx'
       import '/src/styles.css'

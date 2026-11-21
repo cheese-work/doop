@@ -38,6 +38,8 @@ describe.skipIf(!findBrowserPath())('importing SVG files', { timeout: 30_000 }, 
     await page.setViewport({ width: 1200, height: 800 })
     await page.goto(fixtureUrl('drawing.html'))
     await page.waitForFunction(() => !!window.drawingHarness)
+    /* the app opens in Hand; these tests start from Select */
+    await page.keyboard.press('v')
   })
 
   afterAll(() => {

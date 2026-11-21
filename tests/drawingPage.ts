@@ -104,7 +104,7 @@ async function openPage(pages: TestPages): Promise<Page> {
 export function drawingPage(): void {
   const pages = pagePerTest()
 
-  beforeEach(async () => {
+  beforeEach(async (ctx) => {
     page = await openPage(pages)
     saved = []
     nextId = 0
@@ -129,6 +129,8 @@ export function drawingPage(): void {
     )
     await page.waitForSelector('[aria-label="Canvas tools"]')
     await page.evaluate(() => window.drawingHarness.viewport({ x: 40, y: 20, zoom: 2 }))
+    /* the app opens in Hand; every other test here starts from Select */
+    if (!ctx.task.name.startsWith('opens in Hand')) await page.keyboard.press('v')
   })
 
   afterAll(() => {
