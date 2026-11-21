@@ -29,6 +29,6 @@ it('the candidate keeps every migration the C00 ledger has applied (C-8.3)', asy
     candidateMigrations: (await inventory(dir)).migrations,
   })
   expect(r).toMatchObject({ ok: true })
-  /* 0046-0054 came in with the 0.14 merge, 0055-0065 (upstream 0049-0059, renumbered) with 0.15.0 */
-  expect(r.newMigrations).toHaveLength(20)
+  /* 0046-0054 came in with the 0.14 merge, 0055-0065 (upstream 0049-0059, renumbered) with 0.15.0, 0066 is the G3 attestation + Multica task id */
+  expect(r.newMigrations).toHaveLength(21)
 })

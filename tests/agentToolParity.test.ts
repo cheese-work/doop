@@ -51,6 +51,7 @@ const MISSING = [
   'set_page_background',
   'export_frame',
   'upload_asset',
+  'check_design_completeness', // the G3 reviewer check (CHE-6078); resident agents do not review
   'list_linear_issues', // integration tools, registered by their connections
   'get_linear_issue',
 ]

@@ -6,6 +6,7 @@ import { db } from './index.ts'
 import * as t from './schema.ts'
 import { extractAssetIds } from '../assets.ts'
 import { AGENT_ROLES, roleByAgentName } from '../../shared/agents.ts'
+import type { AttestationRow } from '../../shared/designCompleteness.ts'
 import { isCommunityCategory } from '../../shared/types.ts'
 import { storedLinkAccess } from '../../shared/canvasRole.ts'
 import type { ComponentDef, LibraryComponent } from '../../shared/components.ts'
@@ -1046,6 +1047,19 @@ async function syncAssetRefs(frameId: string, html: string, exec: Exec = db) {
   }
 }
 
+/** Store one run of check_design_completeness. Awaited by the caller: an
+ *  attestation id is only handed out once its rows are in the database. */
+export async function saveAttestationRows(rows: AttestationRow[]): Promise<void> {
+  if (!rows.length) return
+  await db.insert(t.designAttestations).values(rows.map((r) => ({ id: nanoid(), ...r })))
+}
+
+/** Every row of one run, oldest frame first; empty when there is no such run. */
+export async function listAttestationRun(runId: string): Promise<AttestationRow[]> {
+  const rows = await db.select().from(t.designAttestations).where(eq(t.designAttestations.runId, runId))
+  return rows.map(({ id: _id, ...row }) => ({ ...row, result: row.result === 'complete' ? 'complete' : 'incomplete' }))
+}
+
 export function deleteCanvas(canvasId: string) {
   /* refs must go before the frames rows the subquery reads */
   swallow(
@@ -1067,6 +1081,7 @@ export function deleteCanvas(canvasId: string) {
       db.delete(t.feedback).where(eq(t.feedback.canvasId, canvasId)),
     ),
   )
+  swallow(db.delete(t.designAttestations).where(eq(t.designAttestations.canvasId, canvasId)))
   swallow(db.delete(t.comments).where(eq(t.comments.canvasId, canvasId)))
   swallow(db.delete(t.commentEvents).where(eq(t.commentEvents.canvasId, canvasId)))
   swallow(db.delete(t.canvasBridge).where(eq(t.canvasBridge.canvasId, canvasId)))
@@ -1178,6 +1193,7 @@ export function saveTask(canvasId: string, task: AgentTask) {
     frameIds: task.frameIds?.join(',') ?? null,
     runner: task.runner ? JSON.stringify(task.runner) : null,
     reply: task.reply ?? null,
+    multicaTaskId: task.multicaTaskId ?? null,
   }
   const write = () =>
     db
@@ -1730,6 +1746,7 @@ export async function hydrate(): Promise<Hydrated> {
       ...(row.frameIds ? { frameIds: row.frameIds.split(',').filter(Boolean) } : {}),
       ...runnerField(row.runner),
       ...(row.reply != null ? { reply: row.reply } : {}),
+      ...(row.multicaTaskId ? { multicaTaskId: row.multicaTaskId } : {}),
     })
     tasks.set(row.canvasId, list)
   }

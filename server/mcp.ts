@@ -8,7 +8,10 @@ import { db } from './db/index.ts'
 import * as authSchema from './db/auth-schema.ts'
 import { ARCHIVE_PAGE_ID, canvasPages, framePageId, MAX_PAGE_NAME } from '../shared/pages.ts'
 import { normalizePageBackground } from '../shared/pageBackground.ts'
+import { MULTICA_TASK_HEADER, parseMulticaTaskId } from '../shared/pageIssue.ts'
 import { prototypeReport, prototypeUrl, setPrototypeStart } from './prototypeTools.ts'
+import { attestPage } from './designAttestations.ts'
+import { sloplintEntries } from './sloplintInput.ts'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import type { Request, Response } from 'express'
@@ -425,10 +428,22 @@ function frameSummary(
  *  same isolation the web UI gets. clientName names the connecting client
  *  (handleMcpRequest builds one server per stateless request, so it is the
  *  name remembered from initialize, else the OAuth application's): feedback
- *  records it and agent presence reads its brand from it. */
-export function buildMcpServer(owner?: string, ownerId?: string, clientName?: string): McpServer {
+ *  records it and agent presence reads its brand from it. multicaTaskId is
+ *  the Multica run (X-Multica-Task-Id) the calls belong to. */
+export function buildMcpServer(
+  owner?: string,
+  ownerId?: string,
+  clientName?: string,
+  multicaTaskId?: string,
+): McpServer {
   const actorFrom = (agent_name?: string) =>
-    actions.resolveActor({ name: agent_name, kind: 'agent', owner, brand: resolveAgentBrand(clientName, agent_name) })
+    actions.resolveActor({
+      name: agent_name,
+      kind: 'agent',
+      owner,
+      brand: resolveAgentBrand(clientName, agent_name),
+      multicaTaskId,
+    })
   /* Canvas access for agents mirrors the web UI: the OAuth user's id runs
      through the same canvasRole gate as browser sessions, so an agent
      connected by someone holding a view or comment link reads but cannot
@@ -1623,6 +1638,51 @@ export function buildMcpServer(owner?: string, ownerId?: string, clientName?: st
       if (!canvas) return noCanvas(canvas_id)
       arrive(canvas_id, agent_name)
       return text(prototypeReport(canvas))
+    },
+  )
+
+  server.registerTool(
+    'check_design_completeness',
+    {
+      title: 'Check a design page for completeness',
+      description:
+        'Run the completeness check on one page (one design direction) and store the result as an attestation you cannot edit; the UX verdict cites its attestation_id. A page is complete when it has: a recon inventory (a frame with <script type="application/json" id="doop-recon"> holding {scanHash, candidates:[{id, file, line, decision: keep|change|remove|n/a, reason}]}) where every Keep/Change candidate has an element with data-recon-ref="<id>" in a design frame and every other decision has a reason; a wireframe (data-doop-stage="wireframe") and a hi-fi frame; the states loading, empty, error, disconnected (data-doop-state="<state>", or data-doop-state-na="<state>: <reason>"); a motion block (data-doop-motion=\'{"trigger","property","duration","easing","reducedMotion"}\', every field nonempty) on the element or in the frame of every prototype interaction that has a transition (rule motion_per_transition), and at least one on the page; prototype wiring with a flow start (set_prototype_start) where every screen is reachable (a frame named "<screen> · doc" is a doc, not a screen); the canvas has a page named Motion with a visible frame "<ISSUE-KEY> · motion" (motion_page_missing; the key is that of the bound issue), whose table rows each end with a cell naming an animated frame on the Motion page, by id or name, that holds @keyframes or an animation or transition with a duration above zero (motion_frame_missing; at least one row); every hi-fi frame (not a wireframe, hidden or recon frame) has a doc frame on the same page named "<frame name> · doc" with the headings Purpose, UX reasoning, UI reasoning, Ergonomics, States, Motion and Accessibility, each with text, not empty or only TBD, TODO, … or - (screen_doc_missing). Ruleset g3-r7 adds: a Hallmark sloplint result for every design frame (visible, not recon; doc frames included) at the current updatedAt of the frame, sent in the sloplint argument as {frame_id, updated_at, tool_sha, result_json, sha256}: tool_sha must be the pinned 407fa689f4a276f2fd389208d271d0fef08f5058 (static tier, --json, no browser flags), sha256 is the hex SHA256 of result_json exactly as sent, and a frame with no result, a NOT-RUN one, a stale updated_at, another tool_sha or a sha256 that does not match is sloplint_missing; a canvas Components page (components_page_missing) with a visible frame holding data-doop-tokens whose CSS variables define at least one token each of colour (--color-*), type (--type-* or --font-*), spacing (--space-* or --spacing-*) and radius (--radius-*), and at least one visible component (data-doop-component="<name>"); every data-doop-component in a design frame names a component on that page (component_unknown, exact name); every component on that page shows at least one data-doop-variant and each of the states default, hover, focus, disabled, loading and error as data-doop-state="<state>" on its markup (the element or inside it, across all its instances) or data-doop-state-na="<state>: <reason>" (component_states_missing); every non-default data-doop-state of a component on that page (named "<component> · <state>") and every element in a design frame marked data-doop-interaction="<name>" carries data-doop-motion with trigger, property, duration, easing and reducedMotion nonempty, or data-doop-motion-na="<reason>", and its name is the first cell of a row in the "<ISSUE-KEY> · motion" spec table (motion_per_micro_interaction; the row check waits for the Motion page). The page must be bound to a Multica issue (an unbound page, or a server with no readable Multica, is incomplete: req_not_checked / req_source_unavailable), and every non-empty line of the issue description and of its member comments needs an entry in a requirement ledger (a script with type="application/json" id="doop-reqledger" holding {"<line id>": {"d": "map"|"ctx"|"defer", "reason": "…"}}; line ids are in the req_missing findings): map = a design element has data-req-ref="<line id>"; ctx and defer need a reason, and deferred lines are printed for Cheese. Returns complete, the missing list, deferred lines and the attestation_id. A later edit to any frame ends the attestation: run it again. It checks that artefacts exist, not that they are drawn well, which stays the reviewer\'s check.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      inputSchema: {
+        canvas_id: z.string(),
+        page_id: z.string().optional().describe('Page ID from get_canvas; defaults to the first page'),
+        sloplint: z
+          .array(
+            z.object({
+              frame_id: z.string(),
+              updated_at: z.union([z.string(), z.number()]).describe('The frame updatedAt the result was run at.'),
+              tool_sha: z.string().describe('The sloplint revision that ran.'),
+              result_json: z
+                .string()
+                .max(200_000)
+                .optional()
+                .describe(
+                  'The `sloplint --json` output, as text: a JSON object with a `findings` array. null, an array, or {"status":"NOT-RUN"} counts as NOT-RUN. Omit it for NOT-RUN.',
+                ),
+              sha256: z.string().optional().describe('Hex SHA256 of result_json exactly as sent.'),
+            }),
+          )
+          .max(500)
+          .optional()
+          .describe('One sloplint result per design frame (rule sloplint_missing).'),
+        agent_name: agentName,
+      },
+    },
+    async ({ canvas_id, page_id, sloplint, agent_name }) => {
+      const canvas = canvasFor(canvas_id, 'view')
+      if (!canvas) return noCanvas(canvas_id)
+      const pages = canvasPages(canvas)
+      const page = page_id ? pages.find((p) => p.id === page_id) : pages[0]
+      if (!page) return err(`no page ${page_id} on canvas ${canvas_id} — use a page id from get_canvas`)
+      arrive(canvas_id, agent_name)
+      return text(
+        await attestPage(canvas, page.id, actorFrom(agent_name).name, undefined, sloplintEntries(sloplint ?? [])),
+      )
     },
   )
 
@@ -3221,7 +3281,12 @@ export async function handleMcpRequest(req: Request, res: Response) {
   const clientName =
     (bearer ? clientNamesByCredential.get(credentialKey(bearer)) : undefined) ??
     (oauthClientId ? await oauthClientName(oauthClientId) : undefined)
-  const server = buildMcpServer(owner, session?.userId ?? undefined, clientName)
+  const server = buildMcpServer(
+    owner,
+    session?.userId ?? undefined,
+    clientName,
+    parseMulticaTaskId(req.headers[MULTICA_TASK_HEADER]),
+  )
   /* Stateless, and plain JSON rather than an SSE stream per response: no
      tool here sends notifications mid-call, so a stream carries nothing a
      JSON body does not, and JSON is what every client — including ChatGPT's

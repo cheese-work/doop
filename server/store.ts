@@ -5,6 +5,7 @@ import {
   archiveLast,
   canvasPages,
   copyPageName,
+  framePageId,
   pageFrames,
   samePages,
 } from '../shared/pages.ts'
@@ -18,6 +19,7 @@ import { byStack, frontOf, stackOf } from '../shared/frameStack.ts'
 import { htmlLoaded, setHtml, setHtmlMissHandler, unloadHtml, withHtml } from './frameHtml.ts'
 import { afterCommit, inTransaction, recordUndo, requireBoundary } from './journal.ts'
 import type { DesignToken } from '../shared/designTokens.ts'
+import { deriveDesignLinks, isUuid, type DesignIssue } from '../shared/pageIssue.ts'
 import type {
   Canvas,
   CanvasGuide,
@@ -496,7 +498,7 @@ class Store {
       createdAt: now,
       updatedAt: now,
       frames,
-      pages: canvasPages(source).map(({ startFrameId, ...page }) => {
+      pages: canvasPages(source).map(({ startFrameId, issueId: _issue, issueSource: _source, ...page }) => {
         const start = startFrameId && frameIds.get(startFrameId)
         return start ? { ...page, startFrameId: start } : page
       }),
@@ -633,14 +635,17 @@ class Store {
        moves a flow start or recolours a page, which only setFlowStart and
        setPageBackground change */
     const current = canvasPages(canvas)
-    const merged = pages.map(({ startFrameId: _start, background: _background, ...page }) => {
-      const kept = current.find((p) => p.id === page.id)
-      return {
-        ...page,
-        ...(kept?.startFrameId ? { startFrameId: kept.startFrameId } : {}),
-        ...(kept?.background ? { background: kept.background } : {}),
-      }
-    })
+    const merged = pages.map(
+      ({ startFrameId: _start, background: _background, issueId: _issue, issueSource: _source, ...page }) => {
+        const kept = current.find((p) => p.id === page.id)
+        return {
+          ...page,
+          ...(kept?.startFrameId ? { startFrameId: kept.startFrameId } : {}),
+          ...(kept?.background ? { background: kept.background } : {}),
+          ...(kept?.issueId ? { issueId: kept.issueId, issueSource: kept.issueSource } : {}),
+        }
+      },
+    )
     const ordered = archiveLast(merged)
     /* a removed page is kept in the trash, with its (deleted) frames still pointing at it */
     const now = Date.now()
@@ -700,6 +705,51 @@ class Store {
     canvas.updatedAt = Date.now()
     this.saveCanvasLater(canvas)
     return canvas.pages
+  }
+
+  /** Bind (issueId) or unbind (null) a page's Multica issue. Only the member
+   *  route and the Design-URL derivation call this — page-list saves, copies
+   *  and MCP tools never reach it. Undefined for an unknown canvas or page or
+   *  a malformed issue id. */
+  setPageIssue(canvasId: string, pageId: string, issueId: string | null, source: 'member' | 'design') {
+    const canvas = this.canvases.get(canvasId)
+    if (!canvas || (issueId !== null && !isUuid(issueId))) return undefined
+    const pages = canvasPages(canvas)
+    if (!pages.some((p) => p.id === pageId)) return undefined
+    canvas.pages = pages.map((page) => {
+      if (page.id !== pageId) return page
+      const { issueId: _previous, issueSource: _source, ...rest } = page
+      return issueId ? { ...rest, issueId: issueId.toLowerCase(), issueSource: source } : rest
+    })
+    canvas.updatedAt = Date.now()
+    persist.saveCanvas(canvas)
+    return canvas.pages
+  }
+
+  /** Reconcile the 'design' links with the issues' Design URLs: link a page an
+   *  issue alone names, and clear a design link the URLs no longer support (stale
+   *  or in conflict). Member links are never touched. */
+  applyDesignLinks(canvasId: string, issues: DesignIssue[]) {
+    const canvas = this.canvases.get(canvasId)
+    if (!canvas) return undefined
+    const pages = canvasPages(canvas)
+    const frameIds = new Map(canvas.frames.map((f) => [f.id, framePageId(canvas, f)]))
+    const { links } = deriveDesignLinks(canvasId, pages, issues, (id) => frameIds.get(id))
+    let changed = false
+    const next = pages.map((page) => {
+      if (page.issueSource === 'member') return page
+      const want = links.get(page.id)
+      if (want === page.issueId) return page
+      changed = true
+      const { issueId: _previous, issueSource: _source, ...rest } = page
+      return want ? { ...rest, issueId: want, issueSource: 'design' as const } : rest
+    })
+    if (changed) {
+      canvas.pages = next
+      canvas.updatedAt = Date.now()
+      persist.saveCanvas(canvas)
+    }
+    return canvas.pages ?? next
   }
 
   /** Add a ruler guide, or move one that exists. Undefined when the canvas

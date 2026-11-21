@@ -1023,6 +1023,21 @@ data-doop-webfonts>` for the roster families the frame names and does not load i
   Prototype tab and `PrototypeOverlay.tsx` edit and draw them; MCP has `get_prototype` and
   `set_prototype_start`. `tests/prototypeBrowser.test.ts` drives the player in Chromium.
 
+- Design completeness (G3, CHE-6078): MCP `check_design_completeness` runs `shared/designCompleteness.ts`
+  over one page (recon inventory `doop-recon` with `data-recon-ref` per Keep/Change item, wireframe,
+  states, `data-doop-motion` blocks, prototype wiring and reachability; ruleset `g3-r6` (CHE-6853) adds a motion block
+  per transition, the `Motion` page with the issue's `<KEY> · motion` spec frame whose rows each name an animated frame,
+  and a `<screen> · doc` frame with the 7 filled headings per hi-fi screen; `g3-r7` (CHE-6854) adds a Hallmark `sloplint`
+  result per design frame at its `updatedAt` (the reviewer's JSON with its SHA256, checked in `server/sloplintInput.ts`),
+  the `Components` page (tokens frame, components, `component_unknown`, variants and states, motion per micro-interaction)) and stores the result in
+  `design_attestations`, one row per design frame at its `updatedAt`, append-only. The route
+  `/api/design-attestations/:id` reads a run with `current` (false once any frame changed).
+  On this branch a component's main and instances carry its definition id (`data-doop-component` / `data-doop-instance`), so the check
+  reads names from the canvas's component definitions (`CheckOptions.components`); a hand-written name marker still counts. The id/name
+  mapping is an attested input (`inputs.componentNames`): a rename writes no frame, so `currentAttestation` compares it with the live definitions and ends the run. `readAttestation`
+  loads the canvas first (frame html is lazy). `extraChecks` is the plug-in point for the requirement ledger. Tests: `designCompleteness.test.ts`,
+  `designAttestation.test.ts`.
+
 ## 5. Security and Secrets
 
 - better-auth 1.6.26 - authentication: email/password, generic OIDC/SSO, and Google / Microsoft /
@@ -1076,6 +1091,14 @@ data-doop-webfonts>` for the roster families the frame names and does not load i
   (`MCP_REFRESH_TOKEN_TTL_S` in `server/mcpTokens.ts`; the plugin neither rotates nor revokes
   them). A daily prune deletes expired token rows but keeps the newest per user and client,
   since `allowance.ts` reads any row as proof an agent once connected.
+
+- Multica links (`shared/pageIssue.ts`, `server/multicaRuns.ts`): a page's `issueId` is server-owned like
+  `startFrameId` (`setPages` and copies drop client values) and is written only by a member's
+  `PUT /api/canvases/:id/pages/:pageId/issue` or the Design-property derivation (`store.applyDesignLinks`,
+  fail closed on a missing or conflicting link); MCP has no tool for it. An MCP call's `X-Multica-Task-Id` header
+  is stored on the agent task (`tasks.multica_task_id`). `GET /api/canvases/:id/pages/:pageId/runs` lists the
+  bound issue's runs from Multica (`MULTICA_API_URL`, `MULTICA_API_TOKEN`, `MULTICA_WORKSPACE_ID`,
+  `MULTICA_WEB_URL`; 503 when unset), each with a hop-in URL.
 
 ## 6. Build and Dependency Management
 

@@ -40,6 +40,8 @@ import { previewDocument } from './componentPreview.ts'
 import { codeSchema, propSchema } from './componentTools.ts'
 import { activeComponents } from '../shared/components.ts'
 import { PRO_UPLOAD_BYTES } from '../shared/billing.ts'
+import { listPageRuns, multicaRunsSource } from './multicaRuns.ts'
+import { isUuid } from '../shared/pageIssue.ts'
 import { canvasPages, framePageId, samePages } from '../shared/pages.ts'
 import { normalizePageBackground } from '../shared/pageBackground.ts'
 import { MAX_STACK_WRITES, type StackWrite } from '../shared/frameStack.ts'
@@ -116,6 +118,7 @@ import { resealSecrets } from './secretBackfill.ts'
 import { encryptionConfigured } from './secretBox.ts'
 import * as authSchema from './db/auth-schema.ts'
 import * as persist from './db/persist.ts'
+import { readAttestation } from './designAttestations.ts'
 import { handleMcpRequest } from './mcp.ts'
 import { RendererBusyError } from './renderBrowser.ts'
 import { getAsset, reconcileAssetRefs, beginTicketUpload, endTicketUpload, createAsset } from './assets.ts'
@@ -2278,6 +2281,37 @@ app.put('/api/canvases/:id/pages/:pageId/flow-start', (req, res) => {
   res.json(pages)
 })
 
+/* The page's Multica issue: the authoritative page-to-issue link. Only a signed-in
+   member with edit access writes it here (null unbinds). Agent keys never reach
+   this route and MCP has no tool for it. */
+app.put('/api/canvases/:id/pages/:pageId/issue', (req, res) => {
+  const canvas = requireCanvas(req, res, req.params.id, 'edit')
+  if (!canvas) return
+  const issueId: unknown = req.body?.issueId
+  if (issueId !== null && (typeof issueId !== 'string' || !isUuid(issueId)))
+    return res.status(400).json({ error: 'issueId must be an issue UUID or null' })
+  if (!canvasPages(canvas).some((p) => p.id === req.params.pageId))
+    return res.status(404).json({ error: 'page not found' })
+  const actor = actions.resolveActor({ name: req.user!.name, kind: 'user' })
+  res.json(actions.setPageIssue(canvas.id, req.params.pageId, issueId, actor))
+})
+
+/* The Multica runs of a page: its bound issue's runs plus the DM's chat runs. */
+app.get('/api/canvases/:id/pages/:pageId/runs', async (req, res) => {
+  const canvas = requireCanvas(req, res, req.params.id, 'view')
+  if (!canvas) return
+  const source = multicaRunsSource(env)
+  if (!source) return res.status(503).json({ error: 'Multica is not configured on this server.' })
+  try {
+    const result = await listPageRuns(canvas, req.params.pageId, source)
+    if (!result.ok) return res.status(result.status).json({ error: result.error })
+    res.json(result)
+  } catch (err) {
+    console.error('page runs failed', err)
+    res.status(502).json({ error: 'Multica could not list the runs.' })
+  }
+})
+
 /* Ruler guides, one per request so two people dragging different guides
    never overwrite each other. The id is the client's, which lets undo put
    a removed guide back as itself. */
@@ -2898,6 +2932,15 @@ app.patch('/api/frames/:id/instances', (req, res) => {
   if (!current) return
   const changes = Array.isArray(req.body?.changes) ? req.body.changes : []
   componentRoute(res, () => changeInstances(current.canvasId, current.id, changes, userActor(req)))
+})
+
+/* G3 attestations (CHE-6078): read-only. Rows are written by the server's own
+   check run only; there is deliberately no way to edit or delete one here. */
+app.get('/api/design-attestations/:id', async (req, res) => {
+  const view = await readAttestation(req.params.id)
+  if (!view) return res.status(404).json({ error: 'attestation not found' })
+  if (!requireCanvas(req, res, view.canvasId, 'view')) return
+  res.json(view)
 })
 
 app.put('/api/frames/:id/approval', (req, res) => {
