@@ -19,14 +19,14 @@ type Harness = {
  * line between a dark design and the dark canvas at many zooms.
  */
 
-const frame = (id: string, name: string, x: number, html: string): Frame => ({
+const frame = (id: string, name: string, x: number, html: string, width = 1440): Frame => ({
   id,
   canvasId: 'c',
   pageId: 'first',
   name,
   x,
   y: 0,
-  width: 1440,
+  width,
   height: 1024,
   html,
   createdAt: 0,
@@ -34,14 +34,17 @@ const frame = (id: string, name: string, x: number, html: string): Frame => ({
   updatedBy: 'Tester',
 })
 
+/* 1700 wide, so it is still 160 px on screen at the lowest zoom below: a frame
+   narrower than that shows its stored preview, not a live iframe (frameCulling) */
 const DARK = frame(
   'dark',
   'Dark design',
   1560,
   '<!doctype html><html><body style="margin:0;height:100vh;background:#0b1530"></body></html>',
+  1700,
 )
 /* no background of its own: it must still sit on white */
-const PLAIN = frame('plain', 'Plain design', 3200, '<!doctype html><html><body><p>No background</p></body></html>')
+const PLAIN = frame('plain', 'Plain design', 3400, '<!doctype html><html><body><p>No background</p></body></html>')
 
 /* zooms where the line showed before the fix, at 1 device pixel per CSS
    pixel, each with the camera at a few sub-pixel offsets: the line shows where
