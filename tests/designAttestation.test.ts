@@ -241,8 +241,38 @@ it('stores an attestation per run and ends it when a frame changes', async () =>
   expect(fifth.complete).toBe(true)
   expect(await readRun(fifth.attestation_id)).toBe(true)
 
-  await callTool('set_prototype_start', { canvas_id: canvas.id, frame_id: design.id, agent_name: 'Reviewer' })
+  /* a component rename writes no frame, yet names are inputs (Terra P1, 6784db0b): it ends the run and the next check finds the spec row missing */
+  const button = (
+    (await (await owner.get(`/api/canvases/${canvas.id}/components`)).json()) as { id: string; name: string }[]
+  ).find((c) => c.name === 'Button')!
+  const renamed = await owner.patch(`/api/canvases/${canvas.id}/components/${button.id}`, { name: 'Action' })
+  expect(renamed.status).toBe(200)
   expect(await readRun(fifth.attestation_id)).toBe(false)
+  const afterRename = await callTool('check_design_completeness', {
+    canvas_id: canvas.id,
+    sloplint: await sloplintFor(owner, canvas.id),
+    agent_name: 'Reviewer',
+  })
+  expect(afterRename.complete).toBe(false)
+  expect(afterRename.missing).toContainEqual(
+    expect.objectContaining({
+      code: 'motion_per_micro_interaction',
+      detail: expect.stringContaining('"Action · hover" has no row'),
+    }),
+  )
+  /* naming it back: a fresh run is complete again */
+  expect((await owner.patch(`/api/canvases/${canvas.id}/components/${button.id}`, { name: 'Button' })).status).toBe(200)
+  const restored = await callTool('check_design_completeness', {
+    canvas_id: canvas.id,
+    sloplint: await sloplintFor(owner, canvas.id),
+    agent_name: 'Reviewer',
+  })
+  expect(restored.complete).toBe(true)
+  expect(await readRun(restored.attestation_id)).toBe(true)
+  expect(await readRun(afterRename.attestation_id)).toBe(false)
+
+  await callTool('set_prototype_start', { canvas_id: canvas.id, frame_id: design.id, agent_name: 'Reviewer' })
+  expect(await readRun(restored.attestation_id)).toBe(false)
 
   /* nobody else can read it, and nothing writes to it */
   expect((await stranger.get(`/api/design-attestations/${second.attestation_id}`)).status).toBe(403)

@@ -145,7 +145,13 @@ export async function readAttestation(
       current:
         !!canvas &&
         requirementsHold &&
-        currentAttestation(canvas, head.pageId, rows, requirementsNow?.hash ?? null)?.runId === runId,
+        currentAttestation(
+          canvas,
+          head.pageId,
+          rows,
+          requirementsNow?.hash ?? null,
+          activeComponents(store.getComponents(canvas.id)),
+        )?.runId === runId,
     }
   })
 }

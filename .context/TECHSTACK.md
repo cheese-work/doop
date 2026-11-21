@@ -1033,7 +1033,8 @@ data-doop-webfonts>` for the roster families the frame names and does not load i
   `design_attestations`, one row per design frame at its `updatedAt`, append-only. The route
   `/api/design-attestations/:id` reads a run with `current` (false once any frame changed).
   On this branch a component's main and instances carry its definition id (`data-doop-component` / `data-doop-instance`), so the check
-  reads names from the canvas's component definitions (`CheckOptions.components`); a hand-written name marker still counts. `readAttestation`
+  reads names from the canvas's component definitions (`CheckOptions.components`); a hand-written name marker still counts. The id/name
+  mapping is an attested input (`inputs.componentNames`): a rename writes no frame, so `currentAttestation` compares it with the live definitions and ends the run. `readAttestation`
   loads the canvas first (frame html is lazy). `extraChecks` is the plug-in point for the requirement ledger. Tests: `designCompleteness.test.ts`,
   `designAttestation.test.ts`.
 

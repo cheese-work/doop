@@ -80,6 +80,21 @@ export interface SloplintEntry {
   resultJson?: string
 }
 
+export interface ComponentRef {
+  id: string
+  name: string
+}
+
+/** The definitions in a stable order, so two reads of the same set compare equal. */
+export const componentRefs = (components: readonly ComponentRef[] = []): ComponentRef[] =>
+  components.map(({ id, name }) => ({ id, name })).sort((a, b) => a.id.localeCompare(b.id))
+
+const sameComponentNames = (a: readonly ComponentRef[] = [], b: readonly ComponentRef[] = []) => {
+  const x = componentRefs(a)
+  const y = componentRefs(b)
+  return x.length === y.length && x.every((c, i) => c.id === y[i]?.id && c.name === y[i]?.name)
+}
+
 export interface AttestedInputs {
   recon: { id: string; updatedAt: number }[]
   start: string | null
@@ -87,6 +102,8 @@ export interface AttestedInputs {
   motion?: MotionInput | null
   /** the Components page, the same way (g3-r7) */
   components?: MotionInput | null
+  /** the active component definitions (id and name) the check resolved names through; a rename or an add or remove ends the attestation without any frame being written */
+  componentNames?: ComponentRef[]
   /** the sloplint results the run read, for the design frames (g3-r7) */
   sloplint?: SloplintEntry[]
   /** hash of the requirement lines the ledger row read (CHE-6373); absent when that row did not run */
@@ -316,6 +333,7 @@ export function checkPageCompleteness(canvas: Canvas, pageId: string, opts: Chec
     frames,
     inputs: {
       ...attestedInputs(canvas, pageId, scanned),
+      componentNames: componentRefs(opts.components),
       ...(opts.sloplint ? { sloplint: opts.sloplint.filter((e) => frames.some((f) => f.id === e.frameId)) } : {}),
     },
     reviewerNotes: [REVIEWER_NOTE],
@@ -818,7 +836,7 @@ export function attestationRowsFor(
 /**
  * The newest complete run that still describes the page: same ruleset, and
  * exactly the page's current design frames, each at the version the run saw.
- * An edit, an added frame or a removed frame ends it, and so does any change to the recon frame, the flow start or the requirement lines. Null means "attest again".
+ * An edit, an added frame or a removed frame ends it, and so does any change to the recon frame, the flow start, the requirement lines or a component definition's id or name. Null means "attest again".
  * G4 reads this from the stored rows, never from comment text.
  */
 export function currentAttestation(
@@ -827,6 +845,8 @@ export function currentAttestation(
   rows: AttestationRow[],
   /** the requirement hash the source gives now; null when it cannot be read */
   requirementsNow: string | null = null,
+  /** the page's canvas's active component definitions now; a run saw them too, and a rename ends it */
+  componentsNow: readonly ComponentRef[] = [],
 ): AttestationRow | null {
   const now = new Map(designFrames(canvas, pageId).map((f) => [f.id, f.updatedAt]))
   const inputsNow = attestedInputs(canvas, pageId)
@@ -838,6 +858,7 @@ export function currentAttestation(
     if (head.result !== 'complete' || head.ruleset !== COMPLETENESS_RULESET) continue
     if (run.length !== now.size) continue
     if (!sameInputs(head.inputs, inputsNow)) continue
+    if (!sameComponentNames(head.inputs.componentNames, componentsNow)) continue
     /* a run that read requirement lines is only current while the source still hashes the same */
     if (typeof head.inputs.requirements === 'string' && head.inputs.requirements !== requirementsNow) continue
     if (run.every((r) => now.get(r.frameId) === r.frameUpdatedAt)) return head
