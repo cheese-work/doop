@@ -332,7 +332,7 @@ describe('--start', () => {
       status: 'active',
       mode: 'run_only',
       agent: 'x99-claude-sonnet',
-      project: '5e621e12-eeb4-40a5-9571-25657d5b0ec5',
+      project: 'a8809cf1-12d8-4e75-82ce-f398d6004e24',
     })
     expect(np?.triggers).toMatchObject([{ cron: '30 4,10,16,22 * * *', timezone: 'Asia/Ho_Chi_Minh' }])
     expect(np?.description).toContain(ledger.id)
