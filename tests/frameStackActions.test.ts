@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Actor } from '../shared/types'
+import { systemContext } from '../server/writePolicy.ts'
+
+const sys = systemContext()
 
 /* persistence is not under test: the batch's all-or-nothing is */
 vi.mock('../server/db/persist.ts', () => ({
@@ -71,7 +74,7 @@ describe('restackFrames', () => {
 
   it('keeps an explicit z when a frame changes page (undoing a page move)', () => {
     const canvas = store.getCanvas(canvasId)!
-    store.setPages(canvasId, [...(canvas.pages ?? []), { id: 'p2', name: 'Page 2' }])
+    store.setPages(sys, canvasId, [...(canvas.pages ?? []), { id: 'p2', name: 'Page 2' }])
     const a = actions.createFrame(canvasId, { name: 'a', z: 5 }, user)!
     actions.createFrame(canvasId, { name: 'b', z: 10 }, user)
     actions.updateFrame(a.id, { pageId: 'p2' }, user)

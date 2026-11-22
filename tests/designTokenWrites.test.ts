@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Actor } from '../shared/types'
 import { TOKEN_BLOCK_ATTR } from '../shared/designTokens'
+import { systemContext } from '../server/writePolicy.ts'
+
+const sys = systemContext()
 
 /* Frame writes mirror into Postgres and broadcast; only the saved HTML and
    what the room is sent matter here. */
@@ -88,6 +91,7 @@ describe('design tokens on frame writes', () => {
     )!
     const other = actions.createFrame(canvasId, { name: 'Other', html: '<html><body>plain</body></html>' }, human)!
     store.updateFrame(
+      sys,
       uses.id,
       {
         approval: {

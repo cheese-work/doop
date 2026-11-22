@@ -1,6 +1,9 @@
 import { beforeAll, beforeEach, expect, it, vi } from 'vitest'
 import type { drizzle as pgliteDrizzle } from 'drizzle-orm/pglite'
 import { db } from '../server/db/index.ts'
+import { systemContext } from '../server/writePolicy.ts'
+
+const sys = systemContext()
 
 /* Boot keeps every canvas and frame in memory but not frame HTML, which
    loads per canvas (store.load) and is dropped again when the canvas goes
@@ -29,8 +32,8 @@ beforeEach(() => store.setInUse(() => false))
  *  what the store holds after a restart. */
 async function bootedCanvas(name: string) {
   const canvas = store.createCanvas(name, 'owner')
-  const first = store.createFrame(canvas.id, { name: 'First', html: '<p>first</p>' }, 'owner')!
-  const second = store.createFrame(canvas.id, { name: 'Second', html: '<p>second</p>' }, 'owner')!
+  const first = store.createFrame(sys, canvas.id, { name: 'First', html: '<p>first</p>' }, 'owner')!
+  const second = store.createFrame(sys, canvas.id, { name: 'Second', html: '<p>second</p>' }, 'owner')!
   await persist.saveFrameNow(first)
   await persist.saveFrameNow(second)
   const { canvases } = await persist.hydrate()
@@ -86,7 +89,7 @@ it('drops an idle canvas, but not one held, in use or waiting on a write', async
   store.evictIdle(HOUR / 2, at(2.25))
   expect(store.isLoaded(canvasId)).toBe(true)
 
-  store.updateFrame(firstId, { x: 40 }, 'owner') // debounced write pending
+  store.updateFrame(sys, firstId, { x: 40 }, 'owner') // debounced write pending
   store.evictIdle(HOUR / 2, at(3))
   expect(store.isLoaded(canvasId)).toBe(true)
   await persist.saveFrameNow(store.getFrame(firstId)!)

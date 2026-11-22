@@ -459,7 +459,7 @@ describe('MCP comment write tools over real action state', () => {
     })
     vi.spyOn(store, 'getFrame').mockImplementation((id: string) => (id === FRAME.id ? FRAME : undefined))
     /* a comment stamps its element's id into the frame: apply it to the fixture */
-    vi.spyOn(store, 'updateFrame').mockImplementation((id, patch) => {
+    vi.spyOn(store, 'updateFrame').mockImplementation((_ctx, id, patch) => {
       const f = store.getFrame(id)
       return f ? Object.assign(f, patch) : undefined
     })

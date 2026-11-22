@@ -1470,6 +1470,13 @@ class Store {
     return frame
   }
 
+  /** Schedule the write of a frame as it is now, without changing it. A pass-through for callers outside
+   *  the store (an undo that kept part of a write, a trashed frame whose row an in-flight save overwrote):
+   *  the state was already changed under a policy check, this only puts it on disk. */
+  persistFrame(frame: Frame, immediate = false): void {
+    persist.saveFrame(frame, immediate)
+  }
+
   /** Put back html, size and (optionally) the stamp and approval of a write that did not commit. This
    *  undoes the caller's own write, so it passes the lock: the frame goes back to a state it already had.
    *  Synchronous, like `updateFrame`; the caller decides what is still theirs to take back. */
@@ -1585,6 +1592,7 @@ class Store {
 
   /** Move frames to the Archive page (made last on first use) and hide them. */
   archiveFrames(
+    ctx: WriteContext,
     canvasId: string,
     frameIds: string[],
     by: string,
@@ -1599,7 +1607,7 @@ class Store {
       c.pages = archiveLast([...pages, { id: ARCHIVE_PAGE_ID, name: ARCHIVE_PAGE_NAME }])
       this.saveCanvasLater(c)
     }
-    for (const frame of frames) this.updateFrame(frame.id, { pageId: ARCHIVE_PAGE_ID, hidden: true }, by)
+    for (const frame of frames) this.updateFrame(ctx, frame.id, { pageId: ARCHIVE_PAGE_ID, hidden: true }, by)
     return { pages: c.pages!, frames }
   }
 }

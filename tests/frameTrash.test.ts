@@ -6,6 +6,9 @@ import { buildMcpServer } from '../server/mcp.ts'
 import { store } from '../server/store.ts'
 import { ARCHIVE_PAGE_ID } from '../shared/pages.ts'
 import type { Canvas } from '../shared/types.ts'
+import { systemContext } from '../server/writePolicy.ts'
+
+const sys = systemContext()
 
 /**
  * Soft delete (CHE-5306) without a database: the persist layer is a no-op
@@ -51,9 +54,9 @@ function seed() {
   store.canvases.clear()
   store.init([canvas])
   return {
-    a: store.createFrame(cid, { name: 'Hero', html: '<h1>a</h1>', pageId: 'p1' }, 'Tester')!,
-    b: store.createFrame(cid, { name: 'Footer', html: '<h1>b</h1>', pageId: 'p1' }, 'Tester')!,
-    c: store.createFrame(cid, { name: 'Other', html: '<h1>c</h1>', pageId: 'p2' }, 'Tester')!,
+    a: store.createFrame(sys, cid, { name: 'Hero', html: '<h1>a</h1>', pageId: 'p1' }, 'Tester')!,
+    b: store.createFrame(sys, cid, { name: 'Footer', html: '<h1>b</h1>', pageId: 'p1' }, 'Tester')!,
+    c: store.createFrame(sys, cid, { name: 'Other', html: '<h1>c</h1>', pageId: 'p2' }, 'Tester')!,
   }
 }
 
@@ -108,7 +111,7 @@ describe('a deleted frame refuses every writer', () => {
     ['actions.appendFrameHtml', (id) => actions.appendFrameHtml(id, '<p>x</p>', actor)],
     ['actions.restoreFrameVersion', (id) => actions.restoreFrameVersion(id, 'v1', actor)],
     ['actions.setFrameApproval', (id) => actions.setFrameApproval(id, true, { id: 'u', name: 'U' })],
-    ['store.updateFrame (the shared funnel)', (id) => store.updateFrame(id, { name: 'x' }, 'Tester')],
+    ['store.updateFrame (the shared funnel)', (id) => store.updateFrame(sys, id, { name: 'x' }, 'Tester')],
   ]
 
   it.each(writers)('%s throws naming the frame', async (_label, write) => {

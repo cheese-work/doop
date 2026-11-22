@@ -2,6 +2,9 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Canvas, Frame, PageSnapshot } from '../shared/types.ts'
+import { systemContext } from '../server/writePolicy.ts'
+
+const sys = systemContext()
 
 /**
  * Named page snapshots (CHE-5307) over MCP. The real store, actions and
@@ -96,7 +99,7 @@ function seed(linkAccess?: Canvas['linkAccess']) {
       seedFrame('f3', 'Other page', '<p>elsewhere</p>', { pageId: 'p2', createdAt: T0 + 2 }),
     ],
   }
-  store.deleteCanvas('c1') // the store keeps a canvas's trash across init
+  store.deleteCanvas(sys, 'c1') // the store keeps a canvas's trash across init
   store.init([canvas])
   actions.wire(
     () => {},

@@ -65,7 +65,7 @@ import {
   type TokenType,
 } from '../shared/designTokens.ts'
 import { emitCanvasEvent } from './events.ts'
-import { writeContextFor } from './writePolicy.ts'
+import { systemContext, writeContextFor } from './writePolicy.ts'
 import type {
   Actor,
   Canvas,
@@ -806,7 +806,7 @@ async function stampSaved(frameId: string, id: string): Promise<boolean> {
         () => {
           /* deleted while the write was out: it must not clear the flag the delete saved */
           const deleted = store.getDeletedFrame(frameId)
-          if (deleted) persist.saveFrame(deleted, true)
+          if (deleted) store.persistFrame(deleted, true)
           for (const stamp of carried) pending.ids.delete(stamp)
           if (!pending.ids.size && unsavedStamps.get(frameId) === pending) unsavedStamps.delete(frameId)
         },
@@ -849,7 +849,7 @@ export async function ensureElementId(
     const current = store.getFrame(frameId)
     return current ? { id: stamped.id, frame: current } : undefined
   }
-  const next = store.updateFrame(frameId, { html: stamped.html }, by, { annotation: true })
+  const next = store.updateFrame(systemContext(), frameId, { html: stamped.html }, by, { annotation: true })
   if (!next) return undefined
   const pending = unsavedStamps.get(frameId) ?? { ids: new Set<string>() }
   pending.ids.add(stamped.id)
@@ -979,7 +979,7 @@ export async function backfillElementIds(
     try {
       const frame = store.getFrame(frameId)
       if (frame && html !== frame.html) {
-        const next = store.updateFrame(frameId, { html }, frame.updatedBy, { annotation: true })
+        const next = store.updateFrame(systemContext(), frameId, { html }, frame.updatedBy, { annotation: true })
         if (!next) continue
         await persist.saveFrameNow(next)
         broadcast(next.canvasId, {
@@ -2091,7 +2091,7 @@ function finishStream(frameId: string, logDone: boolean) {
   const html = withCanvasFaces(current.canvasId, renamed)
   /* compare the HTML, not the objects: updateFrame edits the frame in place */
   const htmlChanged = html !== current.html
-  const frame = htmlChanged ? store.updateFrame(frameId, { html }, s.actor.name)! : current
+  const frame = htmlChanged ? store.updateFrame(writeContextFor(s.actor), frameId, { html }, s.actor.name)! : current
   /* the store keeps what arrived; viewers get it healed, like every chunk,
      so a script cut off mid-way never runs in their frames */
   if (htmlChanged)
@@ -2160,7 +2160,7 @@ function settleIdleStream(frameId: string, s: StreamState) {
   const prepared = before ? prepareWrite(before.canvasId, before.id, before.html, before.html, s.actor.name) : undefined
   if (before && prepared && prepared.html !== before.html) {
     const prior = priorState(before)
-    const frame = store.updateFrame(frameId, { html: prepared.html }, s.actor.name)!
+    const frame = store.updateFrame(writeContextFor(s.actor), frameId, { html: prepared.html }, s.actor.name)!
     noteHtmlChange(prior, s.actor, true)
     /* viewers get it healed, like every chunk, so a script cut off mid-way never runs */
     broadcast(frame.canvasId, {
@@ -2405,7 +2405,7 @@ function propagateIntoFrame(
   if (html === latest.html) return {}
   const prior = priorState(latest)
   /* a component it uses changed, not the frame: sign-off stands (decided 2026-11-12) */
-  const updated = store.updateFrame(latest.id, { html }, actor.name, { annotation: true })
+  const updated = store.updateFrame(systemContext(), latest.id, { html }, actor.name, { annotation: true })
   if (!updated) return {}
   noteHtmlChange(prior, actor, true)
   broadcast(canvasId, { type: 'frame:updated', frame: updated, actor })
@@ -2525,7 +2525,7 @@ function healFromMain(canvas: Canvas, frame: Frame, ids: ReadonlySet<string>) {
   const { html, saved } = rederiveFromMains(canvas, frame.id, ids, actor.name)
   for (const def of saved) broadcastComponent(canvas.id, def, actor)
   if (html === frame.html) return
-  const next = store.updateFrame(frame.id, { html }, frame.updatedBy, { annotation: true })
+  const next = store.updateFrame(systemContext(), frame.id, { html }, frame.updatedBy, { annotation: true })
   if (next) broadcast(canvas.id, { type: 'frame:updated', frame: next, actor })
 }
 
@@ -2791,7 +2791,7 @@ function revertKeyedWrite(
     })
   }
   /* the commit path cancelled any pending write of this frame, so schedule one for what stays */
-  persist.saveFrame(frame)
+  store.persistFrame(frame)
   if (asWritten) broadcast(frame.canvasId, { type: 'frame:updated', frame, actor })
   return asWritten
 }
@@ -3034,7 +3034,7 @@ export const restackFrames = atomic(function restackFrames(
   actor: Actor,
 ): Frame[] | undefined {
   if (writes.some((w) => store.getFrame(w.id)?.canvasId !== canvasId)) return undefined
-  const frames = writes.map((w) => store.updateFrame(w.id, { z: w.z }, actor.name)!)
+  const frames = writes.map((w) => store.updateFrame(writeContextFor(actor), w.id, { z: w.z }, actor.name)!)
   for (const frame of frames) broadcast(canvasId, { type: 'frame:updated', frame, actor })
   touch(canvasId, actor, frames[0]?.id)
   return frames
@@ -3162,7 +3162,7 @@ const restoreLoadedPage = atomic(function restoreLoadedPage(canvasId: string, pa
 
 /** Move frames to the Archive page and hide them in one step. */
 export function archiveFrames(canvasId: string, frameIds: string[], actor: Actor) {
-  const archived = store.archiveFrames(canvasId, frameIds, actor.name)
+  const archived = store.archiveFrames(writeContextFor(actor), canvasId, frameIds, actor.name)
   if (!archived) return undefined
   broadcast(canvasId, { type: 'canvas:pages', pages: archived.pages, actor })
   for (const frame of archived.frames) broadcast(canvasId, { type: 'frame:updated', frame, actor })
@@ -3434,7 +3434,7 @@ function restyleTokenFrames(canvasId: string, actor: Actor, renames: TokenRename
   let changed = 0
   for (const { frame, html } of plan) {
     const prevHtml = frame.html
-    const updated = store.updateFrame(frame.id, { html }, actor.name, { annotation: true })
+    const updated = store.updateFrame(systemContext(), frame.id, { html }, actor.name, { annotation: true })
     if (!updated) continue
     afterCommit(() => thumbs.purge(frame.id))
     const openReveal = reveals.get(frame.id)
@@ -4034,7 +4034,7 @@ export async function restorePageSnapshot(canvasId: string, snapshotId: string, 
         hidden: !!want.hidden,
         html: html.get(want.hash)!,
       }
-      const updated = store.updateFrame(want.frameId, patch, actor.name)
+      const updated = store.updateFrame(writeContextFor(actor), want.frameId, patch, actor.name)
       if (!updated) continue
       finishStream(want.frameId, false)
       finishReveal(want.frameId)

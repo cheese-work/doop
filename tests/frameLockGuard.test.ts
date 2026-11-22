@@ -2,6 +2,9 @@ import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Canvas, Frame, FrameVersion } from '../shared/types.ts'
+import { systemContext } from '../server/writePolicy.ts'
+
+const sys = systemContext()
 
 /**
  * A locked frame is immutable to every writer of its HTML or size, whoever the
@@ -98,7 +101,7 @@ describe('store guard on a locked frame', () => {
     ['height', { height: 10 }],
     ['an unlock carried with html', { locked: false, html: '<p>x</p>' }],
   ])('refuses a %s write, naming the frame and saying it is locked', (_label, patch) => {
-    expect(() => store.updateFrame('f1', patch, 'someone')).toThrow(/Hero.*f1.*locked|locked.*Hero/s)
+    expect(() => store.updateFrame(sys, 'f1', patch, 'someone')).toThrow(/Hero.*f1.*locked|locked.*Hero/s)
     unchanged()
   })
 
@@ -167,7 +170,7 @@ describe('restore over a locked frame', () => {
     mocks.versions.set('v1', version)
     mocks.duringVersionRead = () => {
       /* another request's write: its own transaction, so this restore's rollback cannot take it back */
-      detached(() => store.updateFrame('f1', { locked: true }, 'Ada'))
+      detached(() => store.updateFrame(sys, 'f1', { locked: true }, 'Ada'))
       mocks.saved.length = 0
     }
     await expect(actions.restoreFrameVersion('f1', 'v1', AGENT)).rejects.toThrow(/locked/)
@@ -192,14 +195,14 @@ describe('conditional writes (expectedUpdatedAt)', () => {
   })
 
   it('refuses a stale expectedUpdatedAt and writes nothing', () => {
-    expect(() => store.updateFrame('f1', { html: '<p>x</p>' }, 'a', { expectedUpdatedAt: 999 })).toThrow(
+    expect(() => store.updateFrame(sys, 'f1', { html: '<p>x</p>' }, 'a', { expectedUpdatedAt: 999 })).toThrow(
       /changed|stale/i,
     )
     unchanged()
   })
 
   it('accepts a matching expectedUpdatedAt', () => {
-    store.updateFrame('f1', { html: '<p>x</p>' }, 'a', { expectedUpdatedAt: 1_000 })
+    store.updateFrame(sys, 'f1', { html: '<p>x</p>' }, 'a', { expectedUpdatedAt: 1_000 })
     expect(frame.html).toBe('<p>x</p>')
   })
 

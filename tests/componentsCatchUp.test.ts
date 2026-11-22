@@ -20,6 +20,9 @@ import { createComponentFromHtml } from '../server/componentActions.ts'
 import { store } from '../server/store.ts'
 import type { Actor } from '../shared/types.ts'
 import { stubEnv, unstubAllEnvs } from './envStub.ts'
+import { systemContext } from '../server/writePolicy.ts'
+
+const sys = systemContext()
 
 /* instances a propagation never reached (a restart mid-drain) are brought up to their component */
 const actor = { name: 'Tester', kind: 'agent', color: '#000', clientId: 'x' } as unknown as Actor
@@ -43,9 +46,9 @@ describe('catching up instances behind', () => {
     /* the component moves on while its propagation is lost: the frame keeps the old markup */
     const main = store.getFrame(def.mainFrameId!)!
     actions.updateFrame(main.id, { html: main.html.replace('>New<', '>Fresh<') }, actor)
-    store.updateFrame(page.id, { html: stale }, 'Tester', { annotation: true })
+    store.updateFrame(sys, page.id, { html: stale }, 'Tester', { annotation: true })
     await propagation.whenIdle()
-    store.updateFrame(page.id, { html: stale }, 'Tester', { annotation: true })
+    store.updateFrame(sys, page.id, { html: stale }, 'Tester', { annotation: true })
     expect(store.getFrame(page.id)!.html).toContain('New')
 
     behind.list = [{ canvasId: canvas.id, componentId: def.id }]
