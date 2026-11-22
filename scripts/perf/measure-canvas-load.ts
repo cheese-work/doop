@@ -48,6 +48,11 @@ export interface MeasureOptions {
   heartbeatMs?: number
 }
 
+/** The browser every perf script launches. `CHROME_PATH` names the executable (the host's playwright build may not
+ * be the one installed); the same flags go to every run so before and after numbers compare. */
+export const CHROME_FLAGS = ['--enable-precise-memory-info']
+export const launchOptions = () => ({ executablePath: process.env.CHROME_PATH || undefined, args: CHROME_FLAGS })
+
 const DATA_IMAGE_URI = /data:image\/[a-z0-9.+-]+[;,]/gi
 const SETTLE_MS = 500
 
@@ -120,7 +125,7 @@ async function measureOnce(opts: MeasureOptions, expectedAll: number): Promise<R
   const say = opts.onProgress ?? (() => {})
   const started = Date.now()
   const t = () => `${((Date.now() - started) / 1000).toFixed(0)} s`
-  const browser = await chromium.launch()
+  const browser = await chromium.launch(launchOptions())
   say(`  browser started`)
   let beat: NodeJS.Timeout | undefined
   try {
