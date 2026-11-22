@@ -47,6 +47,7 @@ import {
 import { TOOLS, isDrawingTool, resolvePointerAction, toolForKey, type Tool } from '../lib/tools'
 import { useCanvasDrawing } from './CanvasDrawing'
 import { FrameLabelLayer } from './FrameLabelLayer'
+import { useCulledFrames } from './useCulledFrames'
 import { pixelGridLines } from './PixelGrid'
 import { layoutZoomFor } from '../lib/layoutZoom'
 import { useT, type PlainMessageKey } from '../lib/i18n'
@@ -201,6 +202,8 @@ export function Stage({
   docked?: boolean
 }) {
   const ref = useRef<HTMLDivElement>(null)
+  /* frames far from the camera, too small to read or over the live cap hold no iframe */
+  const culledFrames = useCulledFrames(ref)
   /* read by the fit callbacks, which outlive a render */
   const insetsRef = useRef(insets)
   /* a fit that opens a panel (a frame link opens the Inspector) runs once
@@ -1167,7 +1170,7 @@ export function Stage({
               ref={worldRef}
             >
               <FrameLabelLayer.Provider value={labelLayer}>
-                <FrameStack frames={canvas?.frames ?? []} layoutZoom={layoutZoom} />
+                <FrameStack frames={canvas?.frames ?? []} layoutZoom={layoutZoom} culled={culledFrames} />
               </FrameLabelLayer.Provider>
               <GhostFrames />
               <FlowOverlay />
@@ -1371,7 +1374,16 @@ function byCreation(a: Frame, b: Frame) {
  *  an iframe in the DOM reloads it, so a restack must not move any. The
  *  layer isolates the stack, so the overlays after it (cursors, guides, the
  *  marquee) stay above every frame. */
-function FrameStack({ frames, layoutZoom }: { frames: Frame[]; layoutZoom: number }) {
+function FrameStack({
+  frames,
+  layoutZoom,
+  culled,
+}: {
+  frames: Frame[]
+  layoutZoom: number
+  /** frames that hold no iframe (see frameCulling) */
+  culled: ReadonlySet<string>
+}) {
   const mounted = useMemo(() => [...frames].sort(byCreation), [frames])
   const rank = useMemo(() => new Map(frames.map((f, i) => [f.id, i + 1])), [frames])
   return (
@@ -1380,7 +1392,7 @@ function FrameStack({ frames, layoutZoom }: { frames: Frame[]; layoutZoom: numbe
         f.hidden ? (
           <HiddenFrameView key={f.id} frame={f} stack={rank.get(f.id)} />
         ) : (
-          <FrameView key={f.id} frame={f} stack={rank.get(f.id)} layoutZoom={layoutZoom} />
+          <FrameView key={f.id} frame={f} stack={rank.get(f.id)} layoutZoom={layoutZoom} mounted={!culled.has(f.id)} />
         ),
       )}
     </div>
