@@ -10,11 +10,15 @@ import { buildFixture, fixtureManifest } from '../scripts/perf/build-canvas-fixt
 import {
   LONG_FRAME_MS,
   aggregateRuns,
+  gestureProblems,
   measureFitAllRendered,
   panZoomPath,
   percentile,
   recordPath,
   summarizeFrameTimes,
+  summarizeGesture,
+  type PathStep,
+  type WheelEntry,
 } from '../scripts/perf/measure-canvas-perf.ts'
 
 /* CHE-5889 (CHE-5793 step 22, contract C8): the canvas performance harness.
@@ -123,11 +127,11 @@ describe('percentile and summarizeFrameTimes', () => {
 
 describe('panZoomPath', () => {
   const steps = panZoomPath({ width: 2560, height: 1440 })
-  it('is deterministic and spans 10 s', () => {
+  it('is deterministic and spans 8 s of the 10 s window, leaving 2 s for queued input to arrive', () => {
     expect(panZoomPath({ width: 2560, height: 1440 })).toEqual(steps)
     expect(steps[0]!.atMs).toBe(0)
-    expect(steps.at(-1)!.atMs).toBeGreaterThanOrEqual(9_900)
-    expect(steps.at(-1)!.atMs).toBeLessThan(10_000)
+    expect(steps.at(-1)!.atMs).toBeGreaterThanOrEqual(7_900)
+    expect(steps.at(-1)!.atMs).toBeLessThanOrEqual(8_000)
   })
   it('pans and zooms, and the zoom wheel deltas cancel so the path ends where it started', () => {
     expect(steps.some((s) => s.kind === 'pan')).toBe(true)
@@ -137,6 +141,74 @@ describe('panZoomPath', () => {
   })
   it('keeps times non-decreasing', () => {
     for (let i = 1; i < steps.length; i++) expect(steps[i]!.atMs).toBeGreaterThanOrEqual(steps[i - 1]!.atMs)
+  })
+})
+
+/* The wheel events the page received, as the recorder logs them: time on the page clock, Control held, deltas. */
+function received(steps: PathStep[], t0: number, lateBy = 0): WheelEntry[] {
+  return steps.map((s) => ({ t: t0 + s.atMs + lateBy, ctrl: s.kind === 'zoom', dx: s.deltaX, dy: s.deltaY }))
+}
+/** `perDirection` pan wheels down then as many up, then `perDirection` zoom wheels in and as many out, 16 ms apart */
+const gestureSteps = (perDirection = 5): PathStep[] => {
+  const n = 2 * perDirection
+  return [
+    ...Array.from({ length: n }, (_, k): PathStep => ({
+      atMs: k * 16,
+      kind: 'pan',
+      deltaX: 0,
+      deltaY: k < perDirection ? 40 : -40,
+    })),
+    ...Array.from({ length: n }, (_, k): PathStep => ({
+      atMs: (n + k) * 16,
+      kind: 'zoom',
+      deltaX: 0,
+      deltaY: k < perDirection ? -30 : 30,
+    })),
+  ]
+}
+
+describe('summarizeGesture and gestureProblems', () => {
+  const steps = gestureSteps()
+  it('accepts a gesture whose every pan and zoom event reached the page inside the window', () => {
+    const g = summarizeGesture(received(steps, 1000), 1000, 2000)
+    expect(g).toMatchObject({ panEvents: 10, zoomEvents: 10, panPeakDy: 200, zoomPeakDy: 150, lateEvents: 0 })
+    expect(g.lastMs).toBeLessThan(1_000)
+    expect(gestureProblems(g, steps)).toEqual([])
+  })
+  it('accepts coalesced events: fewer events carrying the same summed deltas', () => {
+    const log: WheelEntry[] = [
+      { t: 1010, ctrl: false, dx: 0, dy: 100 },
+      { t: 1030, ctrl: false, dx: 0, dy: 100 },
+      { t: 1050, ctrl: false, dx: 0, dy: -100 },
+      { t: 1070, ctrl: false, dx: 0, dy: -100 },
+      { t: 1200, ctrl: true, dx: 0, dy: -150 },
+      { t: 1230, ctrl: true, dx: 0, dy: 150 },
+    ]
+    expect(gestureProblems(summarizeGesture(log, 1000, 2000), steps)).toEqual([])
+  })
+  it('reports events that reach the page after the window ended', () => {
+    const g = summarizeGesture(received(steps, 1000, 900), 1000, 1500)
+    expect(g.lateEvents).toBeGreaterThan(0)
+    expect(gestureProblems(g, steps).join(' ')).toMatch(/after the window/)
+  })
+  it('reports a zoom phase that never arrived', () => {
+    const g = summarizeGesture(
+      received(
+        steps.filter((s) => s.kind === 'pan'),
+        1000,
+      ),
+      1000,
+      2000,
+    )
+    expect(gestureProblems(g, steps).join(' ')).toMatch(/zoom/)
+  })
+  it('reports zoom wheels that arrived without Control (the page would pan, not zoom)', () => {
+    const log = received(steps, 1000).map((e) => ({ ...e, ctrl: false }))
+    expect(gestureProblems(summarizeGesture(log, 1000, 2000), steps).join(' ')).toMatch(/zoom/)
+  })
+  it('reports lost events: the peak of the pan falls short', () => {
+    const log = received(steps, 1000).filter((_, k) => k % 2 === 0 || k >= 10)
+    expect(gestureProblems(summarizeGesture(log, 1000, 2000), steps).join(' ')).toMatch(/pan/)
   })
 })
 
@@ -181,13 +253,13 @@ describe.skipIf(!chromiumPresent)('recordPath in a real browser', () => {
     try {
       const page = await browser.newPage({ viewport: { width: 800, height: 600 } })
       await page.goto(baseUrl)
-      const short = panZoomPath({ width: 800, height: 600 }).filter((s) => s.atMs < 600)
+      const short = gestureSteps(20) // 80 wheels over 1.3 s
       const out = await recordPath(
         page,
         short,
         { width: 800, height: 600 },
         {
-          windowMs: 600,
+          windowMs: 1_800,
           onStart: async () => {
             await page.keyboard.press('KeyA') // the 120 ms task lands inside the recording
           },
@@ -203,10 +275,10 @@ describe.skipIf(!chromiumPresent)('recordPath in a real browser', () => {
     }
   }, 60_000)
 
-  it('keeps the recording window at windowMs however slow event handling is', async () => {
+  it('keeps the recording window at windowMs however slow event handling is, and reports the gesture the page received', async () => {
     const slowServer = createServer((_req, res) => {
       res.writeHead(200, { 'content-type': 'text/html' })
-      // every wheel event takes 40 ms on the main thread: 50 steps would need 2 s inside an 800 ms window
+      // every wheel event takes 40 ms on the main thread
       res.end(`<!doctype html><body style="margin:0"><div data-frame-surface></div><script>
         addEventListener('wheel', () => { const t = performance.now(); while (performance.now() - t < 40); })
       </script></body>`)
@@ -217,19 +289,39 @@ describe.skipIf(!chromiumPresent)('recordPath in a real browser', () => {
     try {
       const page = await browser.newPage({ viewport: { width: 800, height: 600 } })
       await page.goto(url)
-      const steps = panZoomPath({ width: 800, height: 600 }).filter((s) => s.atMs < 800)
+      const steps = gestureSteps(30) // 120 wheels over 1.9 s inside a 3.5 s window
       const started = Date.now()
-      const out = await recordPath(page, steps, { width: 800, height: 600 }, { windowMs: 800 })
-      expect(out.elapsedMs).toBeGreaterThanOrEqual(800)
-      // it ends at the first frame past the window: a frame here is several 40 ms handlers long, but nowhere near the 2 s they need in all
-      expect(out.elapsedMs).toBeLessThan(1_300)
-      expect(Date.now() - started).toBeLessThan(3_000)
-      expect(out.sentSteps).toBe(steps.length) // none dropped: the gesture does not depend on the page's speed
-      // the recorded frame gaps cover the window and no more
+      const out = await recordPath(page, steps, { width: 800, height: 600 }, { windowMs: 3_500 })
+      expect(out.elapsedMs).toBeGreaterThanOrEqual(3_500)
+      expect(out.elapsedMs).toBeLessThan(4_000) // ends at the first frame past the window, whatever the handlers cost
+      expect(Date.now() - started).toBeLessThan(8_000)
+      expect(out.sentSteps).toBe(steps.length)
+      // both phases, observed on the page: pan wheels without Control, then zoom wheels with it, all inside the window
+      expect(out.gesture.panEvents).toBeGreaterThan(0)
+      expect(out.gesture.zoomEvents).toBeGreaterThan(0)
+      expect(out.gesture.lateEvents).toBe(0)
+      expect(out.gesture.lastPanMs).toBeLessThanOrEqual(out.gesture.firstZoomMs)
+      expect(out.gesture.lastMs).toBeLessThan(out.elapsedMs)
+      expect(out.gesture.panPeakDy).toBeGreaterThan(0.8 * 30 * 40)
+      expect(out.gesture.zoomPeakDy).toBeGreaterThan(0.8 * 30 * 30)
       expect(out.frames.reduce((a, d) => a + d, 0)).toBeLessThan(out.elapsedMs + 150)
     } finally {
       await browser.close()
       await new Promise<void>((r) => slowServer.close(() => r()))
+    }
+  }, 60_000)
+
+  it('rejects the run when the window ends before the gesture has reached the page', async () => {
+    const browser = await chromium.launch(launchOptions())
+    try {
+      const page = await browser.newPage({ viewport: { width: 800, height: 600 } })
+      await page.goto(baseUrl)
+      // the zoom wheels are sent from 160 ms to 304 ms; a 200 ms window is over before most of them can arrive
+      await expect(recordPath(page, gestureSteps(), { width: 800, height: 600 }, { windowMs: 200 })).rejects.toThrow(
+        /gesture did not reach the page whole/,
+      )
+    } finally {
+      await browser.close()
     }
   }, 60_000)
   it('times fit-all until every frame in view shows a loaded preview or a ready iframe', async () => {
