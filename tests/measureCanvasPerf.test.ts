@@ -182,9 +182,17 @@ describe.skipIf(!chromiumPresent)('recordPath in a real browser', () => {
       const page = await browser.newPage({ viewport: { width: 800, height: 600 } })
       await page.goto(baseUrl)
       const short = panZoomPath({ width: 800, height: 600 }).filter((s) => s.atMs < 600)
-      const out = await recordPath(page, short, { width: 800, height: 600 }, async () => {
-        await page.keyboard.press('KeyA') // the 120 ms task lands inside the recording
-      })
+      const out = await recordPath(
+        page,
+        short,
+        { width: 800, height: 600 },
+        {
+          windowMs: 600,
+          onStart: async () => {
+            await page.keyboard.press('KeyA') // the 120 ms task lands inside the recording
+          },
+        },
+      )
       expect(out.frames.length).toBeGreaterThan(5)
       expect(out.longFrames).toBeGreaterThanOrEqual(1)
       expect(out.iframes).toBe(1)
@@ -193,8 +201,37 @@ describe.skipIf(!chromiumPresent)('recordPath in a real browser', () => {
     } finally {
       await browser.close()
     }
-  })
+  }, 60_000)
 
+  it('keeps the recording window at windowMs however slow event handling is', async () => {
+    const slowServer = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html' })
+      // every wheel event takes 40 ms on the main thread: 50 steps would need 2 s inside an 800 ms window
+      res.end(`<!doctype html><body style="margin:0"><div data-frame-surface></div><script>
+        addEventListener('wheel', () => { const t = performance.now(); while (performance.now() - t < 40); })
+      </script></body>`)
+    })
+    await new Promise<void>((r) => slowServer.listen(0, '127.0.0.1', r))
+    const url = `http://127.0.0.1:${(slowServer.address() as AddressInfo).port}`
+    const browser = await chromium.launch(launchOptions())
+    try {
+      const page = await browser.newPage({ viewport: { width: 800, height: 600 } })
+      await page.goto(url)
+      const steps = panZoomPath({ width: 800, height: 600 }).filter((s) => s.atMs < 800)
+      const started = Date.now()
+      const out = await recordPath(page, steps, { width: 800, height: 600 }, { windowMs: 800 })
+      expect(out.elapsedMs).toBeGreaterThanOrEqual(800)
+      // it ends at the first frame past the window: a frame here is several 40 ms handlers long, but nowhere near the 2 s they need in all
+      expect(out.elapsedMs).toBeLessThan(1_300)
+      expect(Date.now() - started).toBeLessThan(3_000)
+      expect(out.sentSteps).toBe(steps.length) // none dropped: the gesture does not depend on the page's speed
+      // the recorded frame gaps cover the window and no more
+      expect(out.frames.reduce((a, d) => a + d, 0)).toBeLessThan(out.elapsedMs + 150)
+    } finally {
+      await browser.close()
+      await new Promise<void>((r) => slowServer.close(() => r()))
+    }
+  }, 60_000)
   it('times fit-all until every frame in view shows a loaded preview or a ready iframe', async () => {
     const PIXEL = 'data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA='
     const html = `<!doctype html><body style="margin:0">
@@ -222,5 +259,5 @@ describe.skipIf(!chromiumPresent)('recordPath in a real browser', () => {
     } finally {
       await browser.close()
     }
-  })
+  }, 60_000)
 })

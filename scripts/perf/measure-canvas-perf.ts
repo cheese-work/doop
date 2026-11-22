@@ -30,6 +30,7 @@ export const LONG_FRAME_MS = 50
 const TICK_MS = 16
 const TICKS = 624 // 624 * 16 ms: the last wheel lands at 9,968 ms
 const SETTLE_AT_FIT_ALL_MS = 4000
+export const PATH_MS = 10_000
 
 export interface PathStep {
   atMs: number
@@ -84,7 +85,7 @@ export function aggregateRuns(runs: RunMetrics[]): RunMetrics {
 /** Recorder in the page: rAF deltas and long animation frames, only while `on`. A string, not a function: tsx's
  * keepNames would inject a `__name` helper the page does not have. */
 const RECORDER = `{
-  const rec = { frames: [], loaf: 0, loafSupported: false, on: false }
+  const rec = { frames: [], loaf: 0, loafSupported: false, on: false, t0: 0, t1: 0, until: 0 }
   window.__perf = rec
   try {
     new PerformanceObserver((l) => { if (rec.on) for (const e of l.getEntries()) if (e.duration > ${LONG_FRAME_MS}) rec.loaf++ })
@@ -92,7 +93,12 @@ const RECORDER = `{
     rec.loafSupported = true
   } catch {}
   let last = performance.now()
-  const tick = (now) => { if (rec.on) rec.frames.push(now - last); last = now; requestAnimationFrame(tick) }
+  const tick = (now) => {
+    if (rec.on && now >= rec.until) { rec.t1 = now; rec.on = false }
+    if (rec.on) rec.frames.push(now - last)
+    last = now
+    requestAnimationFrame(tick)
+  }
   requestAnimationFrame(tick)
 }`
 
@@ -111,37 +117,79 @@ async function jsHeapMb(page: Page): Promise<number> {
   }
 }
 
-/** Reads the live iframe count and heap, then replays `steps` on the page and returns what the recorder saw.
- * `onStart` runs once the recorder is on, before the first step (the test uses it to cause a long frame). */
+export interface RecordOptions {
+  /** the recording window, timed on the page's own clock (default `PATH_MS`) */
+  windowMs?: number
+  /** runs once the recorder is on, before the first step (the test uses it to cause a long frame) */
+  onStart?: () => Promise<void>
+}
+
+/** Reads the live iframe count and heap, then replays `steps` and returns what the recorder saw.
+ * The recorder is switched on and off by the page's own clock, so the window is `windowMs` however slow the
+ * page is. Wheel events are sent on the schedule without waiting for the page to acknowledge each one (an
+ * awaited wheel takes as long as a busy frame, which would stretch the path and make it depend on the page's
+ * speed); Chrome queues and coalesces them, so every delta still arrives and the gesture is the same before and after. */
 export async function recordPath(
   page: Page,
   steps: PathStep[],
   viewport: { width: number; height: number },
-  onStart?: () => Promise<void>,
+  { windowMs = PATH_MS, onStart }: RecordOptions = {},
 ) {
   await page.evaluate(RECORDER)
   const iframes = await page.locator('iframe[data-doop-frame]').count()
   const heap = await jsHeapMb(page)
   await page.mouse.move(viewport.width / 2, viewport.height / 2)
-  await page.evaluate(() => ((window as never as { __perf: { on: boolean } }).__perf.on = true))
-  await onStart?.()
+  // the window ends at the first frame past `windowMs` on the page's clock; the timer only backs that up, because
+  // queued wheel events can hold the main thread ahead of a timer for longer than a frame
+  await page.evaluate((ms) => {
+    const r = (window as never as { __perf: { on: boolean; t0: number; t1: number; until: number } }).__perf
+    r.t0 = performance.now()
+    r.until = r.t0 + ms
+    r.on = true
+    setTimeout(() => {
+      if (!r.on) return
+      r.t1 = performance.now()
+      r.on = false
+    }, ms + 500)
+  }, windowMs)
   const start = Date.now()
+  await onStart?.()
+  const sent: Promise<unknown>[] = []
+  const send = (p: Promise<unknown>) => sent.push(p.catch(() => {})) // a late rejection (page closed) is not the run's error
+  let ctrl = false
   for (const s of steps) {
     const wait = s.atMs - (Date.now() - start)
-    if (wait > 0) await page.waitForTimeout(wait)
-    if (s.kind === 'zoom') await page.keyboard.down('Control')
-    await page.mouse.wheel(s.deltaX, s.deltaY)
-    if (s.kind === 'zoom') await page.keyboard.up('Control')
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait))
+    // Control stays down through the whole zoom half: one key event per phase, not two per wheel
+    if ((s.kind === 'zoom') !== ctrl) {
+      send(s.kind === 'zoom' ? page.keyboard.down('Control') : page.keyboard.up('Control'))
+      ctrl = s.kind === 'zoom'
+    }
+    send(page.mouse.wheel(s.deltaX, s.deltaY))
   }
+  if (ctrl) send(page.keyboard.up('Control'))
+  await page.waitForFunction(() => !(window as never as { __perf: { on: boolean } }).__perf.on, undefined, {
+    timeout: windowMs + 30_000,
+  })
   const rec = await page.evaluate(() => {
-    const r = (window as never as { __perf: { frames: number[]; loaf: number; loafSupported: boolean; on: boolean } })
-      .__perf
-    r.on = false
-    return { frames: r.frames, loaf: r.loaf, loafSupported: r.loafSupported }
+    const r = (
+      window as never as {
+        __perf: { frames: number[]; loaf: number; loafSupported: boolean; t0: number; t1: number }
+      }
+    ).__perf
+    return { frames: r.frames, loaf: r.loaf, loafSupported: r.loafSupported, elapsedMs: r.t1 - r.t0 }
   })
   // without the Long Animation Frames API (Chrome before 123) the nearest stand-in is a frame gap over 50 ms
   const longFrames = rec.loafSupported ? rec.loaf : rec.frames.filter((d) => d > LONG_FRAME_MS).length
-  return { frames: rec.frames, longFrames, loafSupported: rec.loafSupported, iframes, jsHeapMb: heap }
+  return {
+    frames: rec.frames,
+    longFrames,
+    loafSupported: rec.loafSupported,
+    iframes,
+    jsHeapMb: heap,
+    elapsedMs: rec.elapsedMs,
+    sentSteps: steps.length,
+  }
 }
 
 /** Fit-all, then the time since navigation at which every frame in view was rendered and stayed so for `settleMs`. */
@@ -222,12 +270,19 @@ async function main() {
   const runs = Number(values.runs)
   const result = await withLocalDoop(async (base, cookie) => {
     const canvasId = await importCanvasExport(base, cookie, fixture)
-    const perRun: (RunMetrics & { loafSupported: boolean; framesInView: number })[] = []
+    const perRun: (RunMetrics & {
+      loafSupported: boolean
+      framesInView: number
+      elapsedMs: number
+      sentSteps: number
+    })[] = []
     let chrome = ''
     for (let i = 0; i < runs; i++) {
       console.error(`run ${i + 1}/${runs} ...`)
       const p = await oneRun(base, canvasId, cookie, viewport)
       chrome = p.chrome
+      if (p.elapsedMs < PATH_MS || p.elapsedMs > PATH_MS + 1000)
+        throw new Error(`run ${i + 1}: the recording window was ${Math.round(p.elapsedMs)} ms, not ${PATH_MS} ms`)
       const s = summarizeFrameTimes(p.frames)
       perRun.push({
         allFramesMs: Math.round(p.ms),
@@ -238,6 +293,8 @@ async function main() {
         jsHeapMb: Math.round(p.jsHeapMb * 10) / 10,
         loafSupported: p.loafSupported,
         framesInView: p.framesInView,
+        elapsedMs: Math.round(p.elapsedMs),
+        sentSteps: p.sentSteps,
       })
       console.error(`  ${JSON.stringify(perRun[i])}`)
     }
