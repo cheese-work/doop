@@ -111,7 +111,7 @@ async function world(opts: { confirm: boolean }) {
 }
 
 async function connect() {
-  const server = buildMcpServer('Owner', 'owner-1', RUN)
+  const server = buildMcpServer('Owner', 'owner-1', 'recon-mcp-test', RUN)
   const client = new Client({ name: 'recon-mcp-test', version: '1.0.0' })
   const [a, b] = InMemoryTransport.createLinkedPair()
   await server.connect(b)

@@ -201,7 +201,10 @@ describe('G2 recon guard', () => {
   it('(f) recon edited after the comment -> policy_refused', async () => {
     const f = await setup()
     const html = f.frame.html.replace('"decision":"keep"', '"decision":"remove","reason":"x"')
+    /* the frame lock now holds (CHE-6626 path on cheese/main): unlock to edit, lock again */
+    store.updateFrame(sys, f.frame.id, { locked: false }, 'x')
     store.updateFrame(sys, f.frame.id, { html }, 'x')
+    store.updateFrame(sys, f.frame.id, { locked: true }, 'x')
     refused(f, /hash/)
   })
 
