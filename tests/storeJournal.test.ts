@@ -25,13 +25,16 @@ import { savepoint, transaction, WriteBoundaryError } from '../server/journal.ts
 import { store } from '../server/store.ts'
 import { canvasPages } from '../shared/pages.ts'
 import { stubEnv, unstubAllEnvs } from './envStub.ts'
+import { systemContext } from '../server/writePolicy.ts'
+
+const sys = systemContext()
 
 let canvas: Canvas
 let frame: Frame
 
 beforeEach(() => {
   canvas = store.createCanvas('journal')
-  frame = store.createFrame(canvas.id, { name: 'One', html: '<p>one</p>' }, 'Ada')!
+  frame = store.createFrame(sys, canvas.id, { name: 'One', html: '<p>one</p>' }, 'Ada')!
   writes.length = 0
 })
 
@@ -50,7 +53,7 @@ const refuse = (work: () => void) =>
 describe('a store write inside a transaction', () => {
   it('changes memory at once and reaches the database only at the commit', () => {
     transaction(() => {
-      store.updateFrame(frame.id, { html: '<p>two</p>' }, 'Ada')
+      store.updateFrame(sys, frame.id, { html: '<p>two</p>' }, 'Ada')
       expect(store.getFrame(frame.id)!.html).toBe('<p>two</p>')
       expect(writes).toEqual([])
     })
@@ -59,10 +62,10 @@ describe('a store write inside a transaction', () => {
 
   it('writes a row once however often the transaction changed it', () => {
     transaction(() => {
-      const made = store.createFrame(canvas.id, { name: 'Two' }, 'Ada')!
-      store.updateFrame(made.id, { html: '<p>a</p>' }, 'Ada')
-      store.updateFrame(made.id, { html: '<p>b</p>' }, 'Ada')
-      store.updateFrame(frame.id, { x: 5 }, 'Ada')
+      const made = store.createFrame(sys, canvas.id, { name: 'Two' }, 'Ada')!
+      store.updateFrame(sys, made.id, { html: '<p>a</p>' }, 'Ada')
+      store.updateFrame(sys, made.id, { html: '<p>b</p>' }, 'Ada')
+      store.updateFrame(sys, frame.id, { x: 5 }, 'Ada')
     })
     expect(writes.filter((write) => write.startsWith('canvas:'))).toHaveLength(1)
     expect(writes.filter((write) => write.startsWith('frame:'))).toHaveLength(2)
@@ -71,8 +74,8 @@ describe('a store write inside a transaction', () => {
   it('writes a frame the same transaction went on to delete once, as trashed, and never hard-deletes it', () => {
     let id = ''
     transaction(() => {
-      id = store.createFrame(canvas.id, { name: 'Gone' }, 'Ada')!.id
-      store.deleteFrame(id)
+      id = store.createFrame(sys, canvas.id, { name: 'Gone' }, 'Ada')!.id
+      store.deleteFrame(sys, id)
     })
     /* the fork's delete is soft: one row write carrying deletedAt, not the live write and not a DELETE */
     expect(writes.filter((write) => write.startsWith(`frame:${id}`))).toEqual([`frame:${id}:now`])
@@ -94,8 +97,8 @@ describe('a transaction that is refused', () => {
   it('puts a frame back whole: its html, size, stamp and author, and stores nothing', () => {
     const before = { ...frame }
     refuse(() => {
-      store.updateFrame(frame.id, { html: '<p>two</p>', width: 900, rotation: 12 }, 'Grace')
-      store.updateFrame(frame.id, { name: 'Renamed' }, 'Grace')
+      store.updateFrame(sys, frame.id, { html: '<p>two</p>', width: 900, rotation: 12 }, 'Grace')
+      store.updateFrame(sys, frame.id, { name: 'Renamed' }, 'Grace')
     })
     expect({ ...store.getFrame(frame.id)! }).toEqual(before)
     expect(store.getFrame(frame.id)).toBe(frame)
@@ -103,11 +106,11 @@ describe('a transaction that is refused', () => {
   })
 
   it('takes a created frame away again and brings a deleted one back in its place', () => {
-    const second = store.createFrame(canvas.id, { name: 'Two' }, 'Ada')!
+    const second = store.createFrame(sys, canvas.id, { name: 'Two' }, 'Ada')!
     const order = canvas.frames.map((entry) => entry.id)
     refuse(() => {
-      store.createFrame(canvas.id, { name: 'Three' }, 'Ada')
-      store.deleteFrame(frame.id)
+      store.createFrame(sys, canvas.id, { name: 'Three' }, 'Ada')
+      store.deleteFrame(sys, frame.id)
     })
     expect(canvas.frames.map((entry) => entry.id)).toEqual(order)
     expect(store.getFrame(frame.id)).toBe(frame)
@@ -132,7 +135,7 @@ describe('a transaction that is refused', () => {
     store.setTokens(canvas.id, [{ name: '--ink', type: 'color', value: '#111' }], 'Ada')
     const pages = canvasPages(canvas)
     refuse(() => {
-      store.setPages(canvas.id, [...pages, { id: 'components', name: 'Components' }])
+      store.setPages(sys, canvas.id, [...pages, { id: 'components', name: 'Components' }])
       store.setTokens(
         canvas.id,
         [
@@ -152,7 +155,7 @@ describe('a transaction that is refused', () => {
     let made = ''
     refuse(() => {
       made = store.createCanvas('never').id
-      store.deleteCanvas(canvas.id)
+      store.deleteCanvas(sys, canvas.id)
     })
     expect(store.getCanvas(made)).toBeUndefined()
     expect(store.getCanvas(canvas.id)).toBe(canvas)
@@ -163,9 +166,9 @@ describe('a transaction that is refused', () => {
     let made = ''
     await expect(
       transaction(async () => {
-        made = store.createFrame(canvas.id, { name: 'New', html: '<p>a</p>' }, 'Ada')!.id
+        made = store.createFrame(sys, canvas.id, { name: 'New', html: '<p>a</p>' }, 'Ada')!.id
         await Promise.resolve()
-        store.updateFrame(made, { html: '<p>b</p>' }, 'Ada')
+        store.updateFrame(sys, made, { html: '<p>b</p>' }, 'Ada')
         throw new Error('refused')
       }),
     ).rejects.toThrow('refused')
@@ -176,9 +179,9 @@ describe('a transaction that is refused', () => {
   it('stores a frame that was there before back once, after every undo has run', async () => {
     await expect(
       transaction(async () => {
-        store.updateFrame(frame.id, { html: '<p>two</p>' }, 'Ada')
+        store.updateFrame(sys, frame.id, { html: '<p>two</p>' }, 'Ada')
         await Promise.resolve()
-        store.updateFrame(frame.id, { html: '<p>three</p>' }, 'Ada')
+        store.updateFrame(sys, frame.id, { html: '<p>three</p>' }, 'Ada')
         throw new Error('refused')
       }),
     ).rejects.toThrow('refused')
@@ -192,9 +195,9 @@ describe('an undo and a write someone else made meanwhile', () => {
     /* refused after an await during which another request wrote the same frame */
     await expect(
       transaction(async () => {
-        store.updateFrame(frame.id, { html: '<p>mine</p>' }, 'Ada')
+        store.updateFrame(sys, frame.id, { html: '<p>mine</p>' }, 'Ada')
         await Promise.resolve()
-        store.updateFrame(frame.id, { html: '<p>theirs</p>' }, 'Grace')
+        store.updateFrame(sys, frame.id, { html: '<p>theirs</p>' }, 'Grace')
         throw new Error('refused')
       }),
     ).rejects.toThrow('refused')
@@ -208,13 +211,13 @@ describe('an undo and a write someone else made meanwhile', () => {
     let release = () => {}
     const waiting = new Promise<void>((resolve) => (release = resolve))
     const mine = transaction(async () => {
-      store.updateFrame(frame.id, { html: '<p>mine</p>' }, 'Ada')
+      store.updateFrame(sys, frame.id, { html: '<p>mine</p>' }, 'Ada')
       await waiting
       throw new Error('refused')
     })
     await Promise.resolve()
     /* someone else's request, committed while the first awaits */
-    transaction(() => store.updateFrame(frame.id, { html: '<p>theirs</p>' }, 'Grace'))
+    transaction(() => store.updateFrame(sys, frame.id, { html: '<p>theirs</p>' }, 'Grace'))
     release()
     await expect(mine).rejects.toThrow('refused')
     expect(store.getFrame(frame.id)!.html).toBe('<p>theirs</p>')
@@ -243,10 +246,10 @@ describe('an undo and a write someone else made meanwhile', () => {
 describe('a savepoint', () => {
   it('takes back what followed it and keeps what came before', () => {
     transaction(() => {
-      store.updateFrame(frame.id, { name: 'Kept' }, 'Ada')
+      store.updateFrame(sys, frame.id, { name: 'Kept' }, 'Ada')
       const before = savepoint()
-      store.updateFrame(frame.id, { name: 'Undone' }, 'Ada')
-      store.createFrame(canvas.id, { name: 'Undone too' }, 'Ada')
+      store.updateFrame(sys, frame.id, { name: 'Undone' }, 'Ada')
+      store.createFrame(sys, canvas.id, { name: 'Undone too' }, 'Ada')
       before.undo()
     })
     expect(store.getFrame(frame.id)!.name).toBe('Kept')
@@ -258,10 +261,10 @@ describe('a savepoint', () => {
 describe('a store write outside any boundary', () => {
   it('is refused when the check is set to throw, and allowed inside a transaction', () => {
     stubEnv('DOOP_WRITE_BOUNDARY', 'throw')
-    expect(() => store.updateFrame(frame.id, { x: 1 }, 'Ada')).toThrow(WriteBoundaryError)
+    expect(() => store.updateFrame(sys, frame.id, { x: 1 }, 'Ada')).toThrow(WriteBoundaryError)
     expect(() => store.createCanvas('nope')).toThrow(WriteBoundaryError)
     expect(() => store.saveComponent(canvas.id, blankComponent({ name: 'B', by: 'Ada' }))).toThrow(WriteBoundaryError)
-    expect(() => transaction(() => store.updateFrame(frame.id, { x: 1 }, 'Ada'))).not.toThrow()
+    expect(() => transaction(() => store.updateFrame(sys, frame.id, { x: 1 }, 'Ada'))).not.toThrow()
     expect(store.getFrame(frame.id)!.x).toBe(1)
   })
 })

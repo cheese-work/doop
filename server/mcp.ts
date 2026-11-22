@@ -37,6 +37,7 @@ import {
 } from '../shared/designTokens.ts'
 import { webFontFamilies, webFontsBrief } from '../shared/webFonts.ts'
 import * as actions from './actions.ts'
+import { warmTaskIdentity } from './writePolicy.ts'
 import { canvasRole } from './access.ts'
 import { roleAllows, type CanvasRole } from '../shared/canvasRole.ts'
 import { isAgentKeySecret, verifyAgentKey } from './agentKeys.ts'
@@ -443,6 +444,7 @@ export function buildMcpServer(
       owner,
       brand: resolveAgentBrand(clientName, agent_name),
       multicaTaskId,
+      origin: 'mcp',
     })
   /* Canvas access for agents mirrors the web UI: the OAuth user's id runs
      through the same canvasRole gate as browser sessions, so an agent
@@ -3281,12 +3283,10 @@ export async function handleMcpRequest(req: Request, res: Response) {
   const clientName =
     (bearer ? clientNamesByCredential.get(credentialKey(bearer)) : undefined) ??
     (oauthClientId ? await oauthClientName(oauthClientId) : undefined)
-  const server = buildMcpServer(
-    owner,
-    session?.userId ?? undefined,
-    clientName,
-    parseMulticaTaskId(req.headers[MULTICA_TASK_HEADER]),
-  )
+  const multicaTaskId = parseMulticaTaskId(req.headers[MULTICA_TASK_HEADER])
+  /* the header is the client's word: ask Multica now, so the synchronous store can judge the task */
+  if (multicaTaskId) await warmTaskIdentity(multicaTaskId)
+  const server = buildMcpServer(owner, session?.userId ?? undefined, clientName, multicaTaskId)
   /* Stateless, and plain JSON rather than an SSE stream per response: no
      tool here sends notifications mid-call, so a stream carries nothing a
      JSON body does not, and JSON is what every client — including ChatGPT's

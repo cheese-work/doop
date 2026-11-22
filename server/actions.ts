@@ -65,6 +65,7 @@ import {
   type TokenType,
 } from '../shared/designTokens.ts'
 import { emitCanvasEvent } from './events.ts'
+import { systemContext, writeContextFor } from './writePolicy.ts'
 import type {
   Actor,
   Canvas,
@@ -304,7 +305,15 @@ function logActivity(canvasId: string, actor: Actor, message: string, frameId?: 
 
 export function resolveActor(
   raw:
-    | { name?: string; kind?: string; clientId?: string; owner?: string; brand?: AgentBrand; multicaTaskId?: string }
+    | {
+        name?: string
+        kind?: string
+        clientId?: string
+        owner?: string
+        brand?: AgentBrand
+        multicaTaskId?: string
+        origin?: 'mcp' | 'sync'
+      }
     | undefined,
 ): Actor {
   const kind = raw?.kind === 'agent' ? 'agent' : raw?.kind === 'user' ? 'user' : 'agent'
@@ -316,6 +325,7 @@ export function resolveActor(
     clientId: raw?.clientId,
     owner: raw?.owner,
     brand: raw?.brand,
+    ...(raw?.origin ? { origin: raw.origin } : {}),
     ...(kind === 'agent' && raw?.multicaTaskId ? { multicaTaskId: raw.multicaTaskId } : {}),
   }
 }
@@ -796,7 +806,7 @@ async function stampSaved(frameId: string, id: string): Promise<boolean> {
         () => {
           /* deleted while the write was out: it must not clear the flag the delete saved */
           const deleted = store.getDeletedFrame(frameId)
-          if (deleted) persist.saveFrame(deleted, true)
+          if (deleted) store.persistFrame(deleted, true)
           for (const stamp of carried) pending.ids.delete(stamp)
           if (!pending.ids.size && unsavedStamps.get(frameId) === pending) unsavedStamps.delete(frameId)
         },
@@ -839,7 +849,7 @@ export async function ensureElementId(
     const current = store.getFrame(frameId)
     return current ? { id: stamped.id, frame: current } : undefined
   }
-  const next = store.updateFrame(frameId, { html: stamped.html }, by, { annotation: true })
+  const next = store.updateFrame(systemContext(), frameId, { html: stamped.html }, by, { annotation: true })
   if (!next) return undefined
   const pending = unsavedStamps.get(frameId) ?? { ids: new Set<string>() }
   pending.ids.add(stamped.id)
@@ -969,7 +979,7 @@ export async function backfillElementIds(
     try {
       const frame = store.getFrame(frameId)
       if (frame && html !== frame.html) {
-        const next = store.updateFrame(frameId, { html }, frame.updatedBy, { annotation: true })
+        const next = store.updateFrame(systemContext(), frameId, { html }, frame.updatedBy, { annotation: true })
         if (!next) continue
         await persist.saveFrameNow(next)
         broadcast(next.canvasId, {
@@ -1932,7 +1942,7 @@ export const restoreFrameVersion = atomic(async function restoreFrameVersion(
   finishReveal(frameId)
   const prior = priorState(before)
   const patch = { html: prepared.html, width: version.width, height: version.height }
-  const frame = store.updateFrame(frameId, patch, actor.name)
+  const frame = store.updateFrame(writeContextFor(actor), frameId, patch, actor.name)
   if (!frame) return undefined
   noteHtmlChange(prior, actor, false)
   broadcast(frame.canvasId, { type: 'frame:updated', frame, actor })
@@ -2081,7 +2091,7 @@ function finishStream(frameId: string, logDone: boolean) {
   const html = withCanvasFaces(current.canvasId, renamed)
   /* compare the HTML, not the objects: updateFrame edits the frame in place */
   const htmlChanged = html !== current.html
-  const frame = htmlChanged ? store.updateFrame(frameId, { html }, s.actor.name)! : current
+  const frame = htmlChanged ? store.updateFrame(writeContextFor(s.actor), frameId, { html }, s.actor.name)! : current
   /* the store keeps what arrived; viewers get it healed, like every chunk,
      so a script cut off mid-way never runs in their frames */
   if (htmlChanged)
@@ -2150,7 +2160,7 @@ function settleIdleStream(frameId: string, s: StreamState) {
   const prepared = before ? prepareWrite(before.canvasId, before.id, before.html, before.html, s.actor.name) : undefined
   if (before && prepared && prepared.html !== before.html) {
     const prior = priorState(before)
-    const frame = store.updateFrame(frameId, { html: prepared.html }, s.actor.name)!
+    const frame = store.updateFrame(writeContextFor(s.actor), frameId, { html: prepared.html }, s.actor.name)!
     noteHtmlChange(prior, s.actor, true)
     /* viewers get it healed, like every chunk, so a script cut off mid-way never runs */
     broadcast(frame.canvasId, {
@@ -2395,7 +2405,7 @@ function propagateIntoFrame(
   if (html === latest.html) return {}
   const prior = priorState(latest)
   /* a component it uses changed, not the frame: sign-off stands (decided 2026-11-12) */
-  const updated = store.updateFrame(latest.id, { html }, actor.name, { annotation: true })
+  const updated = store.updateFrame(systemContext(), latest.id, { html }, actor.name, { annotation: true })
   if (!updated) return {}
   noteHtmlChange(prior, actor, true)
   broadcast(canvasId, { type: 'frame:updated', frame: updated, actor })
@@ -2515,7 +2525,7 @@ function healFromMain(canvas: Canvas, frame: Frame, ids: ReadonlySet<string>) {
   const { html, saved } = rederiveFromMains(canvas, frame.id, ids, actor.name)
   for (const def of saved) broadcastComponent(canvas.id, def, actor)
   if (html === frame.html) return
-  const next = store.updateFrame(frame.id, { html }, frame.updatedBy, { annotation: true })
+  const next = store.updateFrame(systemContext(), frame.id, { html }, frame.updatedBy, { annotation: true })
   if (next) broadcast(canvas.id, { type: 'frame:updated', frame: next, actor })
 }
 
@@ -2561,7 +2571,9 @@ export const appendFrameHtml = atomic(function appendFrameHtml(
   if (opts.done) dropKey(streamIssues, frameId)
   else setKey(streamIssues, frameId, carried)
   const prior = priorState(before)
-  const frame = store.updateFrame(frameId, { html }, actor.name, { expectedUpdatedAt: opts.expectedUpdatedAt })!
+  const frame = store.updateFrame(writeContextFor(actor), frameId, { html }, actor.name, {
+    expectedUpdatedAt: opts.expectedUpdatedAt,
+  })!
   /* the opening chunk replaces the design; every later one extends this burst */
   noteHtmlChange(prior, actor, !starting)
   announceAdopted(before.canvasId, chunked.adopted, actor, true)
@@ -2779,7 +2791,7 @@ function revertKeyedWrite(
     })
   }
   /* the commit path cancelled any pending write of this frame, so schedule one for what stays */
-  persist.saveFrame(frame)
+  store.persistFrame(frame)
   if (asWritten) broadcast(frame.canvasId, { type: 'frame:updated', frame, actor })
   return asWritten
 }
@@ -2791,7 +2803,7 @@ export const setCanvasPages = atomic(function setCanvasPages(
   pages: import('../shared/types.ts').CanvasPageInfo[],
   actor: Actor,
 ) {
-  const saved = store.setPages(canvasId, pages)
+  const saved = store.setPages(writeContextFor(actor), canvasId, pages)
   const next = saved?.pages ?? pages
   broadcast(canvasId, { type: 'canvas:pages', pages: next, actor })
   for (const guide of saved?.dropped ?? []) broadcast(canvasId, { type: 'guide', id: guide.id, guide: null, actor })
@@ -2845,7 +2857,7 @@ export function deleteGuide(canvasId: string, guideId: string, actor: Actor) {
 
 /** Copy a page with its frames; peers get the page list and each new frame. */
 export async function duplicatePage(canvasId: string, pageId: string, actor: Actor) {
-  const copy = await store.duplicatePage(canvasId, pageId, actor.name)
+  const copy = await store.duplicatePage(writeContextFor(actor), canvasId, pageId, actor.name)
   if (!copy) return undefined
   broadcast(canvasId, { type: 'canvas:pages', pages: copy.pages, actor })
   for (const guide of copy.guides) broadcast(canvasId, { type: 'guide', id: guide.id, guide, actor })
@@ -2912,7 +2924,7 @@ export const createFrame = atomic(function createFrame(
   }
   let moved = false
   if (actor.kind === 'agent') ({ input, moved } = clearOfOverlap(canvasId, input))
-  const frame = store.createFrame(canvasId, input, actor.name)
+  const frame = store.createFrame(writeContextFor(actor), canvasId, input, actor.name)
   if (!frame) return undefined
   if (moved) relocated.add(frame)
   const createIssues = takeComponentIssues('')
@@ -2957,7 +2969,9 @@ export const updateFrame = atomic(function updateFrame(
   const prevHidden = !!before.hidden
   const prevLocked = !!before.locked
   const prior = priorState(before)
-  const frame = store.updateFrame(frameId, patch, actor.name, { expectedUpdatedAt: opts.expectedUpdatedAt })
+  const frame = store.updateFrame(writeContextFor(actor), frameId, patch, actor.name, {
+    expectedUpdatedAt: opts.expectedUpdatedAt,
+  })
   if (!frame) return undefined
 
   const htmlChanged = patch.html !== undefined && patch.html !== prevHtml
@@ -3020,7 +3034,7 @@ export const restackFrames = atomic(function restackFrames(
   actor: Actor,
 ): Frame[] | undefined {
   if (writes.some((w) => store.getFrame(w.id)?.canvasId !== canvasId)) return undefined
-  const frames = writes.map((w) => store.updateFrame(w.id, { z: w.z }, actor.name)!)
+  const frames = writes.map((w) => store.updateFrame(writeContextFor(actor), w.id, { z: w.z }, actor.name)!)
   for (const frame of frames) broadcast(canvasId, { type: 'frame:updated', frame, actor })
   touch(canvasId, actor, frames[0]?.id)
   return frames
@@ -3049,7 +3063,7 @@ export const setFrameApproval = atomic(function setFrameApproval(
         ...(agent ? { approvedVia: agent.name } : {}),
       }
     : null
-  const frame = store.updateFrame(frameId, { approval }, actor.name)!
+  const frame = store.updateFrame(writeContextFor(actor), frameId, { approval }, actor.name)!
   broadcast(frame.canvasId, { type: 'frame:updated', frame, actor })
   logActivity(
     frame.canvasId,
@@ -3101,7 +3115,7 @@ export const deleteFrame = atomic(function deleteFrame(frameId: string, actor: A
      so their auto “Designing…” tasks end with it */
   finishStream(frameId, false)
   finishReveal(frameId)
-  const frame = store.deleteFrame(frameId)
+  const frame = store.deleteFrame(writeContextFor(actor), frameId)
   if (!frame) return undefined
   dropKey(unsavedStamps, frameId)
   dropKey(bursts, frameId)
@@ -3148,7 +3162,7 @@ const restoreLoadedPage = atomic(function restoreLoadedPage(canvasId: string, pa
 
 /** Move frames to the Archive page and hide them in one step. */
 export function archiveFrames(canvasId: string, frameIds: string[], actor: Actor) {
-  const archived = store.archiveFrames(canvasId, frameIds, actor.name)
+  const archived = store.archiveFrames(writeContextFor(actor), canvasId, frameIds, actor.name)
   if (!archived) return undefined
   broadcast(canvasId, { type: 'canvas:pages', pages: archived.pages, actor })
   for (const frame of archived.frames) broadcast(canvasId, { type: 'frame:updated', frame, actor })
@@ -3158,8 +3172,8 @@ export function archiveFrames(canvasId: string, frameIds: string[], actor: Actor
 }
 
 /** Remove a canvas with everything attached to it; viewers are told to leave. */
-export const deleteCanvas = atomic(function deleteCanvas(canvasId: string): boolean {
-  const c = store.deleteCanvas(canvasId)
+export const deleteCanvas = atomic(function deleteCanvas(canvasId: string, actor: Actor): boolean {
+  const c = store.deleteCanvas(writeContextFor(actor), canvasId)
   forgetLibrary(canvasId)
   if (!c) return false
   for (const f of c.frames) {
@@ -3420,7 +3434,7 @@ function restyleTokenFrames(canvasId: string, actor: Actor, renames: TokenRename
   let changed = 0
   for (const { frame, html } of plan) {
     const prevHtml = frame.html
-    const updated = store.updateFrame(frame.id, { html }, actor.name, { annotation: true })
+    const updated = store.updateFrame(systemContext(), frame.id, { html }, actor.name, { annotation: true })
     if (!updated) continue
     afterCommit(() => thumbs.purge(frame.id))
     const openReveal = reveals.get(frame.id)
@@ -4020,7 +4034,7 @@ export async function restorePageSnapshot(canvasId: string, snapshotId: string, 
         hidden: !!want.hidden,
         html: html.get(want.hash)!,
       }
-      const updated = store.updateFrame(want.frameId, patch, actor.name)
+      const updated = store.updateFrame(writeContextFor(actor), want.frameId, patch, actor.name)
       if (!updated) continue
       finishStream(want.frameId, false)
       finishReveal(want.frameId)

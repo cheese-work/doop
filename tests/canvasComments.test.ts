@@ -81,7 +81,7 @@ beforeEach(() => {
   vi.spyOn(store, 'getCanvas').mockImplementation((id) => (id === CANVAS.id ? CANVAS : undefined))
   vi.spyOn(store, 'getFrame').mockImplementation((id) => CANVAS.frames.find((f) => f.id === id))
   /* a comment stamps its element's id into the frame: apply it to the fixture */
-  vi.spyOn(store, 'updateFrame').mockImplementation((id, patch) => {
+  vi.spyOn(store, 'updateFrame').mockImplementation((_ctx, id, patch) => {
     const f = store.getFrame(id)
     return f ? Object.assign(f, patch) : undefined
   })

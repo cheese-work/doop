@@ -27,6 +27,7 @@ vi.mock('../server/db/persist.ts', () => {
   }
 })
 import { store } from '../server/store.ts'
+import { systemContext } from '../server/writePolicy.ts'
 import { canvasPages, pageFrames } from '../shared/pages.ts'
 import { MAX_GUIDES } from '../shared/guides.ts'
 
@@ -46,7 +47,7 @@ const frame = (id: string, pageId?: string): Frame => ({
 })
 
 beforeEach(() => {
-  for (const canvas of store.allCanvases()) store.deleteCanvas(canvas.id)
+  for (const canvas of store.allCanvases()) store.deleteCanvas(systemContext(), canvas.id)
   rig.savedFrames = []
   rig.duringCopy = null
 })
@@ -81,10 +82,10 @@ it('advances a frame version when multiple writes share the same timestamp', () 
   const now = vi.spyOn(Date, 'now').mockReturnValue(100)
   try {
     const canvas = store.createCanvas('Versions', 'alice')
-    const frame = store.createFrame(canvas.id, { name: 'Path' }, 'alice')!
+    const frame = store.createFrame(systemContext(), canvas.id, { name: 'Path' }, 'alice')!
     const first = frame.updatedAt
-    const second = store.updateFrame(frame.id, { html: '<p>Second</p>' }, 'alice')!.updatedAt
-    const third = store.updateFrame(frame.id, { html: '<p>Third</p>' }, 'alice')!.updatedAt
+    const second = store.updateFrame(systemContext(), frame.id, { html: '<p>Second</p>' }, 'alice')!.updatedAt
+    const third = store.updateFrame(systemContext(), frame.id, { html: '<p>Third</p>' }, 'alice')!.updatedAt
     expect(second).toBeGreaterThan(first)
     expect(third).toBeGreaterThan(second)
   } finally {
@@ -102,7 +103,7 @@ it('keeps a page copy within the guide limit when guides are added while it is w
   rig.duringCopy = () => {
     for (let i = 0; i < 10; i++) store.setGuide(canvas.id, guide(`late${i}`))
   }
-  const copy = await store.duplicatePage(canvas.id, page!.id, 'alice')
+  const copy = await store.duplicatePage(systemContext(), canvas.id, page!.id, 'alice')
   expect(copy!.guides).toHaveLength(5)
   expect(store.getCanvas(canvas.id)!.guides).toHaveLength(MAX_GUIDES)
 })
@@ -110,14 +111,15 @@ it('keeps a page copy within the guide limit when guides are added while it is w
 it('points a copied page’s prototype links and flow start at the copied frames', async () => {
   const canvas = store.createCanvas('Prototype copy', 'alice')
   const [page] = canvasPages(canvas)
-  store.setPages(canvas.id, [page!, { id: 'other-page', name: 'Other' }])
-  const other = store.createFrame(canvas.id, { name: 'Elsewhere', pageId: 'other-page' }, 'alice')!
-  const target = store.createFrame(canvas.id, { name: 'Target', pageId: page!.id }, 'alice')!
+  store.setPages(systemContext(), canvas.id, [page!, { id: 'other-page', name: 'Other' }])
+  const other = store.createFrame(systemContext(), canvas.id, { name: 'Elsewhere', pageId: 'other-page' }, 'alice')!
+  const target = store.createFrame(systemContext(), canvas.id, { name: 'Target', pageId: page!.id }, 'alice')!
   const multi = JSON.stringify([
     { on: 'click', action: `overlay:${target.id}` },
     { on: 'key:Escape', action: `navigate:${other.id}` },
   ]).replaceAll('"', '&quot;')
   store.createFrame(
+    systemContext(),
     canvas.id,
     {
       name: 'Start',
@@ -128,7 +130,7 @@ it('points a copied page’s prototype links and flow start at the copied frames
   )
   store.setFlowStart(canvas.id, page!.id, target.id)
 
-  const copy = (await store.duplicatePage(canvas.id, page!.id, 'alice'))!
+  const copy = (await store.duplicatePage(systemContext(), canvas.id, page!.id, 'alice'))!
   const copiedTarget = copy.frames.find((f) => f.name === 'Target')!
   const copiedStart = copy.frames.find((f) => f.name === 'Start')!
   expect(copy.page.startFrameId).toBe(copiedTarget.id)
@@ -142,8 +144,9 @@ it('points a copied page’s prototype links and flow start at the copied frames
 it('points a copied canvas’s prototype links and flow starts at the copied frames', async () => {
   const canvas = store.createCanvas('Prototype canvas', 'alice')
   const [page] = canvasPages(canvas)
-  const target = store.createFrame(canvas.id, { name: 'Target', pageId: page!.id }, 'alice')!
+  const target = store.createFrame(systemContext(), canvas.id, { name: 'Target', pageId: page!.id }, 'alice')!
   store.createFrame(
+    systemContext(),
     canvas.id,
     { name: 'Start', pageId: page!.id, html: `<a data-doop-on="click" data-doop-action="overlay:${target.id}">Go</a>` },
     'alice',
@@ -162,7 +165,7 @@ it('keeps a page’s background across page-list saves and gives it to copies of
   expect(store.setPageBackground(canvas.id, 'missing', '#1e1e1e')).toBeUndefined()
   expect(store.setPageBackground(canvas.id, page!.id, '#1e1e1e')).toEqual([{ ...page, background: '#1e1e1e' }])
   /* a rename or reorder never touches the colour, whatever the client sends for it */
-  const saved = store.setPages(canvas.id, [
+  const saved = store.setPages(systemContext(), canvas.id, [
     { id: page!.id, name: 'Renamed', background: '#ffffff' },
     { id: 'second', name: 'Second', background: '#ff0000' },
   ])
@@ -170,7 +173,7 @@ it('keeps a page’s background across page-list saves and gives it to copies of
     { id: page!.id, name: 'Renamed', background: '#1e1e1e' },
     { id: 'second', name: 'Second' },
   ])
-  const copy = await store.duplicatePage(canvas.id, page!.id, 'alice')
+  const copy = await store.duplicatePage(systemContext(), canvas.id, page!.id, 'alice')
   expect(copy!.page.background).toBe('#1e1e1e')
   const twin = await store.duplicateCanvas(canvas.id, 'alice', 'alice')
   expect(canvasPages(twin!).map((p) => p.background)).toEqual(['#1e1e1e', '#1e1e1e', undefined])
