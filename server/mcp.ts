@@ -12,6 +12,8 @@ import { MULTICA_TASK_HEADER, parseMulticaTaskId } from '../shared/pageIssue.ts'
 import { prototypeReport, prototypeUrl, setPrototypeStart } from './prototypeTools.ts'
 import { attestPage } from './designAttestations.ts'
 import { sloplintEntries } from './sloplintInput.ts'
+import { runLintFrames } from './lintFramesTool.ts'
+import { AFTER_PATTERN, FRAME_ID_PATTERN, FrameLintInputError, WINDOW_SIZE } from '../shared/frameLintResult.ts'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import type { Request, Response } from 'express'
@@ -1640,6 +1642,46 @@ export function buildMcpServer(
       if (!canvas) return noCanvas(canvas_id)
       arrive(canvas_id, agent_name)
       return text(prototypeReport(canvas))
+    },
+  )
+
+  server.registerTool(
+    'lint_frames',
+    {
+      title: 'Lint the frames of a page',
+      description: `Render the frames of one page in a browser and report layout findings in warning mode: nothing here blocks the completeness check, a publish or a lock. Today it runs the rule outside-frame (a box that reaches past the bottom edge of its fixed-height frame, so the canvas cuts it off) at the frame size and at 320 px wide. A call lints at most ${WINDOW_SIZE} frames, two at a time, in creation order, and answers within 45 s whatever the page holds: frames the deadline cut are rows with status NOT-RUN and reason deadline, and frames it did not reach are only counted in omitted.not_reached. The reply is JSON of at most 120,000 bytes (ruleset fl-r1): rows are always a prefix of the window, long strings and finding lists are cut and counted in omitted and each row's truncated, and summary.by_rule holds the full count of every rule. To read the whole page, follow next: when next is {after}, call again with that after and the same page_id; when next is {frame_ids}, call again with those frame_ids. page_complete is true only for a first call that covered every frame. retry_frame_ids names the rows to run again: pass them as frame_ids (at most ${WINDOW_SIZE} ids). Until page rules are wired every row counts as needing them, so retry only the rows whose status is NOT-RUN. Give after or frame_ids, not both. Page-wide rules are not wired yet: page_rules.scope is NOT-RUN with reason "not wired".`,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: {
+        canvas_id: z.string(),
+        page_id: z.string().optional().describe('Page ID from get_canvas; defaults to the first page'),
+        frame_ids: z
+          .array(z.string().regex(FRAME_ID_PATTERN))
+          .min(1)
+          .max(WINDOW_SIZE)
+          .optional()
+          .describe(`At most ${WINDOW_SIZE} frame ids to lint, for example retry_frame_ids or next.frame_ids`),
+        after: z
+          .string()
+          .regex(AFTER_PATTERN)
+          .optional()
+          .describe('next.after of the previous call: lint the frames after that one in the walk'),
+        agent_name: agentName,
+      },
+    },
+    async ({ canvas_id, page_id, frame_ids, after, agent_name }, extra) => {
+      const canvas = canvasFor(canvas_id, 'view')
+      if (!canvas) return noCanvas(canvas_id)
+      const pages = canvasPages(canvas)
+      const page = page_id ? pages.find((p) => p.id === page_id) : pages[0]
+      if (!page) return err(`no page ${page_id} on canvas ${canvas_id} — use a page id from get_canvas`)
+      arrive(canvas_id, agent_name)
+      try {
+        const assembled = await runLintFrames({ canvas, pageId: page.id, after, frame_ids, signal: extra.signal })
+        return text(assembled.text)
+      } catch (e) {
+        if (e instanceof FrameLintInputError) return err(e.message)
+        throw e
+      }
     },
   )
 

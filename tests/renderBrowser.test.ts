@@ -420,6 +420,28 @@ describe('an aborted render', () => {
     expect(renderer.status()).toMatchObject({ kills: 0, active: 0 })
   })
 
+  it('makes one open attempt with retry: false when the first open stalls, and ends within the deadline', async () => {
+    const wedged = fakeBrowser('wedged', { stallContexts: true })
+    const fresh = fakeBrowser('fresh')
+    const { renderer, launch } = rig([wedged, fresh])
+    const work = vi.fn(async () => 'linted')
+
+    const result = await outcome(renderer.withPage('linting', 5_000, work, { retry: false }), 400)
+
+    expect(result).toMatchObject({ state: 'rejected', error: expect.any(RenderTimeoutError) })
+    expect(work).not.toHaveBeenCalled()
+    expect(launch).toHaveBeenCalledTimes(1)
+    expect(fresh.contextsOpen).toBe(0)
+    expect(renderer.status()).toMatchObject({ active: 0, pagesOpen: 0 })
+  })
+
+  it('still retries a stalled open on a fresh browser by default', async () => {
+    const { renderer, launch } = rig([fakeBrowser('wedged', { stallContexts: true }), fakeBrowser('fresh')])
+
+    expect(await renderer.withPage('rendering', 5_000, async (page) => label(page))).toBe('fresh')
+    expect(launch).toHaveBeenCalledTimes(2)
+  })
+
   it('keeps today’s behavior without a signal: the stalled render still reruns once', async () => {
     const turning = fakeBrowser('turning')
     const { renderer } = rig([turning, fakeBrowser('fresh')])
