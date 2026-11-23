@@ -1403,7 +1403,10 @@ export class ClientRequestConflictError extends Error {
  *  key and text repeat, and throws ClientRequestConflictError when the text
  *  differs. Two concurrent callers queue on the index entry, so one inserts
  *  and the other reads the committed row. */
-export async function saveNewComment(c: ElementComment): Promise<ElementComment | undefined> {
+export async function saveNewComment(
+  c: ElementComment,
+  actorKind: ActorKind = 'user',
+): Promise<ElementComment | undefined> {
   return db.transaction(async (tx) => {
     if (c.clientRequestId !== undefined && c.parentId !== undefined) {
       const inserted = await tx
@@ -1432,6 +1435,7 @@ export async function saveNewComment(c: ElementComment): Promise<ElementComment 
       commentId: c.id,
       parentId: c.parentId ?? null,
       fromUserId: c.fromUserId ?? null,
+      actorKind,
       at: c.at,
     })
     return undefined
@@ -1476,6 +1480,8 @@ export interface CommentEvent {
   commentId: string
   parentId: string | null
   fromUserId: string | null
+  /** Null on events written before the column existed. */
+  actorKind: ActorKind | null
   at: number
   comment: ElementComment
 }
@@ -1496,6 +1502,7 @@ export async function listUnackedCommentEvents(canvasId: string, limit: number):
     commentId: event.commentId,
     parentId: event.parentId,
     fromUserId: event.fromUserId,
+    actorKind: event.actorKind,
     at: event.at,
     comment: commentFromRow(comment),
   }))
