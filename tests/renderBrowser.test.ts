@@ -36,6 +36,8 @@ interface FakeBrowser {
   stallContexts: boolean
   stallClose: boolean
   stallContextClose: boolean
+  /** when set, createBrowserContext resolves only once this settles */
+  holdContexts: Promise<void> | null
   contextsOpen: number
   close: ReturnType<typeof vi.fn>
   disconnect: ReturnType<typeof vi.fn>
@@ -54,6 +56,7 @@ function fakeBrowser(
     stallContexts: options.stallContexts ?? false,
     stallClose: options.stallClose ?? false,
     stallContextClose: options.stallContextClose ?? false,
+    holdContexts: null,
     contextsOpen: 0,
     /* pid undefined: the kill falls back to child.kill, never a real group */
     child: { pid: undefined, exitCode: null, signalCode: null, kill: vi.fn(() => true) },
@@ -63,7 +66,7 @@ function fakeBrowser(
       if (browser.stallContexts) return never()
       browser.contextsOpen++
       let closed = false
-      return Promise.resolve({
+      const context = {
         newPage: async () => ({ label, evaluate: async () => 1 }),
         close: async () => {
           if (browser.stallContextClose) return never()
@@ -71,7 +74,8 @@ function fakeBrowser(
           closed = true
           browser.contextsOpen--
         },
-      })
+      }
+      return browser.holdContexts ? browser.holdContexts.then(() => context) : Promise.resolve(context)
     },
     /* a remote browser (REMOTE_BROWSER_URL) has no local process */
     process: () => (options.remote ? null : browser.child),
@@ -92,6 +96,26 @@ function rig(browsers: FakeBrowser[], tuning: Partial<RendererTuning> = {}) {
 }
 
 const label = (page: unknown) => (page as { label: string }).label
+
+/** What a promise did within `ms`: observed, so a missing abort fails on an
+ *  assertion about the outcome instead of a hung test. */
+async function outcome<T>(
+  promise: Promise<T>,
+  ms = 60,
+): Promise<{ state: 'pending' } | { state: 'resolved'; value: T } | { state: 'rejected'; error: unknown }> {
+  return Promise.race([
+    promise.then(
+      (value) => ({ state: 'resolved' as const, value }),
+      (error: unknown) => ({ state: 'rejected' as const, error }),
+    ),
+    tick(ms).then(() => ({ state: 'pending' as const })),
+  ])
+}
+
+const abortReason = new Error('lint deadline')
+function abortedBy(controller: AbortController): void {
+  controller.abort(abortReason)
+}
 
 describe('a wedged browser', () => {
   it('is killed when it cannot open a page, and the page opens on a fresh launch', async () => {
@@ -287,6 +311,134 @@ describe('a remote browser', () => {
   })
 })
 
+describe('an aborted render', () => {
+  it('closes a context that opens after the abort, and gives the slot back', async () => {
+    const slow = fakeBrowser('slow')
+    let release!: () => void
+    slow.holdContexts = new Promise<void>((resolve) => (release = resolve))
+    const { renderer } = rig([slow], { openTimeoutMs: 5_000 })
+    const controller = new AbortController()
+
+    const opening = outcome(renderer.openPage({ signal: controller.signal }), 100)
+    await tick(20)
+    abortedBy(controller)
+
+    expect(await opening).toEqual({ state: 'rejected', error: abortReason })
+    release() /* the context arrives late */
+    await tick(30)
+    expect(slow.contextsOpen).toBe(0)
+    expect(renderer.status()).toMatchObject({ active: 0, pagesOpen: 0, kills: 0 })
+  })
+
+  it('drops an aborted queued openPage without ever admitting it', async () => {
+    const { renderer } = rig([fakeBrowser('a')], { maxConcurrent: 1, queueTimeoutMs: 1_000 })
+    const holder = await renderer.openPage()
+    const controller = new AbortController()
+    const queued = outcome(renderer.openPage({ signal: controller.signal }))
+    await tick()
+    expect(renderer.status().queued).toBe(1)
+
+    abortedBy(controller)
+
+    expect(await queued).toEqual({ state: 'rejected', error: abortReason })
+    await holder.close()
+    await tick()
+    expect(renderer.status()).toMatchObject({ active: 0, queued: 0, pagesOpen: 0 })
+  })
+
+  it('stops waiting for work that hangs, and frees the slot within closeTimeoutMs', async () => {
+    const { renderer, launch } = rig([fakeBrowser('a')])
+    const controller = new AbortController()
+    const work = vi.fn(() => never())
+
+    const running = outcome(renderer.withPage('linting', 5_000, work, { signal: controller.signal, retry: false }))
+    await tick(20)
+    expect(work).toHaveBeenCalledTimes(1)
+    abortedBy(controller)
+
+    expect(await running).toEqual({ state: 'rejected', error: abortReason })
+    await tick(FAST.closeTimeoutMs!)
+    expect(renderer.status()).toMatchObject({ active: 0, pagesOpen: 0, kills: 0 })
+    expect(launch).toHaveBeenCalledTimes(1)
+  })
+
+  it('kills the browser when the aborted page will not close', async () => {
+    const stuck = fakeBrowser('stuck', { stallContextClose: true })
+    const { renderer } = rig([stuck])
+    const controller = new AbortController()
+
+    const running = outcome(
+      renderer.withPage('linting', 5_000, () => never(), { signal: controller.signal, retry: false }),
+    )
+    await tick(20)
+    abortedBy(controller)
+
+    expect(await running).toEqual({ state: 'rejected', error: abortReason })
+    await tick(FAST.closeTimeoutMs! * 3)
+    expect(stuck.close).toHaveBeenCalled()
+    expect(renderer.status()).toMatchObject({ active: 0, kills: 1 })
+  })
+
+  it('does not call the work when the signal is already aborted', async () => {
+    const { renderer, launch } = rig([fakeBrowser('a')])
+    const controller = new AbortController()
+    abortedBy(controller)
+    const work = vi.fn(async () => 'png')
+
+    const result = await outcome(renderer.withPage('linting', 5_000, work, { signal: controller.signal }))
+
+    expect(result).toEqual({ state: 'rejected', error: abortReason })
+    expect(work).not.toHaveBeenCalled()
+    expect(launch).not.toHaveBeenCalled()
+    expect(renderer.status()).toMatchObject({ active: 0 })
+  })
+
+  it('makes no second attempt with retry: false, and does not probe the browser', async () => {
+    const turning = fakeBrowser('turning')
+    const fresh = fakeBrowser('fresh')
+    const { renderer, launch } = rig([turning, fresh])
+
+    let attempts = 0
+    const result = await outcome(
+      renderer.withPage(
+        'linting',
+        40,
+        async () => {
+          attempts++
+          turning.stallContexts = true /* a probe would fail and kill the browser */
+          return never()
+        },
+        { retry: false },
+      ),
+      400,
+    )
+
+    expect(result).toMatchObject({ state: 'rejected', error: expect.any(RenderTimeoutError) })
+    expect(attempts).toBe(1)
+    expect(launch).toHaveBeenCalledTimes(1)
+    expect(turning.close).not.toHaveBeenCalled()
+    expect(renderer.status()).toMatchObject({ kills: 0, active: 0 })
+  })
+
+  it('keeps today’s behavior without a signal: the stalled render still reruns once', async () => {
+    const turning = fakeBrowser('turning')
+    const { renderer } = rig([turning, fakeBrowser('fresh')])
+
+    let attempts = 0
+    const result = await renderer.withPage('rendering', 40, async (page) => {
+      attempts++
+      if (label(page) === 'turning') {
+        turning.stallContexts = true
+        return never()
+      }
+      return 'png'
+    })
+
+    expect(result).toBe('png')
+    expect(attempts).toBe(2)
+  })
+})
+
 describe('remoteConnectFailure', () => {
   /* what the ws library rejects with when the provider answers the upgrade
      with an HTTP error: an ErrorEvent, not an Error */
@@ -370,6 +522,70 @@ describe('RenderGate', () => {
 
     await expect(gate.acquire('interactive')).rejects.toBeInstanceOf(RendererBusyError)
     await expect(timedOut).rejects.toThrow(/no render slot within 100ms/)
+  })
+})
+
+describe('RenderGate abort', () => {
+  const tuning = { maxConcurrent: 2, maxBackground: 1, maxQueued: 4, queueTimeoutMs: 1_000 }
+
+  it('drops an aborted queued waiter: it leaves the queue and is never admitted', async () => {
+    const gate = new RenderGate(tuning)
+    const first = await gate.acquire('interactive')
+    await gate.acquire('interactive')
+    const controller = new AbortController()
+    const waiting = gate.acquire('interactive', controller.signal)
+    const result = outcome(waiting)
+    await tick()
+    expect(gate.stats.queued).toBe(1)
+
+    abortedBy(controller)
+
+    expect(await result).toEqual({ state: 'rejected', error: abortReason })
+    expect(gate.stats.queued).toBe(0)
+    first() /* a slot frees: the aborted waiter must not take it */
+    await tick()
+    expect(gate.stats).toMatchObject({ active: 1, queued: 0 })
+  })
+
+  it('refuses a signal that is already aborted, even with a free slot, and takes no slot', async () => {
+    const gate = new RenderGate(tuning)
+    const controller = new AbortController()
+    abortedBy(controller)
+
+    expect(await outcome(gate.acquire('interactive', controller.signal))).toEqual({
+      state: 'rejected',
+      error: abortReason,
+    })
+    expect(gate.stats).toMatchObject({ active: 0, queued: 0 })
+  })
+
+  it('lets the next waiter through when the one ahead of it aborts', async () => {
+    const gate = new RenderGate(tuning)
+    const first = await gate.acquire('interactive')
+    await gate.acquire('interactive')
+    const controller = new AbortController()
+    void gate.acquire('interactive', controller.signal).catch(() => {})
+    const next = gate.acquire('interactive')
+    await tick()
+
+    abortedBy(controller)
+    first()
+
+    expect((await outcome(next)).state).toBe('resolved')
+    expect(gate.stats).toMatchObject({ active: 2, queued: 0 })
+  })
+
+  it('does not touch a waiter whose signal never aborts', async () => {
+    const gate = new RenderGate(tuning)
+    const first = await gate.acquire('interactive')
+    await gate.acquire('interactive')
+    const controller = new AbortController()
+    const waiting = gate.acquire('interactive', controller.signal)
+    await tick()
+
+    first()
+
+    expect((await outcome(waiting)).state).toBe('resolved')
   })
 })
 
