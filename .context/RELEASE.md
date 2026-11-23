@@ -53,6 +53,10 @@ confirm, and written `suspended:*` (never clear) by recovery, drill and rollback
 and a GitHub App token from environment `doop-deploy-marker`. Setup and rules:
 [`deploy/cd/README.md`](../deploy/cd/README.md).
 
+Lifting a suspension is `cd-lift.yml` (S3b): dispatch with the id of an approved Multica decision; it checks the
+decision against the standing marker, proves quiescence and health on C00, and writes `clear:*` with evidence.
+It never turns the train on.
+
 ## Desktop app (Tauri: macOS DMG + Windows NSIS installer + Linux AppImage/.deb/.rpm)
 
 Driven by `.github/workflows/desktop-release.yml`; every desktop job shares the toolchain setup

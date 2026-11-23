@@ -1,10 +1,10 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 // @ts-expect-error plain .mjs script, no type declarations
-import { admit, decideRun, pickCandidate, recheckOp } from '../scripts/deploy-gate.mjs'
+import { admit, c00Quiescent, decideRun, pickCandidate, recheckOp } from '../scripts/deploy-gate.mjs'
 // @ts-expect-error plain .mjs script, no type declarations
 import { inventory } from '../scripts/migration-inventory.mjs'
 
@@ -549,7 +549,69 @@ describe('migration inventory sha (C-8.1, used by the manifest)', () => {
   })
 })
 
+/* CHE-5549 review round 1: the gate's quiescence proof is the real one (c00.sh quiescence), not a stub. */
+describe('c00Quiescent: the real migration quiescence proof (C-5, C-8.8)', () => {
+  const fake = (body: string) => {
+    const root = mkdtempSync(join(tmpdir(), 'q-'))
+    const sh = join(root, 'c00.sh')
+    writeFileSync(sh, `#!/usr/bin/env bash\n${body}\n`)
+    chmodSync(sh, 0o755)
+    return { root, sh }
+  }
+  it('is ok when `c00.sh quiescence` passes, and runs exactly that command', async () => {
+    const { root, sh } = fake('echo "$1" > "$(dirname "$0")/arg"; exit 0')
+    try {
+      expect(await c00Quiescent(sh)).toEqual({ ok: true })
+      expect(spawnSync('cat', [join(root, 'arg')], { encoding: 'utf8' }).stdout.trim()).toBe('quiescence')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+  it('is not ok, with the reason, when it refuses', async () => {
+    const { root, sh } = fake(
+      'echo "c00.sh: migration quiescence not proven: live migrate sessions: (5, t)" >&2; exit 1',
+    )
+    try {
+      const q = await c00Quiescent(sh)
+      expect(q.ok).toBe(false)
+      expect(q.reason).toContain('live migrate sessions')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+  it('is not ok when the script cannot be run', async () => {
+    expect((await c00Quiescent('/nonexistent/c00.sh')).ok).toBe(false)
+  })
+  it('is not ok when it hangs past the bound', async () => {
+    const { root, sh } = fake('sleep 5')
+    try {
+      expect((await c00Quiescent(sh, 200)).ok).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('deploy-gate CLI', () => {
+  it('recheck refuses on unproven quiescence before it reads anything else', () => {
+    const { root, sh } = (() => {
+      const root = mkdtempSync(join(tmpdir(), 'q-'))
+      const sh = join(root, 'c00.sh')
+      writeFileSync(sh, '#!/usr/bin/env bash\necho "live migrate sessions" >&2\nexit 1\n')
+      chmodSync(sh, 0o755)
+      return { root, sh }
+    })()
+    try {
+      const r = spawnSync('node', ['scripts/deploy-gate.mjs', 'recheck', 'train', '--op', 'confirm', '--expect', 'x'], {
+        encoding: 'utf8',
+        env: { PATH: process.env.PATH, C00_SH: sh, REPO: 'cheese-work/doop' },
+      })
+      expect(r.status).not.toBe(0)
+      expect(r.stderr + r.stdout).toMatch(/quiescence not proven: .*live migrate sessions/)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
   it('refuses an unknown operation with a non-zero exit', () => {
     const r = spawnSync('node', ['scripts/deploy-gate.mjs', 'recheck', 'train', '--op', 'explode'], {
       encoding: 'utf8',
