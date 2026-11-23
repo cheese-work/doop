@@ -163,7 +163,7 @@ export default tseslint.config(
     ],
     languageOptions: {
       globals: Object.fromEntries(
-        'process console Buffer URL fetch setTimeout clearTimeout setInterval clearInterval'
+        'process console Buffer URL AbortSignal fetch setTimeout clearTimeout setInterval clearInterval'
           .split(' ')
           .map((g) => [g, 'readonly']),
       ),

@@ -22,6 +22,11 @@
 #   c00.sh guard      refuse (exit 1) while an earlier compat migration's quiescence is unproven; re-proves the three
 #                     facts and clears the guard when they hold. apply, rollback and sweep run it first; the lift
 #                     job calls it. `guard-set run mig db user dbname app` writes it (compat-sandbox.mjs does).
+#   c00.sh lift       the C00 half of cd-lift.yml (CHE-5551, C-10.7): refuse while a compat guard holds, take the host
+#                     lock, prove migration quiescence, read the running digest, revision label and container
+#                     health, and run scripts/deploy-lift.mjs lift under the same lock with those facts. That script
+#                     decides, re-reads the decision and the marker right before the write, and writes `clear:*`.
+#                     Unproven quiescence does not stop here: the script is told and records the refusal.
 #   c00.sh sweep      remove every doop.compat.run resource (containers, networks, volumes), read back
 #                     zero, print df before and after. Needs no compose dir and no deploy ref (CHE-5474 C-8.5d).
 #
@@ -422,6 +427,26 @@ case $cmd in
     fi
     ;;
 
+  lift)
+    guard_check
+    take_lock
+    # Under the lock: the three C-8.8 facts (in a subshell, so a refusal is handed on rather than exiting), then what
+    # C00 runs. A read that fails leaves its fact empty, which the lift script refuses.
+    if ( require_quiescent ) >&2; then LIFT_QUIESCENT=true; else LIFT_QUIESCENT=false; fi
+    img=$(docker inspect --format '{{.Image}}' "$container" 2>/dev/null) || img=
+    LIFT_DIGEST=
+    LIFT_REVISION=
+    if [ -n "$img" ]; then
+      LIFT_DIGEST=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$img" 2>/dev/null |
+        sed -n 's/.*@\(sha256:[0-9a-f]\{64\}\)$/\1/p' | head -n 1) || LIFT_DIGEST=
+      LIFT_REVISION=$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$img" 2>/dev/null) || LIFT_REVISION=
+    fi
+    LIFT_CONTAINER_HEALTH=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container" 2>/dev/null) || LIFT_CONTAINER_HEALTH=
+    export LIFT_QUIESCENT LIFT_DIGEST LIFT_REVISION LIFT_CONTAINER_HEALTH
+    echo "lift facts: quiescent=$LIFT_QUIESCENT digest=${LIFT_DIGEST:-unknown} revision=${LIFT_REVISION:-unknown} container=${LIFT_CONTAINER_HEALTH:-unknown}"
+    node "$here/../../scripts/deploy-lift.mjs" lift
+    ;;
+
   quiescence)
     require_quiescent
     echo "quiescent: no migrate container running, no migrate session, advisory key free"
@@ -449,5 +474,5 @@ case $cmd in
     echo "sweep ok: containers=0 networks=0 volumes=0"
     ;;
 
-  *) die "usage: c00.sh apply|readback|confirm|rollback|quiescence|sweep|guard|guard-set" ;;
+  *) die "usage: c00.sh apply|readback|confirm|rollback|quiescence|lift|sweep|guard|guard-set" ;;
 esac
