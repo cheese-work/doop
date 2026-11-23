@@ -199,6 +199,17 @@ export interface FactColor {
   doop_id?: string
 }
 
+/** One axe-core violation node, reduced to what the rules need. */
+export interface AxeFact {
+  /** the axe rule id (`button-name`, `target-size`, ...) */
+  rule: string
+  doop_id?: string
+  /** `[data-doop-id="..."]` when the element has one, else axe's own CSS target */
+  selector: string
+  /** axe's one-line reason for this node */
+  message: string
+}
+
 export interface FrameFacts {
   /** the frame's own size: rule 3 compares boxes with `frame.height` */
   frame: { width: number; height: number }
@@ -207,6 +218,8 @@ export interface FrameFacts {
   elements: FactElement[]
   /** the element walk hit `FACT_ELEMENT_CAP` */
   capped: boolean
+  /** axe-core violations for `AXE_RULE_IDS`; absent when axe did not run */
+  axe?: AxeFact[]
   /** a font of the page failed to load, so the metrics may differ from the live image (plan risk 1) */
   fonts_fell_back: boolean
   /** distinct opaque rendered colors, first `FACT_COLOR_CAP` seen */
@@ -220,8 +233,22 @@ export const FACT_COLOR_CAP = 256
 
 export interface FrameRule {
   id: string
+  /** the collector must run axe-core for this rule */
+  needsAxe?: boolean
   run(facts: FrameFacts): LintFinding[]
 }
+
+/** The axe-core rules S5 runs (`runOnly`), and the frame-lint rule each one maps to. axe-core 4.14.1 (MPL-2.0) is
+ *  used unmodified and is not copied into the repo. */
+export const AXE_NAME_RULE_IDS = [
+  'button-name',
+  'link-name',
+  'label',
+  'aria-command-name',
+  'input-button-name',
+] as const
+export const AXE_TARGET_RULE_ID = 'target-size'
+export const AXE_RULE_IDS: readonly string[] = [...AXE_NAME_RULE_IDS, AXE_TARGET_RULE_ID]
 
 /** One frame as a page rule sees it. `facts` is what the rule's `collect` returned for the frame's HTML, or `null` when
  *  the frame was skipped (over the size or fact cap). A skipped frame is counted, never read as clean. */
@@ -502,11 +529,45 @@ export const radiusBleedRule: FrameRule = {
   },
 }
 
+function axeFinding(facts: FrameFacts, node: AxeFact, rule: string, level: LintFinding['level']): LintFinding {
+  return {
+    rule,
+    level,
+    viewport: { width: facts.viewport.width, height: facts.viewport.height },
+    element: { ...(node.doop_id ? { doop_id: node.doop_id } : {}), selector: node.selector },
+    message: node.message,
+  }
+}
+
+/** Rule 8 `interactive-name`: the accessible name of a control, not the label of the graphic inside it. Gate 33
+ *  checks `<svg>` and `<canvas>` for `aria-hidden` or `aria-label` and stays its own check. */
+export const interactiveNameRule: FrameRule = {
+  id: 'interactive-name',
+  needsAxe: true,
+  run: (facts) =>
+    (facts.axe ?? [])
+      .filter((node) => (AXE_NAME_RULE_IDS as readonly string[]).includes(node.rule))
+      .map((node) => axeFinding(facts, node, 'interactive-name', 'error')),
+}
+
+/** Rule 7 `target-spacing`: axe `target-size` unmodified (WCAG 2.5.8: under 24 x 24 CSS px and not enough space).
+ *  No own height threshold, so Hallmark gate 39b's 44 to 52 px band stays its own check. */
+export const targetSpacingRule: FrameRule = {
+  id: 'target-spacing',
+  needsAxe: true,
+  run: (facts) =>
+    (facts.axe ?? [])
+      .filter((node) => node.rule === AXE_TARGET_RULE_ID)
+      .map((node) => axeFinding(facts, node, 'target-spacing', 'warn')),
+}
+
 export const FRAME_RULES: FrameRule[] = [
   outsideFrameRule,
   borderClippedRule,
   textClippedRule,
   controlOccludedRule,
   radiusBleedRule,
+  interactiveNameRule,
+  targetSpacingRule,
 ]
 export const PAGE_RULES: PageRule[] = [statesPageRule, repeatedMarkupRule]

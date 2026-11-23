@@ -6,12 +6,15 @@ import type { Page } from 'puppeteer-core'
 import { RendererBusyError } from './renderBrowser.ts'
 import { LOAD_TIMEOUT_MS, loadFrameInto, withRenderPage } from './screenshot.ts'
 import {
+  AXE_RULE_IDS,
+  AXE_TARGET_RULE_ID,
   FACT_COLOR_CAP,
   FACT_ELEMENT_CAP,
   FRAME_RULES,
   type AppliedInput,
   type FactColor,
   type FactControlKind,
+  type AxeFact,
   type FactElement,
   type FactRect,
   type FactRef,
@@ -41,6 +44,15 @@ export interface LintOptions {
   /** run only these rule ids; unset runs every registered frame rule */
   rules?: string[]
   signal: AbortSignal
+}
+
+/** The axe-core script, read once from the installed package. axe-core is MPL-2.0, used unmodified and loaded from
+ *  `node_modules`: no copy of it lives in this repo. It is injected with `page.evaluate`, so no network request is
+ *  made and the frame's own CSP does not apply. */
+let axeSource: Promise<string> | undefined
+function loadAxeSource(): Promise<string> {
+  axeSource ??= import('axe-core').then((mod) => (mod.default ?? mod).source)
+  return axeSource
 }
 
 /** What the page-side collector returns, before the harness adds the frame size. */
@@ -148,17 +160,26 @@ async function runOnPage(
   started: number,
 ): Promise<FrameViewportResult> {
   const collected = await collectFacts(page)
+  const wantsAxe = FRAME_RULES.some((rule) => rule.needsAxe && (!opts.rules || opts.rules.includes(rule.id)))
+  const axe = wantsAxe ? await collectAxe(page) : undefined
   const facts: FrameFacts = {
     frame: { width: frame.width, height: frame.height },
     viewport: { width: viewport.width, height: viewport.height },
     ...collected,
+    ...(axe ? { axe } : {}),
   }
   const findings = runRules(facts, opts.rules)
+  /* a run that lost a source of facts is never clean: say which */
+  const reason = collected.capped
+    ? `fact cap ${FACT_ELEMENT_CAP} elements`
+    : wantsAxe && !axe
+      ? 'axe did not run'
+      : undefined
   return {
     width: viewport.width,
     height: viewport.height,
-    status: collected.capped ? 'partial' : 'ok',
-    ...(collected.capped ? { reason: `fact cap ${FACT_ELEMENT_CAP} elements` } : {}),
+    status: reason ? 'partial' : 'ok',
+    ...(reason ? { reason } : {}),
     ms: Date.now() - started,
     applied: collected.applied,
     findings,
@@ -422,4 +443,84 @@ async function collectFacts(page: Page): Promise<CollectedFacts> {
     FACT_ELEMENT_CAP,
     FACT_COLOR_CAP,
   )
+}
+
+/** One violation node as the page reports it, before the harness drops mirrored pairs. */
+interface AxeNode extends AxeFact {
+  /** axe's CSS targets of the neighbours that made this node fail `target-size` */
+  related: string[]
+  /** axe's own CSS target of this node, the key `related` names */
+  axe_target: string
+}
+
+/** Run the six axe rules in the page. Returns `undefined` when axe could not be injected or run (a page that
+ *  blocks `window.axe`, an axe error): the caller reports the viewport as `partial`, never clean. */
+async function collectAxe(page: Page): Promise<AxeFact[] | undefined> {
+  try {
+    await page.evaluate(await loadAxeSource())
+    await page.evaluate('globalThis.__name = (target) => target')
+    const nodes = await page.evaluate(
+      async (ids: string[]): Promise<AxeNode[]> => {
+        const axe = (window as unknown as { axe: { run(ctx: Document, opts: object): Promise<AxeRunResult> } }).axe
+        interface AxeCheck {
+          message: string
+          relatedNodes: Array<{ target: unknown[] }>
+        }
+        interface AxeRunResult {
+          violations: Array<{
+            id: string
+            help: string
+            nodes: Array<{ target: unknown[]; any: AxeCheck[] }>
+          }>
+        }
+        const css = (target: unknown[]): string => {
+          const first = target[0]
+          return Array.isArray(first) ? first.join(' ') : String(first)
+        }
+        const result = await axe.run(document, { runOnly: { type: 'rule', values: ids }, resultTypes: ['violations'] })
+        const out: AxeNode[] = []
+        for (const violation of result.violations) {
+          for (const node of violation.nodes) {
+            const selector = css(node.target)
+            let doopId: string | null = null
+            try {
+              doopId = document.querySelector(selector)?.getAttribute('data-doop-id') ?? null
+            } catch {
+              /* a selector the page cannot resolve keeps axe's own text */
+            }
+            const message = violation.id === 'target-size' ? (node.any[0]?.message ?? violation.help) : violation.help
+            out.push({
+              rule: violation.id,
+              ...(doopId ? { doop_id: doopId } : {}),
+              selector: doopId ? `[data-doop-id="${doopId.replace(/["\\]/g, '\\$&')}"]` : selector,
+              message: message.replace(/\s+/g, ' ').trim(),
+              related: node.any.flatMap((check) => check.relatedNodes.map((related) => css(related.target))),
+              axe_target: selector,
+            })
+          }
+        }
+        return out
+      },
+      [...AXE_RULE_IDS],
+    )
+    return dropMirroredPairs(nodes)
+  } catch {
+    return undefined
+  }
+}
+
+/** axe reports both buttons of a crowded pair (each names the other as its neighbour). Report the pair once: a
+ *  node is dropped when an earlier reported `target-size` node is one of its neighbours. */
+export function dropMirroredPairs(nodes: AxeNode[]): AxeFact[] {
+  const reported = new Set<string>()
+  const kept: AxeFact[] = []
+  for (const node of nodes) {
+    if (node.rule === AXE_TARGET_RULE_ID) {
+      if (node.related.some((neighbour) => reported.has(neighbour))) continue
+      reported.add(node.axe_target)
+    }
+    const { related: _related, axe_target: _target, ...fact } = node
+    kept.push(fact)
+  }
+  return kept
 }
