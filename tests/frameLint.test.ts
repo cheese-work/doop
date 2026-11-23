@@ -34,7 +34,13 @@ const box = (x: number, y: number, width: number, height: number) => ({ x, y, wi
 describe('the registries', () => {
   it('names the ruleset, one frame rule (rule 3) and the page rules registered so far', () => {
     expect(FRAME_LINT_RULESET).toBe('fl-r1')
-    expect(FRAME_RULES.map((rule) => rule.id)).toEqual(['outside-frame'])
+    expect(FRAME_RULES.map((rule) => rule.id)).toEqual([
+      'outside-frame',
+      'border-clipped',
+      'text-clipped',
+      'control-occluded',
+      'radius-bleed',
+    ])
     expect(PAGE_RULES.map((rule) => rule.id)).toEqual(['states'])
     expect(HALLMARK_PIN).toMatch(/^[0-9a-f]{40}$/)
   })

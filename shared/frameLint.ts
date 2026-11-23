@@ -133,17 +133,52 @@ export const HALLMARK_RENDER_EMITTERS = [
   'F26',
 ] as const
 
-/** One element the collector saw, in document coordinates (CSS px). */
+/** A box in document coordinates (CSS px). */
+export interface FactRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export type FactControlKind = 'icon-button' | 'field' | 'image-link'
+
+/** An element a rule names, as the collector found it again by a CSS path. */
+export interface FactRef {
+  tag: string
+  doop_id?: string
+  selector: string
+}
+
+/** One element the collector saw, in document coordinates (CSS px). The optional facts below are set only where they
+ *  apply, so a rule reads one as "this element has it" and an element without any costs nothing. */
 export interface FactElement {
   tag: string
   doop_id?: string
   /** a CSS path that finds the element again */
   selector: string
-  rect: { x: number; y: number; width: number; height: number }
+  rect: FactRect
   /** index into `elements` of the nearest collected ancestor, or -1 */
   parent: number
   /** an ancestor below `body` clips the vertical overflow of this element */
   clipped_y: boolean
+  /** border widths in px; set when any side is drawn (S4) */
+  border?: { top: number; right: number; bottom: number; left: number }
+  /** the box that `overflow: hidden|clip` ancestors leave visible to this element (a fixed box escapes them, an
+   *  absolute one escapes those it is not inside); set on bordered elements an ancestor clips */
+  clip?: FactRect
+  /** the text this element owns, one box per line fragment; `truncates` marks an intended cut (ellipsis, line clamp) */
+  text?: { lines: FactRect[]; truncates: boolean }
+  /** the box left visible to that text: the same as `clip`, but the element's own `overflow` counts too */
+  content_clip?: FactRect
+  /** an interactive control with no text of its own, and the element its center hits if that is not itself */
+  control?: { kind: FactControlKind; occluded_by?: FactRef }
+  /** corner radii in px: top-left, top-right, bottom-right, bottom-left; set when any is above 0 */
+  radius?: [number, number, number, number]
+  /** `overflow` is not `visible` on either axis, so the box rounds its content */
+  clips?: boolean
+  /** the box paints something of its own: a background, an image, a border, or it is a replaced element */
+  paints_box?: boolean
 }
 
 /** What the collector reports back as applied, so a variant test can compare it with the input. */
@@ -233,5 +268,227 @@ export const outsideFrameRule: FrameRule = {
   },
 }
 
-export const FRAME_RULES: FrameRule[] = [outsideFrameRule]
+/** A px tolerance for rounding: a box within 1px of an edge does not cross it. */
+const EDGE_TOLERANCE = 1
+const SIDES = ['top', 'right', 'bottom', 'left'] as const
+type Side = (typeof SIDES)[number]
+
+function findingOf(
+  facts: FrameFacts,
+  rule: string,
+  level: LintFinding['level'],
+  el: FactElement,
+  message: string,
+): LintFinding {
+  return {
+    rule,
+    level,
+    viewport: { width: facts.viewport.width, height: facts.viewport.height },
+    element: { ...(el.doop_id ? { doop_id: el.doop_id } : {}), selector: el.selector },
+    message,
+  }
+}
+
+/** How far each edge of `rect` lies outside `clip`; positive means cut. */
+function overshoot(rect: FactRect, clip: FactRect): Record<Side, number> {
+  return {
+    top: clip.y - rect.y,
+    right: rect.x + rect.width - (clip.x + clip.width),
+    bottom: rect.y + rect.height - (clip.y + clip.height),
+    left: clip.x - rect.x,
+  }
+}
+
+function intersectionArea(a: FactRect, b: FactRect): number {
+  const w = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x)
+  const h = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y)
+  return w > 0 && h > 0 ? w * h : 0
+}
+
+/** The sides of `el` whose drawn border lies past the clip of an ancestor. A box clipped away entirely is hidden, not
+ *  cut, and the rule leaves it to the hiding rules. */
+function cutBorderSides(el: FactElement): Array<[Side, number]> {
+  const { border, clip, rect } = el
+  if (!border || !clip || intersectionArea(rect, clip) === 0) return []
+  const over = overshoot(rect, clip)
+  return SIDES.filter((side) => border[side] > 0 && over[side] > EDGE_TOLERANCE).map((side) => [side, over[side]])
+}
+
+/** Rule 1 `border-clipped`: a box with a drawn border that an `overflow: hidden|clip` ancestor cuts, so the border
+ *  is missing on that side (a field one px too wide for its card). Only the outermost box is reported: its own
+ *  bordered children that ride along inside it are not. A scroll container is not a clip, because the box scrolls
+ *  into view. */
+export const borderClippedRule: FrameRule = {
+  id: 'border-clipped',
+  run(facts) {
+    const findings: LintFinding[] = []
+    facts.elements.forEach((el) => {
+      const parent = el.parent >= 0 ? facts.elements[el.parent] : undefined
+      const parentSides = new Set((parent ? cutBorderSides(parent) : []).map(([side]) => side))
+      const cut = cutBorderSides(el).filter(([side]) => !parentSides.has(side))
+      if (cut.length === 0) return
+      const parts = cut.map(([side, px]) => `${side} ${Math.round(px)}px`).join(', ')
+      findings.push(
+        findingOf(
+          facts,
+          'border-clipped',
+          'warn',
+          el,
+          `An ancestor that clips overflow cuts off the border of this box (${parts} past the edge)`,
+        ),
+      )
+    })
+    return findings
+  },
+}
+
+/** Rule 2 `text-clipped`: text that an `overflow` box cuts, not text hidden by `display` or `visibility` (the collector
+ *  does not see those). An ellipsis or a line clamp is a cut on purpose and is not reported. Text that is gone
+ *  entirely, such as a collapsed panel, is not cut text either; a line gone while another line shows is. A line box is
+ *  taller than the glyphs, so the vertical tolerance is a third of the line, not a pixel. */
+export const textClippedRule: FrameRule = {
+  id: 'text-clipped',
+  run(facts) {
+    const findings: LintFinding[] = []
+    for (const el of facts.elements) {
+      const clip = el.content_clip
+      if (!el.text || !clip || el.text.truncates || el.text.lines.length === 0) continue
+      let total = 0
+      let visible = 0
+      let cutSome = false
+      let goneSome = false
+      let shownSome = false
+      for (const line of el.text.lines) {
+        const over = overshoot(line, clip)
+        const horizontal = Math.max(over.left, over.right, 0)
+        const vertical = Math.max(over.top, over.bottom, 0)
+        const seen = intersectionArea(line, clip)
+        total += line.width * line.height
+        visible += seen
+        const cut = horizontal > EDGE_TOLERANCE || vertical > Math.max(EDGE_TOLERANCE, line.height / 3)
+        if (seen > 0) shownSome = true
+        if (cut && seen > 0) cutSome = true
+        if (cut && seen === 0) goneSome = true
+      }
+      if (!(cutSome || (goneSome && shownSome))) continue
+      const percent = total > 0 ? Math.round((visible / total) * 100) : 0
+      findings.push(
+        findingOf(
+          facts,
+          'text-clipped',
+          facts.fonts_fell_back ? 'warn' : 'error',
+          el,
+          `An overflow box cuts this text off: ${percent}% visible`,
+        ),
+      )
+    }
+    return findings
+  },
+}
+
+/** Rule 4 `control-occluded`, narrowed from Hallmark gate 73: an interactive control with no text of its own (icon-only
+ *  button, form field, image link) whose center another element hits, so a click lands elsewhere. Covered text and
+ *  covered text buttons are Hallmark's, not this rule's. The collector hit-tests inside the viewport only. */
+export const controlOccludedRule: FrameRule = {
+  id: 'control-occluded',
+  run(facts) {
+    const findings: LintFinding[] = []
+    for (const el of facts.elements) {
+      const by = el.control?.occluded_by
+      if (!by) continue
+      findings.push(
+        findingOf(
+          facts,
+          'control-occluded',
+          'error',
+          el,
+          `Another element, ${by.selector}, covers the center of this ${el.control?.kind}, so a click lands there`,
+        ),
+      )
+    }
+    return findings
+  },
+}
+
+const CORNERS = ['top-left', 'top-right', 'bottom-right', 'bottom-left'] as const
+
+/** The corners of `child` whose square edge sticks out of the rounded `parent` corner. */
+function bleedingCorners(child: FactElement, parent: FactElement, radius: [number, number, number, number]): number[] {
+  const c = child.rect
+  const p = parent.rect
+  const own = child.radius ?? [0, 0, 0, 0]
+  const gaps = [
+    [c.x - p.x, c.y - p.y],
+    [p.x + p.width - (c.x + c.width), c.y - p.y],
+    [p.x + p.width - (c.x + c.width), p.y + p.height - (c.y + c.height)],
+    [c.x - p.x, p.y + p.height - (c.y + c.height)],
+  ] as const
+  const out: number[] = []
+  gaps.forEach(([dx, dy], corner) => {
+    const r = radius[corner] ?? 0
+    /* past the parent edge it is plain overflow, which `outside-frame` and Hallmark gate 34 own */
+    if (r <= 0 || dx < -EDGE_TOLERANCE || dy < -EDGE_TOLERANCE) return
+    const x = Math.max(dx, 0)
+    const y = Math.max(dy, 0)
+    if (x >= r || y >= r || (r - x) ** 2 + (r - y) ** 2 <= r * r) return
+    if ((own[corner] ?? 0) >= r - Math.max(x, y) - EDGE_TOLERANCE) return
+    out.push(corner)
+  })
+  return out
+}
+
+/** Rule 16 `radius-bleed`, a Cheese extra: a painted box whose square corner sticks out of the rounded corner of the
+ *  card it sits in, or whose border that rounded `overflow` cuts. A background or image that a clip rounds is the
+ *  usual image-in-a-card pattern and is fine. Only the outermost bleeding box is reported. */
+export const radiusBleedRule: FrameRule = {
+  id: 'radius-bleed',
+  run(facts) {
+    const { elements } = facts
+    const findings: LintFinding[] = []
+    const flagged = new Set<number>()
+    elements.forEach((el, index) => {
+      if (!el.paints_box) return
+      let skip = false
+      let at = el.parent
+      let rounded: FactElement | undefined
+      while (at >= 0) {
+        const ancestor = elements[at]
+        if (!ancestor) break
+        if (flagged.has(at)) skip = true
+        if (ancestor.radius) {
+          rounded = ancestor
+          break
+        }
+        at = ancestor.parent
+      }
+      if (skip || !rounded?.radius || !(rounded.paints_box || rounded.clips)) return
+      if (rounded.clips && !el.border) return
+      const corners = bleedingCorners(el, rounded, rounded.radius)
+      if (corners.length === 0) return
+      flagged.add(index)
+      const names = corners.map((corner) => CORNERS[corner]).join(', ')
+      const radius = Math.round(Math.max(...rounded.radius))
+      findings.push(
+        findingOf(
+          facts,
+          'radius-bleed',
+          'warn',
+          el,
+          rounded.clips
+            ? `The ${radius}px rounded overflow of its parent cuts the border at the ${names} corner`
+            : `The square ${names} corner sticks out of the ${radius}px rounded corner of its parent`,
+        ),
+      )
+    })
+    return findings
+  },
+}
+
+export const FRAME_RULES: FrameRule[] = [
+  outsideFrameRule,
+  borderClippedRule,
+  textClippedRule,
+  controlOccludedRule,
+  radiusBleedRule,
+]
 export const PAGE_RULES: PageRule[] = [statesPageRule]
