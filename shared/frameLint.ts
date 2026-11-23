@@ -5,6 +5,7 @@
 
 import type { LintFinding, ViewportResult, RowStatus } from './frameLintResult.ts'
 import { statesPageRule } from './frameLintStates.ts'
+import { repeatedMarkupRule } from './frameLintRepeated.ts'
 
 export { FRAME_LINT_RULESET } from './frameLintResult.ts'
 export type { LintFinding, FindingLevel } from './frameLintResult.ts'
@@ -189,6 +190,15 @@ export interface AppliedInput {
   fontScale: number
 }
 
+/** One rendered color the collector saw, with the first element that uses it (plan rule 17). `value` is the computed
+ *  CSS color string; `count` is how many elements use it as text, background or border color. */
+export interface FactColor {
+  value: string
+  count: number
+  selector: string
+  doop_id?: string
+}
+
 export interface FrameFacts {
   /** the frame's own size: rule 3 compares boxes with `frame.height` */
   frame: { width: number; height: number }
@@ -199,9 +209,14 @@ export interface FrameFacts {
   capped: boolean
   /** a font of the page failed to load, so the metrics may differ from the live image (plan risk 1) */
   fonts_fell_back: boolean
+  /** distinct opaque rendered colors, first `FACT_COLOR_CAP` seen */
+  colors: FactColor[]
+  /** more distinct colors than `FACT_COLOR_CAP` were seen, so `colors` is a part */
+  colors_capped: boolean
 }
 
 export const FACT_ELEMENT_CAP = 5000
+export const FACT_COLOR_CAP = 256
 
 export interface FrameRule {
   id: string
@@ -237,6 +252,9 @@ export interface FrameViewportResult extends ViewportResult {
   /** absent when the render did not finish */
   applied?: AppliedInput
   findings: LintFinding[]
+  /** rendered colors for the page color rule (17); absent when the render did not finish */
+  colors?: FactColor[]
+  colors_capped?: boolean
 }
 
 /** Rule 3 `outside-frame`, bottom edge only: a box that reaches past the bottom of a fixed-height frame is cut off
@@ -491,4 +509,4 @@ export const FRAME_RULES: FrameRule[] = [
   controlOccludedRule,
   radiusBleedRule,
 ]
-export const PAGE_RULES: PageRule[] = [statesPageRule]
+export const PAGE_RULES: PageRule[] = [statesPageRule, repeatedMarkupRule]
