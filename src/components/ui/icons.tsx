@@ -141,6 +141,8 @@ import {
   ZoomIn,
   Rocket,
   Mail,
+  CircleAlert,
+  WifiOff,
 } from 'lucide-react'
 
 type SvgProps = Omit<SVGProps<SVGSVGElement>, 'ref'>
@@ -394,3 +396,5 @@ export const LayoutTemplateIcon = icon(LayoutTemplate)
 /* the plan and upgrade surfaces */
 export const RocketIcon = icon(Rocket)
 export const MailIcon = icon(Mail)
+export const AlertIcon = icon(CircleAlert)
+export const WifiOffIcon = icon(WifiOff)

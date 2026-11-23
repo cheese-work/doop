@@ -1,0 +1,36 @@
+issue: CHE-9390
+design: design/lifecycle-ui/approved/A1-frame-lock.html @ 572cc77
+# U0 cites the state rows of A1, A2 and A4. The component is new: no page mounts it yet,
+# so "keep" is empty and the change list names the new element ids. Later slices
+# (A1 lock, A2 archive and trash, A4 resolve) mount it on their own pages.
+pages:
+  - id: a1-frame-lock-states
+    design: design/lifecycle-ui/approved/A1-frame-lock.html @ 572cc77
+    url: storybook Shell/PanelState (shell-panelstate--loading, --empty, --error-with-retry, --disconnected)
+    keep: []
+    change:
+      - panel-state-loading: 'skeleton bars and "Reading lock state…"'
+      - panel-state-empty: '"No locked frames", the hint and the one Lock frame action'
+      - panel-state-error: 'alert banner "Could not unlock … (403). It is still locked." and Try again'
+      - panel-state-offline: 'status banner "Offline. Lock and unlock are paused. Locked frames stay locked." plus "Reconnecting…"'
+    remove: []
+  - id: a2-archive-and-trash-states
+    design: design/lifecycle-ui/approved/A2-archive-and-trash.html @ 572cc77
+    url: same component; copy passed in by the A2 slice
+    keep: []
+    change:
+      - panel-state-loading: '"Reading Archive and Trash…"'
+      - panel-state-empty: '"Nothing archived" and the Archive selected action'
+      - panel-state-error: '"Could not restore … (500). It is still in Trash." and Try again'
+      - panel-state-offline: '"Offline. Restore and delete forever are paused." plus "Reconnecting…"'
+    remove: []
+  - id: a4-comment-resolution-states
+    design: design/lifecycle-ui/approved/A4-comment-resolution.html @ 572cc77
+    url: same component; copy passed in by the A4 slice
+    keep: []
+    change:
+      - panel-state-loading: '"Reading threads…"'
+      - panel-state-empty: '"No comments yet" and the hint'
+      - panel-state-error: '"Could not resolve (500). The thread is still open." and Try again'
+      - panel-state-offline: '"Offline. Reading works. Resolve is paused." plus "Reconnecting…"; threads stay readable'
+    remove: []

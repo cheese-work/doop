@@ -346,4 +346,7 @@ export const panels: Catalog['panels'] = {
   protoNothing: 'Nada para reproduzir ainda',
   protoNothingText: 'Esta página do canvas não tem frames.',
   protoOpenCanvas: 'Abrir o canvas',
+
+  panelStateRetry: 'Tentar de novo',
+  panelStateReconnecting: 'Reconectando…',
 }
