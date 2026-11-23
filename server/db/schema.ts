@@ -211,6 +211,17 @@ export const frames = pgTable(
     approval: jsonb('approval').$type<FrameApproval>(),
     /** soft delete: set = in the canvas trash; the row and its versions stay */
     deletedAt: bigint('deleted_at', { mode: 'number' }),
+    /** lifecycle UI (CHE-9308 S0): who locked the frame, when (ms) and why; null = never set */
+    lockedBy: text('locked_by'),
+    lockedAt: bigint('locked_at', { mode: 'number' }),
+    lockReason: text('lock_reason'),
+    /** where an archived frame came from, so Restore can put it back; null = not archived */
+    archiveOrigin: jsonb('archive_origin').$type<{
+      pageId: string | null
+      hidden: boolean | null
+      archivedAt: number
+      by: string
+    }>(),
   },
   (t) => [index('frames_canvas_idx').on(t.canvasId)],
 )
@@ -541,6 +552,10 @@ export const comments = pgTable(
     parentId: text('parent_id'),
     /* a caller's retry key for a reply: unique per thread (parent_id) when set */
     clientRequestId: text('client_request_id'),
+    /* lifecycle UI (CHE-9308 S0): how a resolved comment was closed; null = no resolution recorded */
+    resolution: text('resolution'),
+    resolutionRef: text('resolution_ref'),
+    resolutionNote: text('resolution_note'),
   },
   (t) => [
     index('comments_canvas_idx').on(t.canvasId),
