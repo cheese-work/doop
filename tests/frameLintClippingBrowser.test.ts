@@ -157,7 +157,7 @@ describe.skipIf(!findBrowserPath())('control-occluded on a real render', () => {
   it('flags a covered icon-only button', async () => {
     const result = await rulesOf(
       page(
-        `<button data-doop-id="close" style="position:absolute;left:20px;top:20px;width:44px;height:44px"><svg width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="6"/></svg></button>${scrim}`,
+        `<button aria-label="Close" data-doop-id="close" style="position:absolute;left:20px;top:20px;width:44px;height:44px"><svg width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="6"/></svg></button>${scrim}`,
       ),
     )
     expect(result.findings.map((f) => f.rule)).toEqual(['control-occluded'])
@@ -167,7 +167,9 @@ describe.skipIf(!findBrowserPath())('control-occluded on a real render', () => {
 
   it('flags a covered input', async () => {
     const result = await rulesOf(
-      page(`<input data-doop-id="email" style="position:absolute;left:20px;top:20px;width:160px;height:36px">${scrim}`),
+      page(
+        `<input aria-label="Email" data-doop-id="email" style="position:absolute;left:20px;top:20px;width:160px;height:36px">${scrim}`,
+      ),
     )
     expect(result.findings.map((f) => f.rule)).toEqual(['control-occluded'])
     expect(result.findings[0]).toMatchObject({ element: { doop_id: 'email' } })
@@ -184,7 +186,7 @@ describe.skipIf(!findBrowserPath())('control-occluded on a real render', () => {
   it('gives 0 findings for an icon-only button nothing covers', async () => {
     const result = await rulesOf(
       page(
-        `<button style="position:absolute;left:20px;top:20px;width:44px;height:44px"><svg width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="6"/></svg></button>`,
+        `<button aria-label="Close" style="position:absolute;left:20px;top:20px;width:44px;height:44px"><svg width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="6"/></svg></button>`,
       ),
     )
     expect(result.findings).toEqual([])
@@ -193,7 +195,7 @@ describe.skipIf(!findBrowserPath())('control-occluded on a real render', () => {
   it('gives 0 findings for a control that is not clickable anyway (pointer-events:none)', async () => {
     const result = await rulesOf(
       page(
-        `<button style="position:absolute;left:20px;top:20px;width:44px;height:44px;pointer-events:none"><svg width="16" height="16"><circle cx="8" cy="8" r="6"/></svg></button>${scrim}`,
+        `<button aria-label="Close" style="position:absolute;left:20px;top:20px;width:44px;height:44px;pointer-events:none"><svg width="16" height="16"><circle cx="8" cy="8" r="6"/></svg></button>${scrim}`,
       ),
     )
     expect(result.findings).toEqual([])
@@ -203,7 +205,7 @@ describe.skipIf(!findBrowserPath())('control-occluded on a real render', () => {
     const result = await rulesOf(
       page(`<style>label{position:relative;display:block;width:160px;height:40px}
         label::after{content:'';position:absolute;inset:0}</style>
-        <label><input type="checkbox" style="position:absolute;left:0;top:0;width:20px;height:20px"></label>`),
+        <label><input aria-label="Agree" type="checkbox" style="position:absolute;left:0;top:0;width:20px;height:20px"></label>`),
     )
     expect(result.findings).toEqual([])
   })
@@ -256,8 +258,8 @@ describe.skipIf(!findBrowserPath())('a clean frame', () => {
         <header style="height:80px;padding:16px">Account</header>
         <div style="margin:20px;border-radius:16px;background:#f5f5f5;padding:16px;overflow:hidden">
           <div style="border:1px solid #999;border-radius:8px;padding:8px;width:100%">Notifications</div>
-          <button style="margin-top:12px;width:44px;height:44px"><svg width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="6"/></svg></button>
-          <input style="display:block;margin-top:12px;width:200px;height:36px">
+          <button aria-label="Close" style="margin-top:12px;width:44px;height:44px"><svg width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="6"/></svg></button>
+          <input aria-label="Email" style="display:block;margin-top:12px;width:200px;height:36px">
         </div>`),
     )
     expect(result.findings).toEqual([])

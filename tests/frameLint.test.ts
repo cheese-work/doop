@@ -5,10 +5,11 @@ import {
   HALLMARK_PIN,
   PAGE_RULES,
   outsideFrameRule,
+  type AxeFact,
   type FactElement,
   type FrameFacts,
 } from '../shared/frameLint.ts'
-import { lintFrame, runRules } from '../server/frameLint.ts'
+import { dropMirroredPairs, lintFrame, runRules } from '../server/frameLint.ts'
 
 /* S2 of the CHE-9115 plan (fl-r1): rule 3 `outside-frame` on synthetic facts, and the harness paths that need no
    browser. The rule is a pure function over what the collector saw. */
@@ -34,7 +35,7 @@ function facts(elements: FactElement[], over: Partial<FrameFacts> = {}): FrameFa
 const box = (x: number, y: number, width: number, height: number) => ({ x, y, width, height })
 
 describe('the registries', () => {
-  it('names the ruleset, one frame rule (rule 3) and the page rules registered so far', () => {
+  it('names the ruleset, the frame rules (rule 3 and the two axe rules) and the page rules registered so far', () => {
     expect(FRAME_LINT_RULESET).toBe('fl-r1')
     expect(FRAME_RULES.map((rule) => rule.id)).toEqual([
       'outside-frame',
@@ -42,6 +43,8 @@ describe('the registries', () => {
       'text-clipped',
       'control-occluded',
       'radius-bleed',
+      'interactive-name',
+      'target-spacing',
     ])
     expect(PAGE_RULES.map((rule) => rule.id)).toEqual(['states', 'repeated-markup'])
     expect(HALLMARK_PIN).toMatch(/^[0-9a-f]{40}$/)
@@ -123,6 +126,75 @@ describe('outside-frame on synthetic facts', () => {
     })
     expect(outsideFrameRule.run(tall)).toHaveLength(1)
     expect(outsideFrameRule.run({ ...tall, frame: { width: 393, height: 700 } })).toEqual([])
+  })
+})
+
+describe('the axe rules on synthetic axe facts (S5)', () => {
+  const axeFacts = (axe: AxeFact[]) => facts([], { axe })
+  const node = (rule: string, over: Partial<AxeFact> = {}): AxeFact => ({
+    rule,
+    selector: '[data-doop-id="x"]',
+    doop_id: 'x',
+    message: 'axe says so',
+    ...over,
+  })
+
+  it.each(['button-name', 'link-name', 'label', 'aria-command-name', 'input-button-name'])(
+    'maps axe %s to interactive-name (error)',
+    (rule) => {
+      const found = runRules(axeFacts([node(rule)]))
+      expect(found).toHaveLength(1)
+      expect(found[0]).toMatchObject({
+        rule: 'interactive-name',
+        level: 'error',
+        viewport: { width: 393, height: 852 },
+        element: { doop_id: 'x', selector: '[data-doop-id="x"]' },
+      })
+      expect(found[0]?.message).toContain('axe says so')
+    },
+  )
+
+  it('maps axe target-size to target-spacing (warn) and omits an absent doop_id', () => {
+    const found = runRules(axeFacts([node('target-size', { doop_id: undefined, selector: 'body > button' })]))
+    expect(found).toHaveLength(1)
+    expect(found[0]).toMatchObject({ rule: 'target-spacing', level: 'warn', element: { selector: 'body > button' } })
+    expect(found[0]?.element).not.toHaveProperty('doop_id')
+  })
+
+  it('ignores an axe rule it does not map, and facts with no axe result', () => {
+    expect(runRules(axeFacts([node('color-contrast')]))).toEqual([])
+    expect(runRules(facts([]))).toEqual([])
+  })
+
+  it('narrows to the ids asked for', () => {
+    const both = axeFacts([node('button-name'), node('target-size')])
+    expect(runRules(both, ['target-spacing']).map((f) => f.rule)).toEqual(['target-spacing'])
+    expect(runRules(both, ['interactive-name']).map((f) => f.rule)).toEqual(['interactive-name'])
+  })
+})
+
+describe('dropMirroredPairs', () => {
+  const n = (rule: string, target: string, related: string[] = []) => ({
+    rule,
+    selector: target,
+    message: 'm',
+    axe_target: target,
+    related,
+  })
+
+  it('reports a crowded pair once and keeps a node whose neighbour was not reported', () => {
+    const kept = dropMirroredPairs([
+      n('target-size', '#a', ['#b']),
+      n('target-size', '#b', ['#a']),
+      n('target-size', '#c', ['#d']),
+    ])
+    expect(kept.map((f) => f.selector)).toEqual(['#a', '#c'])
+  })
+
+  it('never drops a name violation, and strips the bookkeeping fields', () => {
+    const kept = dropMirroredPairs([n('target-size', '#a', ['#b']), n('button-name', '#b', ['#a'])])
+    expect(kept.map((f) => f.rule)).toEqual(['target-size', 'button-name'])
+    expect(kept[0]).toEqual({ rule: 'target-size', selector: '#a', message: 'm' })
   })
 })
 
