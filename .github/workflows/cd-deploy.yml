@@ -75,9 +75,14 @@ jobs:
         with:
           persist-credentials: false
       # Via env, never inlined into a script. A refusal fails the job; a skip ends the run green.
+      # The switch, the pause and the marker come from `vars`: `github.token` cannot be given the Variables
+      # permission, so reading them through the REST API failed and every run skipped green (CHE-9181). A
+      # variable that is not set reads as an empty string, which the gate treats as absent.
       - id: decide
         env:
-          GH_TOKEN: ${{ github.token }}
+          DOOP_DEPLOY_TRAIN: ${{ vars.DOOP_DEPLOY_TRAIN }}
+          MAIN_RED_PAUSED: ${{ vars.MAIN_RED_PAUSED }}
+          DOOP_DEPLOY_SUSPENDED: ${{ vars.DOOP_DEPLOY_SUSPENDED }}
           REPO: ${{ github.repository }}
           EVENT: ${{ github.event_name }}
           ACTOR: ${{ github.actor }}
@@ -204,12 +209,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # Step 1 (C-5): nothing below runs on a skip, and nothing on C00 has changed yet.
-      - name: Pre-arm check
-        id: prearm
-        run: node scripts/deploy-gate.mjs recheck "$DEPLOY_MODE" --op pre-arm
-      # The marker is a repository variable; `github.token` cannot write one, so a GitHub App token does. It is
-      # minted in the environment that holds the App key, only for variables, and just before its first use.
+      # The marker is a repository variable; `github.token` cannot read or write one, so a GitHub App token does.
+      # It is minted in the environment that holds the App key, only for variables, and before the first check
+      # that reads a variable (CHE-9181).
       - name: Mint the marker token
         id: app
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -218,6 +220,12 @@ jobs:
           private-key: ${{ secrets.DOOP_MARKER_APP_KEY }}
           repositories: doop
           permission-variables: write
+      # Step 1 (C-5): nothing below runs on a skip, and nothing on C00 has changed yet.
+      - name: Pre-arm check
+        id: prearm
+        env:
+          VARS_TOKEN: ${{ steps.app.outputs.token }}
+        run: node scripts/deploy-gate.mjs recheck "$DEPLOY_MODE" --op pre-arm
       # Step 2 (C-10.2): before any login, pull or start. A train run arms from clear; recovery and drill write
       # suspended over whatever stands. A failed write fails the job here, so nothing below runs and nothing
       # on C00 has changed.
@@ -245,6 +253,7 @@ jobs:
         if: ${{ steps.prearm.outputs.go == 'true' }}
         env:
           MARKER_EXPECT: ${{ steps.arm.outputs.marker }}
+          VARS_TOKEN: ${{ steps.app.outputs.token }}
         run: bash deploy/cd/c00.sh apply
       - name: Read back (digest, SHA, health)
         id: readback
@@ -306,16 +315,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # Everything is decided under the flock: quiescence, the confirm check (this run's marker, the candidate's digest
-      # and label), the delay, and that the container did not restart since T0 and is healthy. A failure here leaves
-      # the marker armed and starts the rollback job.
-      - name: Confirm on C00 (quiescence, marker, restarts, health, digest)
-        id: confirm
-        env:
-          MARKER_EXPECT: ${{ needs.deploy.outputs.marker }}
-        run: bash deploy/cd/c00.sh confirm
-      # The marker is a repository variable; `github.token` cannot write one, so a GitHub App token does. It is
-      # minted in the environment that holds the App key, only for variables, and just before its first use.
+      # The marker is a repository variable; `github.token` cannot read or write one, so a GitHub App token does.
+      # It is minted in the environment that holds the App key, only for variables, and before the first check
+      # that reads a variable (CHE-9181).
       - name: Mint the marker token
         id: app
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -324,6 +326,15 @@ jobs:
           private-key: ${{ secrets.DOOP_MARKER_APP_KEY }}
           repositories: doop
           permission-variables: write
+      # Everything is decided under the flock: quiescence, the confirm check (this run's marker, the candidate's digest
+      # and label), the delay, and that the container did not restart since T0 and is healthy. A failure here leaves
+      # the marker armed and starts the rollback job. VARS_TOKEN lets the confirm check read the marker.
+      - name: Confirm on C00 (quiescence, marker, restarts, health, digest)
+        id: confirm
+        env:
+          MARKER_EXPECT: ${{ needs.deploy.outputs.marker }}
+          VARS_TOKEN: ${{ steps.app.outputs.token }}
+        run: bash deploy/cd/c00.sh confirm
       # Last step, and only after the confirm passed: this run's own armed value becomes a new clear (C-10.2).
       # Recovery and drill never restore; a failed or refused restore leaves the marker armed, which is suspended.
       - name: Restore the marker
@@ -371,26 +382,31 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # One step, all under the C00 flock: migration quiescence, then the rollback check on what C00 runs and what the
-      # marker says at that moment. Only a candidate that is still running rolls back; the predecessor already running
-      # (`none`) or a newer deploy (`superseded`) changes nothing. A decision made before the lock could replace a
-      # newer deployment, so none is made here.
-      - name: Roll back by digest
-        id: rollback
-        env:
-          MARKER_EXPECT: ${{ needs.deploy.outputs.marker }}
-        run: bash deploy/cd/c00.sh rollback
-      # The marker is a repository variable; `github.token` cannot write one, so a GitHub App token does. It is
-      # minted in the environment that holds the App key, only for variables, and just before its first use.
+      # The marker is a repository variable; `github.token` cannot write one, so a GitHub App token does.
+      # It is minted in the environment that holds the App key, only for variables, and before the rollback, whose
+      # check reads the marker to prove it is still this run's own (CHE-9181). The rollback step runs after a failed
+      # mint (!cancelled()): the mint fails the job, it never keeps a broken deploy from rolling back. Without a
+      # token the check decides from what C00 runs alone, and the suspend step below then fails loudly.
       - name: Mint the marker token
         id: app
-        if: ${{ !cancelled() && steps.rollback.outputs.go == 'true' }}
+        if: ${{ !cancelled() }}
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ vars.DOOP_MARKER_APP_ID }}
           private-key: ${{ secrets.DOOP_MARKER_APP_KEY }}
           repositories: doop
           permission-variables: write
+      # One step, all under the C00 flock: migration quiescence, then the rollback check on what C00 runs and what the
+      # marker says at that moment. Only a candidate that is still running rolls back; the predecessor already running
+      # (`none`) or a newer deploy (`superseded`) changes nothing. A decision made before the lock could replace a
+      # newer deployment, so none is made here.
+      - name: Roll back by digest
+        id: rollback
+        if: ${{ !cancelled() }}
+        env:
+          MARKER_EXPECT: ${{ needs.deploy.outputs.marker }}
+          VARS_TOKEN: ${{ steps.app.outputs.token }}
+        run: bash deploy/cd/c00.sh rollback
       # Whatever the rollback did, even if it failed: this run's armed value becomes suspended (C-10.3). Only a
       # lift (cd-lift.yml) clears it. Not after a refused check, where the marker is no longer this run's own.
       - name: Suspend the marker

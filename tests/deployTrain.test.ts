@@ -1,5 +1,6 @@
 import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -148,11 +149,8 @@ describe('decideRun: train gates skip (Done when 2)', () => {
   it.each([
     ['switch off', { sw: 'off' }],
     ['switch absent', { sw: null }],
-    ['switch unreadable', { sw: httpError(500) }],
     ['pause set', { paused: 'main red' }],
-    ['pause unreadable', { paused: httpError(500) }],
     ['marker absent', { marker: null }],
-    ['marker unreadable', { marker: httpError(500) }],
     ['marker armed', { marker: 'armed:n:1:' + CAND }],
     ['marker suspended', { marker: 'suspended:n:1:' + CAND + ':migrated' }],
     ['marker garbage', { marker: 'ok' }],
@@ -174,6 +172,172 @@ describe('decideRun: train gates skip (Done when 2)', () => {
       }),
     )
     expect(r).toMatchObject({ go: true })
+  })
+})
+
+/* CHE-9181. `github.token` cannot read Actions variables, so the first read of a run takes the switches from env
+   (`${{ vars.X }}`). A fact that cannot be read is a refusal, never a skip: a skip ends the run green and hid a
+   broken read for four days. */
+const forbidden = async () => {
+  throw httpError(403)
+}
+const ENV_VARS = { DOOP_DEPLOY_TRAIN: 'on', MAIN_RED_PAUSED: '', DOOP_DEPLOY_SUSPENDED: CLEAR }
+
+describe('decideRun: switches come from env, not the variables API (CHE-9181)', () => {
+  it('DOOP_DEPLOY_TRAIN=on in env is a go while the variables API answers 403', async () => {
+    const r = await decideRun(entry({ ghApi: forbidden, vars: ENV_VARS }))
+    expect(r).toMatchObject({ go: true, mode: 'train' })
+  })
+
+  it('does not call the variables API at all when env supplies the switches', async () => {
+    const reads: string[] = []
+    const ghApi = async (path: string) => {
+      reads.push(path)
+      throw httpError(403)
+    }
+    await decideRun(entry({ ghApi, vars: ENV_VARS }))
+    expect(reads).toEqual([])
+  })
+
+  it.each([
+    ['unset switch', { ...ENV_VARS, DOOP_DEPLOY_TRAIN: '' }, 'needs'],
+    ['switch off', { ...ENV_VARS, DOOP_DEPLOY_TRAIN: 'off' }, 'needs'],
+    ['pause set', { ...ENV_VARS, MAIN_RED_PAUSED: 'main red' }, 'MAIN_RED_PAUSED is set'],
+    ['marker unset', { ...ENV_VARS, DOOP_DEPLOY_SUSPENDED: '' }, 'absent'],
+    ['marker armed', { ...ENV_VARS, DOOP_DEPLOY_SUSPENDED: ARMED }, 'not clear'],
+  ])('%s in env is still a clean skip', async (_n, vars, words) => {
+    const r = await decideRun(entry({ ghApi: forbidden, vars }))
+    expect(r).toMatchObject({ go: false, skip: true })
+    expect(r.reason).toContain(words)
+  })
+
+  it.each([['DOOP_DEPLOY_TRAIN'], ['MAIN_RED_PAUSED'], ['DOOP_DEPLOY_SUSPENDED']])(
+    '%s missing from env fails red, never a skip',
+    async (name) => {
+      const { [name]: _gone, ...vars } = ENV_VARS as Record<string, string>
+      const r = await decideRun(entry({ ghApi: forbidden, vars }))
+      expect(r).toMatchObject({ go: false, skip: false })
+      expect(r.reason).toContain(name)
+    },
+  )
+
+  it('recovery needs no switch: it is not blocked by a missing one', async () => {
+    const r = await decideRun(
+      entry({
+        event: 'workflow_dispatch',
+        inputs: { mode: 'recovery' },
+        actor: 'congvc-dev',
+        trigger: 'congvc-dev',
+        vars: {},
+      }),
+    )
+    expect(r).toMatchObject({ go: true, mode: 'recovery' })
+  })
+
+  it.each([
+    ['switch', { sw: httpError(403) }, 'DOOP_DEPLOY_TRAIN'],
+    ['pause', { paused: httpError(500) }, 'MAIN_RED_PAUSED'],
+    ['marker', { marker: httpError(500) }, 'DOOP_DEPLOY_SUSPENDED'],
+  ])('an unreadable %s through the API fails red and names the status', async (_n, vars, name) => {
+    const r = await decideRun(entry({ ghApi: api(vars) }))
+    expect(r).toMatchObject({ go: false, skip: false })
+    expect(r.reason).toContain(name)
+    expect(r.reason).toMatch(/GitHub (403|500)/)
+  })
+})
+
+describe('recheckOp: an unreadable variable fails red, and the variables token is separate (CHE-9181)', () => {
+  it('pre-arm reads variables with varsApi, pulls with ghApi', async () => {
+    const reads: string[] = []
+    const varsApi = async (path: string) => {
+      reads.push(path)
+      return api({})(path)
+    }
+    const r = await ops({}, { ghApi: api({}), varsApi })('pre-arm')
+    expect(r).toMatchObject({ go: true })
+    expect(reads.length).toBeGreaterThan(0)
+    expect(reads.every((p) => p.includes('/actions/variables/'))).toBe(true)
+  })
+
+  it('pre-arm: variables 403 refuses instead of skipping', async () => {
+    const r = await ops({}, { ghApi: api({}), varsApi: forbidden })('pre-arm')
+    expect(r).toMatchObject({ go: false, skip: false })
+    expect(r.reason).toContain('GitHub 403')
+  })
+
+  it.each([['pre-apply'], ['confirm']])('%s: variables 403 refuses', async (op) => {
+    const r = await ops({}, { ghApi: api({}), varsApi: forbidden })(op, ARMED, {
+      running: async () => ({ digest: D_CAND, label: CAND }),
+    })
+    expect(r).toMatchObject({ go: false, skip: false })
+    expect(r.reason).toContain('GitHub 403')
+  })
+
+  it('rollback with the variables token refuses a marker that changed while the candidate digest still runs', async () => {
+    const run = { running: async () => ({ digest: D_CAND, label: CAND }) }
+    for (const marker of ['armed:n9:2:' + CAND, CLEAR, CLEAR_LIFT, null, httpError(500)]) {
+      const r = await ops({ marker })('rollback', ARMED, run)
+      expect(r, String(marker)).toMatchObject({ go: false, skip: false })
+    }
+  })
+
+  it('rollback without a token (the mint failed) still rolls back from what C00 runs', async () => {
+    const r = await ops({}, { varsApi: null })('rollback', ARMED, {
+      running: async () => ({ digest: D_CAND, label: CAND }),
+    })
+    expect(r).toMatchObject({ go: true, action: 'rollback' })
+  })
+
+  it('rollback still needs this run’s own --expect value', async () => {
+    expect(await ops({})('rollback', undefined)).toMatchObject({ go: false, skip: false })
+  })
+})
+
+describe('deploy-gate CLI decide (CHE-9181)', () => {
+  const run = async (env: Record<string, string>, status: number) => {
+    const server = createServer((_req, res) => {
+      res.statusCode = status
+      res.setHeader('content-type', 'application/json')
+      res.end(JSON.stringify({ message: 'Resource not accessible by integration' }))
+    })
+    await new Promise<void>((ok) => server.listen(0, '127.0.0.1', ok))
+    const { port } = server.address() as { port: number }
+    try {
+      return await new Promise<{ code: number | null; out: string }>((done) => {
+        const child = spawn('node', ['scripts/deploy-gate.mjs', 'decide'], {
+          env: {
+            PATH: process.env.PATH ?? '',
+            GITHUB_API_URL: `http://127.0.0.1:${port}`,
+            GH_TOKEN: 'github-token-without-variables',
+            REPO,
+            EVENT: 'schedule',
+            ACTOR: BOT,
+            TRIGGER: BOT,
+            ATTEMPT: '1',
+            ...env,
+          },
+        })
+        let out = ''
+        child.stdout.on('data', (d) => (out += d))
+        child.stderr.on('data', (d) => (out += d))
+        child.on('close', (code) => done({ code, out }))
+      })
+    } finally {
+      server.close()
+    }
+  }
+
+  it('DOOP_DEPLOY_TRAIN=on in env with the variables API returning 403: go', async () => {
+    const r = await run(ENV_VARS, 403)
+    expect(r.code).toBe(0)
+    expect(r.out).toContain('"go":"true"')
+  })
+
+  it('a switch the workflow did not pass exits non-zero', async () => {
+    const { DOOP_DEPLOY_TRAIN: _t, ...rest } = ENV_VARS
+    const r = await run(rest, 403)
+    expect(r.code).not.toBe(0)
+    expect(r.out).toContain('DOOP_DEPLOY_TRAIN')
   })
 })
 

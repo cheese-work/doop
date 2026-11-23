@@ -51,20 +51,50 @@ const go = (extra = {}) => ({ go: true, skip: false, reason: 'ok', ...extra })
 const skip = (reason) => ({ go: false, skip: true, reason })
 const refuse = (reason) => ({ go: false, skip: false, reason })
 
-// One repo variable: its value, null when it does not exist, undefined when it cannot be read.
-async function readVar(ghApi, repo, name) {
+// One repo variable: its value, null when it does not exist, undefined when it cannot be read. The reason a
+// read failed (status and message) goes to `errors`, so a refusal can say why (CHE-9181).
+async function readVar(ghApi, repo, name, errors) {
   try {
     return String((await ghApi(`repos/${repo}/actions/variables/${name}`)).value ?? '')
   } catch (err) {
-    return err?.status === 404 ? null : undefined
+    if (err?.status === 404) return null
+    errors[name] = err?.message ?? String(err)
+    return undefined
   }
 }
 
+// Through the API: only a token with the Variables permission can do this (the marker App token). The
+// workflow's `github.token` cannot, so the first read of a run (`decideRun`) takes `vars` from env instead.
 async function readState(ghApi, repo) {
+  const errors = {}
   const [sw, paused, marker] = await Promise.all(
-    ['DOOP_DEPLOY_TRAIN', 'MAIN_RED_PAUSED', 'DOOP_DEPLOY_SUSPENDED'].map((n) => readVar(ghApi, repo, n)),
+    ['DOOP_DEPLOY_TRAIN', 'MAIN_RED_PAUSED', 'DOOP_DEPLOY_SUSPENDED'].map((n) => readVar(ghApi, repo, n, errors)),
   )
-  return { sw, paused, marker }
+  return { sw, paused, marker, errors }
+}
+
+// The same three facts from env, where the workflow put `${{ vars.X }}`. An unset repo variable reads as an
+// empty string, which is "absent" (unset = off). A name the workflow did not pass at all is unreadable.
+function stateFromEnv(env) {
+  const errors = {}
+  const one = (name) => {
+    const v = env[name]
+    if (v === undefined) {
+      errors[name] = `${name} was not passed to the gate in env`
+      return undefined
+    }
+    return v === '' ? null : String(v)
+  }
+  return { sw: one('DOOP_DEPLOY_TRAIN'), paused: one('MAIN_RED_PAUSED'), marker: one('DOOP_DEPLOY_SUSPENDED'), errors }
+}
+
+// A fact this decision needs that could not be read is a refusal, never a skip: a skip ends the run green and
+// hid a broken read for four days (CHE-9181). `need` names the facts: 'sw', 'paused', 'marker'.
+const NAMES = { sw: 'DOOP_DEPLOY_TRAIN', paused: 'MAIN_RED_PAUSED', marker: 'DOOP_DEPLOY_SUSPENDED' }
+function unreadable(state, need) {
+  const bad = need.filter((k) => state[k] === undefined).map((k) => NAMES[k])
+  if (!bad.length) return null
+  return refuse(`cannot read ${bad.join(', ')}: ${bad.map((n) => state.errors?.[n] ?? 'unreadable').join('; ')}`)
 }
 
 // The switch and the pause for a mode. Unreadable is never "off", never "clear".
@@ -103,12 +133,21 @@ function entryOf({ event, actor, trigger, attempt, inputs = {}, extra }) {
   return go({ mode })
 }
 
-export async function decideRun({ event, actor, trigger, attempt, inputs = {}, extra, repo, ghApi }) {
+// `vars` (the switches as the workflow passed them in env) is the normal source at the top of a run;
+// `ghApi` is the fallback for a caller that has a token able to read variables.
+export async function decideRun({ event, actor, trigger, attempt, inputs = {}, extra, repo, ghApi, vars }) {
   const entered = entryOf({ event, actor, trigger, attempt, inputs, extra })
   if (!entered.go) return entered
   const { mode } = entered
 
-  const state = await readState(ghApi, repo)
+  const state = vars ? stateFromEnv(vars) : await readState(ghApi, repo)
+  const want = MODES[mode]
+  const blind = unreadable(state, [
+    ...(want.sw !== null ? ['sw'] : []),
+    ...(want.pause !== null ? ['paused'] : []),
+    ...(mode === 'train' ? ['marker'] : []),
+  ])
+  if (blind) return blind
   const problem = switchProblem(mode, state)
   if (problem) return skip(problem)
   if (mode === 'train' && !isClear(state.marker)) return skip(markerWords(state.marker))
@@ -158,6 +197,7 @@ export async function recheckOp({
   repo,
   extra,
   ghApi,
+  varsApi = ghApi,
   candidate,
   predecessorDigest,
   running,
@@ -186,10 +226,25 @@ export async function recheckOp({
   const q = await quiescent()
   if (!q.ok) return refuse(`migration quiescence not proven: ${q.reason ?? 'unknown'}`)
 
-  const state = await readState(ghApi, repo)
+  // Variables are read with `varsApi`: a token that has the Variables permission. `ghApi` reads pulls.
+  // The rollback op is the one that must still work when the token mint failed (a broken deploy must roll back),
+  // so the workflow mints it with continue-on-error and passes `varsApi: null` when there is no token. With a
+  // token the rollback check keeps the ownership rule of every post-arm op: the marker must be this run's own
+  // value, so a run that a later run has superseded (even on the same digest) does not roll back. Without one,
+  // it decides from what C00 runs alone.
+  const reads = varsApi !== null
+  const state = reads ? await readState(varsApi, repo) : { errors: {} }
+  const want = MODES[mode]
+  const before = op === 'pre-arm' || op === 'pre-apply'
+  const blind = unreadable(state, [
+    ...(before && want.sw !== null ? ['sw'] : []),
+    ...(before && want.pause !== null ? ['paused'] : []),
+    ...(reads && (armed || mode === 'train') ? ['marker'] : []),
+  ])
+  if (blind) return blind
   if (armed) {
     if (!expect) return refuse('no --expect marker value for a post-arm operation')
-    if (state.marker !== expect)
+    if (reads && state.marker !== expect)
       return refuse(
         `the marker is not this run's own value (${state.marker === undefined ? 'unreadable' : state.marker === null ? 'absent' : 'changed'})`,
       )
@@ -275,13 +330,19 @@ export async function dockerRunning(container = process.env.C00_CONTAINER || 'do
 // CLI for D2: node scripts/deploy-gate.mjs decide | resolve | admit | recheck <mode> --op <op> --expect <v>
 // Inputs come from env (never from the command line, never inlined into a workflow script). Results go to
 // $GITHUB_OUTPUT. A skip exits 0 with go=false; a refusal, an unreadable fact or any error exits 1.
-const gh = async (path) => {
+const ghWith = (token) => async (path) => {
   const res = await fetch(`${process.env.GITHUB_API_URL || 'https://api.github.com'}/${path}`, {
-    headers: { Authorization: `Bearer ${process.env.GH_TOKEN}`, Accept: 'application/vnd.github+json' },
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
   })
-  if (!res.ok) throw Object.assign(new Error(`GitHub ${res.status} for ${path}`), { status: res.status })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    const why = typeof body?.message === 'string' ? `: ${body.message.slice(0, 200)}` : ''
+    throw Object.assign(new Error(`GitHub ${res.status} for ${path}${why}`), { status: res.status })
+  }
   return res.json()
 }
+
+const gh = (path) => ghWith(process.env.GH_TOKEN)(path)
 
 const emit = (fields) => {
   const flat = Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, String(v ?? '').replace(/[\r\n]+/g, ' ')]))
@@ -318,7 +379,8 @@ async function cli(argv, env) {
       inputs: { mode: env.INPUT_MODE, schedule_backup: env.INPUT_SCHEDULE_BACKUP },
       extra: env.EXTRA,
       repo,
-      ghApi: gh,
+      // `github.token` cannot read Actions variables; the workflow passes them as `${{ vars.X }}`.
+      vars: env,
     })
     return settle(out, { mode: out.mode ?? '' })
   }
@@ -376,6 +438,9 @@ async function cli(argv, env) {
       repo,
       extra: env.EXTRA,
       ghApi: gh,
+      // The marker App token (Variables permission); `github.token` cannot read variables.
+      // Rollback runs without a token when the mint failed; every other op then fails red on its 403.
+      varsApi: env.VARS_TOKEN ? ghWith(env.VARS_TOKEN) : op === 'rollback' ? null : gh,
       event: env.EVENT,
       actor: env.ACTOR,
       trigger: env.TRIGGER,

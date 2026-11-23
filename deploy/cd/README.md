@@ -45,6 +45,14 @@ value the writer expects, writes, and reads it back; a write it cannot prove fai
   and never touch `DOOP_DEPLOY_TRAIN`. A bot dispatch is refused at entry. A rollback also writes `suspended:*`,
   over its own `armed:*`, whatever the rollback itself did.
 - **Reading is read only.** `decide` and every check read the marker and never write it.
+- **Where the reads come from (CHE-9181).** `github.token` cannot be granted the Variables permission, so the REST
+  read of a variable fails with 403. `resolve/decide` therefore takes `DOOP_DEPLOY_TRAIN`, `MAIN_RED_PAUSED` and
+  `DOOP_DEPLOY_SUSPENDED` from env (`${{ vars.X }}`; unset reads as empty, i.e. absent). The C00 checks
+  (`pre-arm`, `pre-apply`, `confirm`) read them through the API with the marker App token (`VARS_TOKEN`), minted
+  before the check. The `rollback` job mints it too, but a failed mint does not stop the rollback: the rollback step
+  runs after it, and without a token its check decides from what C00 runs alone. A variable that cannot be read
+  **fails the run red**
+  with its HTTP status and message; it is never a skip.
 
 Every failure leaves the marker `armed` or `suspended`, so the train stops until a lift. Lifting is `cd-lift.yml` (below).
 

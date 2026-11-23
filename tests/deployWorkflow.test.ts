@@ -210,9 +210,23 @@ describe('D2 suspension marker wiring (CHE-5545, C-10.1 to C-10.3)', () => {
     expect(j).toMatch(/uses: actions\/create-github-app-token@[0-9a-f]{40}/)
     expect(j).toContain('permission-variables: write')
     expect(j).toContain('repositories: doop')
-    // The token is minted just before the first marker write, never ahead of a check or a rollback it could block.
+    // The token is minted before the first marker write. Deploy and confirm mint before their checks, which read
+    // variables, and `github.token` cannot (CHE-9181): the gate gets it as VARS_TOKEN, the marker writer as
+    // GH_TOKEN. Rollback mints before its check, which runs even if the mint fails (see below). Confirm and rollback
+    // run their check inside c00.sh, under the lock; deploy still runs the pre-arm check in the workflow.
+    const check = _n === 'deploy' ? 'deploy-gate.mjs recheck' : `c00.sh ${_n === 'rollback' ? 'rollback' : 'confirm'}`
     expect(at(j, 'create-github-app-token')).toBeLessThan(at(j, 'deploy-marker.mjs'))
+    expect(at(j, 'create-github-app-token')).toBeLessThan(at(j, check))
+    expect(j).toMatch(/VARS_TOKEN: \$\{\{ steps\.app\.outputs\.token \}\}/)
     expect(j).toMatch(/GH_TOKEN: \$\{\{ steps\.app\.outputs\.token \}\}/)
+  })
+
+  it('resolve/decide reads the switches through vars, not the variables API (CHE-9181)', () => {
+    const decide = job(d2, 'resolve')
+    const step = decide.slice(decide.indexOf('- id: decide'), decide.indexOf('- id: pick'))
+    for (const name of ['DOOP_DEPLOY_TRAIN', 'MAIN_RED_PAUSED', 'DOOP_DEPLOY_SUSPENDED'])
+      expect(step).toContain(`${name}: \${{ vars.${name} }}`)
+    expect(step).not.toContain('github.token')
   })
 
   it('hosted jobs never get the marker token or the environment', () => {
@@ -266,7 +280,7 @@ describe('D2 suspension marker wiring (CHE-5545, C-10.1 to C-10.3)', () => {
     expect(rollback.match(/c00\.sh rollback/g)).toHaveLength(1)
     const rbStep = rollback.slice(rollback.lastIndexOf('- name:', rollbackAt), rollbackAt)
     expect(rbStep).toContain('id: rollback')
-    expect(rbStep).not.toMatch(/\n\s+if:/) // never skipped by a decision made before the lock
+    expect(rbStep).toMatch(/\n\s+if: \$\{\{ !cancelled\(\) \}\}\n/) // runs after a failed mint; never skipped by a decision made before the lock
     expect(rbStep).toMatch(/MARKER_EXPECT: \$\{\{ needs\.deploy\.outputs\.marker \}\}/)
     expect(rollback).toMatch(/action: \$\{\{ steps\.rollback\.outputs\.action \}\}/)
     expect(rollback).not.toContain('steps.check')
@@ -274,11 +288,14 @@ describe('D2 suspension marker wiring (CHE-5545, C-10.1 to C-10.3)', () => {
     expect(step).toMatch(/if: \$\{\{ !cancelled\(\) && steps\.rollback\.outputs\.go == 'true' \}\}/)
     expect(step).toContain('MARKER_EXPECT')
     expect(rollback).not.toMatch(/deploy-marker\.mjs (arm|restore)/)
-    // A failed token mint can never keep a broken deploy from rolling back: it comes after the rollback, and a
-    // failed rollback still gets its token, so the suspension is written.
-    expect(at(rollback, 'create-github-app-token')).toBeGreaterThan(at(rollback, 'c00.sh rollback'))
+    // A failed token mint can never keep a broken deploy from rolling back: it comes before the rollback (whose check
+    // reads the marker, CHE-9181), the rollback step runs after it (!cancelled()), the job still fails, and the check
+    // then decides from C00 alone. The suspend step needs the token and fails loudly without it.
     const mint = rollback.slice(rollback.lastIndexOf('- name:', at(rollback, 'create-github-app-token')))
-    expect(mint).toMatch(/if: \$\{\{ !cancelled\(\) && steps\.rollback\.outputs\.go == 'true' \}\}/)
+    expect(mint).not.toContain('continue-on-error')
+    expect(mint).toMatch(/if: \$\{\{ !cancelled\(\) \}\}/)
+    expect(at(rollback, 'create-github-app-token')).toBeLessThan(at(rollback, 'c00.sh rollback'))
+    expect(rbStep).toMatch(/VARS_TOKEN: \$\{\{ steps\.app\.outputs\.token \}\}/)
   })
 
   it('the marker is written by these three C00 jobs only', () => {
