@@ -242,4 +242,9 @@ function evaluate(inputs: PageFrameInput[]): PageFinding[] {
   return findings
 }
 
-export const repeatedMarkupRule: PageRule = { id: 'repeated-markup', collect, evaluate }
+export const repeatedMarkupRule: PageRule = {
+  id: 'repeated-markup',
+  collect,
+  over: (facts) => isFacts(facts) && facts.capped,
+  evaluate,
+}

@@ -6,7 +6,11 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createRenderer, type Renderer, type RendererTuning } from '../server/renderBrowser.ts'
-import { runLintFrames, setFrameLintDeadlineForTest } from '../server/lintFramesTool.ts'
+import {
+  runLintFrames,
+  setFrameLintDeadlineForTest,
+  setFrameLintPageScanBudgetForTest,
+} from '../server/lintFramesTool.ts'
 import { handleMcpRequest } from '../server/mcp.ts'
 import { store } from '../server/store.ts'
 import { FRAME_RULES, type FrameRule } from '../shared/frameLint.ts'
@@ -136,6 +140,7 @@ beforeEach(() => {
 })
 afterEach(async () => {
   setFrameLintDeadlineForTest(null)
+  setFrameLintPageScanBudgetForTest(null)
   await renderer.shutdown()
 })
 
@@ -169,14 +174,14 @@ function seedCanvas(count: number, make: (i: number) => Partial<Frame> = () => (
   return id
 }
 
-async function lint(args: Record<string, unknown>) {
+async function lint(args: Record<string, unknown>, deadlineMs = 2_000) {
   const started = Date.now()
   const reply = await client.callTool({ name: 'lint_frames', arguments: { agent_name: 'Reviewer', ...args } })
   const elapsed = Date.now() - started
   const content = reply.content as Array<{ type: string; text?: string }>
   const text = content.find((c) => c.type === 'text')!.text!
   const bytes = Buffer.byteLength(text)
-  expect(elapsed, 'the reply arrives within the 2 s deadline plus margin').toBeLessThan(2_500)
+  expect(elapsed, 'the reply arrives within the deadline plus margin').toBeLessThan(deadlineMs + 500)
   expect(bytes).toBeLessThanOrEqual(120_000)
   return { isError: !!reply.isError, text, body: JSON.parse(text) as LintResult }
 }
@@ -211,7 +216,7 @@ describe('lint_frames: the tool contract', () => {
     expect(await refusal({ frame_ids: ['bad id'] })).toContain('frame_ids')
   })
 
-  it('lints a small page: every frame is a row, page rules say not wired, nothing is left to follow', async () => {
+  it('lints a small page: every frame is a row, the page scan covered every frame, nothing is left to follow', async () => {
     const canvas = seedCanvas(3, () => ({ width: 393, height: 852 }))
     const { body } = await lint({ canvas_id: canvas })
     expect(body.frames.map((f) => [f.frame_id, f.status])).toEqual([
@@ -220,7 +225,9 @@ describe('lint_frames: the tool contract', () => {
       ['f2', 'ok'],
     ])
     expect(body.frames[0]!.viewports.map((v) => v.width)).toEqual([393, 320])
-    expect(body.page_rules).toMatchObject({ scope: 'NOT-RUN', reason: 'not wired' })
+    expect(body.page_rules).toMatchObject({ scope: 'all frames', reason: null, frames_scanned: 3 })
+    expect(body.frames.map((f) => f.page_rules)).toEqual(['ok', 'ok', 'ok'])
+    expect(body.page_complete).toBe(true)
     expect(body.blocking).toBe(false)
     expect(body.deadline_ms).toBe(2_000)
     expect(body.next).toBeNull()
@@ -365,5 +372,101 @@ describe('lint_frames: bounded replies', () => {
     } finally {
       FRAME_RULES.splice(FRAME_RULES.indexOf(stub), 1)
     }
+  })
+})
+
+/* CHE-9115 S3p: the whole-page rule scan, with the real S6 (states) and S7 (repeated markup) rules. */
+describe('lint_frames: the whole-page rule scan', () => {
+  const PAGE_RULE_KEY = /^(state-|repeated-markup)/
+  const pageKeys = (byRule: Record<string, number>) => Object.keys(byRule).filter((k) => PAGE_RULE_KEY.test(k))
+  const SELECT = '<select data-doop-id="country"><option>a</option></select>'
+
+  it('(c) an oversized page is NOT-RUN page over cap: no page finding, the big frame is named, the reply is on time', async () => {
+    const big = 'x'.repeat(1_000_000)
+    const huge = 'y'.repeat(2_000_000)
+    const canvas = seedCanvas(201, (i) => ({ html: i === 200 ? huge : big }))
+    const { body } = await lint({ canvas_id: canvas })
+
+    expect(body.page_rules).toMatchObject({ scope: 'NOT-RUN', reason: 'page over 10000000 chars', frames_scanned: 0 })
+    expect(body.page_rules.skipped).toEqual([{ frame_id: 'f200', reason: 'html over 1500000 chars' }])
+    expect(body.page_rules.skipped_count).toBe(1)
+    expect(body.frames.length).toBeGreaterThan(0)
+    for (const row of body.frames) {
+      expect(row.page_rules).toBe('NOT-RUN')
+      expect(row.page_findings).toEqual([])
+    }
+    expect(pageKeys(body.summary.by_rule)).toEqual([])
+    expect(body.summary.coverage.page_rules_not_run).toBe(body.frames.length)
+    expect(body.page_complete).toBe(false)
+  })
+
+  it('(f) page findings from past the old cutoff are counted at once and returned when the walk reaches their rows', async () => {
+    setFrameLintDeadlineForTest(10_000)
+    setFrameLintPageScanBudgetForTest(5_000)
+    /* every frame differs (a class), so no two whole frames repeat each other: the only repeat is the list */
+    const filler = (i: number) => `<p class="c${i}">${'x'.repeat(200_000)}</p>`
+    const list = (i: number) => `<p class="c${i}">x</p><ul>${'<li><span>Name</span><b>1</b></li>'.repeat(5)}</ul>`
+    const noError = '<input type="text" data-doop-id="email" data-doop-state-na="ime-open: fixture">'
+    const canvas = seedCanvas(60, (i) => ({
+      html: i < 30 ? filler(i) : i >= 49 && i <= 51 ? list(i) : i === 54 ? noError : `<p class="c${i}">x</p>`,
+    }))
+
+    const calls: LintResult[] = [(await lint({ canvas_id: canvas }, 10_000)).body]
+    const first = calls[0]!
+    expect(first.frames.map((f) => f.frame_id)).toEqual(Array.from({ length: 24 }, (_, i) => `f${i}`))
+    expect(first.page_rules.scope).toBe('all frames')
+    expect(first.summary.by_rule['repeated-markup']).toBeGreaterThanOrEqual(1)
+    expect(first.summary.by_rule['state-error']).toBe(1)
+    for (const row of first.frames) expect(row.page_findings).toEqual([])
+
+    while (calls.at(-1)!.next && 'after' in calls.at(-1)!.next!) {
+      const { after } = calls.at(-1)!.next as { after: string }
+      calls.push((await lint({ canvas_id: canvas, after }, 10_000)).body)
+    }
+    expect(calls).toHaveLength(3)
+    for (const call of calls) expect(call.page_rules.scope).toBe('all frames')
+    const rows = new Map(calls.flatMap((c) => c.frames).map((r) => [r.frame_id, r]))
+    expect(rows.get('f49')!.page_findings.map((f) => f.rule)).toEqual(['repeated-markup'])
+    expect(rows.get('f54')!.page_findings.map((f) => f.rule)).toEqual(['state-error'])
+    expect([...rows.values()].filter((r) => r.page_findings.length).map((r) => r.frame_id)).toEqual(['f49', 'f54'])
+  })
+
+  it('(g) a window whose page scan failed is replayed through retry_frame_ids and covers the frame', async () => {
+    const canvas = seedCanvas(40, (i) => ({ html: i === 2 ? SELECT : `<p class="c${i}">x</p>` }))
+
+    setFrameLintPageScanBudgetForTest(1)
+    const one = (await lint({ canvas_id: canvas })).body
+    expect(one.page_rules).toMatchObject({ scope: 'NOT-RUN', reason: 'deadline' })
+    expect(one.frames).toHaveLength(24)
+    for (const row of one.frames) expect(row.page_rules).toBe('NOT-RUN')
+    expect(one.frames[2]!.page_findings).toEqual([])
+    expect(one.retry_frame_ids).toEqual(one.frames.map((f) => f.frame_id))
+    expect(one.summary.coverage.page_rules_not_run).toBe(24)
+    expect(pageKeys(one.summary.by_rule)).toEqual([])
+    expect(one.page_complete).toBe(false)
+
+    setFrameLintPageScanBudgetForTest(null)
+    const two = (await lint({ canvas_id: canvas, after: (one.next as { after: string }).after })).body
+    expect(two.page_rules.scope).toBe('all frames')
+    expect(two.summary.by_rule['state-error']).toBe(1)
+    expect(two.summary.by_rule).toEqual({ 'state-error': 1 })
+    expect(two.frames.flatMap((f) => f.page_findings)).toEqual([])
+    expect(two.summary.coverage.page_rules_not_run).toBe(0)
+
+    const three = (await lint({ canvas_id: canvas, frame_ids: one.retry_frame_ids })).body
+    const row3 = three.frames.find((f) => f.frame_id === 'f2')!
+    expect(row3.page_rules).toBe('ok')
+    expect(row3.page_findings.map((f) => f.rule)).toEqual(['state-error'])
+    expect(three.summary.coverage.page_rules_not_run).toBe(0)
+    expect(three.frames.every((f) => f.page_rules === 'ok')).toBe(true)
+  })
+
+  it('a frame over the size cap is skipped: the scope says so and its row is skipped', async () => {
+    const canvas = seedCanvas(3, (i) => ({ html: i === 1 ? 'z'.repeat(1_600_000) : '<p>x</p>' }))
+    const { body } = await lint({ canvas_id: canvas })
+    expect(body.page_rules.scope).toBe('all frames except skipped')
+    expect(body.frames.map((f) => f.page_rules)).toEqual(['ok', 'skipped', 'ok'])
+    expect(body.summary.coverage).toMatchObject({ page_rules_ok: 2, page_rules_skipped: 1, page_rules_not_run: 0 })
+    expect(body.page_complete).toBe(false)
   })
 })
