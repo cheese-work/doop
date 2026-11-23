@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 # doop-main-freeze.sh (CHE-7594, plan CHE-7309 r13 step P3a): read-only `plan` and `status` for the main freeze.
 #
-#   plan   --expect-head <M_f> --probe-heads <list> --issue <id> --admin-member <id> [--source-ids <csv>]
+#   plan   --expect-head <M_f> --probe-heads <list> --issue <id> --admin-member <id>
 #          Checks every precondition for a freeze and prints S0, the point snapshot of main, with its
 #          bounds. Exit 0: all checks pass, S0 is clean. Exit 2: a check failed or a read failed.
 #          Exit 6: a foreign ruleset collides with our names, refs or context. Exit 64: usage.
-#   status --issue <id> --admin-member <id> [--nonce <hex8>] [--source-ids <csv>]
+#   status --issue <id> --admin-member <id> [--nonce <hex8>]
 #          Prints the rules on main and the 4 probe refs, the ownership result of every ruleset with
 #          our prefixes, current_user_can_bypass per source, mirror and freeze, and the policy hashes.
 #   policy-hash --rules-file <f> [--freeze-id <id[,id]>] [--sources-file <f>]
 #          Prints the normalized sha256 of a rule list (and, with --sources-file, Pm).
+#
+# The source set is read on every run: the ruleset ids that rules/branches/main lists, minus every
+# ruleset that carries one of our prefixes. There is no id list to pass or to keep current.
 #
 # Neither plan nor status writes anything: every gh call is a read (the merge queue count is a GraphQL
 # query, which gh sends as a POST) and the only multica call is a comment list. Every bound is GitHub server time (see lib/gh-read.sh); the local clock is never read.
@@ -29,7 +32,6 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=${DOOP_REPO:-cheese-work/doop}
 BASE=${DOOP_BASE:-cheese/main}
 MULTICA=${MULTICA_CLI_PATH:-multica}
-DEFAULT_SOURCES=26093168,27606879
 PROBES=(q-frozen q-open d-frozen d-open)
 export GH_READ_TRACE=1
 
@@ -58,7 +60,7 @@ iso() { gh_iso "$1"; }
 
 # ---------------------------------------------------------------- argument parsing
 parse_args() {
-  EXPECT_HEAD="" PROBE_HEADS="" ISSUE="" ADMIN="" NONCE="" SOURCES=$DEFAULT_SOURCES
+  EXPECT_HEAD="" PROBE_HEADS="" ISSUE="" ADMIN="" NONCE="" SOURCES=""
   RULES_FILE="" FREEZE_IDS="" SOURCES_FILE=""
   while [ $# -gt 0 ]; do
     [ $# -ge 2 ] || die_usage "$1 needs a value"
@@ -68,7 +70,6 @@ parse_args() {
       --issue) ISSUE=$2 ;;
       --admin-member) ADMIN=$2 ;;
       --nonce) NONCE=$2 ;;
-      --source-ids) SOURCES=$2 ;;
       --rules-file) RULES_FILE=$2 ;;
       --freeze-id) FREEZE_IDS="${FREEZE_IDS:+$FREEZE_IDS,}$2" ;;
       --sources-file) SOURCES_FILE=$2 ;;
@@ -103,8 +104,9 @@ cmd_policy_hash() {
 }
 
 # ---------------------------------------------------------------- shared reads
-# load_rulesets: reads the ruleset list and every detail, classifies them, reads the intent records.
-# Result files under $WORK: list.json, rs/<id>.json, owners.tsv (id<TAB>result), comments.json
+# load_rulesets: reads the ruleset list and every detail, the rules on main, and the intent records; derives
+# the source set ($SOURCES, csv) and classifies every ruleset.
+# Result files under $WORK: list.ndjson, rs/<id>.json, rules-main.json, owners.tsv (id<TAB>result), comments.json
 load_rulesets() {
   mkdir -p "$WORK/rs"
   gh_read_list "repos/$REPO/rulesets" || read_failed
@@ -120,6 +122,13 @@ load_rulesets() {
     fail "intent-records" "cannot read the comments of issue $ISSUE"
     exit 2
   fi
+  # the source set: every ruleset that rules/branches/main lists, except those with our prefixes
+  gh_read_list "repos/$REPO/rules/branches/main" || read_failed
+  printf '%s' "$GH_BODY" >"$WORK/rules-main.json"
+  PRE_IDS=$(prefixed_ids)
+  SOURCES=$(jq -r --arg ex "$PRE_IDS" '
+    ($ex | split(",") | map(select(length > 0) | tonumber)) as $skip
+    | [.[] | .ruleset_id | select(. != null and ((. as $i | $skip | index($i)) == null))] | unique | map(tostring) | join(",")' "$WORK/rules-main.json")
   RO_DETAIL_DIR="$WORK/rs"
   : >"$WORK/owners.tsv"
   local f res
@@ -128,6 +137,15 @@ load_rulesets() {
     res=$(ro_classify "$f" "$WORK/comments.json" "$ADMIN" "$SOURCES")
     printf '%s\t%s\n' "$(jq -r '.id' "$f")" "$res" >>"$WORK/owners.tsv"
   done
+}
+
+# every source needs a repository ruleset detail: its updated_at and bypass actors are part of Pm
+missing_source_detail() {
+  local s miss=""
+  local -a ids=()
+  IFS=',' read -r -a ids <<<"$SOURCES"
+  for s in "${ids[@]}"; do [ -z "$s" ] || [ -f "$WORK/rs/$s.json" ] || miss="${miss:+$miss,}$s"; done
+  echo "$miss"
 }
 
 # prefixed_ids: ids of rulesets with our name prefixes (own or foreign), comma separated
@@ -158,7 +176,7 @@ cmd_plan() {
       foreign*)
         FOREIGN=$((FOREIGN + 1))
         echo "FAIL ownership: ruleset $id is foreign: ${res#foreign }" ;;
-      "own freeze "* | "own mirror "*)
+      "own "*)
         kind=$(cut -d' ' -f2 <<<"$res"); nonce=$(cut -d' ' -f3 <<<"$res")
         fail "stale-own" "stale own #$nonce ($kind ruleset $id)" ;;
     esac
@@ -166,10 +184,9 @@ cmd_plan() {
   [ $FOREIGN -eq 0 ] || { echo "foreign ruleset found: no snapshot taken"; finish; }
 
   # source rules on main, without the rules of any ruleset that carries our prefix
-  gh_read_list "repos/$REPO/rules/branches/main" || read_failed
-  printf '%s' "$GH_BODY" >"$WORK/rules-main.json"
-  local pre_ids facts
-  pre_ids=$(prefixed_ids)
+  local pre_ids=$PRE_IDS facts miss
+  miss=$(missing_source_detail)
+  if [ -n "$miss" ]; then fail source-detail "no repository ruleset detail for source id(s) $miss"; else ok source-detail; fi
   facts=$(jq -c --arg ex "$pre_ids" '
     ($ex | split(",") | map(select(length > 0) | tonumber)) as $skip
     | [.[] | select((.ruleset_id as $i | $skip | index($i)) == null)]' "$WORK/rules-main.json" >"$WORK/src-rules.json" && fc_pin_facts "$WORK/src-rules.json")
@@ -257,14 +274,15 @@ cmd_status() {
   gh_read_init || read_failed
   load_rulesets
 
-  local pre_ids
-  pre_ids=$(prefixed_ids)
+  local pre_ids=$PRE_IDS
 
-  # rules on main and on each probe ref
+  # rules on main (read with the rulesets) and on each probe ref
   local ref label
   for ref in main "${PROBES[@]/#/freeze-probe/}"; do
-    gh_read_list "repos/$REPO/rules/branches/$ref" || read_failed
-    printf '%s' "$GH_BODY" >"$WORK/rules-$(tr / - <<<"$ref").json"
+    if [ "$ref" != main ]; then
+      gh_read_list "repos/$REPO/rules/branches/$ref" || read_failed
+      printf '%s' "$GH_BODY" >"$WORK/rules-$(tr / - <<<"$ref").json"
+    fi
     echo "rules $ref:"
     jq -r '.[] | "  ruleset=\(.ruleset_id) type=\(.type)"' "$WORK/rules-$(tr / - <<<"$ref").json"
   done
@@ -306,11 +324,17 @@ cmd_status() {
     echo "policy $label sha256=$(policy_hash "$WORK/rules-$(tr / - <<<"$ref").json" "$pre_ids")"
   done
   # Pm adds each source ruleset's id, updated_at and bypass list
+  local miss
+  miss=$(missing_source_detail)
+  if [ -n "$miss" ]; then
+    fail source-detail "no repository ruleset detail for source id(s) $miss: Pm not computed"
+    exit 2
+  fi
   local src_json="$WORK/sources.json"
   local -a src_files=()
   local s
   IFS=',' read -r -a src_ids <<<"$SOURCES"
-  for s in "${src_ids[@]}"; do [ -f "$WORK/rs/$s.json" ] && src_files+=("$WORK/rs/$s.json"); done
+  for s in "${src_ids[@]}"; do [ -z "$s" ] || src_files+=("$WORK/rs/$s.json"); done
   if [ ${#src_files[@]} -gt 0 ]; then jq -cs '.' "${src_files[@]}" >"$src_json"; else echo '[]' >"$src_json"; fi
   echo "Pm sha256=$(policy_hash "$WORK/rules-main.json" "$pre_ids" "$src_json")"
   exit 0

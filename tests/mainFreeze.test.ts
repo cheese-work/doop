@@ -66,6 +66,14 @@ const S2 = sourceDetail(27606879, 'protect main (repo copy)', [
   { type: 'pull_request', parameters: { required_approving_review_count: 0 } },
 ])
 
+// a third source that no fixed id list knows: bypass actors and updated_at are part of Pm
+const S3 = sourceDetail(
+  28000001,
+  'protect main (new source)',
+  [{ type: 'deletion' }],
+  [{ actor_id: 5, actor_type: 'RepositoryRole', bypass_mode: 'pull_request' }],
+)
+
 const freezeRules = (): J[] => [
   { type: 'update' },
   { type: 'deletion' },
@@ -101,6 +109,66 @@ const mirrorDetail = (id: number, nonce: string, src: J, over: J = {}): J => ({
   bypass_actors: src.bypass_actors,
   conditions: { ref_name: { include: [...MIRROR_INCLUDE], exclude: [] } },
   rules: src.rules,
+  current_user_can_bypass: 'never',
+  ...extras,
+  ...over,
+})
+const BASE_REF = 'refs/heads/cheese/main'
+const fenceDetail = (id: number, nonce = NONCE, over: J = {}): J => ({
+  id,
+  name: `port merge fence (CHE-7309) #${nonce}`,
+  target: 'branch',
+  source_type: 'Repository',
+  enforcement: 'active',
+  bypass_actors: [],
+  conditions: { ref_name: { include: [BASE_REF], exclude: [] } },
+  rules: [
+    {
+      type: 'required_status_checks',
+      parameters: {
+        strict_required_status_checks_policy: true,
+        do_not_enforce_on_create: false,
+        required_status_checks: ['commit-message', 'typecheck', 'lint', 'build', 'tests'].map((context) => ({
+          context,
+        })),
+      },
+    },
+    {
+      type: 'pull_request',
+      parameters: {
+        allowed_merge_methods: ['merge'],
+        required_approving_review_count: 0,
+        dismiss_stale_reviews_on_push: false,
+        require_code_owner_review: false,
+      },
+    },
+  ],
+  current_user_can_bypass: 'never',
+  ...extras,
+  ...over,
+})
+const actorDetail = (id: number, nonce = NONCE, over: J = {}): J => ({
+  id,
+  name: `port merge actor (CHE-7309) #${nonce}`,
+  target: 'branch',
+  source_type: 'Repository',
+  enforcement: 'active',
+  bypass_actors: [{ actor_id: 129714106, actor_type: 'User', bypass_mode: 'pull_request' }],
+  conditions: { ref_name: { include: [BASE_REF], exclude: [] } },
+  rules: [{ type: 'update' }],
+  current_user_can_bypass: 'never',
+  ...extras,
+  ...over,
+})
+const pinOwn = (id: number, nonce = NONCE, over: J = {}): J => ({
+  id,
+  name: `port head pin (CHE-7309) #${nonce}`,
+  target: 'branch',
+  source_type: 'Repository',
+  enforcement: 'active',
+  bypass_actors: [],
+  conditions: { ref_name: { include: ['refs/heads/agent/x'], exclude: [] } },
+  rules: [{ type: 'update' }, { type: 'deletion' }, { type: 'non_fast_forward' }],
   current_user_can_bypass: 'never',
   ...extras,
   ...over,
@@ -343,7 +411,7 @@ describe('case 1: each failed precondition makes no write', { timeout: 60_000 },
     w.rulesets = [S1, { ...S2, rules: [...S2.rules, { type: 'update' }] }]
     expectFail(plan(w), 'source-update')
   })
-  it('a source ruleset with a main-frozen context', () => {
+  it('a source ruleset with a main-frozen context is a foreign collision', () => {
     const w = freshWorld()
     w.rulesets = [
       {
@@ -352,7 +420,12 @@ describe('case 1: each failed precondition makes no write', { timeout: 60_000 },
       },
       S2,
     ]
-    expectFail(plan(w), 'source-context')
+    // the source set is derived from main, so a ruleset on main that requires the freeze context is a
+    // foreign collision (plan: "any ruleset that is not ours and requires main-frozen"): exit 6, not 2
+    const r = plan(w)
+    expect(r.status).toBe(6)
+    expect(r.out).toMatch(/foreign: collision/)
+    expect(r.writes).toBe('')
   })
   it('a workflow file that reports the main-frozen context', () => {
     writeWorld(freshWorld())
@@ -450,6 +523,90 @@ describe('case 2: bounds from GitHub server time only', { timeout: 60_000 }, () 
     const r = sh(planArgs(), { FAKE_NODATE: 'rate_limit' })
     expect(r.status).toBe(2)
     expect(r.out).not.toMatch(/^S0 .* clean$/m)
+  })
+})
+
+describe('case 1b: the source set is read from main, not fixed', { timeout: 60_000 }, () => {
+  it('a source ruleset that is not in any fixed list is a source: an update rule in it fails the plan', () => {
+    const w = freshWorld()
+    w.rulesets = [S1, S2, { ...S3, rules: [{ type: 'update' }] }]
+    const r = plan(w)
+    expect(r.status).toBe(2)
+    expect(r.out).toContain('FAIL source-update')
+  })
+  it('a canonical mirror of a source that no fixed list names is own (stale own), not foreign', () => {
+    const w = freshWorld()
+    w.rulesets = [S1, S2, S3, mirrorDetail(222, NONCE, S3)]
+    w.comments = [intent(NONCE)]
+    const r = plan(w)
+    expect(r.status).toBe(2)
+    expect(r.out).toContain(`stale own #${NONCE}`)
+    expect(r.out).not.toMatch(/foreign/)
+  })
+  it('a mirror of a ruleset that main does not list is foreign (unknown source)', () => {
+    const w = freshWorld()
+    const off = { ...S3, conditions: { ref_name: { include: ['refs/heads/other'], exclude: [] } } }
+    w.rulesets = [S1, S2, off, mirrorDetail(222, NONCE, off)]
+    w.comments = [intent(NONCE)]
+    const r = plan(w)
+    expect(r.status).toBe(6)
+    expect(r.out).toMatch(/unknown-source/)
+  })
+  it('a source listed on main with no readable repository ruleset fails the plan', () => {
+    const w = freshWorld()
+    w.rules = [
+      ...ruleRows(S1),
+      ...ruleRows(S2),
+      { type: 'deletion', ruleset_id: 999, ruleset_source_type: 'Organization' },
+    ]
+    const r = plan(w)
+    expect(r.status).toBe(2)
+    expect(r.out).toContain('FAIL source-detail')
+  })
+  it('--source-ids is gone', () => {
+    writeWorld(freshWorld())
+    const r = sh([...planArgs(), '--source-ids', '1'])
+    expect(r.status).toBe(64)
+  })
+})
+
+describe('case 1c: every own ruleset in play is stale or foreign', { timeout: 60_000 }, () => {
+  const own = (d: J, kind = 'merge-fence') => {
+    const w = freshWorld()
+    w.rulesets = [S1, S2, d]
+    w.comments = [intent(NONCE, kind)]
+    return plan(w)
+  }
+  it.each([
+    ['head pin', pinOwn(120), 'pin'],
+    ['merge fence', fenceDetail(121), 'fence'],
+    ['merge actor', actorDetail(122), 'actor'],
+  ])('an own active %s is stale own, and its rules do not count as source rules', (_n, d, kind) => {
+    const r = own(d)
+    expect(r.status).toBe(2)
+    expect(r.out).toContain(`stale own #${NONCE} (${kind} ruleset ${d.id})`)
+    expect(r.out).not.toContain('FAIL source-update')
+    expect(r.writes).toBe('')
+  })
+  it.each([
+    ['fence', fenceDetail(121, 'deadbeef')],
+    ['actor', actorDetail(122, 'deadbeef')],
+    ['fence with a bypass actor', fenceDetail(121, NONCE, { bypass_actors: actorDetail(1).bypass_actors })],
+    [
+      'actor with two bypass actors',
+      actorDetail(122, NONCE, {
+        bypass_actors: [...actorDetail(1).bypass_actors, { actor_id: 7, actor_type: 'User', bypass_mode: 'always' }],
+      }),
+    ],
+    [
+      'actor with a team actor',
+      actorDetail(122, NONCE, { bypass_actors: [{ actor_id: 7, actor_type: 'Team', bypass_mode: 'pull_request' }] }),
+    ],
+  ])('a foreign %s ends in exit 6', (_n, d) => {
+    const r = own(d)
+    expect(r.status).toBe(6)
+    expect(r.out).toMatch(/foreign/)
+    expect(r.writes).toBe('')
   })
 })
 
@@ -648,6 +805,57 @@ describe('ruleset-owner.sh unit', { timeout: 60_000 }, () => {
         intent(NONCE, 'merge-fence'),
       ]),
     ).toMatch(/^foreign bad-shape/))
+  it('a canonical merge fence is own under a merge-fence intent', () =>
+    expect(own(fenceDetail(6), [intent(NONCE, 'merge-fence')])).toBe(`own fence ${NONCE}`))
+  it('a canonical merge actor is own under a merge-fence intent', () =>
+    expect(own(actorDetail(7), [intent(NONCE, 'merge-fence')])).toBe(`own actor ${NONCE}`))
+  it('a fence or actor needs a merge-fence intent for its own nonce', () => {
+    expect(own(fenceDetail(6), [intent(NONCE, 'freeze')])).toMatch(/^foreign no-intent/)
+    expect(own(actorDetail(7), [intent('deadbeef', 'merge-fence')])).toMatch(/^foreign no-intent/)
+  })
+  it('a fence with another context, no strict policy, other merge methods or an approval count is foreign', () => {
+    const ctx = fenceDetail(6)
+    ctx.rules[0].parameters.required_status_checks.pop()
+    expect(own(ctx, [intent(NONCE, 'merge-fence')])).toMatch(/^foreign bad-shape rules/)
+    const strict = fenceDetail(6)
+    strict.rules[0].parameters.strict_required_status_checks_policy = false
+    expect(own(strict, [intent(NONCE, 'merge-fence')])).toMatch(/^foreign bad-shape rules/)
+    const methods = fenceDetail(6)
+    methods.rules[1].parameters.allowed_merge_methods = ['merge', 'squash']
+    expect(own(methods, [intent(NONCE, 'merge-fence')])).toMatch(/^foreign bad-shape rules/)
+    const approvals = fenceDetail(6)
+    approvals.rules[1].parameters.required_approving_review_count = 1
+    expect(own(approvals, [intent(NONCE, 'merge-fence')])).toMatch(/^foreign bad-shape rules/)
+  })
+  it('a fence or actor on more than one ref, or off refs/heads, is foreign', () => {
+    const two = fenceDetail(6, NONCE, {
+      conditions: { ref_name: { include: [BASE_REF, 'refs/heads/main'], exclude: [] } },
+    })
+    expect(own(two, [intent(NONCE, 'merge-fence')])).toMatch(/^foreign bad-shape include/)
+    const tag = actorDetail(7, NONCE, { conditions: { ref_name: { include: ['refs/tags/v1'], exclude: [] } } })
+    expect(own(tag, [intent(NONCE, 'merge-fence')])).toMatch(/^foreign bad-shape include/)
+  })
+  it('an actor with an extra rule, a wrong mode or an evaluate enforcement is foreign', () => {
+    const rule = actorDetail(7, NONCE, { rules: [{ type: 'update' }, { type: 'deletion' }] })
+    expect(own(rule, [intent(NONCE, 'merge-fence')])).toMatch(/^foreign bad-shape rules/)
+    const mode = actorDetail(7, NONCE, { bypass_actors: [{ actor_id: 1, actor_type: 'User', bypass_mode: 'always' }] })
+    expect(own(mode, [intent(NONCE, 'merge-fence')])).toMatch(/^foreign bad-shape bypass_actors/)
+    expect(own(actorDetail(7, NONCE, { enforcement: 'evaluate' }), [intent(NONCE, 'merge-fence')])).toMatch(
+      /^foreign bad-shape enforcement/,
+    )
+  })
+  it('ro_has_prefix knows all five prefixes', () => {
+    for (const p of [
+      'freeze main (CHE-7309) #x',
+      'port merge fence (CHE-7309) #x',
+      'port merge actor (CHE-7309) #x',
+      'port head pin (CHE-7309) #x',
+      'freeze probe mirror (CHE-7309) #x',
+    ]) {
+      const r = spawnSync('bash', ['-c', `source "${LIB('ruleset-owner.sh')}"; ro_has_prefix "${p}"`])
+      expect(r.status, p).toBe(0)
+    }
+  })
   it('a non-prefixed ruleset is other', () =>
     expect(own(sourceDetail(9, 'protect cheese/main', [{ type: 'deletion' }]), [])).toBe('other'))
 })
@@ -888,6 +1096,41 @@ describe('status', { timeout: 60_000 }, () => {
     const base = /^policy main sha256=(\S+)/m.exec(sh(statusArgs()).out)![1]
     writeWorld(world())
     expect(/^policy main sha256=(\S+)/m.exec(sh(statusArgs()).out)![1]).toBe(base)
+  })
+  const pmOf = (rulesets: J[]) => {
+    const w = freshWorld()
+    w.rulesets = rulesets
+    writeWorld(w)
+    const r = sh(statusArgs())
+    expect(r.status).toBe(0)
+    return /^Pm sha256=(\S+)/m.exec(r.out)![1]
+  }
+  it('Pm covers a source that no fixed list names: its bypass actors and updated_at change Pm', () => {
+    const base = pmOf([S1, S2, S3])
+    expect(base).not.toBe(pmOf([S1, S2]))
+    const bypass = { ...S3, bypass_actors: [{ actor_id: 6, actor_type: 'RepositoryRole', bypass_mode: 'always' }] }
+    expect(pmOf([S1, S2, bypass])).not.toBe(base)
+    expect(pmOf([S1, S2, { ...S3, updated_at: '2026-11-22T00:00:00Z' }])).not.toBe(base)
+    expect(pmOf([S1, S2, S3])).toBe(base)
+  })
+  it('lists a derived source as role=source', () => {
+    const w = freshWorld()
+    w.rulesets = [S1, S2, S3]
+    writeWorld(w)
+    expect(sh(statusArgs()).out).toMatch(/ruleset 28000001 .*role=source .*current_user_can_bypass=pull_requests_only/)
+  })
+  it('a source listed on main with no readable repository ruleset gives no Pm and exit 2', () => {
+    const w = freshWorld()
+    w.rules = [
+      ...ruleRows(S1),
+      ...ruleRows(S2),
+      { type: 'deletion', ruleset_id: 999, ruleset_source_type: 'Organization' },
+    ]
+    writeWorld(w)
+    const r = sh(statusArgs())
+    expect(r.status).toBe(2)
+    expect(r.out).toContain('FAIL source-detail')
+    expect(r.out).not.toMatch(/^Pm sha256=/m)
   })
   it('--nonce narrows the ownership listing to one nonce', () => {
     writeWorld(world())

@@ -7,6 +7,8 @@
 #       own freeze <nonce>
 #       own mirror <nonce> source=<id>
 #       own pin <nonce>
+#       own fence <nonce>              port merge fence (CHE-7309)
+#       own actor <nonce>              port merge actor (CHE-7309)
 #       foreign <reason> [detail]      reasons: bad-name no-intent unknown-source bad-shape collision
 #       other                          not ours, not a collision
 #
@@ -15,7 +17,7 @@
 # and its shape equals what the script sets (only the fields the script sets are compared; fields GitHub
 # adds are ignored). Anything with our prefix that fails one of these is foreign. A ruleset without our
 # prefix is a collision when it names a freeze-probe or guard-rehearsal ref or requires the main-frozen
-# context, unless it is one of the source rulesets. Unreadable bypass actors (null) fail closed.
+# context, a ruleset that main lists as a source included. Unreadable bypass actors (null) fail closed.
 #
 # A mirror is compared with its source ruleset, read from "$RO_DETAIL_DIR/<source id>.json".
 
@@ -23,11 +25,13 @@ RO_CTX='main-frozen (CHE-7309)'
 RO_P_FREEZE='freeze main (CHE-7309)'
 RO_P_MIRROR='freeze probe mirror (CHE-7309)'
 RO_P_PIN='port head pin (CHE-7309)'
+RO_P_FENCE='port merge fence (CHE-7309)'
+RO_P_ACTOR='port merge actor (CHE-7309)'
 RO_FREEZE_INCLUDE='["refs/heads/freeze-probe/d-frozen","refs/heads/freeze-probe/q-frozen","refs/heads/main"]'
 RO_MIRROR_INCLUDE='["refs/heads/freeze-probe/d-frozen","refs/heads/freeze-probe/d-open","refs/heads/freeze-probe/q-frozen","refs/heads/freeze-probe/q-open"]'
 
 ro_has_prefix() {
-  case "$1" in "$RO_P_FREEZE "* | "$RO_P_MIRROR "* | "$RO_P_PIN "*) return 0 ;; esac
+  case "$1" in "$RO_P_FREEZE "* | "$RO_P_MIRROR "* | "$RO_P_PIN "* | "$RO_P_FENCE "* | "$RO_P_ACTOR "*) return 0 ;; esac
   return 1
 }
 
@@ -47,9 +51,27 @@ _ro_pin_rules() {
   jq -cnS '[{type:"update",parameters:null},{type:"deletion",parameters:null},{type:"non_fast_forward",parameters:null}] | sort_by(tojson)'
 }
 
-# _ro_common_shape <detail.json> <strict|mirror>: empty when target/enforcement/bypass/exclude are canonical,
+# Merge fence A (port merge fence): the fields the script sets, reduced to type + those parameters.
+# GitHub adds defaults to pull_request and required_status_checks; they are ignored.
+_ro_fence_view() {
+  jq -cS '[.rules[]? | if .type == "required_status_checks" then
+      {type, strict: .parameters.strict_required_status_checks_policy,
+       contexts: ([.parameters.required_status_checks[]?.context] | sort)}
+    elif .type == "pull_request" then
+      {type, methods: ((.parameters.allowed_merge_methods // []) | sort), approvals: .parameters.required_approving_review_count}
+    else {type} end] | sort_by(tojson)'
+}
+_ro_fence_expected() {
+  jq -cnS '[
+    {type:"required_status_checks",strict:true,contexts:["build","commit-message","lint","tests","typecheck"]},
+    {type:"pull_request",methods:["merge"],approvals:0}
+  ] | sort_by(tojson)'
+}
+
+# _ro_common_shape <detail.json> <strict|mirror|actor>: empty when target/enforcement/bypass/exclude are canonical,
 # else a reason. A mirror copies enforcement and bypass actors from its source, so only the source
-# comparison constrains them; null bypass actors still fail closed.
+# comparison constrains them; null bypass actors still fail closed. An actor ruleset (merge fence B) has
+# exactly one bypass actor, so the empty-list rule is replaced by its own check.
 _ro_common_shape() {
   jq -r --arg mode "$2" '
     if .target != "branch" then "target"
@@ -57,18 +79,21 @@ _ro_common_shape() {
     elif ((.conditions.ref_name.exclude // []) != []) then "exclude not empty"
     elif $mode == "mirror" then ""
     elif .enforcement != "active" then "enforcement"
+    elif $mode == "actor" then
+      (if (.bypass_actors | length) == 1 and (.bypass_actors[0].actor_type == "User")
+          and (.bypass_actors[0].bypass_mode == "pull_request") and ((.bypass_actors[0].actor_id | type) == "number")
+       then "" else "bypass_actors not exactly one User with mode pull_request" end)
     elif .bypass_actors != [] then "bypass_actors not empty"
     else "" end' "$1"
 }
 
 ro_classify() {
   local detail=$1 comments=$2 admin=$3 sources=$4
-  local name id nonce kind="" src="" want="" prefix reason inc
+  local name id nonce kind="" src="" want="" prefix reason inc mode
   name=$(jq -r '.name // ""' "$detail")
   id=$(jq -r '.id' "$detail")
 
   if ! ro_has_prefix "$name"; then
-    case ",$sources," in *",$id,"*) echo other; return ;; esac
     if jq -e --arg ctx "$RO_CTX" '
         ([.conditions.ref_name.include[]? | select(startswith("refs/heads/freeze-probe/") or startswith("refs/heads/guard-rehearsal/"))] | length > 0)
         or ([.rules[]? | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.context] | index($ctx) != null)' "$detail" >/dev/null; then
@@ -84,6 +109,10 @@ ro_classify() {
   elif [[ "$name" == "$RO_P_MIRROR #"* ]]; then
     kind=mirror; nonce=${name#"$RO_P_MIRROR #"}
     if [[ "$nonce" =~ ^[0-9a-f]{8}\.[0-9]+$ ]]; then src=${nonce#*.}; nonce=${nonce%%.*}; fi
+  elif [[ "$name" == "$RO_P_FENCE #"* ]]; then
+    kind=fence; nonce=${name#"$RO_P_FENCE #"}
+  elif [[ "$name" == "$RO_P_ACTOR #"* ]]; then
+    kind=actor; nonce=${name#"$RO_P_ACTOR #"}
   else
     kind=pin; nonce=${name#"$RO_P_PIN #"}
   fi
@@ -93,14 +122,15 @@ ro_classify() {
   fi
 
   # the intent record: whole line, right kind, this nonce, written by the admin member
-  case $kind in freeze | mirror) want=freeze ;; pin) want=merge-fence ;; esac
+  case $kind in freeze | mirror) want=freeze ;; pin | fence | actor) want=merge-fence ;; esac
   if ! jq -e --arg a "$admin" --arg line "^${want}-intent v1 nonce=${nonce}( |\$)" '
       any(.[]?; .author_type == "member" and .author_id == $a and ((.content // "") | split("\n") | any(test($line))))' "$comments" >/dev/null 2>&1; then
     echo "foreign no-intent"
     return
   fi
 
-  reason=$(_ro_common_shape "$detail" "$([ "$kind" = mirror ] && echo mirror || echo strict)")
+  case $kind in mirror) mode=mirror ;; actor) mode=actor ;; *) mode=strict ;; esac
+  reason=$(_ro_common_shape "$detail" "$mode")
   if [ -n "$reason" ]; then echo "foreign bad-shape $reason"; return; fi
 
   case $kind in
@@ -113,6 +143,14 @@ ro_classify() {
       jq -e '(.conditions.ref_name.include // []) | length > 0 and all(.[]; startswith("refs/heads/"))' "$detail" >/dev/null || { echo "foreign bad-shape include"; return; }
       [ "$(_ro_rules <"$detail")" = "$(_ro_pin_rules)" ] || { echo "foreign bad-shape rules"; return; }
       echo "own pin $nonce" ;;
+    fence | actor)
+      jq -e '(.conditions.ref_name.include // []) | length == 1 and all(.[]; startswith("refs/heads/"))' "$detail" >/dev/null || { echo "foreign bad-shape include"; return; }
+      if [ "$kind" = fence ]; then
+        [ "$(_ro_fence_view <"$detail")" = "$(_ro_fence_expected)" ] || { echo "foreign bad-shape rules"; return; }
+      else
+        [ "$(_ro_rules <"$detail")" = "$(jq -cnS '[{type:"update",parameters:null}]')" ] || { echo "foreign bad-shape rules"; return; }
+      fi
+      echo "own $kind $nonce" ;;
     mirror)
       case ",$sources," in *",$src,"*) ;; *) echo "foreign unknown-source $src"; return ;; esac
       local sd="${RO_DETAIL_DIR:?RO_DETAIL_DIR is not set}/$src.json"
