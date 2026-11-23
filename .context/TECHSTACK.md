@@ -715,7 +715,7 @@ data-doop-webfonts>` for the roster families the frame names and does not load i
   attestation id on a locked frame is refused. `expectedUpdatedAt` on `updateFrame` / `appendFrameHtml` throws
   `FrameStaleError` on a mismatch (REST append: 412; PATCH keeps 409; MCP `expected_updated_at` on set / edit /
   append / update_frame). `persist.writeFrame` keeps the stored html and size while both the stored and the
-  incoming row are locked. `tests/frameLockGuard.test.ts` scans `server/` so a new writer of those columns
+  incoming row are locked in the same `lock_epoch` (an unlock whose save an immediate relock cancelled shows as a higher epoch, so the edit between them lands with the relock). `tests/frameLockGuard.test.ts` scans `server/` so a new writer of those columns
   outside the guard fails the build.
 - Frame write keys (`frame_write_keys`, migration 0045; `actions.writeFrameHtmlOnce`): MCP `set_frame_html` /
   `edit_frame_html` / `append_frame_html` and REST `PATCH /api/frames/:id` (html only) and

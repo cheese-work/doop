@@ -80,4 +80,37 @@ describe('frame lock in a real database', () => {
     expect(store.lockIfVersion(agent, frame.id, frame.updatedAt, 'att-same')).toMatchObject({ ok: true })
     expect(await row(frame.id)).toEqual(before)
   })
+
+  it('lock, flush, unlock, edit and an immediate relock: the edited html and size are stored and hydrate (P1, CHE-8992 review)', async () => {
+    const { frame } = await frameOnDisk()
+    store.lockIfVersion(agent, frame.id, frame.updatedAt, 'att-a')
+    expect(await row(frame.id)).toMatchObject({ locked: true, html: '<p>v1</p>' })
+
+    /* nothing is flushed between the three writes: the unlock and the edit are still waiting on their
+       debounce when the relock saves at once, so the stored row is still the first lock */
+    store.updateFrame(cheese, frame.id, { locked: false }, 'cheese')
+    const edited = store.updateFrame(sys, frame.id, { html: '<p>v2</p>', width: 777, height: 555 }, 'x')!
+    expect(store.lockIfVersion(agent, frame.id, edited.updatedAt, 'att-b')).toMatchObject({ ok: true })
+
+    expect(await row(frame.id)).toMatchObject({
+      locked: true,
+      lockAttestationId: 'att-b',
+      lockEpoch: 1,
+      html: '<p>v2</p>',
+      width: 777,
+      height: 555,
+    })
+    const back = (await persist.hydrate()).canvases.flatMap((c) => c.frames).find((f) => f.id === frame.id)
+    expect(back).toMatchObject({ locked: true, lockAttestationId: 'att-b', lockEpoch: 1, width: 777, height: 555 })
+  })
+
+  it('a stale write from the same lock epoch still cannot change the stored html of a locked frame', async () => {
+    const { frame } = await frameOnDisk()
+    store.lockIfVersion(agent, frame.id, frame.updatedAt, 'att-c')
+    await row(frame.id)
+    const live = store.getFrame(frame.id)!
+    const stale = { ...live, html: '<p>sneaky</p>', width: 1, height: 1 }
+    persist.saveFrame(stale, true)
+    expect(await row(frame.id)).toMatchObject({ locked: true, html: '<p>v1</p>' })
+  })
 })

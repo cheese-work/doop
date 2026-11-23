@@ -667,11 +667,14 @@ async function writeFrameRow(f: Frame, exec: Exec) {
   }
   const { id, createdAt, ...set } = row
   /* Second line of the frame lock (the first is `store.updateFrame`): when the
-     stored row and this frame are both locked, html, width and height keep their
-     stored values, decided inside the one upsert statement. An unlock saved with
-     its next edit carries `locked: false` and lands whole. */
+     stored row and this frame are both locked in the same lock epoch, html, width
+     and height keep their stored values, decided inside the one upsert statement.
+     An unlock saved with its next edit carries `locked: false` and lands whole. An
+     unlock that never reached the row (its save was cancelled by an immediate
+     relock) shows as a higher `lock_epoch`: the content written between the two
+     locks is the attested content and lands with the relock. */
   const keepWhileLocked = (column: typeof t.frames.html | typeof t.frames.width | typeof t.frames.height) =>
-    sql`CASE WHEN ${t.frames.locked} IS TRUE AND excluded.locked IS TRUE THEN ${column} ELSE excluded.${sql.identifier(column.name)} END`
+    sql`CASE WHEN ${t.frames.locked} IS TRUE AND excluded.locked IS TRUE AND COALESCE(${t.frames.lockEpoch}, 0) = COALESCE(excluded.lock_epoch, 0) THEN ${column} ELSE excluded.${sql.identifier(column.name)} END`
   await exec
     .insert(t.frames)
     .values(row)
