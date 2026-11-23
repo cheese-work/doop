@@ -484,6 +484,13 @@
       "when": 1795460000000,
       "tag": "0069_comment_event_actor_kind",
       "breakpoints": true
+    },
+    {
+      "idx": 70,
+      "version": "7",
+      "when": 1795463871458,
+      "tag": "0070_frame_lock",
+      "breakpoints": true
     }
   ]
 }

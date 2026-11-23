@@ -63,14 +63,7 @@ import { eq, inArray } from 'drizzle-orm'
 import { toNodeHandler, fromNodeHeaders } from 'better-auth/node'
 import { oAuthDiscoveryMetadata } from 'better-auth/plugins'
 import { WebSocketServer, WebSocket } from 'ws'
-import {
-  FrameDeletedError,
-  FrameLockedError,
-  FrameStaleError,
-  GuideLimitError,
-  PageLimitError,
-  store,
-} from './store.ts'
+import { FrameDeletedError, FrameStaleError, GuideLimitError, PageLimitError, store } from './store.ts'
 import { parseGuide } from '../shared/guides.ts'
 import { getImage } from './previews.ts'
 import { LayerNotFoundError, layerRefFromQuery, layerSelector } from './layerExport.ts'
@@ -125,7 +118,7 @@ import { handleMcpRequest } from './mcp.ts'
 import { RendererBusyError } from './renderBrowser.ts'
 import { getAsset, reconcileAssetRefs, beginTicketUpload, endTicketUpload, createAsset } from './assets.ts'
 import * as ingest from './ingest.ts'
-import { PolicyRefused } from './writePolicy.ts'
+import { PolicyRefused, setLockOwners } from './writePolicy.ts'
 import * as agentKeys from './agentKeys.ts'
 import * as backgrounds from './backgrounds.ts'
 import { serveIcon } from './iconProxy.ts'
@@ -2412,8 +2405,9 @@ function frameWriteRefused(res: express.Response, e: unknown): boolean {
     res.status(422).json({ error: e.message, code: 'work_budget_exceeded' })
     return true
   }
-  if (e instanceof FrameLockedError) {
-    res.status(423).json({ error: e.message })
+  /* a locked frame (FrameLockedError is one) or any other store policy refusal */
+  if (e instanceof PolicyRefused) {
+    res.status(423).json({ error: e.message, code: e.code })
     return true
   }
   if (e instanceof FrameStaleError) {
@@ -2533,7 +2527,8 @@ app.patch('/api/frames/:id', async (req, res) => {
     clean.rotation = normalizeRotation(patch.rotation)
   }
   try {
-    const frame = actions.updateFrame(req.params.id, clean, actor)
+    /* the account id, not the display name, decides who may unlock a frame (DOOP_LOCK_OWNERS) */
+    const frame = actions.updateFrame(req.params.id, clean, actor, { userId: req.user!.id })
     if (!frame) return res.status(404).json({ error: 'frame not found' })
     res.json(frame)
   } catch (e) {
@@ -3038,9 +3033,13 @@ app.post('/api/canvases/:id/pages/:pageId/restore', async (req, res) => {
 app.delete('/api/frames/:id', (req, res) => {
   if (!requireFrame(req, res, req.params.id, 'edit', req.body?.expectedUpdatedAt)) return
   const actor = userActor(req)
-  const frame = actions.deleteFrame(req.params.id, actor)
-  if (!frame) return res.status(404).json({ error: 'frame not found' })
-  res.json({ ok: true })
+  try {
+    const frame = actions.deleteFrame(req.params.id, actor)
+    if (!frame) return res.status(404).json({ error: 'frame not found' })
+    res.json({ ok: true })
+  } catch (e) {
+    frameWriteFailed(res, e) // a locked frame refuses delete: 423
+  }
 })
 
 /* design history: the states a frame had before later edits replaced them,
@@ -3594,6 +3593,7 @@ app.use(undoRequest)
 app.use(workBudgetRefusal)
 
 /* G2 reads the issue's comments from Multica; without its settings no design frame on an issue page passes */
+setLockOwners(env.DOOP_LOCK_OWNERS)
 setReconSources({ assets: storedReconAssets, comments: multicaCommentsSource(env)?.comments })
 
 const server = http.createServer(app)

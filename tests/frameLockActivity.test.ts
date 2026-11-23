@@ -18,6 +18,7 @@ vi.mock('../server/db/persist.ts', () => ({
 
 const actions = await import('../server/actions.ts')
 const { store } = await import('../server/store.ts')
+const { setLockOwners } = await import('../server/writePolicy.ts')
 
 const user: Actor = { name: 'kevin', kind: 'user', color: '#000' }
 const agent: Actor = { name: 'Claude', kind: 'agent', color: '#e5533c' }
@@ -28,6 +29,7 @@ function messages(): string[] {
 }
 
 beforeEach(() => {
+  setLockOwners(['kevin'])
   actions.wire(
     () => {},
     () => {},
@@ -48,24 +50,22 @@ describe('frame lock activity', () => {
     const frame = actions.createFrame(canvasId, { name: 'Hero' }, user)!
     actions.updateFrame(frame.id, { locked: true }, user)
     expect(messages()).toContain('locked “Hero”')
-    actions.updateFrame(frame.id, { locked: false }, user)
+    actions.updateFrame(frame.id, { locked: false }, user, { userId: 'kevin' }) // CHE-6626: owners only
     expect(messages()).toContain('unlocked “Hero”')
   })
 
-  it('keeps the lock line when the same update also renames or redesigns the frame', () => {
+  it('keeps the lock line when the same update also renames the frame', () => {
     const frame = actions.createFrame(canvasId, { name: 'Hero' }, user)!
     /* an agent's update_frame may carry name and locked together */
     actions.updateFrame(frame.id, { name: 'Hero v2', locked: true }, agent)
     expect(messages()).toContain('renamed “Hero” to “Hero v2”')
     expect(messages()).toContain('locked “Hero v2”')
 
-    /* a locked frame refuses html even when the same update unlocks it: unlock first, then write */
-    expect(() => actions.updateFrame(frame.id, { html: '<h1>Hi</h1>', locked: false }, user)).toThrow(/locked/)
-    actions.updateFrame(frame.id, { name: 'Hero v3', locked: false }, user)
-    expect(messages()).toContain('renamed “Hero v2” to “Hero v3”')
-    expect(messages()).toContain('unlocked “Hero v3”')
+    /* an unlock carries nothing else (CHE-6626); the redesign follows as its own update */
+    actions.updateFrame(frame.id, { locked: false }, user, { userId: 'kevin' })
+    expect(messages()).toContain('unlocked “Hero v2”')
     actions.updateFrame(frame.id, { html: '<h1>Hi</h1>' }, user)
-    expect(messages()).toContain('updated the design of “Hero v3”')
+    expect(messages()).toContain('updated the design of “Hero v2”')
   })
 
   it('stays quiet when the lock does not change', () => {

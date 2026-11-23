@@ -126,6 +126,8 @@ const schema = {
   TRUSTED_ORIGINS: list({ default: [] }),
   SIGNUP_EMAIL_DOMAINS: list({ default: [] }),
   ADMIN_EMAILS: list({ default: [] }),
+  /* account ids that may unlock a locked frame (CHE-6626); empty = nobody can */
+  DOOP_LOCK_OWNERS: list({ default: [] }),
   REQUIRE_EMAIL_VERIFICATION: bool({ default: true }),
   OIDC_ISSUER: str({ default: undefined }),
   OIDC_CLIENT_ID: str({ default: undefined }),

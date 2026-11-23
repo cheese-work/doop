@@ -65,7 +65,7 @@ import {
   type TokenType,
 } from '../shared/designTokens.ts'
 import { emitCanvasEvent } from './events.ts'
-import { systemContext, writeContextFor } from './writePolicy.ts'
+import { PolicyRefused, systemContext, writeContextFor } from './writePolicy.ts'
 import type {
   Actor,
   Canvas,
@@ -2954,7 +2954,12 @@ export const updateFrame = atomic(function updateFrame(
     Pick<Frame, 'name' | 'pageId' | 'x' | 'y' | 'width' | 'height' | 'html' | 'hidden' | 'locked' | 'z' | 'rotation'>
   >,
   actor: Actor,
-  opts: { replace?: boolean; expectedUpdatedAt?: number } = {},
+  opts: {
+    replace?: boolean
+    expectedUpdatedAt?: number
+    /** the signed-in account id (session routes only); an unlock needs it, a display name proves nothing */
+    userId?: string
+  } = {},
 ): Frame | undefined {
   const before = store.writableFrame(frameId)
   if (!before) return undefined
@@ -2969,7 +2974,7 @@ export const updateFrame = atomic(function updateFrame(
   const prevHidden = !!before.hidden
   const prevLocked = !!before.locked
   const prior = priorState(before)
-  const frame = store.updateFrame(writeContextFor(actor), frameId, patch, actor.name, {
+  const frame = store.updateFrame(writeContextFor(actor, opts.userId), frameId, patch, actor.name, {
     expectedUpdatedAt: opts.expectedUpdatedAt,
   })
   if (!frame) return undefined
@@ -3095,6 +3100,41 @@ export function agentSetFrameApproval(
  *  only playback of what is already stored, so background work may rewrite the frame. */
 export function isFrameMidStream(frameId: string): boolean {
   return streams.has(frameId)
+}
+
+export type LockEntry = { frameId: string; attestedUpdatedAt: number; attestationId: string }
+export type LockResult = { frameId: string; ok: boolean; error?: 'not_found' | 'version_changed' | 'policy_refused' }
+
+/** Lock one frame if it is still at the attested version (CHE-6626). Any open stream or playback ends
+ *  with the lock, so no chunk lands after it. */
+export const lockFrameIfVersion = atomic(function lockFrameIfVersion(entry: LockEntry, actor: Actor): LockResult {
+  const { frameId, attestedUpdatedAt, attestationId } = entry
+  let res: ReturnType<typeof store.lockIfVersion>
+  try {
+    res = store.lockIfVersion(writeContextFor(actor), frameId, attestedUpdatedAt, attestationId)
+  } catch (err) {
+    if (err instanceof PolicyRefused) return { frameId, ok: false, error: 'policy_refused' }
+    throw err
+  }
+  if (!res) return { frameId, ok: false, error: 'not_found' }
+  if (!res.ok) return { frameId, ok: false, error: res.error }
+  if (res.already) return { frameId, ok: true } // a retry of a lock that holds: nothing to announce
+  finishStream(frameId, false)
+  finishReveal(frameId)
+  broadcast(res.frame.canvasId, { type: 'frame:updated', frame: res.frame, actor })
+  logActivity(res.frame.canvasId, actor, `locked “${res.frame.name}” at its attested version`, frameId)
+  touch(res.frame.canvasId, actor, frameId)
+  return { frameId, ok: true }
+})
+
+/** Publish step: lock every attested frame, one after another. A failure leaves the frames already locked
+ *  locked (the safe side) and withholds the card; the retry, after a fresh attestation, locks the rest. */
+export function lockFramesForPublish(
+  entries: LockEntry[],
+  actor: Actor,
+): { cardAllowed: boolean; results: LockResult[] } {
+  const results = entries.map((entry) => lockFrameIfVersion(entry, actor))
+  return { cardAllowed: results.length > 0 && results.every((r) => r.ok), results }
 }
 
 export function isFrameStreaming(frameId: string): boolean {

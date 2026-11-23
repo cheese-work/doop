@@ -23,6 +23,7 @@ vi.mock('../server/fonts.ts', () => ({ fontsForCanvas: () => [] }))
 
 const actions = await import('../server/actions.ts')
 const { store, FrameLockedError } = await import('../server/store.ts')
+const { setLockOwners } = await import('../server/writePolicy.ts')
 
 /**
  * A token edit that would rewrite a locked frame is refused as a whole: the
@@ -32,6 +33,9 @@ const { store, FrameLockedError } = await import('../server/store.ts')
  */
 
 const human: Actor = { name: 'Kevin', kind: 'user', color: '#2743ee' }
+/* CHE-6626: only a signed-in lock owner unlocks */
+const OWNER = { userId: 'kevin-id' }
+setLockOwners([OWNER.userId])
 actions.wire(
   () => {},
   () => {},
@@ -116,7 +120,7 @@ describe('token edits against a locked frame', () => {
   it('refuses a theme rename that rewrites a locked frame', () => {
     const s = setup()
     // theme the tokens while the frame is still open, so its block carries the dark value, then lock it
-    actions.updateFrame(s.locked.id, { locked: false }, human)
+    actions.updateFrame(s.locked.id, { locked: false }, human, OWNER)
     actions.setTokenThemes(s.canvasId, ['dark'], human)
     actions.setTokens(s.canvasId, [{ name: '--ink', themes: { dark: '#eee' } }], human)
     actions.updateFrame(s.locked.id, { locked: true }, human)
@@ -131,7 +135,7 @@ describe('token edits against a locked frame', () => {
 
   it('still edits freely once the frame is unlocked', () => {
     const s = setup()
-    actions.updateFrame(s.locked.id, { locked: false }, human)
+    actions.updateFrame(s.locked.id, { locked: false }, human, OWNER)
     actions.setTokens(s.canvasId, [{ name: '--ink', newName: '--text' }], human)
     expect(store.getTokens(s.canvasId).map((t) => t.name)).toEqual(['--text'])
     expect(store.getFrame(s.locked.id)!.html).toContain('var(--text)')

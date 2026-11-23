@@ -480,7 +480,7 @@ data-doop-webfonts>` for the roster families the frame names and does not load i
   edit. Restore first files the current page as a `before restoring ...` snapshot (awaited, then re-captured
   in one tick, up to 3 tries, so a writer that raced the save cannot slip past it), then applies every frame
   in one synchronous tick through `store.updateFrame`, the lock guard: a locked frame that differs is
-  skipped, reported under `skipped` and left as it was. Frames deleted since come back; the `locked` flag and
+  skipped, reported under `skipped` and left as it was (restore never unlocks). Frames deleted since come back; the `locked` flag and
   frames made after the snapshot are left alone. No branching, merge or UI.
 - Chat bridge (`server/bridge.ts`, `shared/bridge.ts`): one `canvas_bridge` row per canvas holds the Multica
   agent people chat with, the agent list the watcher publishes (`set_bridge_agents`) and its liveness
@@ -699,15 +699,24 @@ data-doop-webfonts>` for the roster families the frame names and does not load i
   that version without recording an undo step. Frame timestamps advance monotonically, even
   for multiple writes in the same millisecond, so concurrent saves cannot share a version.
   Delayed HTTP save responses cannot replace a newer frame received through the room.
-- Frame lock (`locked: true`): `Store.updateFrame` is the one guard for a frame's `html`, `width`
-  and `height`. It is synchronous, so the lock check and the write share one tick, and it throws
-  `FrameLockedError` before changing anything, for every actor and path (REST, MCP, restore,
-  streamed append, element-id stamping). Rename, move, hide and unlock still pass. REST answers 423
-  and MCP an error naming the frame. `expectedUpdatedAt` on `updateFrame` / `appendFrameHtml` throws
-  `FrameStaleError` on a mismatch (REST append: 412; PATCH keeps 409; MCP `expected_updated_at`
-  on set / edit / append). `persist.writeFrame` keeps the stored html and size while both the stored
-  and the incoming row are locked. `tests/frameLockGuard.test.ts` scans `server/` so a new writer of
-  those columns outside the guard fails the build.
+- Frame lock (`locked: true`, CHE-6626): a real lock at the store. `assertWritable` (`server/writePolicy.ts`,
+  `assertLockRules`, checked first) refuses every op on a locked frame, from every actor and path (REST, MCP,
+  restore, streamed append, element-id stamping): edit, rename, move, hide, approval and delete alike. The one
+  exception is `unlock_frame`: the actor must be a signed-in user whose id is in `DOOP_LOCK_OWNERS`
+  (comma-separated user ids, read at boot by `setLockOwners`; empty means nobody can unlock, so it fails closed),
+  and the patch must carry nothing else. An agent never unlocks. Unlocking raises `Frame.lockEpoch` and drops
+  `lockAttestationId` (columns `lock_epoch`, `lock_attestation_id`, migration 0070). Copies of a frame
+  (duplicate canvas / page) start unlocked. A canvas holding a locked frame cannot be deleted, and `set_pages`
+  cannot drop a page holding one; only `erasureContext()` (account deletion) bypasses that. `FrameLockedError`
+  extends `PolicyRefused`; REST answers 423 `{ error, code: 'policy_refused' }`, MCP an error naming the frame.
+  MCP `lock_frame_if_version` (`actions.lockFrameIfVersion`, `lockFramesForPublish`) is a compare-and-set on the
+  attested `updatedAt`: a frame that changed is not locked (`version_changed`); locking does not move
+  `updatedAt`; a retry with the same attestation id at the current version answers `already`, another
+  attestation id on a locked frame is refused. `expectedUpdatedAt` on `updateFrame` / `appendFrameHtml` throws
+  `FrameStaleError` on a mismatch (REST append: 412; PATCH keeps 409; MCP `expected_updated_at` on set / edit /
+  append / update_frame). `persist.writeFrame` keeps the stored html and size while both the stored and the
+  incoming row are locked. `tests/frameLockGuard.test.ts` scans `server/` so a new writer of those columns
+  outside the guard fails the build.
 - Frame write keys (`frame_write_keys`, migration 0045; `actions.writeFrameHtmlOnce`): MCP `set_frame_html` /
   `edit_frame_html` / `append_frame_html` and REST `PATCH /api/frames/:id` (html only) and
   `POST /api/frames/:id/append` take `idempotency_key` and an optional `version_name`. The key row,

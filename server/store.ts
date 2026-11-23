@@ -49,11 +49,12 @@ export class GuideLimitError extends Error {
 /** Frame columns a lock protects. `store.updateFrame` and `persist.writeFrame` share this list. */
 export const DESIGN_KEYS = ['html', 'width', 'height'] as const
 
-/** A write to a locked frame's html or size. Unlock first (a separate, logged action). */
-export class FrameLockedError extends Error {
+/** A write to a locked frame (CHE-6626): every op from every actor is refused until an owner unlocks it.
+ *  A `PolicyRefused`, so the REST (423) and MCP paths that already handle one handle this too. */
+export class FrameLockedError extends PolicyRefused {
   override readonly name = 'FrameLockedError'
   constructor(frame: Pick<Frame, 'id' | 'name'>) {
-    super(`Frame "${frame.name}" (${frame.id}) is locked: its HTML and size cannot be changed until it is unlocked.`)
+    super('update_frame', `frame "${frame.name}" (${frame.id}) is locked; only a lock owner can unlock it`)
   }
 }
 
@@ -121,6 +122,9 @@ function restoreFrame(frame: Frame, state: ReturnType<typeof frameState>) {
  * store synchronously as before. `evictIdle` drops the HTML of a canvas
  * nobody has used for a while, never one that is held or in use.
  */
+/** A copy is a new draft: it carries no lock, no epoch and no attestation of the frame it came from. */
+const UNLOCKED = { locked: undefined, lockEpoch: undefined, lockAttestationId: undefined } as const
+
 class Store {
   canvases = new Map<string, Canvas>()
   private frameIndex = new Map<string, string>() // frameId -> canvasId
@@ -477,6 +481,7 @@ class Store {
       id: frameIds.get(frame.id)!,
       html: remapFrameTargets(frame.html, frameIds),
       approval: null,
+      ...UNLOCKED,
       z: stackOf(frame),
       canvasId,
       createdAt: now,
@@ -578,6 +583,7 @@ class Store {
       html: remapFrameTargets(frame.html, frameIds),
       pageId: page.id,
       approval: null,
+      ...UNLOCKED,
       z: stackOf(frame),
       createdAt: now,
       updatedAt: now,
@@ -1415,10 +1421,16 @@ class Store {
   ): Frame | undefined {
     const frame = this.writableFrame(frameId)
     if (!frame) return undefined
-    // The one guard for frame html, width and height (every actor, every path).
-    // Synchronous: the check and the write below share one tick, so a lock
-    // cannot land between them. Name, position and the lock itself stay open.
-    if (frame.locked && DESIGN_KEYS.some((key) => patch[key] !== undefined)) throw new FrameLockedError(frame)
+    // The one guard for a locked frame (every actor, every path, CHE-6626). Synchronous: the check and
+    // the write below share one tick, so a lock cannot land between them. Nothing but an owner's
+    // unlock, and only on its own, gets past it; `assertWritable` decides whose unlock that is.
+    const unlocking = frame.locked === true && patch.locked === false
+    if (
+      unlocking &&
+      Object.keys(patch).some((key) => key !== 'locked' && patch[key as keyof typeof patch] !== undefined)
+    )
+      throw new PolicyRefused('unlock_frame', 'unlock changes nothing else; edit after it')
+    if (frame.locked && !unlocking) throw new FrameLockedError(frame)
     if (opts.expectedUpdatedAt !== undefined && opts.expectedUpdatedAt !== frame.updatedAt)
       throw new FrameStaleError(frame)
     if (
@@ -1427,7 +1439,7 @@ class Store {
     )
       return undefined
     const c = this.canvases.get(frame.canvasId)!
-    assertWritable(ctx, 'update_frame', {
+    assertWritable(ctx, unlocking ? 'unlock_frame' : 'update_frame', {
       canvas: c,
       frame,
       pageIds: patch.pageId !== undefined ? [framePageId(c, frame), patch.pageId] : [framePageId(c, frame)],
@@ -1440,6 +1452,11 @@ class Store {
     if (patch.pageId !== undefined && patch.pageId !== frame.pageId && patch.z === undefined)
       patch = { ...patch, z: frontOf(pageFrames(c, patch.pageId)) ?? frame.z }
     Object.assign(frame, patch)
+    if (unlocking) {
+      /* the epoch only goes up, so a lock decision made before this unlock can never be replayed after it */
+      frame.lockEpoch = (frame.lockEpoch ?? 0) + 1
+      delete frame.lockAttestationId
+    }
     if (patch.z !== undefined) c.frames.sort(byStack)
     // All writers (including streams, sync and restores) invalidate sign-off.
     if (designChanged && frame.approval?.status === 'ready_for_dev') {
@@ -1468,6 +1485,43 @@ class Store {
     this.saveFrameLater(frame) // debounced: streaming appends land as one write per burst
     this.saveCanvasLater(c)
     return frame
+  }
+
+  /** Compare-and-set lock (CHE-6626): locks the frame only if it is still at `attestedUpdatedAt`, the
+   *  version a G3 attestation covers. A lock does not move `updatedAt`, so the attestation stays current.
+   *  A frame that is already locked keeps its attestation: the same id again at the current version is a no-op
+   *  (`already`, a retry), at another version `version_changed`; any other id, or a lock that carries none,
+   *  is refused until an owner unlocks it.
+   *  Undefined = not found; a refused write throws PolicyRefused. */
+  lockIfVersion(
+    ctx: WriteContext,
+    frameId: string,
+    attestedUpdatedAt: number,
+    attestationId: string,
+  ):
+    | { ok: true; frame: Frame; already?: true }
+    | { ok: false; error: 'version_changed'; currentUpdatedAt: number }
+    | undefined {
+    const frame = this.writableFrame(frameId)
+    if (!frame) return undefined
+    const c = this.canvases.get(frame.canvasId)!
+    assertWritable(ctx, 'lock_frame', { canvas: c, frame, pageIds: [framePageId(c, frame)] })
+    if (frame.locked && frame.lockAttestationId !== attestationId)
+      throw new PolicyRefused('lock_frame', 'the frame is locked with another attestation; an owner unlocks it first')
+    /* the version check comes first for a retry too: a late retry of an older attempt must not pass */
+    if (frame.updatedAt !== attestedUpdatedAt)
+      return { ok: false, error: 'version_changed', currentUpdatedAt: frame.updatedAt }
+    if (frame.locked) return { ok: true, frame, already: true }
+    requireBoundary('store.lockIfVersion')
+    const before = inTransaction() ? frameState(frame) : undefined
+    frame.locked = true
+    frame.lockAttestationId = attestationId
+    if (before)
+      recordUndo(() => {
+        if (this.getFrame(frame.id) === frame && frame.lockAttestationId === attestationId) restoreFrame(frame, before)
+      })
+    this.saveFrameLater(frame, true)
+    return { ok: true, frame }
   }
 
   /** Schedule the write of a frame as it is now, without changing it. A pass-through for callers outside

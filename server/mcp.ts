@@ -20,7 +20,8 @@ import type { Request, Response } from 'express'
 import { fromNodeHeaders } from 'better-auth/node'
 import { z } from 'zod'
 import { SnapshotError } from './pageSnapshots.ts'
-import { FrameLockedError, FrameStaleError, PageLimitError, store } from './store.ts'
+import { FrameStaleError, PageLimitError, store } from './store.ts'
+import { PolicyRefused } from './writePolicy.ts'
 import { addPage, savePages, updateFrameMeta } from './pageTools.ts'
 import { fontsForCanvas } from './fonts.ts'
 import { customAgentsForCanvas } from './customAgents.ts'
@@ -240,7 +241,7 @@ function err(message: string) {
 /** A frame write the store refused (locked, or changed since read) as a tool error; any other failure is real. */
 function refusalOf(e: unknown) {
   if (
-    e instanceof FrameLockedError ||
+    e instanceof PolicyRefused /* a locked frame (FrameLockedError is one), or any other store policy refusal */ ||
     e instanceof FrameStaleError ||
     e instanceof actions.FrameWriteKeyConflictError ||
     e instanceof actions.FrameEditError
@@ -2909,7 +2910,7 @@ export function buildMcpServer(
       title: 'Rename, move or resize a frame',
       _meta: previewToolMeta('Updating the frame…', 'Frame updated'),
       description:
-        "Update frame metadata in one call: rename it (name), move it on its page (x, y), resize it (width, height), turn it (rotation: degrees clockwise about its centre; 0 straightens it), or move it to another page (pageId from get_canvas; it keeps its x/y unless you pass new ones and lands in front of that page's frames). Set locked to true to lock the frame on the canvas (humans cannot select, move, resize or delete it from the stage until it is unlocked) or false to unlock it. A move or resize that would overlap another frame on the page (or leave less than 40px clear) is refused with the free spot to use. A locked frame refuses every change to its HTML and size (width, height) from everyone, agents included; rename and move still work, and unlocking is its own call (it cannot carry an HTML or size change).",
+        "Update frame metadata in one call: rename it (name), move it on its page (x, y), resize it (width, height), turn it (rotation: degrees clockwise about its centre; 0 straightens it), or move it to another page (pageId from get_canvas; it keeps its x/y unless you pass new ones and lands in front of that page's frames). Set locked to true to lock the frame: a locked frame refuses every edit, move, rename and delete, from everyone, until its owner unlocks it (an agent can never unlock; locked=false is refused). Prefer lock_frame_if_version, which locks only if the frame is still the version you checked. A move or resize that would overlap another frame on the page (or leave less than 40px clear) is refused with the free spot to use.",
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: {
         frame_id: z.string(),
@@ -2921,13 +2922,22 @@ export function buildMcpServer(
         height: z.number().optional(),
         locked: z.boolean().optional(),
         rotation: z.number().optional(),
+        expected_updated_at: z
+          .string()
+          .optional()
+          .describe(
+            'updatedAt from your last get_frame or tool result; the update is refused if the frame changed since',
+          ),
         agent_name: agentName,
       },
     },
-    async ({ frame_id, agent_name, ...patch }) => {
+    async ({ frame_id, agent_name, expected_updated_at, ...patch }) => {
       const found = frameFor(frame_id, 'edit')
       const canvas = found && store.getCanvas(found.canvasId)
       if (!canvas) return noFrame(frame_id)
+      /* checked and written in one tick, like set_frame_html's fence; optional here, never required */
+      const stale = expected_updated_at === undefined ? undefined : fenceError(found, expected_updated_at)
+      if (stale) return stale
       let updated
       try {
         updated = updateFrameMeta(canvas, frame_id, patch, actorFrom(agent_name))
@@ -2966,6 +2976,42 @@ export function buildMcpServer(
       const result = actions.agentSetFrameApproval(frame_id, status, { id: ownerId, name: owner }, actor)
       if (!result.ok) return err(result.error)
       return withFeedback(text({ ok: true, frame: frameSummary(result.frame) }), result.frame.canvasId, actor)
+    },
+  )
+
+  server.registerTool(
+    'lock_frame_if_version',
+    {
+      title: 'Lock a frame if it is still the checked version',
+      description:
+        'Lock a frame only if its updatedAt still equals attested_updated_at, the version check_design_completeness attested. A frame that changed in between is NOT locked and the call fails with version_changed (re-check, then lock again). A locked frame refuses every edit and delete from everyone; only its owner can unlock it. Locking does not change updatedAt, so the attestation stays current.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: {
+        frame_id: z.string(),
+        attested_updated_at: z
+          .union([z.string(), z.number()])
+          .describe('The frame updatedAt the attestation covers (ISO string, as get_frame returns it, or epoch ms).'),
+        attestation_id: z.string().min(1).describe('The id of the design attestation being relied on.'),
+        agent_name: agentName,
+      },
+    },
+    async ({ frame_id, attested_updated_at, attestation_id, agent_name }) => {
+      if (!frameFor(frame_id, 'edit')) return noFrame(frame_id)
+      const attestedMs = typeof attested_updated_at === 'number' ? attested_updated_at : Date.parse(attested_updated_at)
+      if (!Number.isFinite(attestedMs)) return err('attested_updated_at must be an ISO timestamp or epoch milliseconds')
+      const res = actions.lockFrameIfVersion(
+        { frameId: frame_id, attestedUpdatedAt: attestedMs, attestationId: attestation_id },
+        actorFrom(agent_name),
+      )
+      if (res.error === 'not_found') return noFrame(frame_id)
+      if (res.error === 'policy_refused') return err('policy_refused: this agent may not lock that frame')
+      if (res.error === 'version_changed') {
+        const current = store.getFrame(frame_id)
+        return err(
+          `version_changed: the frame changed after ${new Date(attestedMs).toISOString()} (now ${current ? new Date(current.updatedAt).toISOString() : 'gone'}); it was NOT locked. Check it again, then lock again.`,
+        )
+      }
+      return text({ ok: true, locked: true, frame: frameSummary(store.getFrame(frame_id)!) })
     },
   )
 
