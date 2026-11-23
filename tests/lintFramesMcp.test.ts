@@ -6,7 +6,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createRenderer, type Renderer, type RendererTuning } from '../server/renderBrowser.ts'
-import { setFrameLintDeadlineForTest } from '../server/lintFramesTool.ts'
+import { runLintFrames, setFrameLintDeadlineForTest } from '../server/lintFramesTool.ts'
 import { handleMcpRequest } from '../server/mcp.ts'
 import { store } from '../server/store.ts'
 import { FRAME_RULES, type FrameRule } from '../shared/frameLint.ts'
@@ -262,6 +262,22 @@ describe('lint_frames: the absolute deadline', () => {
     expect(body.retry_frame_ids).toContain('f0')
     expect(rig.loads).toEqual([])
     await holder.close()
+  })
+
+  it('counts the time spent before the run starts: the abort and the reply keep to T0 + the deadline', async () => {
+    const canvasId = seedCanvas(2)
+    rig.hangs = () => true
+    const spent = 1_200 /* the handler already used this much before runLintFrames was called */
+    const started = Date.now()
+    const assembled = await runLintFrames({
+      canvas: store.canvases.get(canvasId)!,
+      pageId: 'p1',
+      startedAt: started - spent,
+    })
+    const elapsed = Date.now() - started
+    expect(JSON.parse(assembled.text).frames[0]).toMatchObject({ status: 'NOT-RUN', reason: 'deadline' })
+    /* 2 s deadline, 1.2 s gone: the reply is due in 0.8 s, not 2 s after the run began */
+    expect(elapsed).toBeLessThan(2_000 - spent + 400)
   })
 
   it('stops the render when the client goes away', async () => {

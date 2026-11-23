@@ -42,6 +42,8 @@ export interface LintFramesInput {
   pageId: string
   after?: string
   frame_ids?: readonly string[]
+  /** when the call began (the handler's first line); the deadline counts from here, not from this function */
+  startedAt?: number
   /** the MCP request's own signal: the client leaving aborts the same controller as the deadline */
   signal?: AbortSignal
 }
@@ -115,7 +117,7 @@ const isDeadlineRow = (r: LintRowInput) => r.status === 'NOT-RUN' && (r.reason =
 
 /** Lint one window of a page and return the assembled `fl-r1` reply. Throws `FrameLintInputError` for bad input. */
 export async function runLintFrames(input: LintFramesInput): Promise<AssembledLintResult> {
-  const t0 = Date.now()
+  const t0 = input.startedAt ?? Date.now()
   const deadline = deadlineOverride ?? FRAME_LINT_DEADLINE_MS
   const frames = pageFrames(input.canvas, input.pageId)
   const window = resolveWindow(walkOrder(frames), { after: input.after, frame_ids: input.frame_ids }, WINDOW_SIZE)
@@ -128,10 +130,12 @@ export async function runLintFrames(input: LintFramesInput): Promise<AssembledLi
   if (input.signal?.aborted) onClientGone()
   else input.signal?.addEventListener('abort', onClientGone, { once: true })
   const stopAt = t0 + deadline * STOP_SCHEDULING
-  const abortTimer = setTimeout(() => controller.abort('deadline'), deadline * ABORT_IN_FLIGHT)
+  /* every timer is set against T0, so setup time already spent is not added on top of the deadline */
+  const untilT0 = (fraction: number) => Math.max(0, t0 + deadline * fraction - Date.now())
+  const abortTimer = setTimeout(() => controller.abort('deadline'), untilT0(ABORT_IN_FLIGHT))
   let giveUpTimer: ReturnType<typeof setTimeout> | undefined
   const giveUp = new Promise<void>((resolve) => {
-    giveUpTimer = setTimeout(resolve, deadline * GIVE_UP_WAITING)
+    giveUpTimer = setTimeout(resolve, untilT0(GIVE_UP_WAITING))
   })
 
   const results: Array<LintRowInput | undefined> = new Array(window.frames.length)

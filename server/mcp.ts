@@ -1669,6 +1669,7 @@ export function buildMcpServer(
       },
     },
     async ({ canvas_id, page_id, frame_ids, after, agent_name }, extra) => {
+      const startedAt = Date.now()
       const canvas = canvasFor(canvas_id, 'view')
       if (!canvas) return noCanvas(canvas_id)
       const pages = canvasPages(canvas)
@@ -1676,7 +1677,14 @@ export function buildMcpServer(
       if (!page) return err(`no page ${page_id} on canvas ${canvas_id} — use a page id from get_canvas`)
       arrive(canvas_id, agent_name)
       try {
-        const assembled = await runLintFrames({ canvas, pageId: page.id, after, frame_ids, signal: extra.signal })
+        const assembled = await runLintFrames({
+          canvas,
+          pageId: page.id,
+          after,
+          frame_ids,
+          startedAt,
+          signal: extra.signal,
+        })
         return text(assembled.text)
       } catch (e) {
         if (e instanceof FrameLintInputError) return err(e.message)
