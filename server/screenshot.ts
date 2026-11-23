@@ -15,6 +15,7 @@ import {
   type PageOptions,
   type RenderPage,
   type RendererStatus,
+  type WithPageOptions,
 } from './renderBrowser.ts'
 
 /**
@@ -134,6 +135,19 @@ const renderer = createRenderer({
   },
 })
 
+export const LOAD_TIMEOUT_MS = 8000
+
+/** Run `work` on a page of the shared renderer: the gate, the lease, the close and the abort `options` of
+ *  `renderBrowser.withPage`. */
+export function withRenderPage<T>(
+  step: string,
+  timeoutMs: number,
+  work: (page: Page) => Promise<T>,
+  options?: WithPageOptions,
+): Promise<T> {
+  return renderer.withPage(step, timeoutMs, work, options)
+}
+
 /** The live shared browser, launched if need be. */
 export function getBrowser(): Promise<Browser> {
   return renderer.browser()
@@ -165,7 +179,9 @@ export async function loadFramePage(frame: Frame, options?: PageOptions): Promis
   }
 }
 
-async function loadFrameInto(page: Page, frame: Frame): Promise<void> {
+/** Load the frame's HTML into `page`. Resolves `false` when the 8 s load timed out and the page holds whatever
+ *  had rendered by then, `true` otherwise. */
+export async function loadFrameInto(page: Page, frame: Pick<Frame, 'html' | 'width' | 'height'>): Promise<boolean> {
   const assetOrigin = new URL(env.BETTER_AUTH_URL).origin
   await guardPublicPageRequests(page, {
     allowUrl: (url) =>
@@ -191,15 +207,18 @@ async function loadFrameInto(page: Page, frame: Frame): Promise<void> {
     const baseTag = `<base href="${assetOrigin.replace(/"/g, '&quot;')}/">`
     html = /<head[^>]*>/i.test(html) ? html.replace(/<head([^>]*)>/i, `<head$1>${baseTag}`) : baseTag + html
   }
+  let loaded = true
   try {
     await page.setContent(html, {
       waitUntil: 'load',
-      timeout: 8000,
+      timeout: LOAD_TIMEOUT_MS,
     })
   } catch {
     /* Slow external resources: inspect whatever has rendered. */
+    loaded = false
   }
   await new Promise((resolve) => setTimeout(resolve, 120))
+  return loaded
 }
 
 export interface FrameInspection {
