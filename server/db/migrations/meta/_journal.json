@@ -456,6 +456,20 @@
       "when": 1794488857049,
       "tag": "0065_workspace_seats_bought",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1795213665677,
+      "tag": "0066_design_attestations_and_multica_task",
+      "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1795344341778,
+      "tag": "0067_canvas_project_id",
+      "breakpoints": true
     }
   ]
 }

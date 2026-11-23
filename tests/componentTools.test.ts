@@ -19,6 +19,9 @@ import { takeComponentIssues } from '../server/actions.ts'
 import { findComponent } from '../server/componentActions.ts'
 import { previewDocument } from '../server/componentPreview.ts'
 import { activeComponents } from '../shared/components.ts'
+import { systemContext } from '../server/writePolicy.ts'
+
+const sys = systemContext()
 
 const OWNER = 'owner-1'
 const AGENT = { agent_name: 'Tester' }
@@ -179,6 +182,7 @@ describe('an agent working with components', () => {
       'B',
     )
     store.updateFrame(
+      sys,
       a,
       {
         approval: {

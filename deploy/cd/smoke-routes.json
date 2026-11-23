@@ -385,6 +385,23 @@
       "noWrite": "creating a provider stores an endpoint and a key, and a probe calls an outside host; the contract call proves the route and its on/off switch"
     },
     {
+      "group": "/api/design-attestations",
+      "calls": [
+        {
+          "kind": "contract",
+          "method": "GET",
+          "path": "/api/design-attestations/none",
+          "expectByStatus": {
+            "404": {
+              "error": "attestation not found"
+            }
+          },
+          "contract": "an unknown attestation id answers the route's own 404 text, so the route and its table are up; an absent route answers a different body. A real attestation needs a design check run, which the sandbox does not have"
+        }
+      ],
+      "noWrite": "attestations are read-only; the server's own check run writes them, there is no write route"
+    },
+    {
       "group": "/api/feedback",
       "calls": [
         {

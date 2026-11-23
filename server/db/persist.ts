@@ -6,6 +6,7 @@ import { db } from './index.ts'
 import * as t from './schema.ts'
 import { extractAssetIds } from '../assets.ts'
 import { AGENT_ROLES, roleByAgentName } from '../../shared/agents.ts'
+import type { AttestationRow } from '../../shared/designCompleteness.ts'
 import { isCommunityCategory } from '../../shared/types.ts'
 import { storedLinkAccess } from '../../shared/canvasRole.ts'
 import type { ComponentDef, LibraryComponent } from '../../shared/components.ts'
@@ -61,6 +62,7 @@ function canvasColumns(c: Canvas) {
     category: c.category ?? null,
     copyCount: c.copyCount ?? 0,
     workspaceId: c.workspaceId ?? null,
+    projectId: c.projectId ?? null,
     updatedAt: c.updatedAt,
   }
 }
@@ -545,10 +547,10 @@ const FRAME_DEBOUNCE_MS = 400
 /** Persist a duplicated page as one unit: the canvas's new page list and
  * every copied frame land together or not at all, so a copy is never half
  * there after a crash. Like saveCanvasCopy, success means durable. */
-export async function savePageCopy(c: Canvas, frames: Frame[]): Promise<void> {
+export async function savePageCopy(c: Canvas, frames: Frame[], beforeCommit?: () => void): Promise<void> {
   await db.transaction(async (tx) => {
     await tx.update(t.canvases).set(canvasColumns(c)).where(eq(t.canvases.id, c.id))
-    if (!frames.length) return
+    if (!frames.length) return beforeCommit?.()
     await tx.insert(t.frames).values(
       frames.map((frame) => ({
         id: frame.id,
@@ -574,6 +576,8 @@ export async function savePageCopy(c: Canvas, frames: Frame[]): Promise<void> {
       [...extractAssetIds(frame.html)].map((assetId) => ({ assetId, frameId: frame.id })),
     )
     if (refs.length) await tx.insert(t.assetRefs).values(refs)
+    /* the last word before the rows become durable: a throw here rolls the whole copy back */
+    beforeCommit?.()
   })
 }
 
@@ -1046,6 +1050,19 @@ async function syncAssetRefs(frameId: string, html: string, exec: Exec = db) {
   }
 }
 
+/** Store one run of check_design_completeness. Awaited by the caller: an
+ *  attestation id is only handed out once its rows are in the database. */
+export async function saveAttestationRows(rows: AttestationRow[]): Promise<void> {
+  if (!rows.length) return
+  await db.insert(t.designAttestations).values(rows.map((r) => ({ id: nanoid(), ...r })))
+}
+
+/** Every row of one run, oldest frame first; empty when there is no such run. */
+export async function listAttestationRun(runId: string): Promise<AttestationRow[]> {
+  const rows = await db.select().from(t.designAttestations).where(eq(t.designAttestations.runId, runId))
+  return rows.map(({ id: _id, ...row }) => ({ ...row, result: row.result === 'complete' ? 'complete' : 'incomplete' }))
+}
+
 export function deleteCanvas(canvasId: string) {
   /* refs must go before the frames rows the subquery reads */
   swallow(
@@ -1067,6 +1084,7 @@ export function deleteCanvas(canvasId: string) {
       db.delete(t.feedback).where(eq(t.feedback.canvasId, canvasId)),
     ),
   )
+  swallow(db.delete(t.designAttestations).where(eq(t.designAttestations.canvasId, canvasId)))
   swallow(db.delete(t.comments).where(eq(t.comments.canvasId, canvasId)))
   swallow(db.delete(t.commentEvents).where(eq(t.commentEvents.canvasId, canvasId)))
   swallow(db.delete(t.canvasBridge).where(eq(t.canvasBridge.canvasId, canvasId)))
@@ -1178,6 +1196,7 @@ export function saveTask(canvasId: string, task: AgentTask) {
     frameIds: task.frameIds?.join(',') ?? null,
     runner: task.runner ? JSON.stringify(task.runner) : null,
     reply: task.reply ?? null,
+    multicaTaskId: task.multicaTaskId ?? null,
   }
   const write = () =>
     db
@@ -1601,6 +1620,7 @@ export async function hydrate(): Promise<Hydrated> {
     ...(isCommunityCategory(c.category) ? { category: c.category } : {}),
     ...(c.copyCount ? { copyCount: c.copyCount } : {}),
     ...(c.workspaceId ? { workspaceId: c.workspaceId } : {}),
+    ...(c.projectId ? { projectId: c.projectId } : {}),
     createdAt: c.createdAt,
     updatedAt: c.updatedAt,
     frames: [],
@@ -1730,6 +1750,7 @@ export async function hydrate(): Promise<Hydrated> {
       ...(row.frameIds ? { frameIds: row.frameIds.split(',').filter(Boolean) } : {}),
       ...runnerField(row.runner),
       ...(row.reply != null ? { reply: row.reply } : {}),
+      ...(row.multicaTaskId ? { multicaTaskId: row.multicaTaskId } : {}),
     })
     tasks.set(row.canvasId, list)
   }

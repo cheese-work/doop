@@ -227,6 +227,11 @@ describe('markers', () => {
     expect(parseReplayMarkers(`2026-11-18T14:00:00Z ${line}\n`)).toEqual([r])
     expect(parseReplayMarkers('migration-replay FAIL candidate=x')).toEqual([])
   })
+
+  it('parses a replay marker from a push run, whose pr_head is `-`', () => {
+    const r = { candidate: HEAD, base: PARENT1, prHead: '-', runAttempt: '1' }
+    expect(parseReplayMarkers(`2026-11-18T14:00:00Z ${formatReplayMarker(r)}\n`)).toEqual([r])
+  })
 })
 
 describe('CLI (real git)', () => {

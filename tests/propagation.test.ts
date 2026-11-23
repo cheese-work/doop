@@ -36,6 +36,9 @@ import { referencesComponent } from '../server/components.ts'
 import { COMPONENT_ATTR, type ComponentDef } from '../shared/components.ts'
 import type { Actor, Canvas } from '../shared/types.ts'
 import { stubEnv, unstubAllEnvs } from './envStub.ts'
+import { systemContext } from '../server/writePolicy.ts'
+
+const sys = systemContext()
 
 const actor = { name: 'Tester', kind: 'user', color: '#000', clientId: 'x' } as unknown as Actor
 
@@ -114,7 +117,7 @@ function oldPropagateComponents(canvasId: string, changed: ComponentDef[], origi
       queue.push(...prepared.changed)
       const html = withCanvasFaces(canvasId, prepared.html)
       if (html === frame.html) continue
-      store.updateFrame(frame.id, { html }, actor.name)
+      store.updateFrame(sys, frame.id, { html }, actor.name)
     }
   }
 }
@@ -142,7 +145,7 @@ describe('the propagation queue', () => {
 
     restyle(buttonMain.id, 'fresh')
 
-    expect(writes.mock.calls.map(([frameId]) => frameId)).toEqual([buttonMain.id])
+    expect(writes.mock.calls.map(([, frameId]) => frameId)).toEqual([buttonMain.id])
     for (const frame of frames) expect(framed(frame.id)).toBe(before[frame.id])
     expect(propagation.pendingFrames(canvas.id)).toBeGreaterThan(0)
 
@@ -176,7 +179,7 @@ describe('the propagation queue', () => {
     expect(queued.html[frames[0]!.id]).toContain('btn fresh')
     expect(store.getFrame(frames[1]!.id)!.approval?.status).toBe('ready_for_dev')
 
-    for (const frame of canvas.frames) store.updateFrame(frame.id, { html: start.html[frame.id]! }, actor.name)
+    for (const frame of canvas.frames) store.updateFrame(sys, frame.id, { html: start.html[frame.id]! }, actor.name)
     canvas.components = start.components
     oldPropagateComponents(canvas.id, [current(canvas.id, button.id)], buttonMain.id)
 
@@ -232,7 +235,7 @@ describe('the propagation queue', () => {
     let raced = 0
     duringPrepare.run = (frameId) => {
       if (frameId !== target.id || raced++) return
-      store.updateFrame(target.id, { html: framed(target.id).replace('<p>text 1</p>', '<p>raced</p>') }, 'Someone')
+      store.updateFrame(sys, target.id, { html: framed(target.id).replace('<p>text 1</p>', '<p>raced</p>') }, 'Someone')
     }
 
     await propagation.whenIdle()
@@ -269,7 +272,7 @@ describe('the propagation queue', () => {
 
     await propagation.whenIdle()
     const perFrame = new Map<string, number>()
-    for (const [frameId] of writes.mock.calls) perFrame.set(frameId, (perFrame.get(frameId) ?? 0) + 1)
+    for (const [, frameId] of writes.mock.calls) perFrame.set(frameId, (perFrame.get(frameId) ?? 0) + 1)
     expect(perFrame.size).toBe(7)
     expect([...perFrame.values()].every((count) => count === 1)).toBe(true)
     expect(framed(frames[1]!.id)).toContain('btn e')

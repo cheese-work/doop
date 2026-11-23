@@ -2,7 +2,7 @@
 // `migration-base.mjs` (S2, S3b), the replay test (S3b) and `merge-proof.mjs` cannot drift apart.
 //
 //   migration-base event=<e> candidate=<sha> base=<sha> merged_head=<sha|-> pr_head=<sha|-> run_attempt=<n>
-//   migration-replay OK candidate=<sha> base=<sha> pr_head=<sha> run_attempt=<n>
+//   migration-replay OK candidate=<sha> base=<sha> pr_head=<sha|-> run_attempt=<n>
 //
 // Parsers scan a whole job log: GitHub prefixes each line with a timestamp, so a marker may start mid-line.
 // A line that does not match the full pattern (a `FAIL` line, a truncated marker) is not a marker.
@@ -15,7 +15,7 @@ const BASE = new RegExp(
   'g',
 )
 const REPLAY = new RegExp(
-  `migration-replay OK candidate=(${SHA}) base=(${SHA}) pr_head=(${SHA}) run_attempt=(\\d+)${END}`,
+  `migration-replay OK candidate=(${SHA}) base=(${SHA}) pr_head=(${SHA}|-) run_attempt=(\\d+)${END}`,
   'g',
 )
 

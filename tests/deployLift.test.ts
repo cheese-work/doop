@@ -654,7 +654,7 @@ describe('the CLI end to end (a real process, real HTTP)', () => {
         if (url === `/api/decisions/${DECISION_ID}/state`) {
           if (req.headers.authorization !== `Bearer ${TOKEN}` || req.headers['x-workspace-id'] !== WORKSPACE)
             return send(403, {})
-          return send(200, over.decision ?? decisionOf())
+          return send(200, over.decision ?? decisionOf({ expires_at: new Date(Date.now() + 86_400_000).toISOString() }))
         }
         if (url === '/healthz') return send(over.health ?? 200, { ok: true })
         if (url === `/${VAR_URL}`) {

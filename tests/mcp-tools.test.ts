@@ -4,6 +4,9 @@ import { describe, expect, it, vi } from 'vitest'
 import { buildMcpServer } from '../server/mcp.ts'
 import { FRAME_PREVIEW_URI } from '../server/chatgptApp.ts'
 import packageJson from '../package.json' with { type: 'json' }
+import { systemContext } from '../server/writePolicy.ts'
+
+const sys = systemContext()
 
 vi.mock('../server/db/persist.ts', () => ({ saveCanvas: () => {}, saveFrame: () => {}, saveActivity: () => {} }))
 
@@ -400,7 +403,7 @@ it('update_frame normalizes and clears rotation while retaining page validation'
     frames: [],
   })
   const { store } = await import('../server/store.ts')
-  const frame = store.createFrame(canvasId, { name: 'Turn', pageId: 'first', width: 100, height: 50 }, 'Agent')!
+  const frame = store.createFrame(sys, canvasId, { name: 'Turn', pageId: 'first', width: 100, height: 50 }, 'Agent')!
   const update = (patch: Record<string, unknown>) =>
     client.callTool({
       name: 'update_frame',
