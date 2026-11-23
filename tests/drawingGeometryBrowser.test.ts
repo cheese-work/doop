@@ -281,18 +281,24 @@ describe.skipIf(!findBrowserPath())('drawing on the canvas', { timeout: 30_000 }
     await seedFrames([source])
     const front = await visibleDrawing('Stacked', '#front')
     await drag([front.x + 30, front.y + 30], [front.x + 70, front.y + 50])
-    await page.waitForFunction((before) => window.drawingHarness.state().frames[0]!.html !== before, {}, source.html)
-    const positions = await page.evaluate(() => {
-      const doc = new DOMParser().parseFromString(window.drawingHarness.state().frames[0]!.html, 'text/html')
-      return ['front', 'back'].map((id) => {
-        const el = doc.getElementById(id)!
-        return [el.style.left, el.style.top]
-      })
-    })
-    expect(positions).toEqual([
-      ['80px', '70px'],
-      ['60px', '60px'],
-    ])
+    /* The drop is saved in steps: the first html change after the drag is a
+       mid-drag position (CHE-9157: it read 68px/64px on a slow runner), so poll
+       the same exact expectation until the drop settles rather than reading
+       once at the first change. */
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const doc = new DOMParser().parseFromString(window.drawingHarness.state().frames[0]!.html, 'text/html')
+          return ['front', 'back'].map((id) => {
+            const el = doc.getElementById(id)!
+            return [el.style.left, el.style.top]
+          })
+        }),
+      )
+      .toEqual([
+        ['80px', '70px'],
+        ['60px', '60px'],
+      ])
   })
 
   it.each([false, true])('handles a drag that ends before its iframe hit test returns (cancel: %s)', async (cancel) => {

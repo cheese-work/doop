@@ -1230,15 +1230,25 @@ export const FrameView = memo(function FrameView({
      resolved into a probe by asking the runtime for the element behind the
      selector */
   const previousProbe = useRef<string | null>(null)
+  /* the probe a `doop:select-result` made, with the selector the frame was asked to find: the
+     answer is acted on while that element is the live primary, but React renders the probe later */
+  const probeFromSelect = useRef<{ probe: string; asked: string } | null>(null)
   useEffect(() => {
     const previous = previousProbe.current
     previousProbe.current = probeSel
     const cur = useStore.getState().selectedElement
+    const fromSelect = probeFromSelect.current
+    probeFromSelect.current = null
+    /* the selection moved on between the answer and this render (a paste picked the pasted
+       set): the answer is stale, and picking its element would collapse that set */
+    const stale = fromSelect?.probe === probeSel && !(cur?.frameId === frame.id && cur.selector === fromSelect.asked)
     if (probeSel === FRAME_COMMENT_SELECTOR) {
       /* a comment on the whole frame is no element pick: `body` in the
          selection would hand Delete, Duplicate and the Design panel the
          frame's entire document */
       if (cur?.frameId === frame.id) useStore.getState().setSelectedElement(null)
+    } else if (probeSel && stale) {
+      /* leave the live selection as it is */
     } else if (probeSel) {
       const el = { frameId: frame.id, selector: probeSel }
       /* the Comment tool outlines the element without sliding its properties panel in */
@@ -1370,6 +1380,7 @@ export const FrameView = memo(function FrameView({
         const hit = (ev.data.hit ?? null) as ProbeHit | null
         closePopovers()
         if (hit) {
+          probeFromSelect.current = { probe: hit.selector, asked: live.selector }
           setProbe(hit)
           /* an element link names the element by id; from here on the
              selection speaks the positional path the Layers panel knows */

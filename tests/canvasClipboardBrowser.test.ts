@@ -5,6 +5,8 @@ import type { Frame } from '../shared/types'
 import { findBrowserPath } from '../server/screenshot'
 import { fixtureUrl, pagePerTest } from './browser'
 
+type PickedRoots = { picked: string[]; matches: number[]; roots: string[]; sections: number; paragraphs: number }
+
 declare global {
   interface Window {
     canvasClipboardHarness: {
@@ -12,6 +14,8 @@ declare global {
       pick: (...selectors: string[]) => void
       frames: () => Frame[]
       picked: () => string[]
+      primary: () => string | undefined
+      pickedRoots: () => PickedRoots
       lockFrame: () => void
       notice: () => string | undefined
       undo: () => Promise<void>
@@ -65,6 +69,20 @@ describe.skipIf(!findBrowserPath() || !CLIPBOARD_IS_RELIABLE)('canvas clipboard 
       const html = window.canvasClipboardHarness.frames()[0]!.html
       return new DOMParser().parseFromString(html, 'text/html').querySelectorAll(selector).length
     }, selector)
+  }
+
+  async function expectPastedPair() {
+    expectPair(await page.evaluate(() => window.canvasClipboardHarness.pickedRoots()))
+  }
+
+  /* Which elements of the frame are picked, by identity (`pickedRoots` in the fixture): every picked
+     selector must match exactly one element, and the pair must be the second `section` and the second
+     `p`, the two roots the paste inserted (the source `#card` and `#other` come first). */
+  function expectPair(found: PickedRoots) {
+    expect(found.sections).toBe(2)
+    expect(found.paragraphs).toBe(2)
+    expect(found.matches).toEqual([1, 1])
+    expect([...found.roots].sort()).toEqual(['p[2]', 'section[2]'])
   }
 
   async function copyImage() {
@@ -255,7 +273,86 @@ describe.skipIf(!findBrowserPath() || !CLIPBOARD_IS_RELIABLE)('canvas clipboard 
     await chord('c')
     await chord('v')
     await expect.poll(() => count('section, p')).toBe(4)
+    await expectPastedPair()
+  })
+
+  /* CHE-9215. Picking `#other` asks the frame to locate it; the answer is a
+     `doop:select-result` that FrameView turns into a probe. When the paste lands
+     after the answer but before React renders that probe, the probe's effect
+     picked `#other` again against the live store and collapsed the pasted pair.
+     The order is forced here, in one task each: the answer for `#other` is the
+     message that fires the paste. */
+  it('keeps the pasted set when the frame answers for the old primary just before the paste', async () => {
+    const race = await page.evaluate(
+      () =>
+        new Promise<{
+          order: string[]
+          copied: string
+          stored: string | null
+          replyReqId: unknown
+          primaryAtReply: string | undefined
+          pickedAtReply: string[]
+          afterPaste: PickedRoots & { primary: string | undefined }
+        }>((resolve, reject) => {
+          const harness = window.canvasClipboardHarness
+          const iframe = document.querySelector<HTMLIFrameElement>('iframe[data-doop-frame]')!
+          const order: string[] = []
+          const copyData = new DataTransfer()
+          const timer = window.setTimeout(() => reject(new Error('no select-result for #other')), 3_000)
+          function onMessage(ev: MessageEvent) {
+            if (ev.source !== iframe.contentWindow) return
+            if (ev.data?.type !== 'doop:select-result' || ev.data.hit?.selector !== '#other') return
+            window.removeEventListener('message', onMessage)
+            window.clearTimeout(timer)
+            order.push('reply')
+            const replyReqId = ev.data.reqId
+            const primaryAtReply = harness.primary()
+            const pickedAtReply = harness.picked()
+            const pasteData = new DataTransfer()
+            pasteData.setData('text/plain', copyData.getData('text/plain'))
+            document.body.dispatchEvent(
+              new ClipboardEvent('paste', { clipboardData: pasteData, bubbles: true, cancelable: true }),
+            )
+            order.push('paste')
+            resolve({
+              order,
+              copied: copyData.getData('text/plain'),
+              stored: localStorage.getItem('doop:clipboard-token'),
+              replyReqId,
+              primaryAtReply,
+              pickedAtReply,
+              afterPaste: { ...harness.pickedRoots(), primary: harness.primary() },
+            })
+          }
+          window.addEventListener('message', onMessage)
+          harness.pick('#card', '#other')
+          document.body.dispatchEvent(
+            new ClipboardEvent('copy', { clipboardData: copyData, bubbles: true, cancelable: true }),
+          )
+        }),
+    )
+    /* V1: the copy wrote the token the paste carries */
+    expect(race.copied).toMatch(/^doop:clipboard:/)
+    expect(race.stored).toBe(race.copied)
+    /* V2 and V4: the frame's answer for #other arrived first, and FrameView accepted it
+       (it acts on an answer only while the asked-for element is the live primary) */
+    expect(race.order).toEqual(['reply', 'paste'])
+    expect(race.replyReqId).toEqual(expect.any(Number))
+    expect(race.primaryAtReply).toBe('#other')
+    expect(race.pickedAtReply).toEqual(['#card', '#other'])
+    /* V3: the paste itself landed both roots and picked them, before the probe's render */
+    expect(race.afterPaste.sections + race.afterPaste.paragraphs).toBe(4)
+    expect(race.afterPaste.picked).toHaveLength(2)
+    expectPair(race.afterPaste)
+    /* the probe's deferred write has run by now */
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
+        ),
+    )
     expect(await page.evaluate(() => window.canvasClipboardHarness.picked())).toHaveLength(2)
+    await expectPastedPair()
   })
 
   it('copies through the element menu and pastes with the keyboard', async () => {

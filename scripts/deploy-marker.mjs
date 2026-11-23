@@ -2,7 +2,7 @@
 // It is the one switch that lets the train run, so every write is: read it, check it is the value this
 // writer expects, write, read it back. A write that cannot be proven throws and fails the job.
 //
-//   clear:<nonce>:<lift run id|restore>                  the train may run
+//   clear:<nonce>:<lift run id|restore>                  the train may run (a lift is written by scripts/deploy-lift.mjs)
 //   armed:<nonce>:<run id>:<sha>                         a train run is changing C00
 //   suspended:<nonce>:<run id>:<sha>:<reason>            nobody runs until a lift (S3b) writes clear
 //
@@ -36,7 +36,7 @@ export const kindOf = (value) =>
 const nonce = () => randomBytes(16).toString('hex')
 
 // The variable's value, or null when it does not exist. Anything else that goes wrong throws.
-async function read(ghApi, repo) {
+export async function readMarker(ghApi, repo) {
   try {
     return String((await ghApi(`repos/${repo}/actions/variables/${NAME}`)).value ?? '')
   } catch (err) {
@@ -48,19 +48,19 @@ async function read(ghApi, repo) {
 /** Read, check, write, read back. `expected` is the exact value that must stand now (null: absent). */
 export async function writeMarker({ ghApi, repo, expected, next }) {
   if (!kindOf(next)) throw new Error('refusing to write a value that is not a marker value')
-  const now = await read(ghApi, repo)
+  const now = await readMarker(ghApi, repo)
   if (now !== expected) throw new Error('the suspension marker changed since it was read; nothing was written')
   if (now === null)
     await ghApi(`repos/${repo}/actions/variables`, { method: 'POST', body: { name: NAME, value: next } })
   else await ghApi(`repos/${repo}/actions/variables/${NAME}`, { method: 'PATCH', body: { name: NAME, value: next } })
-  if ((await read(ghApi, repo)) !== next) throw new Error('the suspension marker write could not be read back')
+  if ((await readMarker(ghApi, repo)) !== next) throw new Error('the suspension marker write could not be read back')
   return next
 }
 
 /** A train run, before its first change: clear -> this run's armed value. Anything but clear refuses. */
 export async function arm({ ghApi, repo, runId, sha }) {
   if (!/^\d+$/.test(String(runId)) || !SHA40.test(sha ?? '')) throw new Error('arm needs a run id and a full SHA')
-  const now = await read(ghApi, repo)
+  const now = await readMarker(ghApi, repo)
   if (kindOf(now) !== 'clear') throw new Error(`cannot arm: the marker is ${now === null ? 'absent' : 'not clear'}`)
   return writeMarker({ ghApi, repo, expected: now, next: `armed:${nonce()}:${runId}:${sha}` })
 }
@@ -71,12 +71,20 @@ export async function restore({ ghApi, repo, expected }) {
   return writeMarker({ ghApi, repo, expected, next: `clear:${nonce()}:restore` })
 }
 
+/** An approved lift (CHE-5551, C-10.7): exactly the stated armed or suspended value -> a new clear. Nothing else lifts. */
+export async function lift({ ghApi, repo, runId, expected }) {
+  if (!/^\d+$/.test(String(runId ?? ''))) throw new Error('lift needs the lift run id')
+  if (!['armed', 'suspended'].includes(kindOf(expected) ?? ''))
+    throw new Error('lift needs the armed or suspended value it lifts')
+  return writeMarker({ ghApi, repo, expected, next: `clear:${nonce()}:${runId}` })
+}
+
 /** -> suspended, over this run's own armed value (`expected`) or, with `any`, over whatever stands. */
 export async function suspend({ ghApi, repo, runId, sha, reason, expected, any = false }) {
   if (!/^\d+$/.test(String(runId)) || !SHA40.test(sha ?? '')) throw new Error('suspend needs a run id and a full SHA')
   if (!WORD.test(reason ?? '')) throw new Error('the suspension reason must be one word of letters, digits, _ or -')
   let over = expected
-  if (any) over = await read(ghApi, repo)
+  if (any) over = await readMarker(ghApi, repo)
   else if (!['armed', 'suspended'].includes(kindOf(expected) ?? ''))
     throw new Error('suspend needs this run’s own armed or suspended value, or any')
   return writeMarker({ ghApi, repo, expected: over, next: `suspended:${nonce()}:${runId}:${sha}:${reason}` })

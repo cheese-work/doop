@@ -110,16 +110,37 @@ export function isBrowserFailure(error: unknown): boolean {
   )
 }
 
-export function withDeadline<T>(work: Promise<T>, ms: number, step: string): Promise<T> {
+/** Why an aborted caller is refused: the reason it aborted with. */
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException('This operation was aborted', 'AbortError')
+}
+
+/** Settle with `work`, or reject at the deadline, or reject as soon as the
+ *  optional `signal` aborts. `work` keeps running after either; its late
+ *  outcome is dropped, so the caller must clean up whatever it holds. */
+export function withDeadline<T>(work: Promise<T>, ms: number, step: string, signal?: AbortSignal): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new RenderTimeoutError(step, ms)), ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(abortReason(signal!))
+    }
+    const done = () => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      reject(new RenderTimeoutError(step, ms))
+    }, ms)
+    if (signal?.aborted) return onAbort()
+    signal?.addEventListener('abort', onAbort, { once: true })
     work.then(
       (value) => {
-        clearTimeout(timer)
+        done()
         resolve(value)
       },
       (error: unknown) => {
-        clearTimeout(timer)
+        done()
         reject(error)
       },
     )
@@ -148,8 +169,11 @@ export class RenderGate {
     return { active: this.active, background: this.background, queued: this.waiting.length }
   }
 
-  /** Resolves with the slot's release function, which is safe to call twice. */
-  acquire(priority: RenderPriority): Promise<() => void> {
+  /** Resolves with the slot's release function, which is safe to call twice.
+   *  An aborted `signal` refuses the caller with its reason and, if it is
+   *  queued, removes it: an aborted waiter is never admitted. */
+  acquire(priority: RenderPriority, signal?: AbortSignal): Promise<() => void> {
+    if (signal?.aborted) return Promise.reject(abortReason(signal))
     if (this.canAdmit(priority) && !this.waiting.some((w) => this.outranks(w, priority)))
       return Promise.resolve(this.take(priority))
     if (this.waiting.length >= this.tuning.maxQueued)
@@ -159,14 +183,22 @@ export class RenderGate {
         priority,
         admit: () => {
           clearTimeout(timer)
+          signal?.removeEventListener('abort', onAbort)
           resolve(this.take(priority))
         },
         refuse: reject,
       }
       const timer = setTimeout(() => {
+        signal?.removeEventListener('abort', onAbort)
         this.remove(waiter)
         reject(new RendererBusyError(`no render slot within ${this.tuning.queueTimeoutMs}ms`))
       }, this.tuning.queueTimeoutMs)
+      const onAbort = () => {
+        clearTimeout(timer)
+        this.remove(waiter)
+        reject(abortReason(signal!))
+      }
+      signal?.addEventListener('abort', onAbort, { once: true })
       timer.unref?.()
       this.waiting.push(waiter)
     })
@@ -238,13 +270,24 @@ export interface RenderPage {
 
 export interface PageOptions {
   priority?: RenderPriority
+  /** Abort the call: a queued wait ends, a page that opens after the abort
+   *  is closed, and `withPage` stops waiting for its work. The caller gets
+   *  the signal's reason. Unset keeps the unbounded-by-caller behavior. */
+  signal?: AbortSignal
+}
+
+export interface WithPageOptions extends PageOptions {
+  /** `false`: no second attempt on a fresh browser and no health probe
+   *  after a browser failure; the failure goes to the caller. Default true. */
+  retry?: boolean
 }
 
 export interface Renderer {
   openPage(options?: PageOptions): Promise<RenderPage>
   /** open a page, run `work` under `timeoutMs`, always close; a browser
-   *  failure that kills the browser is retried once on a fresh launch */
-  withPage<T>(step: string, timeoutMs: number, work: (page: Page) => Promise<T>, options?: PageOptions): Promise<T>
+   *  failure that kills the browser is retried once on a fresh launch
+   *  (unless `retry: false`) */
+  withPage<T>(step: string, timeoutMs: number, work: (page: Page) => Promise<T>, options?: WithPageOptions): Promise<T>
   /** the live browser, launched if need be (tests and one-off callers) */
   browser(): Promise<Browser>
   status(): RendererStatus
@@ -473,18 +516,51 @@ export function createRenderer(deps: RendererDeps): Renderer {
   }
 
   async function openPage(options: PageOptions = {}): Promise<RenderPage> {
-    const release = await gate.acquire(options.priority ?? 'interactive')
-    let opened: Awaited<ReturnType<typeof openOnLiveBrowser>>
-    try {
-      opened = await openOnLiveBrowser().catch((error: unknown) => {
-        if (!isBrowserFailure(error)) throw error
+    const { signal } = options
+    const release = await gate.acquire(options.priority ?? 'interactive', signal)
+    if (signal?.aborted) {
+      release()
+      throw abortReason(signal)
+    }
+    /* the open is not cancellable: on abort the caller stops waiting, and a
+       page that arrives afterwards is closed, which also returns the slot */
+    const opening = openOnLiveBrowser()
+      .catch((error: unknown) => {
+        if (!isBrowserFailure(error) || signal?.aborted) throw error
         log.warn(`[renderer] retrying on a fresh browser after: ${describe(error)}`)
         return openOnLiveBrowser()
       })
-    } catch (error) {
-      release()
-      throw error
-    }
+      .then(
+        (opened) => handOut(opened, release),
+        (error: unknown) => {
+          release()
+          throw error
+        },
+      )
+    if (!signal) return opening
+    return new Promise<RenderPage>((resolve, reject) => {
+      const onAbort = () => {
+        void opening.then(
+          (handle) => handle.close(),
+          () => {},
+        )
+        reject(abortReason(signal))
+      }
+      signal.addEventListener('abort', onAbort, { once: true })
+      opening.then(
+        (handle) => {
+          signal.removeEventListener('abort', onAbort)
+          resolve(handle)
+        },
+        (error: unknown) => {
+          signal.removeEventListener('abort', onAbort)
+          reject(error)
+        },
+      )
+    })
+  }
+
+  function handOut(opened: Awaited<ReturnType<typeof openOnLiveBrowser>>, release: () => void): RenderPage {
     const { generation, context, page } = opened
     let closing: Promise<void> | null = null
     const close = () => {
@@ -513,19 +589,22 @@ export function createRenderer(deps: RendererDeps): Renderer {
     step: string,
     timeoutMs: number,
     work: (page: Page) => Promise<T>,
-    options: PageOptions = {},
+    options: WithPageOptions = {},
   ): Promise<T> {
+    const { signal, retry = true } = options
     for (let attempt = 0; ; attempt++) {
       const handle = await openPage(options)
       let failure: unknown
       try {
-        return await withDeadline(work(handle.page), timeoutMs, step)
+        /* an abort stops the wait; the finally below closes the page, which
+           is bounded by closeTimeoutMs and kills the browser if it hangs */
+        return await withDeadline(work(handle.page), timeoutMs, step, signal)
       } catch (error) {
         failure = error
       } finally {
         await handle.close()
       }
-      if (!isBrowserFailure(failure) || attempt > 0) throw failure
+      if (!retry || signal?.aborted || !isBrowserFailure(failure) || attempt > 0) throw failure
       const generation = findGeneration(handle.generation)
       const healthy = generation ? await checkHealth(generation, failure) : false
       /* a healthy browser means the frame itself is too slow: no retry */
