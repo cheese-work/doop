@@ -515,8 +515,8 @@ export function createRenderer(deps: RendererDeps): Renderer {
     }
   }
 
-  async function openPage(options: PageOptions = {}): Promise<RenderPage> {
-    const { signal } = options
+  async function openPage(options: WithPageOptions = {}): Promise<RenderPage> {
+    const { signal, retry = true } = options
     const release = await gate.acquire(options.priority ?? 'interactive', signal)
     if (signal?.aborted) {
       release()
@@ -526,7 +526,8 @@ export function createRenderer(deps: RendererDeps): Renderer {
        page that arrives afterwards is closed, which also returns the slot */
     const opening = openOnLiveBrowser()
       .catch((error: unknown) => {
-        if (!isBrowserFailure(error) || signal?.aborted) throw error
+        /* `retry: false` covers the open too: a stalled open is the caller's NOT-RUN, not a second open */
+        if (!retry || !isBrowserFailure(error) || signal?.aborted) throw error
         log.warn(`[renderer] retrying on a fresh browser after: ${describe(error)}`)
         return openOnLiveBrowser()
       })
