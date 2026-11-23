@@ -4,7 +4,7 @@
 
 import { pageFrames } from '../shared/pages.ts'
 import type { Canvas } from '../shared/types.ts'
-import type { FrameViewportResult } from '../shared/frameLint.ts'
+import { PAGE_RULES, type FrameViewportResult } from '../shared/frameLint.ts'
 import {
   DEFAULT_LIMITS,
   WINDOW_SIZE,
@@ -13,10 +13,10 @@ import {
   walkOrder,
   type AssembledLintResult,
   type LintRowInput,
-  type PageScanInput,
   type WindowFrame,
 } from '../shared/frameLintResult.ts'
 import { lintFrame } from './frameLint.ts'
+import { scanPage, type PageScan } from './frameLintPageScan.ts'
 
 /** The whole call, from the first line of the handler to the reply. The SDK's default request timeout is 60 s. */
 export const FRAME_LINT_DEADLINE_MS = 45_000
@@ -37,6 +37,13 @@ export function setFrameLintDeadlineForTest(ms: number | null): void {
   deadlineOverride = ms
 }
 
+let scanBudgetOverride: number | null = null
+
+/** Test hook: the page-rule scan budget in ms, counted from T0. `null` restores one third of the deadline. */
+export function setFrameLintPageScanBudgetForTest(ms: number | null): void {
+  scanBudgetOverride = ms
+}
+
 export interface LintFramesInput {
   canvas: Canvas
   pageId: string
@@ -48,16 +55,24 @@ export interface LintFramesInput {
   signal?: AbortSignal
 }
 
-/** What the page-rule scan reports until S3p wires it. */
-const PAGE_SCAN_NOT_WIRED: PageScanInput = {
+/** Size limits of the whole-page rule scan (plan S3p): a frame over the first is skipped, a page over the second is
+ *  not scanned. Both are by size alone, never by time. */
+export const PAGE_SCAN_MAX_FRAME_CHARS = 1_500_000
+export const PAGE_SCAN_MAX_PAGE_CHARS = 10_000_000
+/** The scan stops at T0 + this fraction of the deadline: 15 s of 45 s. */
+const PAGE_SCAN_BUDGET = 15 / 45
+
+/** What the call reports when the scan did not finish by the time the reply is due. */
+const pageScanTimedOut = (): PageScan => ({
   scope: 'NOT-RUN',
-  reason: 'not wired',
+  reason: 'deadline',
   frames_scanned: 0,
   chars_scanned: 0,
   ms: 0,
   skipped: [],
   by_rule: {},
-}
+  findings: new Map(),
+})
 
 interface FrameSource {
   id: string
@@ -125,6 +140,11 @@ export async function runLintFrames(input: LintFramesInput): Promise<AssembledLi
   const sources = new Map<string, FrameSource>()
   for (const f of frames) if (wanted.has(f.id)) sources.set(f.id, f)
 
+  /* The page scan reads every frame on the page, whatever the window: a conclusion over a part of the page is none. */
+  const scanBudget = scanBudgetOverride ?? deadline * PAGE_SCAN_BUDGET
+  const byId = new Map(frames.map((f) => [f.id, f]))
+  const scanFrames = walkOrder(frames).map(({ id }) => byId.get(id)!)
+
   const controller = new AbortController()
   const onClientGone = () => controller.abort('client')
   if (input.signal?.aborted) onClientGone()
@@ -155,8 +175,17 @@ export async function runLintFrames(input: LintFramesInput): Promise<AssembledLi
     }
   }
 
+  /* started with the renders, not after them; it stops itself at T0 + its budget */
+  const scanning = scanPage(scanFrames, PAGE_RULES, {
+    budgetMs: Math.max(0, t0 + scanBudget - Date.now()),
+    maxFrameChars: PAGE_SCAN_MAX_FRAME_CHARS,
+    maxPageChars: PAGE_SCAN_MAX_PAGE_CHARS,
+    signal: controller.signal,
+  })
+  let scan: PageScan | null = null
   try {
     await Promise.race([Promise.all(Array.from({ length: PARALLEL_FRAMES }, worker)), giveUp])
+    scan = await Promise.race([scanning, giveUp.then(() => null)])
   } finally {
     clearTimeout(abortTimer)
     clearTimeout(giveUpTimer)
@@ -173,6 +202,8 @@ export async function runLintFrames(input: LintFramesInput): Promise<AssembledLi
     rows.push(done)
     if (isDeadlineRow(done)) break
   }
+  scan ??= pageScanTimedOut()
+  for (const r of rows) r.page_findings = scan.findings.get(r.frame_id) ?? []
   const meta = { canvas_id: input.canvas.id, page_id: input.pageId, deadline_ms: deadline, elapsed_ms: Date.now() - t0 }
-  return assembleLintResult(window, rows, PAGE_SCAN_NOT_WIRED, DEFAULT_LIMITS, meta)
+  return assembleLintResult(window, rows, scan, DEFAULT_LIMITS, meta)
 }

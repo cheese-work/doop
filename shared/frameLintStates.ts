@@ -313,4 +313,9 @@ function evaluate(inputs: PageFrameInput[]): PageFinding[] {
   return findings
 }
 
-export const statesPageRule: PageRule = { id: 'states', collect, evaluate }
+export const statesPageRule: PageRule = {
+  id: 'states',
+  collect,
+  over: (facts) => isCollected(facts) && facts.kind === 'over',
+  evaluate,
+}

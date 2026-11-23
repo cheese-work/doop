@@ -269,6 +269,9 @@ export interface PageFinding extends LintFinding {
 export interface PageRule {
   id: string
   collect(html: string): unknown
+  /** true when `collect` returned a part of the frame because it passed the per-frame fact cap; the scan then skips
+   *  the frame for every rule, so no rule reads a part of it as the whole */
+  over?(facts: unknown): boolean
   evaluate(frames: PageFrameInput[]): PageFinding[]
 }
 
