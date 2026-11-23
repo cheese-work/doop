@@ -123,10 +123,32 @@ ro_classify() {
 
   # the intent record: whole line, right kind, this nonce, written by the admin member
   case $kind in freeze | mirror) want=freeze ;; pin | fence | actor) want=merge-fence ;; esac
-  if ! jq -e --arg a "$admin" --arg line "^${want}-intent v1 nonce=${nonce}( |\$)" '
-      any(.[]?; .author_type == "member" and .author_id == $a and ((.content // "") | split("\n") | any(test($line))))' "$comments" >/dev/null 2>&1; then
+  local iline
+  iline=$(jq -r --arg a "$admin" --arg line "^${want}-intent v1 nonce=${nonce}( |\$)" '
+      [.[]? | select(.author_type == "member" and .author_id == $a) | (.content // "") | split("\n")[] | select(test($line))] | first // empty' "$comments" 2>/dev/null)
+  if [ -z "$iline" ]; then
     echo "foreign no-intent"
     return
+  fi
+
+  # A merge-fence intent names the exact refs and the admin it binds. The ruleset must carry exactly
+  # those values; a caller may also pin them (RO_ADMIN_ID, RO_BASE_REF, RO_HEAD_REF) and they must equal
+  # the record's. A record without all three fields owns nothing.
+  local i_base="" i_head="" i_admin=""
+  if [ "$want" = merge-fence ]; then
+    [[ " $iline " =~ \ base_ref=([^\ ]+)\  ]] && i_base=${BASH_REMATCH[1]}
+    [[ " $iline " =~ \ head_ref=([^\ ]+)\  ]] && i_head=${BASH_REMATCH[1]}
+    [[ " $iline " =~ \ admin=[^\ /]+/([0-9]+)\  ]] && i_admin=${BASH_REMATCH[1]}
+    if [ -z "$i_base" ] || [ -z "$i_head" ] || [ -z "$i_admin" ]; then
+      echo "foreign no-intent"
+      return
+    fi
+    if { [ -n "${RO_ADMIN_ID:-}" ] && [ "$RO_ADMIN_ID" != "$i_admin" ]; } ||
+      { [ -n "${RO_BASE_REF:-}" ] && [ "$RO_BASE_REF" != "$i_base" ]; } ||
+      { [ -n "${RO_HEAD_REF:-}" ] && [ "$RO_HEAD_REF" != "$i_head" ]; }; then
+      echo "foreign bad-shape intent differs from expected"
+      return
+    fi
   fi
 
   case $kind in mirror) mode=mirror ;; actor) mode=actor ;; *) mode=strict ;; esac
@@ -140,11 +162,14 @@ ro_classify() {
       [ "$(_ro_rules <"$detail")" = "$(_ro_freeze_rules)" ] || { echo "foreign bad-shape rules"; return; }
       echo "own freeze $nonce" ;;
     pin)
-      jq -e '(.conditions.ref_name.include // []) | length > 0 and all(.[]; startswith("refs/heads/"))' "$detail" >/dev/null || { echo "foreign bad-shape include"; return; }
+      jq -e --arg r "refs/heads/$i_head" '(.conditions.ref_name.include // []) == [$r]' "$detail" >/dev/null || { echo "foreign bad-shape include"; return; }
       [ "$(_ro_rules <"$detail")" = "$(_ro_pin_rules)" ] || { echo "foreign bad-shape rules"; return; }
       echo "own pin $nonce" ;;
     fence | actor)
-      jq -e '(.conditions.ref_name.include // []) | length == 1 and all(.[]; startswith("refs/heads/"))' "$detail" >/dev/null || { echo "foreign bad-shape include"; return; }
+      jq -e --arg r "refs/heads/$i_base" '(.conditions.ref_name.include // []) == [$r]' "$detail" >/dev/null || { echo "foreign bad-shape include"; return; }
+      if [ "$kind" = actor ]; then
+        jq -e --argjson id "$i_admin" '.bypass_actors[0].actor_id == $id' "$detail" >/dev/null || { echo "foreign bad-shape bypass_actors"; return; }
+      fi
       if [ "$kind" = fence ]; then
         [ "$(_ro_fence_view <"$detail")" = "$(_ro_fence_expected)" ] || { echo "foreign bad-shape rules"; return; }
       else

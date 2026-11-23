@@ -113,7 +113,10 @@ const mirrorDetail = (id: number, nonce: string, src: J, over: J = {}): J => ({
   ...extras,
   ...over,
 })
-const BASE_REF = 'refs/heads/cheese/main'
+const ADMIN_ID = 129714106
+const BASE_NAME = 'cheese/main'
+const HEAD_NAME = 'agent/x'
+const BASE_REF = `refs/heads/${BASE_NAME}`
 const fenceDetail = (id: number, nonce = NONCE, over: J = {}): J => ({
   id,
   name: `port merge fence (CHE-7309) #${nonce}`,
@@ -153,7 +156,7 @@ const actorDetail = (id: number, nonce = NONCE, over: J = {}): J => ({
   target: 'branch',
   source_type: 'Repository',
   enforcement: 'active',
-  bypass_actors: [{ actor_id: 129714106, actor_type: 'User', bypass_mode: 'pull_request' }],
+  bypass_actors: [{ actor_id: ADMIN_ID, actor_type: 'User', bypass_mode: 'pull_request' }],
   conditions: { ref_name: { include: [BASE_REF], exclude: [] } },
   rules: [{ type: 'update' }],
   current_user_can_bypass: 'never',
@@ -167,7 +170,7 @@ const pinOwn = (id: number, nonce = NONCE, over: J = {}): J => ({
   source_type: 'Repository',
   enforcement: 'active',
   bypass_actors: [],
-  conditions: { ref_name: { include: ['refs/heads/agent/x'], exclude: [] } },
+  conditions: { ref_name: { include: [`refs/heads/${HEAD_NAME}`], exclude: [] } },
   rules: [{ type: 'update' }, { type: 'deletion' }, { type: 'non_fast_forward' }],
   current_user_can_bypass: 'never',
   ...extras,
@@ -187,12 +190,20 @@ const ruleRows = (d: J) =>
     ruleset_source: 'cheese-work/doop',
     ruleset_id: d.id,
   }))
-const intent = (nonce: string, kind = 'freeze', author = ADMIN): J => ({
-  id: `c-${nonce}`,
-  author_id: author,
-  author_type: 'member',
-  content: `freeze-evidence v1 nonce=${nonce} seq=1 prev=0 kind=intent lo=x hi=y body_sha256=z\n\n\`\`\`json\n{}\n\`\`\`\n${kind}-intent v1 nonce=${nonce} op=apply main=${MF}\n`,
-})
+const MERGE_FIELDS = { base: BASE_NAME, head: HEAD_NAME, admin: `congvc-dev/${ADMIN_ID}` }
+const intent = (nonce: string, kind = 'freeze', author = ADMIN, fields: Partial<typeof MERGE_FIELDS> = {}): J => {
+  const m = { ...MERGE_FIELDS, ...fields }
+  const line =
+    kind === 'merge-fence'
+      ? `merge-fence-intent v1 nonce=${nonce} pr=1 head=${MF} base=${OTHER} base_ref=${m.base} head_ref=${m.head} admin=${m.admin} mode=merge`
+      : `${kind}-intent v1 nonce=${nonce} op=apply main=${MF}`
+  return {
+    id: `c-${nonce}`,
+    author_id: author,
+    author_type: 'member',
+    content: `freeze-evidence v1 nonce=${nonce} seq=1 prev=0 kind=intent lo=x hi=y body_sha256=z\n\n\`\`\`json\n{}\n\`\`\`\n${line}\n`,
+  }
+}
 
 const FAKE_GH = `#!/usr/bin/env bash
 # fake gh: serves $FAKE_DIR/<fixture>, logs calls, records writes in $FAKE_DIR/writes
@@ -563,6 +574,17 @@ describe('case 1b: the source set is read from main, not fixed', { timeout: 60_0
     expect(r.status).toBe(2)
     expect(r.out).toContain('FAIL source-detail')
   })
+  it('--admin-id, --base-ref and --head-ref are accepted and pin the intent', () => {
+    const w = freshWorld()
+    w.rulesets = [S1, S2, actorDetail(122)]
+    w.comments = [intent(NONCE, 'merge-fence')]
+    writeWorld(w)
+    const ok = sh([...planArgs(), '--admin-id', String(ADMIN_ID), '--base-ref', BASE_NAME, '--head-ref', HEAD_NAME])
+    expect(ok.out).toContain(`stale own #${NONCE}`)
+    const bad = sh([...planArgs(), '--admin-id', '999'])
+    expect(bad.status).toBe(6)
+    expect(bad.out).toContain('foreign')
+  })
   it('--source-ids is gone', () => {
     writeWorld(freshWorld())
     const r = sh([...planArgs(), '--source-ids', '1'])
@@ -730,7 +752,7 @@ describe('case 3: foreign collision gives exit 6 with no write', { timeout: 60_0
 })
 
 describe('ruleset-owner.sh unit', { timeout: 60_000 }, () => {
-  const own = (detail: J, comments: J[], sources = '26093168,27606879', extraDetails: J[] = []) => {
+  const own = (detail: J, comments: J[], sources = '26093168,27606879', extraDetails: J[] = [], env = '') => {
     writeFileSync(join(dir, 'd.json'), JSON.stringify(detail))
     writeFileSync(join(dir, 'c.json'), JSON.stringify(comments))
     mkdirSync(join(dir, 'rs'), { recursive: true })
@@ -739,7 +761,7 @@ describe('ruleset-owner.sh unit', { timeout: 60_000 }, () => {
       'bash',
       [
         '-c',
-        `source "${LIB('ruleset-owner.sh')}"; RO_DETAIL_DIR="${dir}/rs" ro_classify "${dir}/d.json" "${dir}/c.json" "${ADMIN}" "${sources}"`,
+        `source "${LIB('ruleset-owner.sh')}"; ${env} RO_DETAIL_DIR="${dir}/rs" ro_classify "${dir}/d.json" "${dir}/c.json" "${ADMIN}" "${sources}"`,
       ],
       { encoding: 'utf8' },
     )
@@ -752,7 +774,7 @@ describe('ruleset-owner.sh unit', { timeout: 60_000 }, () => {
     source_type: 'Repository',
     enforcement: 'active',
     bypass_actors: [],
-    conditions: { ref_name: { include: ['refs/heads/agent/x'], exclude: [] } },
+    conditions: { ref_name: { include: [`refs/heads/${HEAD_NAME}`], exclude: [] } },
     rules: [{ type: 'update' }, { type: 'deletion' }, { type: 'non_fast_forward' }],
     ...over,
   })
@@ -843,6 +865,59 @@ describe('ruleset-owner.sh unit', { timeout: 60_000 }, () => {
     expect(own(actorDetail(7, NONCE, { enforcement: 'evaluate' }), [intent(NONCE, 'merge-fence')])).toMatch(
       /^foreign bad-shape enforcement/,
     )
+  })
+  describe('exact binding to the intent record (round 2)', () => {
+    const mf = (fields: Partial<typeof MERGE_FIELDS> = {}) => [intent(NONCE, 'merge-fence', ADMIN, fields)]
+    it('an actor whose User id is not the admin id in the intent is foreign', () => {
+      const d = actorDetail(7, NONCE, {
+        bypass_actors: [{ actor_id: 999, actor_type: 'User', bypass_mode: 'pull_request' }],
+      })
+      expect(own(d, mf())).toMatch(/^foreign bad-shape bypass_actors/)
+    })
+    it('an actor on another ref than the intent base_ref is foreign', () => {
+      const d = actorDetail(7, NONCE, { conditions: { ref_name: { include: ['refs/heads/other'], exclude: [] } } })
+      expect(own(d, mf())).toMatch(/^foreign bad-shape include/)
+    })
+    it('a fence on another ref than the intent base_ref is foreign', () => {
+      const d = fenceDetail(6, NONCE, { conditions: { ref_name: { include: ['refs/heads/other'], exclude: [] } } })
+      expect(own(d, mf())).toMatch(/^foreign bad-shape include/)
+    })
+    it('a head pin on another ref than the intent head_ref is foreign', () => {
+      const d = pinDetail({ conditions: { ref_name: { include: ['refs/heads/agent/y'], exclude: [] } } })
+      expect(own(d, mf())).toMatch(/^foreign bad-shape include/)
+    })
+    it('an intent without base_ref, head_ref and admin fields owns nothing', () => {
+      const c = { ...intent(NONCE, 'merge-fence'), content: `merge-fence-intent v1 nonce=${NONCE} pr=1 mode=merge\n` }
+      for (const d of [pinDetail(), fenceDetail(6), actorDetail(7)]) expect(own(d, [c])).toMatch(/^foreign no-intent/)
+    })
+    it('a malformed admin field (no numeric id) owns nothing', () => {
+      expect(own(actorDetail(7), mf({ admin: 'congvc-dev' }))).toMatch(/^foreign no-intent/)
+    })
+    it('expected values from the caller must equal the intent and the ruleset', () => {
+      const ok = `RO_ADMIN_ID=${ADMIN_ID} RO_BASE_REF=${BASE_NAME} RO_HEAD_REF=${HEAD_NAME}`
+      expect(own(actorDetail(7), mf(), undefined, [], ok)).toBe(`own actor ${NONCE}`)
+      expect(own(fenceDetail(6), mf(), undefined, [], ok)).toBe(`own fence ${NONCE}`)
+      expect(own(pinDetail(), mf(), undefined, [], ok)).toBe(`own pin ${NONCE}`)
+    })
+    it.each([
+      ['admin id', 'RO_ADMIN_ID=999'],
+      ['base ref', 'RO_BASE_REF=main'],
+      ['head ref', 'RO_HEAD_REF=agent/y'],
+    ])('a caller-expected %s that differs from the intent makes it foreign', (_n, env) => {
+      const r = [
+        own(actorDetail(7), mf(), undefined, [], env),
+        own(fenceDetail(6), mf(), undefined, [], env),
+        own(pinDetail(), mf(), undefined, [], env),
+      ]
+      // each env constrains only the kinds that use it; the actor uses admin and base, fence base, pin head
+      expect(r.some((x) => x.startsWith('foreign'))).toBe(true)
+    })
+    it('an intent whose own values agree but whose ruleset id differs from the caller admin is foreign', () => {
+      const d = actorDetail(7, NONCE, {
+        bypass_actors: [{ actor_id: 999, actor_type: 'User', bypass_mode: 'pull_request' }],
+      })
+      expect(own(d, mf({ admin: 'congvc-dev/999' }), undefined, [], `RO_ADMIN_ID=${ADMIN_ID}`)).toMatch(/^foreign/)
+    })
   })
   it('ro_has_prefix knows all five prefixes', () => {
     for (const p of [

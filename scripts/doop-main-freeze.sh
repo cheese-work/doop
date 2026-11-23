@@ -6,6 +6,8 @@
 #          bounds. Exit 0: all checks pass, S0 is clean. Exit 2: a check failed or a read failed.
 #          Exit 6: a foreign ruleset collides with our names, refs or context. Exit 64: usage.
 #   status --issue <id> --admin-member <id> [--nonce <hex8>]
+#   Both take optional --admin-id <User id>, --base-ref <name> and --head-ref <name>. A merge-fence record
+#   always binds the ruleset to its own recorded values; these flags pin them from outside as well.
 #          Prints the rules on main and the 4 probe refs, the ownership result of every ruleset with
 #          our prefixes, current_user_can_bypass per source, mirror and freeze, and the policy hashes.
 #   policy-hash --rules-file <f> [--freeze-id <id[,id]>] [--sources-file <f>]
@@ -73,6 +75,9 @@ parse_args() {
       --rules-file) RULES_FILE=$2 ;;
       --freeze-id) FREEZE_IDS="${FREEZE_IDS:+$FREEZE_IDS,}$2" ;;
       --sources-file) SOURCES_FILE=$2 ;;
+      --admin-id) export RO_ADMIN_ID=$2 ;;
+      --base-ref) export RO_BASE_REF=$2 ;;
+      --head-ref) export RO_HEAD_REF=$2 ;;
       *) die_usage "unknown argument $1" ;;
     esac
     shift 2
