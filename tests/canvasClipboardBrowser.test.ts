@@ -9,6 +9,7 @@ type PickedRoots = { picked: string[]; matches: number[]; roots: string[]; secti
 
 declare global {
   interface Window {
+    canvasClipboardEvents?: string[]
     canvasClipboardHarness: {
       seed: (frames: Frame[], role?: CanvasRole) => void
       pick: (...selectors: string[]) => void
@@ -276,17 +277,38 @@ describe.skipIf(!findBrowserPath() || !CLIPBOARD_IS_RELIABLE)('canvas clipboard 
     await expectPastedPair()
   })
 
-  /* CHE-9215. Picking `#other` asks the frame to locate it; the answer is a
+  /* CHE-9215, CHE-9283. Picking `#other` asks the frame to locate it; the answer is a
      `doop:select-result` that FrameView turns into a probe. When the paste lands
      after the answer but before React renders that probe, the probe's effect
      picked `#other` again against the live store and collapsed the pasted pair.
      The order is forced here, in one task each: the answer for `#other` is the
-     message that fires the paste. */
+     message that fires the paste.
+     The frame is sandboxed, so the page sees its traffic only through a relay
+     that this test installs inside it (puppeteer evaluates in the frame; the
+     page and the product are untouched). The relay reports every `doop:select`
+     and `__probe__` `doop:locate` the frame receives. FrameView asks for the
+     `__probe__` of `#other` only once its probe is `#other`, and the only thing
+     that sets that probe here is the accepted select-result; this is a fresh
+     frame with no earlier `#other` probe. So that locate (and its answer),
+     arriving after the paste, shows FrameView took the reply and that the
+     probe's effects, the deferred pick among them, ran in the commit before it. */
   it('keeps the pasted set when the frame answers for the old primary just before the paste', async () => {
+    const doc = (await (await page.$('iframe[data-doop-frame]'))!.contentFrame())!
+    await doc.evaluate(() => {
+      /* capturing, so the relay posts before the frame's own handler posts its answer */
+      window.addEventListener(
+        'message',
+        (ev) => {
+          const m = ev.data
+          if (m?.type === 'doop:select' || (m?.type === 'doop:locate' && m.reqId === '__probe__'))
+            window.parent.postMessage({ type: 'test:frame-received', msg: m }, '*')
+        },
+        true,
+      )
+    })
     const race = await page.evaluate(
       () =>
         new Promise<{
-          order: string[]
           copied: string
           stored: string | null
           replyReqId: unknown
@@ -296,33 +318,41 @@ describe.skipIf(!findBrowserPath() || !CLIPBOARD_IS_RELIABLE)('canvas clipboard 
         }>((resolve, reject) => {
           const harness = window.canvasClipboardHarness
           const iframe = document.querySelector<HTMLIFrameElement>('iframe[data-doop-frame]')!
-          const order: string[] = []
+          const events: string[] = []
+          window.canvasClipboardEvents = events
           const copyData = new DataTransfer()
           const timer = window.setTimeout(() => reject(new Error('no select-result for #other')), 3_000)
           function onMessage(ev: MessageEvent) {
             if (ev.source !== iframe.contentWindow) return
-            if (ev.data?.type !== 'doop:select-result' || ev.data.hit?.selector !== '#other') return
-            window.removeEventListener('message', onMessage)
-            window.clearTimeout(timer)
-            order.push('reply')
-            const replyReqId = ev.data.reqId
-            const primaryAtReply = harness.primary()
-            const pickedAtReply = harness.picked()
-            const pasteData = new DataTransfer()
-            pasteData.setData('text/plain', copyData.getData('text/plain'))
-            document.body.dispatchEvent(
-              new ClipboardEvent('paste', { clipboardData: pasteData, bubbles: true, cancelable: true }),
-            )
-            order.push('paste')
-            resolve({
-              order,
-              copied: copyData.getData('text/plain'),
-              stored: localStorage.getItem('doop:clipboard-token'),
-              replyReqId,
-              primaryAtReply,
-              pickedAtReply,
-              afterPaste: { ...harness.pickedRoots(), primary: harness.primary() },
-            })
+            const data = ev.data
+            if (data?.type === 'test:frame-received') {
+              const m = data.msg
+              events.push(
+                m.type === 'doop:select' ? `select-request:${m.reqId}:${m.selector}` : `probe-request:${m.selector}`,
+              )
+            } else if (data?.type === 'doop:located' && data.reqId === '__probe__') {
+              events.push(`probe-located:${data.selector}`)
+            } else if (data?.type === 'doop:select-result' && data.hit?.selector === '#other') {
+              window.clearTimeout(timer)
+              events.push(`reply:${data.reqId}`)
+              const replyReqId = data.reqId
+              const primaryAtReply = harness.primary()
+              const pickedAtReply = harness.picked()
+              const pasteData = new DataTransfer()
+              pasteData.setData('text/plain', copyData.getData('text/plain'))
+              document.body.dispatchEvent(
+                new ClipboardEvent('paste', { clipboardData: pasteData, bubbles: true, cancelable: true }),
+              )
+              events.push('paste')
+              resolve({
+                copied: copyData.getData('text/plain'),
+                stored: localStorage.getItem('doop:clipboard-token'),
+                replyReqId,
+                primaryAtReply,
+                pickedAtReply,
+                afterPaste: { ...harness.pickedRoots(), primary: harness.primary() },
+              })
+            }
           }
           window.addEventListener('message', onMessage)
           harness.pick('#card', '#other')
@@ -334,9 +364,7 @@ describe.skipIf(!findBrowserPath() || !CLIPBOARD_IS_RELIABLE)('canvas clipboard 
     /* V1: the copy wrote the token the paste carries */
     expect(race.copied).toMatch(/^doop:clipboard:/)
     expect(race.stored).toBe(race.copied)
-    /* V2 and V4: the frame's answer for #other arrived first, and FrameView accepted it
-       (it acts on an answer only while the asked-for element is the live primary) */
-    expect(race.order).toEqual(['reply', 'paste'])
+    /* V2: the frame's answer for #other is a number-keyed reply */
     expect(race.replyReqId).toEqual(expect.any(Number))
     expect(race.primaryAtReply).toBe('#other')
     expect(race.pickedAtReply).toEqual(['#card', '#other'])
@@ -344,15 +372,30 @@ describe.skipIf(!findBrowserPath() || !CLIPBOARD_IS_RELIABLE)('canvas clipboard 
     expect(race.afterPaste.sections + race.afterPaste.paragraphs).toBe(4)
     expect(race.afterPaste.picked).toHaveLength(2)
     expectPair(race.afterPaste)
-    /* the probe's deferred write has run by now */
-    await page.evaluate(
-      () =>
-        new Promise<void>((resolve) =>
-          requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
-        ),
+    /* V4: the frame was asked to locate `#other` as the probe, and answered, after the paste.
+       Nothing located `#other` as the probe before the reply, so this probe is the one the
+       reply made: FrameView accepted the reply, and its pick effect ran in that commit */
+    await page.waitForFunction(
+      () => {
+        const events = window.canvasClipboardEvents ?? []
+        return events.includes('probe-located:#other') && events.includes('probe-request:#other')
+      },
+      { timeout: 3_000 },
     )
-    expect(await page.evaluate(() => window.canvasClipboardHarness.picked())).toHaveLength(2)
+    const events = await page.evaluate(() => window.canvasClipboardEvents ?? [])
+    const reply = `reply:${race.replyReqId}`
+    /* The relay posts from inside the frame after the frame's own handler has answered, so only
+       what the frame sends on its own (replies and located) is ordered against the paste. */
+    const direct = events.filter((e) => e === 'paste' || e.startsWith('reply:') || e.startsWith('probe-located:'))
+    expect(direct.slice(0, 3)).toEqual([reply, 'paste', 'probe-located:#other'])
+    /* the reply carries the ID of the frame's first doop:select request, the one for #other;
+       the requests after it are the paste's own pick, in the same order the frame got them */
+    const requests = events.filter((e) => e.startsWith('select-request:'))
+    expect(requests[0]).toBe(`select-request:${race.replyReqId}:#other`)
+    expect(requests.filter((e) => e.endsWith(':#other'))).toHaveLength(1)
+    /* the pair stands after the pick effect, too */
     await expectPastedPair()
+    expect(await page.evaluate(() => window.canvasClipboardHarness.picked())).toHaveLength(2)
   })
 
   it('copies through the element menu and pastes with the keyboard', async () => {
