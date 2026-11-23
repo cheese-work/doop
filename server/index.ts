@@ -1,4 +1,7 @@
 import { env } from './env.ts'
+import { listPageRuns, multicaCommentsSource, multicaRunsSource } from './multicaRuns.ts'
+import { setReconSources, storedReconAssets } from './reconGuard.ts'
+import { isUuid } from '../shared/pageIssue.ts'
 import { canvasPages, framePageId, samePages } from '../shared/pages.ts'
 import { FIRST_CANVAS_PATH, SIGNUP_PARAM, parseSignupMethod } from '../shared/firstCanvas.ts'
 import { localAgentRouter, handleLocalAgentMcp } from './localAgent.ts'
@@ -6,7 +9,7 @@ import { handleGeminiCloudMcp } from './geminiCloudMcp.ts'
 import { serveClient } from './clientStatic.ts'
 import { geminiCloudWorkerFor } from './geminiCloudRuns.ts'
 import http from 'node:http'
-import { createHash } from 'node:crypto'
+import { createHash, timingSafeEqual } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import express from 'express'
@@ -45,6 +48,7 @@ import * as demo from './demo.ts'
 import { db, initDb } from './db/index.ts'
 import * as authSchema from './db/auth-schema.ts'
 import * as persist from './db/persist.ts'
+import { readAttestation, readServiceAttestation } from './designAttestations.ts'
 import { handleMcpRequest } from './mcp.ts'
 import {
   getAsset,
@@ -55,6 +59,9 @@ import {
   MAX_ASSET_BYTES,
 } from './assets.ts'
 import * as ingest from './ingest.ts'
+import { configurePins, loadPins } from './framePins.ts'
+import { startPinReconcile } from './pinReconcile.ts'
+import { PolicyRefused, setLockOwners, VersionChanged } from './writePolicy.ts'
 import * as agentKeys from './agentKeys.ts'
 import * as backgrounds from './backgrounds.ts'
 import * as storage from './storage.ts'
@@ -104,6 +111,12 @@ if (data.canvases.length === 0 && (await persist.importLegacyJson())) {
   data = await persist.hydrate()
 }
 store.init(data.canvases)
+/* G5b: pins are read back before the first request, so no unlock is answered without them. The Multica side of the
+   port (A1 ref_status / abort_ref, A2 abort_if_pending) is not wired here: until it is, release_pin answers
+   multica_unreachable and the reconcile job below only lists pins as stuck. It asks every 30 s and never releases by time. */
+configurePins({ secret: env.DOOP_PIN_SECRET })
+await loadPins()
+startPinReconcile()
 await workspaces.hydrateWorkspaces() // before the first request: canvasRole reads membership
 await webhooks.hydrateWebhooks()
 billing.reportBillingConfig()
@@ -619,6 +632,13 @@ app.options('/ingest/:key', (_req, res) => {
 
 app.post('/ingest/:key', express.json({ limit: '10mb', type: () => true }), (req, res) => {
   ingest.handleIngest(req, res).catch((err) => {
+    if (err instanceof PolicyRefused) {
+      if (!res.headersSent)
+        res
+          .status(403)
+          .json({ error: 'sync cannot write here: the canvas is bound to a project or the frame is locked' })
+      return
+    }
     console.error('[ingest] failed', err)
     if (!res.headersSent) res.status(500).json({ error: 'sync failed' })
   })
@@ -646,6 +666,18 @@ declare global {
    the gate looks at that session (shared/desktopConnect.ts) */
 app.get('/api/integrations/:provider/callback', relayDesktopCallback)
 app.use('/api/live-activities', logLiveActivityRequests)
+/* G4 (CHE-7080): Multica reads an attestation with one shared bearer token, not a session. Registered
+   before the /api session gate; GET only; SHA-256 digests are compared so the token's length leaks nothing. */
+const sha256 = (value: string) => createHash('sha256').update(value).digest()
+app.get('/api/service/design-attestations/:id', async (req, res) => {
+  const expected = env.DOOP_ATTESTATION_READ_TOKEN
+  if (!expected) return res.status(503).json({ error: 'attestation read token not configured' })
+  const presented = /^Bearer (.+)$/.exec(req.headers.authorization ?? '')?.[1] ?? ''
+  if (!timingSafeEqual(sha256(presented), sha256(expected))) return res.status(401).json({ error: 'unauthorized' })
+  const view = await readServiceAttestation(req.params.id)
+  if (!view) return res.status(404).json({ error: 'attestation not found' })
+  res.json(view)
+})
 app.use('/api', async (req, res, next) => {
   try {
     const session = await auth.api.getSession({ headers: fromNodeHeaders(req.headers) })
@@ -1197,7 +1229,7 @@ app.delete('/api/canvases/:id', (req, res) => {
      before they can be destroyed */
   if (!c.ownerId) return res.status(403).json({ error: 'claim it first' })
   if (!canManageCanvas(req.user!.id, c)) return res.status(403).json({ error: 'not yours' })
-  actions.deleteCanvas(c.id)
+  actions.deleteCanvas(c.id, actions.resolveActor({ name: req.user!.name, kind: 'user' }))
   res.json({ ok: true })
 })
 
@@ -1664,6 +1696,37 @@ app.put('/api/canvases/:id/pages/:pageId/flow-start', (req, res) => {
   res.json(actions.setFlowStart(canvas.id, req.params.pageId, frameId, actor))
 })
 
+/* The page's Multica issue: the authoritative page-to-issue link. Only a signed-in
+   member with edit access writes it here (null unbinds). Agent keys never reach
+   this route and MCP has no tool for it. */
+app.put('/api/canvases/:id/pages/:pageId/issue', (req, res) => {
+  const canvas = requireCanvas(req, res, req.params.id, 'edit')
+  if (!canvas) return
+  const issueId: unknown = req.body?.issueId
+  if (issueId !== null && (typeof issueId !== 'string' || !isUuid(issueId)))
+    return res.status(400).json({ error: 'issueId must be an issue UUID or null' })
+  if (!canvasPages(canvas).some((p) => p.id === req.params.pageId))
+    return res.status(404).json({ error: 'page not found' })
+  const actor = actions.resolveActor({ name: req.user!.name, kind: 'user' })
+  res.json(actions.setPageIssue(canvas.id, req.params.pageId, issueId, actor))
+})
+
+/* The Multica runs of a page: its bound issue's runs plus the DM's chat runs. */
+app.get('/api/canvases/:id/pages/:pageId/runs', async (req, res) => {
+  const canvas = requireCanvas(req, res, req.params.id, 'view')
+  if (!canvas) return
+  const source = multicaRunsSource(env)
+  if (!source) return res.status(503).json({ error: 'Multica is not configured on this server.' })
+  try {
+    const result = await listPageRuns(canvas, req.params.pageId, source)
+    if (!result.ok) return res.status(result.status).json({ error: result.error })
+    res.json(result)
+  } catch (err) {
+    console.error('page runs failed', err)
+    res.status(502).json({ error: 'Multica could not list the runs.' })
+  }
+})
+
 /* Ruler guides, one per request so two people dragging different guides
    never overwrite each other. The id is the client's, which lets undo put
    a removed guide back as itself. */
@@ -1737,7 +1800,12 @@ app.post('/api/canvases/:id/frames', (req, res) => {
   res.json(frame)
 })
 
-app.patch('/api/frames/:id', (req, res) => {
+app.patch('/api/frames/:id', (req, res, next) => {
+  patchFrame(req, res).catch(next)
+})
+
+/* Express 4 drops an async handler's rejection, so the route wraps this and forwards it (423/409 or the 500 page) */
+async function patchFrame(req: express.Request<{ id: string }>, res: express.Response): Promise<void> {
   const current = requireFrame(req, res, req.params.id, 'edit', req.body?.expectedUpdatedAt)
   if (!current) return
   const { actor: _ignored, expectedUpdatedAt: _version, ...patch } = req.body ?? {}
@@ -1745,17 +1813,49 @@ app.patch('/api/frames/:id', (req, res) => {
   if (
     patch.pageId !== undefined &&
     !store.getCanvas(store.getFrame(req.params.id)!.canvasId)?.pages?.some((p) => p.id === patch.pageId)
-  )
-    return res.status(400).json({ error: 'page not found' })
+  ) {
+    res.status(400).json({ error: 'page not found' })
+    return
+  }
   const allowed = ['name', 'pageId', 'x', 'y', 'width', 'height', 'html'] as const
   const clean: Record<string, unknown> = {}
   for (const k of allowed) if (patch[k] !== undefined) clean[k] = patch[k]
   /* the eye in the Layers panel: anything but a literal true shows the frame */
   if (patch.hidden !== undefined) clean.hidden = patch.hidden === true
   if (patch.locked !== undefined) clean.locked = !!patch.locked
-  const frame = actions.updateFrame(req.params.id, clean, actor)
-  if (!frame) return res.status(404).json({ error: 'frame not found' })
+  /* an unlock goes through its own durable path: a pin answers `pinned`, the row is written before the reply */
+  if (patch.locked === false && current.locked) {
+    const out = await actions.unlockFrameDurable(req.params.id, actor, {
+      userId: req.user!.id,
+      expectedUpdatedAt: req.body?.expectedUpdatedAt,
+    })
+    if (out.ok) {
+      res.json(out.frame)
+      return
+    }
+    if (out.error === 'not_found') {
+      res.status(404).json({ error: 'frame not found' })
+      return
+    }
+    res.status(out.error === 'persist_failed' ? 503 : 409).json({ error: out.error, code: out.error })
+    return
+  }
+  /* the account id, not the display name, decides who may unlock a frame (DOOP_LOCK_OWNERS) */
+  const frame = actions.updateFrame(req.params.id, clean, actor, { userId: req.user!.id })
+  if (!frame) {
+    res.status(404).json({ error: 'frame not found' })
+    return
+  }
   res.json(frame)
+}
+
+/* G3 attestations (CHE-6078): read-only. Rows are written by the server's own
+   check run only; there is deliberately no way to edit or delete one here. */
+app.get('/api/design-attestations/:id', async (req, res) => {
+  const view = await readAttestation(req.params.id)
+  if (!view) return res.status(404).json({ error: 'attestation not found' })
+  if (!requireCanvas(req, res, view.canvasId, 'view')) return
+  res.json(view)
 })
 
 app.put('/api/frames/:id/approval', (req, res) => {
@@ -1806,10 +1906,15 @@ app.get('/api/frames/:id/versions/:versionId', async (req, res) => {
   res.json(version)
 })
 
-app.post('/api/frames/:id/versions/:versionId/restore', async (req, res) => {
+app.post('/api/frames/:id/versions/:versionId/restore', async (req, res, next) => {
   if (!requireFrame(req, res, req.params.id, 'edit')) return
   const actor = actions.resolveActor({ name: req.user!.name, kind: 'user' })
-  const restored = await actions.restoreFrameVersion(req.params.id, req.params.versionId, actor)
+  let restored: Awaited<ReturnType<typeof actions.restoreFrameVersion>>
+  try {
+    restored = await actions.restoreFrameVersion(req.params.id, req.params.versionId, actor)
+  } catch (err) {
+    return next(err) /* a locked frame refuses the restore: answered by the write-refusal handler below */
+  }
   if (restored === null) return res.status(404).json({ error: 'version not found' })
   if (!restored) return res.status(404).json({ error: 'frame not found' })
   res.json(restored)
@@ -2210,6 +2315,10 @@ if (env.isProduction) {
 
 /* ------------------------------------------------- websocket */
 
+/* G2 reads the issue's comments from Multica; without its settings no design frame on an issue page passes */
+setLockOwners(env.DOOP_LOCK_OWNERS)
+setReconSources({ assets: storedReconAssets, comments: multicaCommentsSource(env)?.comments })
+
 const server = http.createServer(app)
 const wss = new WebSocketServer({ server, path: '/ws' })
 
@@ -2346,6 +2455,15 @@ wss.on('connection', (ws, upgradeReq) => {
     if (conn.silent) return // never announced a join, so nothing to leave
     broadcast(conn.canvasId, { type: 'presence:leave', clientId: conn.presence.clientId })
   })
+})
+
+/* A store write refused by policy or by a version fence (frame lock, project binding): a clean 4xx for the
+   session routes instead of Express's default 500 page. Registered after every route. */
+app.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (res.headersSent) return next(err)
+  if (err instanceof PolicyRefused) return res.status(423).json({ error: err.message, code: err.code })
+  if (err instanceof VersionChanged) return res.status(409).json({ error: err.message, code: err.code })
+  next(err)
 })
 
 server.listen(PORT, () => {

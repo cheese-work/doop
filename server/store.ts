@@ -1,8 +1,12 @@
 import { nanoid } from 'nanoid'
-import { canvasPages, copyPageName, pageFrames, samePages } from '../shared/pages.ts'
+import { canvasPages, copyPageName, framePageId, pageFrames, samePages } from '../shared/pages.ts'
+import { defaultSpot } from './frameLayout.ts'
 import * as persist from './db/persist.ts'
+import { exclusive, isPinned, pinHooks } from './pinState.ts'
+import { assertWritable, PolicyRefused, VersionChanged, type WriteContext } from './writePolicy.ts'
 import type { LinkAccess } from '../shared/canvasRole.ts'
 import { MAX_GUIDES } from '../shared/guides.ts'
+import { deriveDesignLinks, isUuid, type DesignIssue } from '../shared/pageIssue.ts'
 import type {
   Canvas,
   CanvasGuide,
@@ -42,6 +46,9 @@ const names = (pages: CanvasPageInfo[]) => pages.map((page) => page.name)
  * broadcasts. Every committed mutation is mirrored to the database via
  * the write-through helpers in db/persist.ts; boot hydrates from there.
  */
+/** A copy is a new draft: it carries no lock, no epoch and no attestation of the frame it came from. */
+const UNLOCKED = { locked: undefined, lockEpoch: undefined, lockAttestationId: undefined } as const
+
 class Store {
   canvases = new Map<string, Canvas>()
   private frameIndex = new Map<string, string>() // frameId -> canvasId
@@ -168,6 +175,7 @@ class Store {
       ...frame,
       id: frameIds.get(frame.id)!,
       approval: null,
+      ...UNLOCKED,
       canvasId,
       createdAt: now,
       updatedAt: now,
@@ -188,7 +196,7 @@ class Store {
       createdAt: now,
       updatedAt: now,
       frames,
-      pages: canvasPages(source).map((page) => ({ ...page })),
+      pages: canvasPages(source).map(({ issueId: _issue, issueSource: _source, ...page }) => ({ ...page })),
       ...(source.guides?.length ? { guides: source.guides.map((guide) => ({ ...guide })) } : {}),
       ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
       ...(guidelines?.length ? { guidelines } : {}),
@@ -206,11 +214,11 @@ class Store {
    * another so two at once cannot pick the same name or overshoot the page
    * limit; memory changes only once the copy is durable, as with
    * duplicateCanvas. Rejects with PageLimitError when the canvas is full. */
-  duplicatePage(canvasId: string, pageId: string, by: string): Promise<PageCopy | undefined> {
+  duplicatePage(ctx: WriteContext, canvasId: string, pageId: string, by: string): Promise<PageCopy | undefined> {
     const previous = this.pageCopies.get(canvasId) ?? Promise.resolve()
     const task = previous.then(
-      () => this.copyPage(canvasId, pageId, by),
-      () => this.copyPage(canvasId, pageId, by),
+      () => this.copyPage(ctx, canvasId, pageId, by),
+      () => this.copyPage(ctx, canvasId, pageId, by),
     )
     this.pageCopies.set(canvasId, task)
     const release = () => {
@@ -220,12 +228,18 @@ class Store {
     return task
   }
 
-  private async copyPage(canvasId: string, pageId: string, by: string): Promise<PageCopy | undefined> {
+  private async copyPage(
+    ctx: WriteContext,
+    canvasId: string,
+    pageId: string,
+    by: string,
+  ): Promise<PageCopy | undefined> {
     const canvas = this.canvases.get(canvasId)
     if (!canvas) return undefined
     const pages = canvasPages(canvas)
     const source = pages.find((page) => page.id === pageId)
     if (!source) return undefined
+    assertWritable(ctx, 'copy_page', { canvas, pageIds: [pageId] })
     if (pages.length >= MAX_PAGES) throw new PageLimitError()
     const now = Date.now()
     const page: CanvasPageInfo = { id: nanoid(10), name: copyPageName(source.name, names(pages)) }
@@ -234,6 +248,7 @@ class Store {
       id: nanoid(10),
       pageId: page.id,
       approval: null,
+      ...UNLOCKED,
       createdAt: now,
       updatedAt: now,
       updatedBy: by,
@@ -245,9 +260,14 @@ class Store {
     if ((canvas.guides?.length ?? 0) + guides.length > MAX_GUIDES) throw new GuideLimitError()
     const next = [...pages]
     next.splice(pages.indexOf(source) + 1, 0, page)
+    /* the copy is async: judge again at the commit, not only at the start. The check runs inside the
+       database transaction, before it commits, so a refusal rolls the copy back and nothing becomes durable. */
     await persist.savePageCopy(
       { ...canvas, pages: next, guides: [...(canvas.guides ?? []), ...guides], updatedAt: now },
       frames,
+      () => {
+        if (this.canvases.get(canvasId) === canvas) assertWritable(ctx, 'copy_page', { canvas, pageIds: [pageId] })
+      },
     )
     if (this.canvases.get(canvasId) !== canvas) return undefined
     /* a page save may have landed during the write: slot the copy after the
@@ -275,11 +295,13 @@ class Store {
    *  the guides that went with deleted pages, so peers can drop them;
    *  undefined when the canvas is gone. */
   setPages(
+    ctx: WriteContext,
     canvasId: string,
     pages: import('../shared/types.ts').CanvasPageInfo[],
   ): { pages: import('../shared/types.ts').CanvasPageInfo[]; dropped: CanvasGuide[] } | undefined {
     const canvas = this.canvases.get(canvasId)
     if (!canvas) return undefined
+    assertWritable(ctx, 'set_pages', { canvas, nextPages: pages })
     const firstId = canvasPages(canvas)[0]!.id
     for (const frame of canvas.frames) {
       if (!frame.pageId) {
@@ -290,9 +312,13 @@ class Store {
     /* a page-list save renames, reorders, adds or deletes pages — it never
        moves a flow start, which only setFlowStart changes */
     const current = canvasPages(canvas)
-    const merged = pages.map(({ startFrameId: _ignored, ...page }) => {
-      const startFrameId = current.find((p) => p.id === page.id)?.startFrameId
-      return startFrameId ? { ...page, startFrameId } : page
+    const merged = pages.map(({ startFrameId: _ignored, issueId: _issue, issueSource: _source, ...page }) => {
+      const existing = current.find((p) => p.id === page.id)
+      return {
+        ...page,
+        ...(existing?.startFrameId ? { startFrameId: existing.startFrameId } : {}),
+        ...(existing?.issueId ? { issueId: existing.issueId, issueSource: existing.issueSource } : {}),
+      }
     })
     canvas.pages = merged
     /* a deleted page takes its guides with it */
@@ -302,6 +328,21 @@ class Store {
     canvas.updatedAt = Date.now()
     persist.saveCanvas(canvas)
     return { pages: merged, dropped }
+  }
+
+  /** Bind (projectId) or unbind (null) the Multica project this canvas belongs to.
+   *  Server-owned like a page's issueId: only a user or the system may change it,
+   *  never an agent (assertWritable). Undefined for an unknown canvas. */
+  bindProject(ctx: WriteContext, canvasId: string, projectId: string | null): Canvas | undefined {
+    const canvas = this.canvases.get(canvasId)
+    if (!canvas) return undefined
+    assertWritable(ctx, 'bind_project', { canvas })
+    /* a page copy judged its binding at the start and commits later: a rebind in between is held off */
+    if (this.pageCopies.has(canvasId)) throw new PolicyRefused('bind_project', 'a page copy is in progress')
+    if (projectId) canvas.projectId = projectId
+    else delete canvas.projectId
+    persist.saveCanvas(canvas)
+    return canvas
   }
 
   /** Set (frameId) or clear (null) the frame a page's prototype starts on. */
@@ -318,6 +359,51 @@ class Store {
     canvas.updatedAt = Date.now()
     persist.saveCanvas(canvas)
     return canvas.pages
+  }
+
+  /** Bind (issueId) or unbind (null) a page's Multica issue. Only the member
+   *  route and the Design-URL derivation call this — page-list saves, copies
+   *  and MCP tools never reach it. Undefined for an unknown canvas or page or
+   *  a malformed issue id. */
+  setPageIssue(canvasId: string, pageId: string, issueId: string | null, source: 'member' | 'design') {
+    const canvas = this.canvases.get(canvasId)
+    if (!canvas || (issueId !== null && !isUuid(issueId))) return undefined
+    const pages = canvasPages(canvas)
+    if (!pages.some((p) => p.id === pageId)) return undefined
+    canvas.pages = pages.map((page) => {
+      if (page.id !== pageId) return page
+      const { issueId: _previous, issueSource: _source, ...rest } = page
+      return issueId ? { ...rest, issueId: issueId.toLowerCase(), issueSource: source } : rest
+    })
+    canvas.updatedAt = Date.now()
+    persist.saveCanvas(canvas)
+    return canvas.pages
+  }
+
+  /** Reconcile the 'design' links with the issues' Design URLs: link a page an
+   *  issue alone names, and clear a design link the URLs no longer support (stale
+   *  or in conflict). Member links are never touched. */
+  applyDesignLinks(canvasId: string, issues: DesignIssue[]) {
+    const canvas = this.canvases.get(canvasId)
+    if (!canvas) return undefined
+    const pages = canvasPages(canvas)
+    const frameIds = new Map(canvas.frames.map((f) => [f.id, framePageId(canvas, f)]))
+    const { links } = deriveDesignLinks(canvasId, pages, issues, (id) => frameIds.get(id))
+    let changed = false
+    const next = pages.map((page) => {
+      if (page.issueSource === 'member') return page
+      const want = links.get(page.id)
+      if (want === page.issueId) return page
+      changed = true
+      const { issueId: _previous, issueSource: _source, ...rest } = page
+      return want ? { ...rest, issueId: want, issueSource: 'design' as const } : rest
+    })
+    if (changed) {
+      canvas.pages = next
+      canvas.updatedAt = Date.now()
+      persist.saveCanvas(canvas)
+    }
+    return canvas.pages ?? next
   }
 
   /** Add a ruler guide, or move one that exists. Undefined when the canvas
@@ -347,9 +433,10 @@ class Store {
   }
 
   /** Remove a canvas and its frames from memory + database. */
-  deleteCanvas(id: string): Canvas | undefined {
+  deleteCanvas(ctx: WriteContext, id: string): Canvas | undefined {
     const c = this.canvases.get(id)
     if (!c) return undefined
+    assertWritable(ctx, 'delete_canvas', { canvas: c })
     for (const f of c.frames) this.frameIndex.delete(f.id)
     this.canvases.delete(id)
     persist.deleteCanvas(id)
@@ -590,6 +677,7 @@ class Store {
   }
 
   createFrame(
+    ctx: WriteContext,
     canvasId: string,
     input: {
       name: string
@@ -609,16 +697,13 @@ class Store {
     if (!c) return undefined
     const pageId = input.pageId ?? canvasPages(c)[0]!.id
     if (!canvasPages(c).some((page) => page.id === pageId)) return undefined
+    assertWritable(ctx, 'create_frame', { canvas: c, pageIds: [pageId], html: input.html })
     const frames = pageFrames(c, pageId)
     const now = Date.now()
     // auto-place: to the right of the right-most frame
-    let x = input.x
-    let y = input.y
-    if (x === undefined || y === undefined) {
-      const rightmost = frames.reduce((mx, f) => Math.max(mx, f.x + f.width), 0)
-      x ??= frames.length ? rightmost + 80 : 120
-      y ??= 120
-    }
+    const at = defaultSpot(frames)
+    const x = input.x ?? at.x
+    const y = input.y ?? at.y
     const frame: Frame = {
       id: nanoid(10),
       canvasId,
@@ -645,11 +730,14 @@ class Store {
   }
 
   updateFrame(
+    ctx: WriteContext,
     frameId: string,
     patch: Partial<
       Pick<Frame, 'name' | 'pageId' | 'x' | 'y' | 'width' | 'height' | 'html' | 'hidden' | 'locked' | 'approval'>
     >,
     by: string,
+    /** the version the caller read; a different current version throws VersionChanged and writes nothing */
+    expectedUpdatedAt?: number,
   ): Frame | undefined {
     const frame = this.getFrame(frameId)
     if (!frame) return undefined
@@ -658,6 +746,28 @@ class Store {
       !canvasPages(this.canvases.get(frame.canvasId)!).some((p) => p.id === patch.pageId)
     )
       return undefined
+    /* unlocking is its own operation: owners only, and only on its own, so an unlock never smuggles an edit */
+    const unlocking = frame.locked === true && patch.locked === false
+    if (unlocking && Object.keys(patch).some((key) => key !== 'locked'))
+      throw new PolicyRefused('unlock_frame', 'unlock changes nothing else; edit after it')
+    assertWritable(ctx, unlocking ? 'unlock_frame' : 'update_frame', {
+      canvas: this.canvases.get(frame.canvasId)!,
+      frame,
+      pageIds:
+        patch.pageId !== undefined
+          ? [framePageId(this.canvases.get(frame.canvasId)!, frame), patch.pageId]
+          : [framePageId(this.canvases.get(frame.canvasId)!, frame)],
+    })
+    /* B5: a pin outranks an owner; the owner's way out is force_release */
+    if (unlocking && isPinned(frameId))
+      throw new PolicyRefused('unlock_frame', 'pinned: a decision card holds this frame')
+    if (expectedUpdatedAt !== undefined && frame.updatedAt !== expectedUpdatedAt)
+      throw new VersionChanged(frameId, frame.updatedAt)
+    if (unlocking) {
+      /* the epoch only goes up, so a lock decision made before this unlock can never be replayed after it */
+      frame.lockEpoch = (frame.lockEpoch ?? 0) + 1
+      delete frame.lockAttestationId
+    }
     const designChanged = (['html', 'width', 'height'] as const).some(
       (key) => patch[key] !== undefined && patch[key] !== frame[key],
     )
@@ -676,13 +786,137 @@ class Store {
     return frame
   }
 
-  deleteFrame(frameId: string): Frame | undefined {
+  /** Compare-and-set lock (CHE-6626): locks the frame only if it is still at `attestedUpdatedAt`, the
+   *  version a G3 attestation covers. A lock does not move `updatedAt`, so the attestation stays current.
+   *  A frame that is already locked keeps its attestation: the same id again at the current version is a no-op
+   *  (`already`, a retry), at another version `version_changed`; any other id, or a lock that carries none,
+   *  is refused until an owner unlocks it.
+   *  Undefined = not found; a refused write throws PolicyRefused. */
+  lockIfVersion(
+    ctx: WriteContext,
+    frameId: string,
+    attestedUpdatedAt: number,
+    attestationId: string,
+  ):
+    | { ok: true; frame: Frame; already?: true }
+    | { ok: false; error: 'version_changed'; currentUpdatedAt: number }
+    | undefined {
+    const out = this.applyLock(ctx, frameId, attestedUpdatedAt, attestationId)
+    if (out?.ok && !out.already) persist.saveFrame(out.frame, true)
+    return out
+  }
+
+  /** The in-memory half of a lock; the callers decide how it becomes durable. */
+  private applyLock(ctx: WriteContext, frameId: string, attestedUpdatedAt: number, attestationId: string) {
+    const frame = this.getFrame(frameId)
+    if (!frame) return undefined
+    const c = this.canvases.get(frame.canvasId)!
+    assertWritable(ctx, 'lock_frame', { canvas: c, frame, pageIds: [framePageId(c, frame)] })
+    if (frame.locked && frame.lockAttestationId !== attestationId)
+      throw new PolicyRefused('lock_frame', 'the frame is locked with another attestation; an owner unlocks it first')
+    /* the version check comes first for a retry too: a late retry of an older attempt must not pass */
+    if (frame.updatedAt !== attestedUpdatedAt)
+      return { ok: false as const, error: 'version_changed' as const, currentUpdatedAt: frame.updatedAt }
+    if (frame.locked) return { ok: true as const, frame, already: true as const }
+    frame.locked = true
+    frame.lockAttestationId = attestationId
+    return { ok: true as const, frame }
+  }
+
+  /** Durable lock (CHE-7062 B7): a narrowing write. The lock shows in memory at once (so nothing slips in) but the
+   *  answer waits for the row; a failed write puts the frame back as it was. Serialised with every pin step. */
+  lockIfVersionDurable(
+    ctx: WriteContext,
+    frameId: string,
+    attestedUpdatedAt: number,
+    attestationId: string,
+  ): Promise<
+    | { ok: true; frame: Frame; epoch: number; already?: true }
+    | { ok: false; error: 'version_changed' | 'persist_failed'; currentUpdatedAt?: number }
+    | undefined
+  > {
+    return exclusive(async () => {
+      const before = this.getFrame(frameId)
+      const was = { locked: before?.locked, attestationId: before?.lockAttestationId }
+      const out = this.applyLock(ctx, frameId, attestedUpdatedAt, attestationId)
+      if (!out || !out.ok) return out
+      const { frame } = out
+      if (out.already) return { ...out, epoch: frame.lockEpoch ?? 0 }
+      try {
+        await pinHooks.beforeWrite?.('lock')
+        await persist.saveFrameNow(frame)
+      } catch {
+        frame.locked = was.locked
+        if (was.attestationId === undefined) delete frame.lockAttestationId
+        else frame.lockAttestationId = was.attestationId
+        return { ok: false, error: 'persist_failed' }
+      }
+      return { ...out, epoch: frame.lockEpoch ?? 0 }
+    })
+  }
+
+  /** Durable unlock (CHE-7062 B5/B7): `pinned` while a pin holds the frame; otherwise a loosening write, so the row
+   *  goes first and memory changes only once it is durable. Same policy as the synchronous unlock (owners only). */
+  unlockFrame(
+    ctx: WriteContext,
+    frameId: string,
+    by: string,
+    expectedUpdatedAt?: number,
+  ): Promise<
+    | { ok: true; frame: Frame }
+    | { ok: false; error: 'pinned' | 'version_changed' | 'persist_failed' | 'not_locked' }
+    | undefined
+  > {
+    return exclusive(async () => {
+      const frame = this.getFrame(frameId)
+      if (!frame) return undefined
+      if (!frame.locked) return { ok: false, error: 'not_locked' }
+      const c = this.canvases.get(frame.canvasId)!
+      assertWritable(ctx, 'unlock_frame', { canvas: c, frame, pageIds: [framePageId(c, frame)] })
+      if (isPinned(frameId)) return { ok: false, error: 'pinned' }
+      if (expectedUpdatedAt !== undefined && frame.updatedAt !== expectedUpdatedAt)
+        return { ok: false, error: 'version_changed' }
+      const next: Frame = {
+        ...frame,
+        locked: false,
+        lockEpoch: (frame.lockEpoch ?? 0) + 1,
+        updatedAt: Math.max(Date.now(), frame.updatedAt + 1),
+        updatedBy: by,
+      }
+      delete next.lockAttestationId
+      try {
+        await pinHooks.beforeWrite?.('unlock')
+        await persist.saveFrameNow(next)
+      } catch {
+        return { ok: false, error: 'persist_failed' }
+      }
+      frame.locked = false
+      frame.lockEpoch = next.lockEpoch
+      delete frame.lockAttestationId
+      frame.updatedAt = next.updatedAt
+      frame.updatedBy = by
+      c.updatedAt = frame.updatedAt
+      persist.saveCanvas(c)
+      return { ok: true, frame }
+    })
+  }
+
+  /** F1 on a void card (CHE-7062): after the database has the new epochs, memory takes them. */
+  setLockEpochs(epochs: { frameId: string; epoch: number }[]): void {
+    for (const e of epochs) {
+      const frame = this.getFrame(e.frameId)
+      if (frame) frame.lockEpoch = e.epoch
+    }
+  }
+
+  deleteFrame(ctx: WriteContext, frameId: string): Frame | undefined {
     const canvasId = this.frameIndex.get(frameId)
     if (!canvasId) return undefined
     const c = this.canvases.get(canvasId)
     if (!c) return undefined
     const idx = c.frames.findIndex((f) => f.id === frameId)
     if (idx === -1) return undefined
+    assertWritable(ctx, 'delete_frame', { canvas: c, frame: c.frames[idx]!, pageIds: [framePageId(c, c.frames[idx]!)] })
     const [frame] = c.frames.splice(idx, 1)
     c.updatedAt = Date.now()
     this.frameIndex.delete(frameId)

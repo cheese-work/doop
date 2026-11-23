@@ -276,7 +276,7 @@ export const useStore = create<State>((set, get) => ({
   following: null,
   selectedIds: [],
   selectedId: null,
-  tool: 'select',
+  tool: 'hand',
   panMode: false,
   inspectorOpen: false,
   ctxMenu: null,
@@ -587,7 +587,7 @@ export const useStore = create<State>((set, get) => ({
       const demoted = !roleAllows(role, 'edit')
       return {
         canvas: { ...s.canvas, role },
-        tool: toolAllowed(s.tool, role) ? s.tool : 'select',
+        tool: toolAllowed(s.tool, role) ? s.tool : 'hand',
         /* an open Design panel or Inspector would keep offering edits */
         ...(demoted ? { inspectorOpen: false, elementPanelOpen: false } : {}),
       }

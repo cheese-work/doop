@@ -42,6 +42,8 @@ const MISSING = [
   'resolve_comment',
   'export_frame',
   'upload_asset',
+  'check_design_completeness', // the G3 reviewer check (CHE-6078); resident agents do not review
+  'lock_frame_if_version', // the G5a publish lock (CHE-6626); only the reviewer's publish step locks
   'list_linear_issues', // integration tools, registered by their connections
   'get_linear_issue',
 ]

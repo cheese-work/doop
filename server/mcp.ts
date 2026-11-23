@@ -1,6 +1,10 @@
 import { env } from './env.ts'
-import { canvasPages, samePages } from '../shared/pages.ts'
+import { canvasPages, framePageId, pageFrames, samePages } from '../shared/pages.ts'
+import { conflicts, freeSpot, FRAME_GAP } from './frameLayout.ts'
+import { MULTICA_TASK_HEADER, parseMulticaTaskId } from '../shared/pageIssue.ts'
 import { prototypeReport, prototypeUrl, setPrototypeStart } from './prototypeTools.ts'
+import { attestPage } from './designAttestations.ts'
+import { sloplintEntries } from './sloplintInput.ts'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import type { Request, Response } from 'express'
@@ -8,6 +12,8 @@ import { fromNodeHeaders } from 'better-auth/node'
 import { z } from 'zod'
 import { store } from './store.ts'
 import * as actions from './actions.ts'
+import { warmReconEvidence } from './reconGuard.ts'
+import { warmTaskIdentity, writeContextFor } from './writePolicy.ts'
 import { canvasRole } from './access.ts'
 import { roleAllows, type CanvasRole } from '../shared/canvasRole.ts'
 import { isAgentKeySecret, verifyAgentKey } from './agentKeys.ts'
@@ -192,6 +198,44 @@ const agentName = z
     'Your display name, shown live to everyone on the canvas (e.g. "Claude", "Codex"). Reuse the SAME name on every call so your work is attributed consistently.',
   )
 
+/** The frame version a caller read (`updatedAt` from get_frame, an ISO string or epoch ms). A write fenced with it
+ *  fails with version_changed instead of overwriting a frame that moved on. */
+const expectedUpdatedAt = z
+  .union([z.string(), z.number()])
+  .optional()
+  .describe(
+    'The frame updatedAt you last read (from get_frame). If the frame changed since, the write is refused with version_changed and nothing is written.',
+  )
+
+function versionMs(value: string | number | undefined): number | undefined {
+  if (value === undefined) return undefined
+  const ms = typeof value === 'number' ? value : Date.parse(value)
+  if (!Number.isFinite(ms)) throw new Error('expected_updated_at must be an ISO timestamp or epoch milliseconds')
+  return ms
+}
+
+/** CHE-6119: why an update_frame that moves or resizes a frame onto another frame is refused (undefined = fine). */
+function overlapRefusal(
+  frame: Frame,
+  patch: Partial<Pick<Frame, 'x' | 'y' | 'width' | 'height' | 'pageId'>>,
+): string | undefined {
+  if (!(['x', 'y', 'width', 'height', 'pageId'] as const).some((k) => patch[k] !== undefined)) return undefined
+  const canvas = store.getCanvas(frame.canvasId)
+  if (!canvas) return undefined
+  const pageId = patch.pageId ?? framePageId(canvas, frame)
+  const box = {
+    x: patch.x ?? frame.x,
+    y: patch.y ?? frame.y,
+    width: patch.width ?? frame.width,
+    height: patch.height ?? frame.height,
+  }
+  const others = pageFrames(canvas, pageId)
+  const hit = conflicts(box, others, frame.id)
+  if (!hit.length) return undefined
+  const spot = freeSpot(others.filter((f) => f.id !== frame.id))
+  return `frames may not overlap or sit closer than ${FRAME_GAP}px: this ${box.width}x${box.height} box at ${box.x},${box.y} hits ${hit.map((f) => `${f.id} “${f.name}”`).join(', ')}. Free space: x ${spot.x}, y ${spot.y}.`
+}
+
 function frameSummary(f: {
   pageId?: string
   id: string
@@ -233,8 +277,9 @@ function frameSummary(f: {
 /** owner is the connecting user's display name (for attribution); ownerId is
  *  their user id — canvases the agent creates or lists are scoped to it, the
  *  same isolation the web UI gets. */
-export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
-  const actorFrom = (agent_name?: string) => actions.resolveActor({ name: agent_name, kind: 'agent', owner })
+export function buildMcpServer(owner?: string, ownerId?: string, multicaTaskId?: string): McpServer {
+  const actorFrom = (agent_name?: string) =>
+    actions.resolveActor({ name: agent_name, kind: 'agent', owner, multicaTaskId, origin: 'mcp' })
   /* Canvas access for agents mirrors the web UI: the OAuth user's id runs
      through the same canvasRole gate as browser sessions, so an agent
      connected by someone holding a view or comment link reads but cannot
@@ -937,6 +982,51 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
   )
 
   server.registerTool(
+    'check_design_completeness',
+    {
+      title: 'Check a design page for completeness',
+      description:
+        'Run the completeness check on one page (one design direction) and store the result as an attestation you cannot edit; the UX verdict cites its attestation_id. A page is complete when it has: a recon inventory (a frame with <script type="application/json" id="doop-recon"> holding {scanHash, candidates:[{id, file, line, decision: keep|change|remove|n/a, reason}]}) where every Keep/Change candidate has an element with data-recon-ref="<id>" in a design frame and every other decision has a reason; a wireframe (data-doop-stage="wireframe") and a hi-fi frame; the states loading, empty, error, disconnected (data-doop-state="<state>", or data-doop-state-na="<state>: <reason>"); a motion block (data-doop-motion=\'{"trigger","property","duration","easing","reducedMotion"}\', every field nonempty) on the element or in the frame of every prototype interaction that has a transition (rule motion_per_transition), and at least one on the page; prototype wiring with a flow start (set_prototype_start) where every screen is reachable (a frame named "<screen> · doc" is a doc, not a screen); the canvas has a page named Motion with a visible frame "<ISSUE-KEY> · motion" (motion_page_missing; the key is that of the bound issue), whose table rows each end with a cell naming an animated frame on the Motion page, by id or name, that holds @keyframes or an animation or transition with a duration above zero (motion_frame_missing; at least one row); every hi-fi frame (not a wireframe, hidden or recon frame) has a doc frame on the same page named "<frame name> · doc" with the headings Purpose, UX reasoning, UI reasoning, Ergonomics, States, Motion and Accessibility, each with text, not empty or only TBD, TODO, … or - (screen_doc_missing). Ruleset g3-r7 adds: a Hallmark sloplint result for every design frame (visible, not recon; doc frames included) at the current updatedAt of the frame, sent in the sloplint argument as {frame_id, updated_at, tool_sha, result_json, sha256}: tool_sha must be the pinned 407fa689f4a276f2fd389208d271d0fef08f5058 (static tier, --json, no browser flags), sha256 is the hex SHA256 of result_json exactly as sent, and a frame with no result, a NOT-RUN one, a stale updated_at, another tool_sha or a sha256 that does not match is sloplint_missing; a canvas Components page (components_page_missing) with a visible frame holding data-doop-tokens whose CSS variables define at least one token each of colour (--color-*), type (--type-* or --font-*), spacing (--space-* or --spacing-*) and radius (--radius-*), and at least one visible component (data-doop-component="<name>"); every data-doop-component in a design frame names a component on that page (component_unknown, exact name); every component on that page shows at least one data-doop-variant and each of the states default, hover, focus, disabled, loading and error as data-doop-state="<state>" on its markup (the element or inside it, across all its instances) or data-doop-state-na="<state>: <reason>" (component_states_missing); every non-default data-doop-state of a component on that page (named "<component> · <state>") and every element in a design frame marked data-doop-interaction="<name>" carries data-doop-motion with trigger, property, duration, easing and reducedMotion nonempty, or data-doop-motion-na="<reason>", and its name is the first cell of a row in the "<ISSUE-KEY> · motion" spec table (motion_per_micro_interaction; the row check waits for the Motion page). The page must be bound to a Multica issue (an unbound page, or a server with no readable Multica, is incomplete: req_not_checked / req_source_unavailable), and every non-empty line of the issue description and of its member comments needs an entry in a requirement ledger (a script with type="application/json" id="doop-reqledger" holding {"<line id>": {"d": "map"|"ctx"|"defer", "reason": "…"}}; line ids are in the req_missing findings): map = a design element has data-req-ref="<line id>"; ctx and defer need a reason, and deferred lines are printed for Cheese. Returns complete, the missing list, deferred lines and the attestation_id. A later edit to any frame ends the attestation: run it again. It checks that artefacts exist, not that they are drawn well, which stays the reviewer\'s check.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      inputSchema: {
+        canvas_id: z.string(),
+        page_id: z.string().optional().describe('Page ID from get_canvas; defaults to the first page'),
+        sloplint: z
+          .array(
+            z.object({
+              frame_id: z.string(),
+              updated_at: z.union([z.string(), z.number()]).describe('The frame updatedAt the result was run at.'),
+              tool_sha: z.string().describe('The sloplint revision that ran.'),
+              result_json: z
+                .string()
+                .max(200_000)
+                .optional()
+                .describe(
+                  'The `sloplint --json` output, as text: a JSON object with a `findings` array. null, an array, or {"status":"NOT-RUN"} counts as NOT-RUN. Omit it for NOT-RUN.',
+                ),
+              sha256: z.string().optional().describe('Hex SHA256 of result_json exactly as sent.'),
+            }),
+          )
+          .max(500)
+          .optional()
+          .describe('One sloplint result per design frame (rule sloplint_missing).'),
+        agent_name: agentName,
+      },
+    },
+    async ({ canvas_id, page_id, sloplint, agent_name }) => {
+      const canvas = canvasFor(canvas_id, 'view')
+      if (!canvas) return noCanvas(canvas_id)
+      const pages = canvasPages(canvas)
+      const page = page_id ? pages.find((p) => p.id === page_id) : pages[0]
+      if (!page) return err(`no page ${page_id} on canvas ${canvas_id} — use a page id from get_canvas`)
+      arrive(canvas_id, agent_name)
+      return text(
+        await attestPage(canvas, page.id, actorFrom(agent_name).name, undefined, sloplintEntries(sloplint ?? [])),
+      )
+    },
+  )
+
+  server.registerTool(
     'set_prototype_start',
     {
       title: 'Set a prototype flow start',
@@ -968,7 +1058,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
          has no card either). The review screenshot after the stream is the
          first card the person sees. */
       description:
-        'Create a new frame on a canvas with an HTML design. A frame is a rectangular artboard that renders a full HTML document (inline <style> and <script> allowed, no external network access needed). If x/y are omitted the frame is auto-placed to the right of existing frames. Everyone viewing the canvas sees it appear live.',
+        'Create a new frame on a canvas with an HTML design. A frame is a rectangular artboard that renders a full HTML document (inline <style> and <script> allowed, no external network access needed). If x/y are omitted the frame is auto-placed to the right of existing frames; an requested position (explicit or defaulted x/y) that would overlap another frame is replaced by free space (see `placement` in the result). Everyone viewing the canvas sees it appear live.',
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       inputSchema: {
         canvas_id: z.string(),
@@ -987,15 +1077,24 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       },
     },
     async ({ canvas_id, pageId, name, html, x, y, width, height, agent_name }) => {
-      if (!canvasFor(canvas_id, 'edit')) return noCanvas(canvas_id)
-      const frame = actions.createFrame(canvas_id, { name, pageId, html, x, y, width, height }, actorFrom(agent_name))
+      const target = canvasFor(canvas_id, 'edit')
+      if (!target) return noCanvas(canvas_id)
+      /* G2 judges the recon in the synchronous store: fetch the images and the issue's comments first */
+      const actor = actorFrom(agent_name)
+      await warmReconEvidence(target, pageId ?? canvasPages(target)[0]!.id, writeContextFor(actor))
+      const frame = actions.createFrame(canvas_id, { name, pageId, html, x, y, width, height }, actor)
       if (!frame) return noCanvas(canvas_id)
-      const result = withEscapeNote(
-        frame.html.length > 0
-          ? textWithNudge({ ok: true, frame: frameSummary(frame) }, REVIEW_NUDGE)
-          : text({ ok: true, frame: frameSummary(frame) }),
-        html,
-      )
+      const moved = actions.wasRelocated(frame)
+      const body = {
+        ok: true,
+        frame: frameSummary(frame),
+        ...(moved
+          ? {
+              placement: `the requested position would overlap another frame; placed in free space at ${frame.x},${frame.y}`,
+            }
+          : {}),
+      }
+      const result = withEscapeNote(frame.html.length > 0 ? textWithNudge(body, REVIEW_NUDGE) : text(body), html)
       return withGuidelinesNudge(
         withStatusNudge(withFeedback(result, canvas_id, actorFrom(agent_name)), canvas_id, actorFrom(agent_name)),
         canvas_id,
@@ -1032,11 +1131,19 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       description:
         'Replace the HTML design of a frame in one shot. The change renders live for everyone viewing the canvas. For new or heavily reworked designs, prefer append_frame_html so viewers can watch the design stream in.',
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
-      inputSchema: { frame_id: z.string(), html: z.string(), agent_name: agentName },
+      inputSchema: {
+        frame_id: z.string(),
+        html: z.string(),
+        expected_updated_at: expectedUpdatedAt,
+        agent_name: agentName,
+      },
     },
-    async ({ frame_id, html, agent_name }) => {
+    async ({ frame_id, html, expected_updated_at, agent_name }) => {
       if (!frameFor(frame_id, 'edit')) return noFrame(frame_id)
-      const frame = actions.updateFrame(frame_id, { html }, actorFrom(agent_name), { replace: true })
+      const frame = actions.updateFrame(frame_id, { html }, actorFrom(agent_name), {
+        replace: true,
+        expectedUpdatedAt: versionMs(expected_updated_at),
+      })
       if (!frame) return noFrame(frame_id)
       return withPreview(
         withGuidelinesNudge(
@@ -1653,12 +1760,17 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
           .describe('The next piece of HTML, appended to what has been sent so far. Raw markup — never escaped.'),
         start: z.boolean().optional().describe('true on the first chunk — clears the frame and starts the live stream'),
         done: z.boolean().optional().describe('true on the final chunk — ends the live stream'),
+        expected_updated_at: expectedUpdatedAt,
         agent_name: agentName,
       },
     },
-    async ({ frame_id, html_chunk, start, done, agent_name }) => {
+    async ({ frame_id, html_chunk, start, done, expected_updated_at, agent_name }) => {
       if (!frameFor(frame_id, 'edit')) return noFrame(frame_id)
-      const frame = actions.appendFrameHtml(frame_id, html_chunk, actorFrom(agent_name), { start, done })
+      const frame = actions.appendFrameHtml(frame_id, html_chunk, actorFrom(agent_name), {
+        start,
+        done,
+        expectedUpdatedAt: versionMs(expected_updated_at),
+      })
       if (!frame) return noFrame(frame_id)
       const result = done
         ? textWithNudge(
@@ -1691,17 +1803,20 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
         frame_id: z.string(),
         old_str: z.string().describe('Exact text to find in the frame HTML — must occur exactly once'),
         new_str: z.string().describe('Replacement text'),
+        expected_updated_at: expectedUpdatedAt,
         agent_name: agentName,
       },
     },
-    async ({ frame_id, old_str, new_str, agent_name }) => {
+    async ({ frame_id, old_str, new_str, expected_updated_at, agent_name }) => {
       const f = frameFor(frame_id, 'edit')
       if (!f) return noFrame(frame_id)
       const count = f.html.split(old_str).length - 1
       if (count === 0) return err('old_str not found in the frame HTML. Call get_frame to see the current content.')
       if (count > 1)
         return err(`old_str occurs ${count} times — include more surrounding context so it matches exactly once.`)
-      const frame = actions.updateFrame(frame_id, { html: f.html.replace(old_str, new_str) }, actorFrom(agent_name))!
+      const frame = actions.updateFrame(frame_id, { html: f.html.replace(old_str, new_str) }, actorFrom(agent_name), {
+        expectedUpdatedAt: versionMs(expected_updated_at),
+      })!
       return withPreview(
         withStatusNudge(
           withFeedback(
@@ -1724,7 +1839,7 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
       title: 'Rename, move or resize a frame',
       _meta: previewToolMeta('Updating the frame…', 'Frame updated'),
       description:
-        'Update frame metadata: rename it, move/resize it, or move it to another page using pageId. Set locked to true to lock the frame on the canvas (humans cannot select, move, resize or delete it from the stage until it is unlocked) or false to unlock it.',
+        'Update frame metadata: rename it, move/resize it, or move it to another page using pageId. Set locked to true to lock the frame: a locked frame refuses every edit and delete, from everyone, until its owner unlocks it (an agent can never unlock; locked=false is refused). Prefer lock_frame_if_version, which locks only if the frame is still the version you checked. A move or resize that would overlap another frame on the page (or leave less than 40px clear) is refused with the free spot to use.',
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: {
         frame_id: z.string(),
@@ -1735,20 +1850,62 @@ export function buildMcpServer(owner?: string, ownerId?: string): McpServer {
         width: z.number().optional(),
         height: z.number().optional(),
         locked: z.boolean().optional(),
+        expected_updated_at: expectedUpdatedAt,
         agent_name: agentName,
       },
     },
-    async ({ frame_id, agent_name, ...patch }) => {
+    async ({ frame_id, agent_name, expected_updated_at, ...patch }) => {
       const clean = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined))
       if (!Object.keys(clean).length) return err('nothing to update')
-      if (!frameFor(frame_id, 'edit')) return noFrame(frame_id)
-      const frame = actions.updateFrame(frame_id, clean, actorFrom(agent_name))
+      const current = frameFor(frame_id, 'edit')
+      if (!current) return noFrame(frame_id)
+      const blocked = overlapRefusal(current, clean)
+      if (blocked) return err(blocked)
+      const frame = actions.updateFrame(frame_id, clean, actorFrom(agent_name), {
+        expectedUpdatedAt: versionMs(expected_updated_at),
+      })
       if (!frame) return noFrame(frame_id)
       return withPreview(
         withFeedback(text({ ok: true, frame: frameSummary(frame) }), frame.canvasId, actorFrom(agent_name)),
         frame.canvasId,
         [frame],
       )
+    },
+  )
+
+  server.registerTool(
+    'lock_frame_if_version',
+    {
+      title: 'Lock a frame if it is still the checked version',
+      description:
+        'Lock a frame only if its updatedAt still equals attested_updated_at, the version check_design_completeness attested. A frame that changed in between is NOT locked and the call fails with version_changed (re-check, then lock again). A locked frame refuses every edit and delete from everyone; only its owner can unlock it. Locking does not change updatedAt, so the attestation stays current.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: {
+        frame_id: z.string(),
+        attested_updated_at: z
+          .union([z.string(), z.number()])
+          .describe('The frame updatedAt the attestation covers (ISO string or epoch ms).'),
+        attestation_id: z.string().min(1).describe('The id of the design attestation being relied on.'),
+        agent_name: agentName,
+      },
+    },
+    async ({ frame_id, attested_updated_at, attestation_id, agent_name }) => {
+      if (!frameFor(frame_id, 'edit')) return noFrame(frame_id)
+      const res = await actions.lockFrameIfVersionDurable(
+        { frameId: frame_id, attestedUpdatedAt: versionMs(attested_updated_at)!, attestationId: attestation_id },
+        actorFrom(agent_name),
+      )
+      if (res.error === 'not_found') return noFrame(frame_id)
+      if (res.error === 'policy_refused') return err('policy_refused: this agent may not lock that frame')
+      if (res.error === 'persist_failed')
+        return err('persist_failed: the lock could not be written; the frame was NOT locked. Try again.')
+      if (res.error === 'version_changed') {
+        const current = store.getFrame(frame_id)
+        return err(
+          `version_changed: the frame changed after ${new Date(versionMs(attested_updated_at)!).toISOString()} (now ${current ? new Date(current.updatedAt).toISOString() : 'gone'}); it was NOT locked. Check it again, then lock again.`,
+        )
+      }
+      return text({ ok: true, locked: true, frame: frameSummary(store.getFrame(frame_id)!) })
     },
   )
 
@@ -1925,7 +2082,10 @@ export async function handleMcpRequest(req: Request, res: Response) {
     }
   }
   const owner = session?.userId ? await getUserName(session.userId) : undefined
-  const server = buildMcpServer(owner, session?.userId ?? undefined)
+  const multicaTaskId = parseMulticaTaskId(req.headers[MULTICA_TASK_HEADER])
+  /* the header is the client's word: ask Multica now, so the synchronous store can judge the task */
+  if (multicaTaskId) await warmTaskIdentity(multicaTaskId)
+  const server = buildMcpServer(owner, session?.userId ?? undefined, multicaTaskId)
   /* Stateless, and plain JSON rather than an SSE stream per response: no
      tool here sends notifications mid-call, so a stream carries nothing a
      JSON body does not, and JSON is what every client — including ChatGPT's

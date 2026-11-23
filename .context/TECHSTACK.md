@@ -180,11 +180,90 @@
   Prototype tab and `PrototypeOverlay.tsx` edit and draw them; MCP has `get_prototype` and
   `set_prototype_start`. `tests/prototypeBrowser.test.ts` drives the player in Chromium.
 
+- Design completeness (G3, CHE-6078): MCP `check_design_completeness` runs `shared/designCompleteness.ts`
+  over one page (recon inventory `doop-recon` with `data-recon-ref` per Keep/Change item, wireframe,
+  states, `data-doop-motion` blocks, prototype wiring and reachability; ruleset `g3-r6` (CHE-6853) adds a motion block
+  per transition, the `Motion` page with the issue's `<KEY> · motion` spec frame whose rows each name an animated frame,
+  and a `<screen> · doc` frame with the 7 filled headings per hi-fi screen; `g3-r7` (CHE-6854) adds a Hallmark `sloplint`
+  result per design frame at its `updatedAt` (the reviewer's JSON with its SHA256, checked in `server/sloplintInput.ts`),
+  the `Components` page (tokens frame, components, `component_unknown`, variants and states, motion per micro-interaction)) and stores the result in
+  `design_attestations`, one row per design frame at its `updatedAt`, append-only. The route
+  `/api/design-attestations/:id` reads a run with `current` (false once any frame changed).
+  `GET /api/service/design-attestations/:id` (G4, CHE-7080) serves the same JSON plus `pageIssueId` (the attested
+  page's current Multica issue, or null) to Multica: it sits before the `/api` session gate, wants
+  `Authorization: Bearer <DOOP_ATTESTATION_READ_TOKEN>` (compared as SHA-256 digests with `timingSafeEqual`; 401 if
+  missing or wrong, 503 while the variable is unset, at least 32 characters), is GET only, and 404s an unknown id.
+  `extraChecks` is the plug-in point for the requirement ledger. Tests: `designCompleteness.test.ts`,
+  `designAttestation.test.ts`.
+
+- Recon guard (G2, CHE-6627, `server/reconGuard.ts`, `server/reconScan.ts`): `assertWritable` refuses an agent's
+  `create_frame` on a page bound to an issue (only a frame that is nothing but the `doop-recon` script, `isReconOnly`, is exempt; design markup beside it is gated) until the
+  page has one recon frame whose scan-derived matrix (screen x state x device 1440/390) has a real image per cell
+  (uploaded, non-empty, PNG width = device, no image reused; `n/a` only with scan proof), every scan candidate has a
+  decision, the issue holds this agent's earlier comment with `recon-manifest: sha256=` of the recon JSON, `main-sha:`,
+  `recon-images:` and the frame id, and the frame is locked. Images and comments reach the synchronous store through a
+  cache `warmReconEvidence` fills (MCP `create_frame` calls it); `setReconSources` plugs them in and, with no
+  comment source, every such write is refused. Production wires `httpCommentsSource` (`server/multicaRuns.ts`, `GET /api/issues/:id/comments`, agent-authored comments only, Multica's own author and time) at boot when the four `MULTICA_*` settings exist. `scripts/recon-scan.ts` prints the scan; it is a read-only heuristic
+  (relative imports, line regexes), a floor and not proof of completeness. Tests: `reconScan.test.ts`, `reconGuard.test.ts`.
+
 - better-auth 1.6.26 - authentication: email/password, generic OIDC/SSO, and Google / Microsoft /
   Apple sign-in (social providers, `GOOGLE_*` / `MICROSOFT_*` / `APPLE_*` client pairs; the iOS app
   signs in with Apple natively against `APPLE_APP_BUNDLE_IDENTIFIER`). Configuration and secrets
   (`BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, provider client IDs/secrets) come from the
   environment (`.env`, documented in `.env.example`); never committed.
+
+- Multica links (`shared/pageIssue.ts`, `server/multicaRuns.ts`): a page's `issueId` is server-owned like
+  `startFrameId` (`setPages` and copies drop client values) and is written only by a member's
+  `PUT /api/canvases/:id/pages/:pageId/issue` or the Design-property derivation (`store.applyDesignLinks`,
+  fail closed on a missing or conflicting link); MCP has no tool for it. An MCP call's `X-Multica-Task-Id` header
+  is stored on the agent task (`tasks.multica_task_id`). `GET /api/canvases/:id/pages/:pageId/runs` lists the
+  bound issue's runs from Multica (`MULTICA_API_URL`, `MULTICA_API_TOKEN`, `MULTICA_WORKSPACE_ID`,
+  `MULTICA_WEB_URL`; 503 when unset), each with a hop-in URL.
+
+- Write policy (`server/writePolicy.ts`, CHE-6624): every `store` mutator (`createFrame`, `updateFrame`,
+  `deleteFrame`, `deleteCanvas`, `setPages`, `duplicatePage`, `bindProject`) takes a required `WriteContext`
+  first and calls `assertWritable` in the same synchronous tick as the change; a refusal throws
+  `PolicyRefused` (`policy_refused`), distinct from the `undefined` of "not found". A canvas carries a
+  server-owned `projectId` (`canvases.project_id`). An agent with an `X-Multica-Task-Id` writes only when
+  Multica vouched for the task (`setTaskIdentityVerifier` + `warmTaskIdentity`, cached 5 min; the header alone
+  is never trusted), the canvas is bound to the task's project and the page to its issue. With no verifier
+  plugged in every such write is refused. An agent with no task may write to unbound canvases only, and once a verifier is plugged in an MCP agent
+  without a task is refused everywhere; a design-sync (ingest) key is held to the binding like an agent; no agent binds
+  or deletes a canvas. A page copy re-checks the policy inside its database transaction, so one that loses a race rolls back whole; `bind_project` is refused while a copy is in flight. Past the lock rules below, users and the system pass.
+  Frame lock (G5a, CHE-6626): a `locked` frame refuses every write from every actor, the system included
+  (`assertWritable`, `lock_frame`/`unlock_frame` ops); a canvas holding one cannot be deleted (account erasure,
+  `erasureContext()`, is the exception) and `set_pages` cannot drop its page; copies start unlocked. `store.lockIfVersion`
+  (MCP `lock_frame_if_version`, `actions.lockFramesForPublish`) is a compare-and-set against the attested `updatedAt`
+  and does not move it, so the G3 attestation stays current; the frame carries `lockEpoch` (up on every unlock, never
+  reused) and `lockAttestationId` (`frames.lock_epoch`, `frames.lock_attestation_id`, migration 0042). Unlock is
+  `{ locked: false }` alone, from a signed-in user whose account id is in `setLockOwners` (an agent never unlocks; no
+  owners set = nobody unlocks; `server/index.ts` fills it at boot from `DOOP_LOCK_OWNERS`, a comma list of account ids).
+  `lockIfVersion` on an already locked frame never rewrites the attestation: the same id is a no-op (`already`, no
+  write, no broadcast), another id is `policy_refused` until an owner unlocks. It raises `lockEpoch`, drops the attestation id and moves `updatedAt`, so the old
+  attestation no longer matches. `expected_updated_at` fences MCP `set_frame_html`, `edit_frame_html`,
+  `append_frame_html` and `update_frame` (`VersionChanged`, `version_changed`). REST answers a refusal 423 and a lost
+  fence 409. `tests/frameLockPolicy.test.ts` covers it. `tests/writePolicy.test.ts` also scans `server/` so a new
+  writer outside `store.ts` and `db/persist.ts` fails CI.
+
+- Lock pins (G5b, CHE-7062, `server/framePins.ts`, `server/pinState.ts`, table `frame_pins` + `frame_pin_frames`,
+  migration 0043): a decision card holds the frames it shows. States RESERVED -> HELD -> SEALED -> RELEASED; no clock
+  moves a pin. Steps: `reserveLock` (P4, all or none, idempotent on `cardRequestId`), `confirmPin` (P6, receipt R1),
+  `pinForPick` (K2, one transaction HELD -> SEALED, receipt R2), `releasePin` (K5/C2: doop asks Multica itself through
+  `MulticaPort` and releases only on `decided` or `void`), `forceRelease` (F1: a lock owner; `abort_ref` first; a `void`
+  raises `lockEpoch`). Receipts are HMAC-SHA256 over card, pin, state, epochs (+ pick) with `DOOP_PIN_SECRET`; unset =
+  no receipt. `store.unlockFrame` (async) answers `pinned` while a pin exists and writes the row before memory changes;
+  the synchronous unlock in `updateFrame` refuses a pinned frame too. `store.lockIfVersionDurable` (MCP
+  `lock_frame_if_version`) answers only after its row is written and reverts memory if that write fails. Pins are read
+  back at boot (`loadPins`). Not wired yet: the Multica port itself (A1 `ref_status`/`abort_ref`, A2 `abort_if_pending`)
+  and an HTTP/MCP route for P4/P6/K2/K5/F1. Tests: `framePins.test.ts` (temporary pglite).
+  Pin reconcile (G5c, CHE-7063, `server/pinReconcile.ts`): `startPinReconcile` (30 s, started at boot) calls
+  `reconcilePins`, which asks Multica about every pin older than `T_RECONCILE_MS` (120 s since its last state change)
+  and never releases by time (B4). `pending` or missing -> A2 `abortIfPending` (a conditional CAS: a card that is
+  already `open` is left as it is, with its HELD pin); `decided` / `void` -> `releasePin`; `open` / `pick_pending` ->
+  nothing; Multica silent -> the pin is listed by `stuckPins()` with its age (the "ghim treo" warning), never released.
+  `MulticaPort.abortRef` (A1, unconditional) stays for `forceRelease` only. Tests: `pinInterleave.test.ts` (the 12 x 5
+  table, `pin/G1..V2/E1..E5`), `pinConcurrent.test.ts`, harness `tests/support/pinHarness.ts` (`pauseAfter`, fake clock,
+  `crashMultica`/`restartMultica`, `dropResponse`, `assertInvariants` over both databases).
 
 ## 6. Build and Dependency Management
 

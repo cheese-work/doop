@@ -66,6 +66,8 @@ export const canvases = pgTable('canvases', {
   /** the shared workspace this canvas lives in; null = the owner's personal
    *  space. Every workspace member can open a workspace canvas. */
   workspaceId: text('workspace_id'),
+  /** the Multica project this canvas is bound to; null = unbound */
+  projectId: text('project_id'),
   createdAt: bigint('created_at', { mode: 'number' }).notNull(),
   updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
 })
@@ -170,6 +172,10 @@ export const frames = pgTable(
     hidden: boolean('hidden'),
     /** Figma-style lock; null = unlocked */
     locked: boolean('locked'),
+    /** unlocks so far (CHE-6626); raised on every unlock, never reused; null = never unlocked */
+    lockEpoch: integer('lock_epoch'),
+    /** the design attestation the frame was locked against; null = none */
+    lockAttestationId: text('lock_attestation_id'),
     approval: jsonb('approval').$type<FrameApproval>(),
   },
   (t) => [index('frames_canvas_idx').on(t.canvasId)],
@@ -196,6 +202,48 @@ export const frameVersions = pgTable(
     savedByKind: text('saved_by_kind'),
   },
   (t) => [index('frame_versions_frame_idx').on(t.frameId), index('frame_versions_canvas_idx').on(t.canvasId)],
+)
+
+/** G3 attestations (CHE-6078): one row per design frame per run of
+ *  check_design_completeness, carrying the page-level result. Append-only, and
+ *  written only by the server's own check run: no route or tool edits or
+ *  deletes a row, so what a UX verdict cites cannot be rewritten afterwards.
+ *  `frame_updated_at` is the frame version the run saw. */
+export const designAttestations = pgTable(
+  'design_attestations',
+  {
+    id: text('id').primaryKey(),
+    runId: text('run_id').notNull(),
+    canvasId: text('canvas_id').notNull(),
+    pageId: text('page_id').notNull(),
+    frameId: text('frame_id').notNull(),
+    frameUpdatedAt: bigint('frame_updated_at', { mode: 'number' }).notNull(),
+    ruleset: text('ruleset').notNull(),
+    scanHash: text('scan_hash'),
+    /** recon frame(s) at their version, the page's flow start and the Motion page, as the run saw them */
+    inputs: jsonb('inputs')
+      .$type<{
+        recon: { id: string; updatedAt: number }[]
+        start: string | null
+        motion?: {
+          pageId: string
+          name: string
+          frames: { id: string; name: string; updatedAt: number; hidden: boolean }[]
+        } | null
+        requirements?: string | null
+        requirementsIssue?: string | null
+      }>()
+      .notNull(),
+    /** 'complete' | 'incomplete' */
+    result: text('result').notNull(),
+    missing: jsonb('missing').$type<{ code: string; frameId?: string; detail: string }[]>().notNull(),
+    createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+    createdBy: text('created_by').notNull(),
+  },
+  (t) => [
+    index('design_attestations_run_idx').on(t.runId),
+    index('design_attestations_page_idx').on(t.canvasId, t.pageId),
+  ],
 )
 
 /** Design-sync keys: the write-only capability behind the /ingest endpoint.
@@ -335,6 +383,8 @@ export const tasks = pgTable(
     scope: text('scope'),
     /** comma-joined ids of the frames edited while the task was open, most recent last */
     frameIds: text('frame_ids'),
+    /** the Multica task (run) whose MCP calls made this task; null for humans and other clients */
+    multicaTaskId: text('multica_task_id'),
   },
   (t) => [index('tasks_canvas_idx').on(t.canvasId)],
 )
@@ -421,6 +471,35 @@ export const assetRefs = pgTable(
   },
   (t) => [primaryKey({ columns: [t.assetId, t.frameId] }), index('asset_refs_frame_idx').on(t.frameId)],
 )
+
+/** Lock pins (CHE-7062, G5b of CHE-6078): one row per card request, state RESERVED -> HELD -> SEALED -> RELEASED.
+ *  No column is a deadline: a pin is released only after Multica reports the card decided or void. */
+export const framePins = pgTable('frame_pins', {
+  cardRequestId: text('card_request_id').primaryKey(),
+  pinId: text('pin_id').notNull().unique(),
+  state: text('state').$type<'RESERVED' | 'HELD' | 'SEALED' | 'RELEASED'>().notNull(),
+  /** every frame the card covers, at the version and epoch the lock was taken at */
+  frames: jsonb('frames')
+    .$type<{ frameId: string; updatedAt: number; attestationId: string; epoch: number }[]>()
+    .notNull(),
+  pickRequestId: text('pick_request_id'),
+  pickedFrameId: text('picked_frame_id'),
+  /** receipts doop issued (HMAC); kept so a retry returns the same one */
+  r1: text('r1'),
+  r2: text('r2'),
+  releaseReason: text('release_reason'),
+  /** informational only (pin age for the stale-pin list); never a deadline */
+  stateChangedAt: bigint('state_changed_at', { mode: 'number' }).notNull(),
+  createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+})
+
+/** The active pin of each frame: the primary key is the "one pin per frame" constraint. A row goes with its release. */
+export const framePinFrames = pgTable('frame_pin_frames', {
+  frameId: text('frame_id').primaryKey(),
+  cardRequestId: text('card_request_id')
+    .notNull()
+    .references(() => framePins.cardRequestId),
+})
 
 /** Named design docs per canvas (brand rules, style recipes) — markdown
  *  written mostly for agents. Small and cold-path; hydrated with the canvas. */

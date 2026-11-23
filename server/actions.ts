@@ -4,10 +4,12 @@ import * as persist from './db/persist.ts'
 import * as thumbs from './thumbs.ts'
 import { colorFor } from '../shared/types.ts'
 import { DEFAULT_ROLE_ID, mentionedRole, normalizePipeline, roleByAgentName, roleName } from '../shared/agents.ts'
-import { canvasPages } from '../shared/pages.ts'
+import { canvasPages, pageFrames } from '../shared/pages.ts'
+import { conflicts, defaultSpot, freeSpot } from './frameLayout.ts'
 import { isCanvasComment } from '../shared/comments.ts'
 import { decodeEscapedHtml, looksEscapedHtml, repairEscapedHtml } from './escapedHtml.ts'
 import { emitCanvasEvent } from './events.ts'
+import { PolicyRefused, writeContextFor } from './writePolicy.ts'
 import type {
   Actor,
   CanvasGuide,
@@ -133,11 +135,28 @@ function logActivity(canvasId: string, actor: Actor, message: string, frameId?: 
 }
 
 export function resolveActor(
-  raw: { name?: string; kind?: string; clientId?: string; owner?: string } | undefined,
+  raw:
+    | {
+        name?: string
+        kind?: string
+        clientId?: string
+        owner?: string
+        multicaTaskId?: string
+        origin?: 'mcp' | 'sync'
+      }
+    | undefined,
 ): Actor {
   const kind = raw?.kind === 'agent' ? 'agent' : raw?.kind === 'user' ? 'user' : 'agent'
   const name = raw?.name?.trim() || (kind === 'agent' ? 'AI Agent' : 'Anonymous')
-  return { name, kind, color: colorFor(name), clientId: raw?.clientId, owner: raw?.owner }
+  return {
+    name,
+    kind,
+    color: colorFor(name),
+    clientId: raw?.clientId,
+    owner: raw?.owner,
+    ...(raw?.origin ? { origin: raw.origin } : {}),
+    ...(kind === 'agent' && raw?.multicaTaskId ? { multicaTaskId: raw.multicaTaskId } : {}),
+  }
 }
 
 function touch(canvasId: string, actor: Actor, frameId?: string | null) {
@@ -264,7 +283,8 @@ export function setAgentStatus(canvasId: string, actor: Actor, status: string) {
   /* board cards stay open until explicitly completed — a status change
      narrates work ON a card, it doesn't end it */
   const open = list.find((t) => sameAgent(t, actor) && !t.endedAt && !t.queuedBy)
-  if (open?.status === clean) return // same status re-posted: nothing new
+  /* same status re-posted by the same run: nothing new */
+  if (open?.status === clean && (actor.multicaTaskId ?? open.multicaTaskId) === open.multicaTaskId) return
   const runStartedAt = open ? (open.runStartedAt ?? open.startedAt) : undefined
   if (open) {
     open.endedAt = Date.now()
@@ -276,6 +296,7 @@ export function setAgentStatus(canvasId: string, actor: Actor, status: string) {
       id: nanoid(8),
       agentName: actor.name,
       owner: actor.owner,
+      ...(actor.multicaTaskId ? { multicaTaskId: actor.multicaTaskId } : {}),
       color: actor.color,
       status: clean,
       startedAt: Date.now(),
@@ -723,6 +744,7 @@ function autoTask(canvasId: string, actor: Actor, status: string, frameId: strin
     id: nanoid(8),
     agentName: actor.name,
     owner: actor.owner,
+    ...(actor.multicaTaskId ? { multicaTaskId: actor.multicaTaskId } : {}),
     color: actor.color,
     status,
     startedAt: Date.now(),
@@ -1124,7 +1146,7 @@ export async function restoreFrameVersion(
   finishReveal(frameId)
   const prior = priorState(before)
   const patch = { html: version.html, width: version.width, height: version.height }
-  const frame = store.updateFrame(frameId, patch, actor.name)
+  const frame = store.updateFrame(writeContextFor(actor), frameId, patch, actor.name)
   if (!frame) return undefined
   noteHtmlChange(prior, actor, false)
   broadcast(frame.canvasId, { type: 'frame:updated', frame, actor })
@@ -1269,7 +1291,7 @@ export function appendFrameHtml(
   frameId: string,
   chunk: string,
   actor: Actor,
-  opts: { start?: boolean; done?: boolean } = {},
+  opts: { start?: boolean; done?: boolean; expectedUpdatedAt?: number } = {},
 ): Frame | undefined {
   const before = store.getFrame(frameId)
   if (!before) return undefined
@@ -1282,7 +1304,7 @@ export function appendFrameHtml(
   const piece = escaped ? decodeEscapedHtml(chunk) : chunk
   const html = opts.start ? piece : before.html + piece
   const prior = priorState(before)
-  const frame = store.updateFrame(frameId, { html }, actor.name)!
+  const frame = store.updateFrame(writeContextFor(actor), frameId, { html }, actor.name, opts.expectedUpdatedAt)!
   /* the opening chunk replaces the design; every later one extends this burst */
   noteHtmlChange(prior, actor, !starting)
 
@@ -1312,7 +1334,7 @@ export function appendFrameHtml(
 /* ------------------------------------------------------------------ */
 
 export function setCanvasPages(canvasId: string, pages: import('../shared/types.ts').CanvasPageInfo[], actor: Actor) {
-  const saved = store.setPages(canvasId, pages)
+  const saved = store.setPages(writeContextFor(actor), canvasId, pages)
   const next = saved?.pages ?? pages
   broadcast(canvasId, { type: 'canvas:pages', pages: next, actor })
   for (const guide of saved?.dropped ?? []) broadcast(canvasId, { type: 'guide', id: guide.id, guide: null, actor })
@@ -1322,6 +1344,13 @@ export function setCanvasPages(canvasId: string, pages: import('../shared/types.
 /** Point a page's prototype flow at a frame (or clear it); peers get the page list. */
 export function setFlowStart(canvasId: string, pageId: string, frameId: string | null, actor: Actor) {
   const pages = store.setFlowStart(canvasId, pageId, frameId)
+  if (pages) broadcast(canvasId, { type: 'canvas:pages', pages, actor })
+  return pages
+}
+
+/** A member binds a page to a Multica issue (or unbinds it); peers get the page list. */
+export function setPageIssue(canvasId: string, pageId: string, issueId: string | null, actor: Actor) {
+  const pages = store.setPageIssue(canvasId, pageId, issueId, 'member')
   if (pages) broadcast(canvasId, { type: 'canvas:pages', pages, actor })
   return pages
 }
@@ -1341,7 +1370,7 @@ export function deleteGuide(canvasId: string, guideId: string, actor: Actor) {
 
 /** Copy a page with its frames; peers get the page list and each new frame. */
 export async function duplicatePage(canvasId: string, pageId: string, actor: Actor) {
-  const copy = await store.duplicatePage(canvasId, pageId, actor.name)
+  const copy = await store.duplicatePage(writeContextFor(actor), canvasId, pageId, actor.name)
   if (!copy) return undefined
   broadcast(canvasId, { type: 'canvas:pages', pages: copy.pages, actor })
   for (const guide of copy.guides) broadcast(canvasId, { type: 'guide', id: guide.id, guide, actor })
@@ -1352,6 +1381,27 @@ export async function duplicatePage(canvasId: string, pageId: string, actor: Act
   logActivity(canvasId, actor, `duplicated page “${copy.source.name}” as “${copy.page.name}”`)
   touch(canvasId, actor)
   return copy
+}
+
+/** Frames `createFrame` moved to free space because the requested spot overlapped another frame (CHE-6119). */
+const relocated = new WeakSet<Frame>()
+export const wasRelocated = (frame: Frame) => relocated.has(frame)
+
+/** CHE-6119: an agent's frame whose box (explicit x/y, or the store's default for a missing one) would sit on
+ *  another frame goes to free space instead. */
+function clearOfOverlap<T extends { pageId?: string; x?: number; y?: number; width?: number; height?: number }>(
+  canvasId: string,
+  input: T,
+): { input: T; moved: boolean } {
+  const canvas = store.getCanvas(canvasId)
+  const pageId = canvas && (input.pageId ?? canvasPages(canvas)[0]?.id)
+  if (!canvas || !pageId) return { input, moved: false }
+  const frames = pageFrames(canvas, pageId)
+  const at = defaultSpot(frames)
+  const box = { x: input.x ?? at.x, y: input.y ?? at.y, width: input.width ?? 640, height: input.height ?? 480 }
+  return conflicts(box, frames).length
+    ? { input: { ...input, ...freeSpot(frames) }, moved: true }
+    : { input, moved: false }
 }
 
 export function createFrame(
@@ -1371,8 +1421,11 @@ export function createFrame(
   actor: Actor,
 ): Frame | undefined {
   if (input.html !== undefined) input = { ...input, html: repairEscapedHtml(input.html) }
-  const frame = store.createFrame(canvasId, input, actor.name)
+  let moved = false
+  if (actor.kind === 'agent') ({ input, moved } = clearOfOverlap(canvasId, input))
+  const frame = store.createFrame(writeContextFor(actor), canvasId, input, actor.name)
   if (!frame) return undefined
+  if (moved) relocated.add(frame)
   bursts.set(frame.id, { actor, lastAt: frame.createdAt })
   if (actor.kind === 'agent' && frame.html.length > 0) {
     /* agent one-shot creation still plays back as a reveal */
@@ -1396,7 +1449,13 @@ export function updateFrame(
   frameId: string,
   patch: Partial<Pick<Frame, 'name' | 'pageId' | 'x' | 'y' | 'width' | 'height' | 'html' | 'hidden' | 'locked'>>,
   actor: Actor,
-  opts: { replace?: boolean } = {},
+  opts: {
+    replace?: boolean
+    /** the signed-in account id (session routes only); an unlock needs it, a display name proves nothing */
+    userId?: string
+    /** the version the caller read; a newer one throws VersionChanged and writes nothing */
+    expectedUpdatedAt?: number
+  } = {},
 ): Frame | undefined {
   const before = store.getFrame(frameId)
   if (!before) return undefined
@@ -1406,7 +1465,13 @@ export function updateFrame(
   const prevHidden = !!before.hidden
   const prevLocked = !!before.locked
   const prior = priorState(before)
-  const frame = store.updateFrame(frameId, patch, actor.name)
+  const frame = store.updateFrame(
+    writeContextFor(actor, opts.userId),
+    frameId,
+    patch,
+    actor.name,
+    opts.expectedUpdatedAt,
+  )
   if (!frame) return undefined
 
   const htmlChanged = patch.html !== undefined && patch.html !== prevHtml
@@ -1477,7 +1542,7 @@ export function setFrameApproval(
         approvedFrameUpdatedAt: current.updatedAt,
       }
     : null
-  const frame = store.updateFrame(frameId, { approval }, user.name)!
+  const frame = store.updateFrame(writeContextFor(actor), frameId, { approval }, user.name)!
   broadcast(frame.canvasId, { type: 'frame:updated', frame, actor })
   logActivity(
     frame.canvasId,
@@ -1486,6 +1551,72 @@ export function setFrameApproval(
     frameId,
   )
   return frame
+}
+
+export type LockEntry = { frameId: string; attestedUpdatedAt: number; attestationId: string }
+export type LockResult = {
+  frameId: string
+  ok: boolean
+  error?: 'not_found' | 'version_changed' | 'policy_refused' | 'persist_failed'
+}
+
+/** What a lock that took effect tells the room: any open stream or playback ends with it, so no chunk lands after. */
+function announceLock(frame: Frame, actor: Actor): void {
+  finishStream(frame.id, false)
+  finishReveal(frame.id)
+  broadcast(frame.canvasId, { type: 'frame:updated', frame, actor })
+  logActivity(frame.canvasId, actor, `locked “${frame.name}” at its attested version`, frame.id)
+  touch(frame.canvasId, actor, frame.id)
+}
+
+/** Lock one frame if it is still at the attested version (CHE-6626), answered only once its row is durable
+ *  (CHE-7062 B7): the MCP lock tool and the publish step both use this one. */
+export async function lockFrameIfVersionDurable(
+  entry: LockEntry,
+  actor: Actor,
+): Promise<LockResult & { epoch?: number }> {
+  const { frameId, attestedUpdatedAt, attestationId } = entry
+  let res: Awaited<ReturnType<typeof store.lockIfVersionDurable>>
+  try {
+    res = await store.lockIfVersionDurable(writeContextFor(actor), frameId, attestedUpdatedAt, attestationId)
+  } catch (err) {
+    if (err instanceof PolicyRefused) return { frameId, ok: false, error: 'policy_refused' }
+    throw err
+  }
+  if (!res) return { frameId, ok: false, error: 'not_found' }
+  if (!res.ok) return { frameId, ok: false, error: res.error }
+  if (!res.already) announceLock(res.frame, actor)
+  return { frameId, ok: true, epoch: res.epoch }
+}
+
+/** An owner's unlock (CHE-7062 B5/B7): `pinned` while a decision card holds the frame; the row is written first. */
+export async function unlockFrameDurable(
+  frameId: string,
+  actor: Actor,
+  opts: { userId?: string; expectedUpdatedAt?: number } = {},
+): Promise<
+  | { ok: true; frame: Frame }
+  | { ok: false; error: 'pinned' | 'version_changed' | 'persist_failed' | 'not_locked' | 'not_found' }
+> {
+  const res = await store.unlockFrame(writeContextFor(actor, opts.userId), frameId, actor.name, opts.expectedUpdatedAt)
+  if (!res) return { ok: false, error: 'not_found' }
+  if (!res.ok) return res
+  broadcast(res.frame.canvasId, { type: 'frame:updated', frame: res.frame, actor })
+  logActivity(res.frame.canvasId, actor, `unlocked “${res.frame.name}”`, frameId)
+  touch(res.frame.canvasId, actor, frameId)
+  return res
+}
+
+/** Publish step: lock every attested frame, one after another, each durable before the next. A failure leaves the
+ *  frames already locked locked (the safe side) and withholds the card; the retry, after a fresh attestation, locks the
+ *  rest. `cardAllowed` is true only once every row is written. */
+export async function lockFramesForPublish(
+  entries: LockEntry[],
+  actor: Actor,
+): Promise<{ cardAllowed: boolean; results: LockResult[] }> {
+  const results: LockResult[] = []
+  for (const entry of entries) results.push(await lockFrameIfVersionDurable(entry, actor))
+  return { cardAllowed: results.length > 0 && results.every((r) => r.ok), results }
 }
 
 export function isFrameStreaming(frameId: string): boolean {
@@ -1497,7 +1628,7 @@ export function deleteFrame(frameId: string, actor: Actor): Frame | undefined {
      so their auto “Designing…” tasks end with it */
   finishStream(frameId, false)
   finishReveal(frameId)
-  const frame = store.deleteFrame(frameId)
+  const frame = store.deleteFrame(writeContextFor(actor), frameId)
   if (!frame) return undefined
   bursts.delete(frameId)
   thumbs.purge(frameId)
@@ -1508,8 +1639,8 @@ export function deleteFrame(frameId: string, actor: Actor): Frame | undefined {
 }
 
 /** Remove a canvas with everything attached to it; viewers are told to leave. */
-export function deleteCanvas(canvasId: string): boolean {
-  const c = store.deleteCanvas(canvasId)
+export function deleteCanvas(canvasId: string, actor: Actor): boolean {
+  const c = store.deleteCanvas(writeContextFor(actor), canvasId)
   if (!c) return false
   for (const f of c.frames) {
     thumbs.purge(f.id)

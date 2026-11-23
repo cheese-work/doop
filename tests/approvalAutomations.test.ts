@@ -20,6 +20,7 @@ import {
   updateAutomation,
 } from '../server/automations.ts'
 import { store } from '../server/store.ts'
+import { systemContext } from '../server/writePolicy.ts'
 import * as actions from '../server/actions.ts'
 import * as persist from '../server/db/persist.ts'
 import { consumeResidentTask } from '../server/allowance.ts'
@@ -79,7 +80,12 @@ beforeEach(async () => {
   sent.length = 0
   stubEnv('BETTER_AUTH_URL', 'https://doop.example')
   canvas = store.createCanvas('Campaign', owner.id)
-  source = store.createFrame(canvas.id, { name: 'Approved creative', html: '<h1>Spring sale</h1>' }, owner.name)!
+  source = store.createFrame(
+    systemContext(),
+    canvas.id,
+    { name: 'Approved creative', html: '<h1>Spring sale</h1>' },
+    owner.name,
+  )!
   await db.insert(integrations).values({
     id: 'linear-owner',
     userId: owner.id,
@@ -162,8 +168,8 @@ async function rawRun(id: string) {
 
 it('batches only approved designs, posts once, and keeps receipts when run history is removed', async () => {
   const a = await workflow()
-  const second = store.createFrame(canvas.id, { name: 'Second', html: '<p>Sale</p>' }, owner.name)!
-  store.createFrame(canvas.id, { name: 'Unapproved secret', html: '<p>Draft</p>' }, owner.name)
+  const second = store.createFrame(systemContext(), canvas.id, { name: 'Second', html: '<p>Sale</p>' }, owner.name)!
+  store.createFrame(systemContext(), canvas.id, { name: 'Unapproved secret', html: '<p>Draft</p>' }, owner.name)
   approve()
   approve(second)
   await Promise.all([tickWorkflows(), tickWorkflows(), runAutomation(a.id, { approved: true })])
@@ -198,7 +204,7 @@ it('waits for generated drafts, then creates a Linear ticket and posts its link 
   expect(onFeedback).toHaveBeenCalledWith(canvas.id)
   await advanceRun(run.id)
   expect(sent).toHaveLength(0)
-  const output = store.createFrame(canvas.id, { name: 'Square', width: 1080, height: 1080 }, 'Doop')!
+  const output = store.createFrame(systemContext(), canvas.id, { name: 'Square', width: 1080, height: 1080 }, 'Doop')!
   await db.update(tasks).set({ endedAt: Date.now(), frameIds: output.id }).where(eq(tasks.id, card!.id))
   await advanceRun(run.id)
   await advanceRun(run.id)
@@ -222,7 +228,7 @@ it('stops downstream actions if an approved source changes during design work', 
   approve()
   await tickWorkflows()
   const run = await rawRun(a.id)
-  store.updateFrame(source.id, { html: '<p>Changed</p>' }, owner.name)
+  store.updateFrame(systemContext(), source.id, { html: '<p>Changed</p>' }, owner.name)
   await advanceRun(run.id)
   expect((await runs(a.id))[0]).toMatchObject({
     status: 'failed',
@@ -373,7 +379,7 @@ it('gives later agents the draft outputs of earlier steps as well as the approve
   approve()
   await tickWorkflows()
   const run = await rawRun(a.id)
-  const output = store.createFrame(canvas.id, { name: 'Square', width: 1080, height: 1080 }, 'Doop')!
+  const output = store.createFrame(systemContext(), canvas.id, { name: 'Square', width: 1080, height: 1080 }, 'Doop')!
   await db.update(tasks).set({ endedAt: Date.now(), frameIds: output.id }).where(eq(tasks.id, run.state!.taskId!))
   await advanceRun(run.id)
   await advanceRun(run.id)
@@ -390,7 +396,7 @@ it('skips handled approval receipts without issuing duplicate inserts', async ()
   const a = await workflow()
   approve()
   for (let i = 0; i < 100; i++) {
-    const frame = store.createFrame(canvas.id, { name: `Handled ${i}` }, owner.name)!
+    const frame = store.createFrame(systemContext(), canvas.id, { name: `Handled ${i}` }, owner.name)!
     frame.approval = { ...source.approval!, approvedFrameUpdatedAt: frame.updatedAt }
   }
   await db

@@ -5,7 +5,9 @@ import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import { db } from './index.ts'
 import * as t from './schema.ts'
 import { extractAssetIds } from '../assets.ts'
+import type { Pin } from '../pinState.ts'
 import { roleByAgentName } from '../../shared/agents.ts'
+import type { AttestationRow } from '../../shared/designCompleteness.ts'
 import { isCommunityCategory } from '../../shared/types.ts'
 import { storedLinkAccess } from '../../shared/canvasRole.ts'
 import type {
@@ -50,6 +52,7 @@ function canvasColumns(c: Canvas) {
     category: c.category ?? null,
     copyCount: c.copyCount ?? 0,
     workspaceId: c.workspaceId ?? null,
+    projectId: c.projectId ?? null,
     updatedAt: c.updatedAt,
   }
 }
@@ -87,6 +90,8 @@ export async function saveCanvasCopy(c: Canvas): Promise<void> {
           demo: frame.demo ?? null,
           hidden: frame.hidden ?? null,
           locked: frame.locked ?? null,
+          lockEpoch: frame.lockEpoch ?? null,
+          lockAttestationId: frame.lockAttestationId ?? null,
         })),
       )
     }
@@ -285,10 +290,10 @@ const FRAME_DEBOUNCE_MS = 400
 /** Persist a duplicated page as one unit: the canvas's new page list and
  * every copied frame land together or not at all, so a copy is never half
  * there after a crash. Like saveCanvasCopy, success means durable. */
-export async function savePageCopy(c: Canvas, frames: Frame[]): Promise<void> {
+export async function savePageCopy(c: Canvas, frames: Frame[], beforeCommit?: () => void): Promise<void> {
   await db.transaction(async (tx) => {
     await tx.update(t.canvases).set(canvasColumns(c)).where(eq(t.canvases.id, c.id))
-    if (!frames.length) return
+    if (!frames.length) return beforeCommit?.()
     await tx.insert(t.frames).values(
       frames.map((frame) => ({
         id: frame.id,
@@ -306,12 +311,16 @@ export async function savePageCopy(c: Canvas, frames: Frame[]): Promise<void> {
         demo: frame.demo ?? null,
         hidden: frame.hidden ?? null,
         locked: frame.locked ?? null,
+        lockEpoch: frame.lockEpoch ?? null,
+        lockAttestationId: frame.lockAttestationId ?? null,
       })),
     )
     const refs = frames.flatMap((frame) =>
       [...extractAssetIds(frame.html)].map((assetId) => ({ assetId, frameId: frame.id })),
     )
     if (refs.length) await tx.insert(t.assetRefs).values(refs)
+    /* the last word before the rows become durable: a throw here rolls the whole copy back */
+    beforeCommit?.()
   })
 }
 
@@ -332,6 +341,15 @@ export function saveFrame(f: Frame, immediate = false) {
   )
 }
 
+/** Awaited frame write (CHE-7062 B7): a lock or unlock is answered only once this resolves. It cancels the
+ *  debounced write of the same frame, which would only repeat it. */
+export async function saveFrameNow(f: Frame): Promise<void> {
+  const pending = frameTimers.get(f.id)
+  if (pending) clearTimeout(pending)
+  frameTimers.delete(f.id)
+  await writeFrame(f)
+}
+
 async function writeFrame(f: Frame) {
   const row = {
     id: f.id,
@@ -349,6 +367,8 @@ async function writeFrame(f: Frame) {
     demo: f.demo ?? null,
     hidden: f.hidden ?? null,
     locked: f.locked ?? null,
+    lockEpoch: f.lockEpoch ?? null,
+    lockAttestationId: f.lockAttestationId ?? null,
     approval: f.approval ?? null,
   }
   const { id, createdAt, ...set } = row
@@ -498,6 +518,19 @@ async function syncAssetRefs(frameId: string, html: string) {
   }
 }
 
+/** Store one run of check_design_completeness. Awaited by the caller: an
+ *  attestation id is only handed out once its rows are in the database. */
+export async function saveAttestationRows(rows: AttestationRow[]): Promise<void> {
+  if (!rows.length) return
+  await db.insert(t.designAttestations).values(rows.map((r) => ({ id: nanoid(), ...r })))
+}
+
+/** Every row of one run, oldest frame first; empty when there is no such run. */
+export async function listAttestationRun(runId: string): Promise<AttestationRow[]> {
+  const rows = await db.select().from(t.designAttestations).where(eq(t.designAttestations.runId, runId))
+  return rows.map(({ id: _id, ...row }) => ({ ...row, result: row.result === 'complete' ? 'complete' : 'incomplete' }))
+}
+
 export function deleteCanvas(canvasId: string) {
   /* refs must go before the frames rows the subquery reads */
   swallow(
@@ -512,6 +545,7 @@ export function deleteCanvas(canvasId: string) {
       .then(() => db.delete(t.frames).where(eq(t.frames.canvasId, canvasId))),
   )
   swallow(db.delete(t.tasks).where(eq(t.tasks.canvasId, canvasId)))
+  swallow(db.delete(t.designAttestations).where(eq(t.designAttestations.canvasId, canvasId)))
   swallow(db.delete(t.feedback).where(eq(t.feedback.canvasId, canvasId)))
   swallow(db.delete(t.comments).where(eq(t.comments.canvasId, canvasId)))
   swallow(db.delete(t.activity).where(eq(t.activity.canvasId, canvasId)))
@@ -593,6 +627,7 @@ export function saveTask(canvasId: string, task: AgentTask) {
     payload: task.payload ? JSON.stringify(task.payload) : null,
     scope: task.scope ? JSON.stringify(task.scope) : null,
     frameIds: task.frameIds?.join(',') ?? null,
+    multicaTaskId: task.multicaTaskId ?? null,
   }
   const write = () =>
     db
@@ -780,6 +815,7 @@ export async function hydrate(): Promise<Hydrated> {
     ...(isCommunityCategory(c.category) ? { category: c.category } : {}),
     ...(c.copyCount ? { copyCount: c.copyCount } : {}),
     ...(c.workspaceId ? { workspaceId: c.workspaceId } : {}),
+    ...(c.projectId ? { projectId: c.projectId } : {}),
     createdAt: c.createdAt,
     updatedAt: c.updatedAt,
     frames: [],
@@ -796,6 +832,8 @@ export async function hydrate(): Promise<Hydrated> {
       demo: f.demo ?? undefined,
       hidden: f.hidden ?? undefined,
       locked: f.locked ?? undefined,
+      lockEpoch: f.lockEpoch ?? undefined,
+      lockAttestationId: f.lockAttestationId ?? undefined,
     })
   for (const c of canvases) c.frames.sort((a, b) => a.createdAt - b.createdAt)
   for (const r of referenceRows) {
@@ -867,6 +905,7 @@ export async function hydrate(): Promise<Hydrated> {
       ...repoCardFields(row.kind, row.payload),
       ...scopeField(row.scope),
       ...(row.frameIds ? { frameIds: row.frameIds.split(',').filter(Boolean) } : {}),
+      ...(row.multicaTaskId ? { multicaTaskId: row.multicaTaskId } : {}),
     })
     tasks.set(row.canvasId, list)
   }
@@ -1014,4 +1053,58 @@ export async function importLegacyJson(): Promise<Canvas[] | null> {
   fs.renameSync(file, `${file}.imported`)
   console.log(`[db] imported ${parsed.length} canvas(es) from legacy store.json`)
   return parsed
+}
+
+/* Lock pins (CHE-7062, G5b). `frame_pins` is the truth; `frame_pin_frames` holds one row per frame of an active
+   pin, its primary key being what stops two pins from holding one frame even across processes. */
+function pinRowOf(pin: Pin) {
+  return {
+    cardRequestId: pin.cardRequestId,
+    pinId: pin.pinId,
+    state: pin.state,
+    frames: pin.frames,
+    pickRequestId: pin.pickRequestId ?? null,
+    pickedFrameId: pin.pickedFrameId ?? null,
+    r1: pin.r1 ?? null,
+    r2: pin.r2 ?? null,
+    releaseReason: pin.releaseReason ?? null,
+    stateChangedAt: pin.stateChangedAt,
+    createdAt: pin.createdAt,
+  }
+}
+
+export async function loadPins(): Promise<Pin[]> {
+  const rows = await db.select().from(t.framePins)
+  return rows.map((r) => ({
+    cardRequestId: r.cardRequestId,
+    pinId: r.pinId,
+    state: r.state,
+    frames: r.frames,
+    ...(r.pickRequestId ? { pickRequestId: r.pickRequestId } : {}),
+    ...(r.pickedFrameId ? { pickedFrameId: r.pickedFrameId } : {}),
+    ...(r.r1 ? { r1: r.r1 } : {}),
+    ...(r.r2 ? { r2: r.r2 } : {}),
+    ...(r.releaseReason ? { releaseReason: r.releaseReason } : {}),
+    stateChangedAt: r.stateChangedAt,
+    createdAt: r.createdAt,
+  }))
+}
+
+/** One transaction per pin step. `insert` takes the active rows with it; a RELEASED pin gives them up and may raise
+ *  the epoch of its frames in the same commit (F1 on a void card). */
+export async function writePin(pin: Pin, mode: 'insert' | 'update', epochs: { frameId: string; epoch: number }[] = []) {
+  await db.transaction(async (tx) => {
+    if (mode === 'insert') {
+      await tx.insert(t.framePins).values(pinRowOf(pin))
+      await tx
+        .insert(t.framePinFrames)
+        .values(pin.frames.map((f) => ({ frameId: f.frameId, cardRequestId: pin.cardRequestId })))
+    } else {
+      const { cardRequestId, ...set } = pinRowOf(pin)
+      await tx.update(t.framePins).set(set).where(eq(t.framePins.cardRequestId, cardRequestId))
+      if (pin.state === 'RELEASED')
+        await tx.delete(t.framePinFrames).where(eq(t.framePinFrames.cardRequestId, cardRequestId))
+    }
+    for (const e of epochs) await tx.update(t.frames).set({ lockEpoch: e.epoch }).where(eq(t.frames.id, e.frameId))
+  })
 }

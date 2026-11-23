@@ -40,6 +40,13 @@ const origin = makeExactValidator<string>((input) => {
   return input.replace(/\/+$/, '')
 })
 
+/** A secret of at least `minimum` characters: a short shared token is guessable. */
+const secret = (minimum: number) =>
+  makeExactValidator<string>((input) => {
+    if (input.length < minimum) throw new TypeError(`Too short (expected >= ${minimum} characters)`)
+    return input
+  })
+
 /** Comma-separated values, trimmed, empties dropped. */
 const list = makeExactValidator<string[]>((input) =>
   input
@@ -81,6 +88,10 @@ const schema = {
   TRUSTED_ORIGINS: list({ default: [] }),
   SIGNUP_EMAIL_DOMAINS: list({ default: [] }),
   ADMIN_EMAILS: list({ default: [] }),
+  /* account ids that may unlock a locked frame (CHE-6626); empty = nobody can */
+  DOOP_LOCK_OWNERS: list({ default: [] }),
+  /* HMAC secret shared with Multica for lock-pin receipts R1/R2 (CHE-7062); unset = doop issues no receipt */
+  DOOP_PIN_SECRET: str({ default: undefined }),
   REQUIRE_EMAIL_VERIFICATION: bool({ default: true }),
   OIDC_ISSUER: str({ default: undefined }),
   OIDC_CLIENT_ID: str({ default: undefined }),
@@ -161,6 +172,13 @@ const schema = {
   LINEAR_CLIENT_ID: str({ default: undefined }),
   LINEAR_CLIENT_SECRET: str({ default: undefined }),
   LINEAR_WEBHOOK_SECRET: str({ default: undefined }),
+  /* Multica: lists the runs of a page's bound issue (GET /api/canvases/:id/pages/:pageId/runs) */
+  MULTICA_API_URL: str({ default: undefined }),
+  MULTICA_API_TOKEN: str({ default: undefined }),
+  MULTICA_WORKSPACE_ID: str({ default: undefined }),
+  MULTICA_WEB_URL: str({ default: undefined }),
+  /* G4: the bearer token Multica sends to GET /api/service/design-attestations/:id; unset = route answers 503 */
+  DOOP_ATTESTATION_READ_TOKEN: secret(32)({ default: undefined }),
   LINEAR_API_URL: str({ default: 'https://api.linear.app/graphql' }),
   LINEAR_TOKEN_URL: str({ default: 'https://api.linear.app/oauth/token' }),
   SLACK_CLIENT_ID: str({ default: undefined }),

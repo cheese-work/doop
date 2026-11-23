@@ -267,6 +267,41 @@
       "when": 1793062237684,
       "tag": "0038_reasoning_effort",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1794600167628,
+      "tag": "0039_multica_task_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1794854399081,
+      "tag": "0040_design_attestations",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1794857821619,
+      "tag": "0041_canvas_project_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1794945454632,
+      "tag": "0042_frame_lock",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1794970997360,
+      "tag": "0043_frame_pins",
+      "breakpoints": true
     }
   ]
 }

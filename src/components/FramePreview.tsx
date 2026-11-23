@@ -13,12 +13,15 @@ export function FramePreview({
   frameId,
   empty = 'empty canvas',
   className,
+  quietFail = false,
 }: {
   frameId?: string | null
   /** what an empty box says; `null` for a plain blank (a tiny thumb) */
   empty?: ReactNode
   /** the fallback text's size and colour; the image itself always fills the box */
   className?: string
+  /** a failed render shows nothing instead of the failure text: for a preview that only covers a live frame while it loads */
+  quietFail?: boolean
 }) {
   const [failedId, setFailedId] = useState<string | null>(null)
   const fallback = (text: ReactNode) =>
@@ -26,7 +29,7 @@ export function FramePreview({
       <span className={cn('grid h-full w-full place-items-center text-label text-ink-faint', className)}>{text}</span>
     )
   if (!frameId) return fallback(empty)
-  if (failedId === frameId) return fallback('preview unavailable')
+  if (failedId === frameId) return quietFail ? null : fallback('preview unavailable')
   return (
     <img
       src={`/i/${frameId}.jpg?preview`}

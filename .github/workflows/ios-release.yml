@@ -1,3 +1,4 @@
+# ci-policy: class=deploy
 # Ships the iOS app to TestFlight / App Store Connect.
 # - Tag `ios-v*` → archives a signed Release build and uploads it to App Store
 #   Connect, where it appears in TestFlight. Release to the store from there.

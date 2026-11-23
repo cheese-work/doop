@@ -25,6 +25,7 @@ vi.mock('../server/db/persist.ts', () => {
   }
 })
 import { store } from '../server/store.ts'
+import { systemContext } from '../server/writePolicy.ts'
 import { canvasPages, pageFrames } from '../shared/pages.ts'
 import { MAX_GUIDES } from '../shared/guides.ts'
 
@@ -44,7 +45,7 @@ const frame = (id: string, pageId?: string): Frame => ({
 })
 
 beforeEach(() => {
-  for (const canvas of store.allCanvases()) store.deleteCanvas(canvas.id)
+  for (const canvas of store.allCanvases()) store.deleteCanvas(systemContext(), canvas.id)
   rig.savedFrames = []
   rig.duringCopy = null
 })
@@ -79,10 +80,10 @@ it('advances a frame version when multiple writes share the same timestamp', () 
   const now = vi.spyOn(Date, 'now').mockReturnValue(100)
   try {
     const canvas = store.createCanvas('Versions', 'alice')
-    const frame = store.createFrame(canvas.id, { name: 'Path' }, 'alice')!
+    const frame = store.createFrame(systemContext(), canvas.id, { name: 'Path' }, 'alice')!
     const first = frame.updatedAt
-    const second = store.updateFrame(frame.id, { html: '<p>Second</p>' }, 'alice')!.updatedAt
-    const third = store.updateFrame(frame.id, { html: '<p>Third</p>' }, 'alice')!.updatedAt
+    const second = store.updateFrame(systemContext(), frame.id, { html: '<p>Second</p>' }, 'alice')!.updatedAt
+    const third = store.updateFrame(systemContext(), frame.id, { html: '<p>Third</p>' }, 'alice')!.updatedAt
     expect(second).toBeGreaterThan(first)
     expect(third).toBeGreaterThan(second)
   } finally {
@@ -100,7 +101,7 @@ it('keeps a page copy within the guide limit when guides are added while it is w
   rig.duringCopy = () => {
     for (let i = 0; i < 10; i++) store.setGuide(canvas.id, guide(`late${i}`))
   }
-  const copy = await store.duplicatePage(canvas.id, page!.id, 'alice')
+  const copy = await store.duplicatePage(systemContext(), canvas.id, page!.id, 'alice')
   expect(copy!.guides).toHaveLength(5)
   expect(store.getCanvas(canvas.id)!.guides).toHaveLength(MAX_GUIDES)
 })

@@ -2,6 +2,7 @@ import { eq } from 'drizzle-orm'
 import { db } from './db/index.ts'
 import { linearOAuthStates, liveActivities, liveActivityStarters, slackOAuthStates } from './db/schema.ts'
 import { store } from './store.ts'
+import { erasureContext } from './writePolicy.ts'
 import { removeMember as leaveWorkspace, workspaceIdsFor } from './workspaces.ts'
 
 /**
@@ -24,7 +25,7 @@ export async function purgeUserData(userId: string): Promise<{ deletedCanvases: 
   for (const canvas of store.allCanvases()) {
     const others = (canvas.memberIds ?? []).filter((id) => id !== userId)
     if (canvas.ownerId === userId && others.length === 0 && !canvas.workspaceId) {
-      store.deleteCanvas(canvas.id)
+      store.deleteCanvas(erasureContext(), canvas.id)
       deletedCanvases += 1
     } else if (canvas.memberIds?.includes(userId)) {
       store.removeMember(canvas.id, userId)

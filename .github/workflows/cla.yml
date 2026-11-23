@@ -1,3 +1,4 @@
+# ci-policy: class=gate
 name: CLA
 
 on:
@@ -5,6 +6,9 @@ on:
     types: [created]
   pull_request_target:
     types: [opened, closed, synchronize]
+  # The queue requires cla-assistant on the queued commit. There is no PR context there, so the job
+  # runs with its CLA step skipped (the step `if` is false) and reports success; the PR's own run signed it.
+  merge_group:
 
 permissions:
   actions: write
