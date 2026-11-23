@@ -308,13 +308,15 @@ describe('radius-bleed on synthetic facts', () => {
 })
 
 describe('the registry', () => {
-  it('registers the S4 rules after outside-frame', () => {
+  it('registers the S4 rules after outside-frame, ahead of the axe rules', () => {
     expect(FRAME_RULES.map((rule) => rule.id)).toEqual([
       'outside-frame',
       'border-clipped',
       'text-clipped',
       'control-occluded',
       'radius-bleed',
+      'interactive-name',
+      'target-spacing',
     ])
   })
 
