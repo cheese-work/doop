@@ -29,6 +29,26 @@
         },
         frames: () => useStore.getState().canvas.frames,
         picked: () => pickedSelectors(useStore.getState()),
+        primary: () => useStore.getState().selectedElement?.selector,
+        pickedRoots: () => {
+          const doc = new DOMParser().parseFromString(useStore.getState().canvas.frames[0].html, 'text/html')
+          const sections = [...doc.querySelectorAll('section')]
+          const paragraphs = [...doc.querySelectorAll('p')]
+          const picked = pickedSelectors(useStore.getState())
+          return {
+            picked,
+            matches: picked.map((selector) => doc.querySelectorAll(selector).length),
+            roots: picked.map((selector) => {
+              const el = doc.querySelector(selector)
+              if (!el) return 'missing'
+              if (el === sections[1]) return 'section[2]'
+              if (el === paragraphs[1]) return 'p[2]'
+              return `other:${el.tagName.toLowerCase()}#${el.id}`
+            }),
+            sections: sections.length,
+            paragraphs: paragraphs.length,
+          }
+        },
         lockFrame: () => useStore.getState().patchFrameLocal('f', { locked: true }),
         notice: () => useStore.getState().notice?.text,
         undo,
