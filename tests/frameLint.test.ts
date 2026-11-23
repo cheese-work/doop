@@ -43,8 +43,8 @@ describe('the registries', () => {
       'text-clipped',
       'control-occluded',
       'radius-bleed',
-    'interactive-name',
-    'target-spacing',
+      'interactive-name',
+      'target-spacing',
     ])
     expect(PAGE_RULES.map((rule) => rule.id)).toEqual(['states', 'repeated-markup'])
     expect(HALLMARK_PIN).toMatch(/^[0-9a-f]{40}$/)
