@@ -336,19 +336,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # Acts on what C00 runs: the candidate rolls back; the predecessor or a newer deploy is left alone.
-      - name: Rollback check
-        id: check
-        env:
-          MARKER_EXPECT: ${{ needs.deploy.outputs.marker }}
-        run: node scripts/deploy-gate.mjs recheck "$DEPLOY_MODE" --op rollback --expect "$MARKER_EXPECT"
-      - name: Roll back by digest
-        if: ${{ steps.check.outputs.action == 'rollback' }}
-        run: bash deploy/cd/c00.sh rollback
       # The marker is a repository variable; `github.token` cannot write one, so a GitHub App token does.
       # It is minted in the environment that holds the App key, only for variables, and just before its first use.
-      # After the rollback, so a failed mint can never keep a broken deploy from rolling back; the rollback check
-      # therefore reads no variable (CHE-9181).
+      # Minted before the rollback check, which reads the marker to prove it is still this run's own (CHE-9181),
+      # but the next two steps run after a failed mint (!cancelled()): it fails the job, it never keeps a broken
+      # deploy from rolling back. Without a token the check decides from what C00 runs alone, and the suspend
+      # step below then fails loudly.
       - name: Mint the marker token
         id: app
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -357,6 +350,17 @@ jobs:
           private-key: ${{ secrets.DOOP_MARKER_APP_KEY }}
           repositories: doop
           permission-variables: write
+      # Acts on what C00 runs: the candidate rolls back; the predecessor or a newer deploy is left alone.
+      - name: Rollback check
+        id: check
+        if: ${{ !cancelled() }}
+        env:
+          MARKER_EXPECT: ${{ needs.deploy.outputs.marker }}
+          VARS_TOKEN: ${{ steps.app.outputs.token }}
+        run: node scripts/deploy-gate.mjs recheck "$DEPLOY_MODE" --op rollback --expect "$MARKER_EXPECT"
+      - name: Roll back by digest
+        if: ${{ !cancelled() && steps.check.outputs.action == 'rollback' }}
+        run: bash deploy/cd/c00.sh rollback
       # Whatever the rollback did, even if it failed: this run's armed value becomes suspended (C-10.3). Only a
       # lift (S3b) clears it. Not after a refused check, where the marker is no longer this run's own.
       - name: Suspend the marker

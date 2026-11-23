@@ -227,10 +227,12 @@ export async function recheckOp({
   if (!q.ok) return refuse(`migration quiescence not proven: ${q.reason ?? 'unknown'}`)
 
   // Variables are read with `varsApi`: a token that has the Variables permission. `ghApi` reads pulls.
-  // The rollback op reads none: the rollback job has no such token before the rollback (a failed mint must never
-  // keep a broken deploy from rolling back), and it decides from what C00 runs. Whether the marker is still this
-  // run's own is checked where it is written, by `suspend` after the rollback.
-  const reads = op !== 'rollback'
+  // The rollback op is the one that must still work when the token mint failed (a broken deploy must roll back),
+  // so the workflow mints it with continue-on-error and passes `varsApi: null` when there is no token. With a
+  // token the rollback check keeps the ownership rule of every post-arm op: the marker must be this run's own
+  // value, so a run that a later run has superseded (even on the same digest) does not roll back. Without one,
+  // it decides from what C00 runs alone.
+  const reads = varsApi !== null
   const state = reads ? await readState(varsApi, repo) : { errors: {} }
   const want = MODES[mode]
   const before = op === 'pre-arm' || op === 'pre-apply'
@@ -240,11 +242,9 @@ export async function recheckOp({
     ...(reads && (armed || mode === 'train') ? ['marker'] : []),
   ])
   if (blind) return blind
-  if (armed && !reads) {
+  if (armed) {
     if (!expect) return refuse('no --expect marker value for a post-arm operation')
-  } else if (armed) {
-    if (!expect) return refuse('no --expect marker value for a post-arm operation')
-    if (state.marker !== expect)
+    if (reads && state.marker !== expect)
       return refuse(
         `the marker is not this run's own value (${state.marker === undefined ? 'unreadable' : state.marker === null ? 'absent' : 'changed'})`,
       )
@@ -428,7 +428,8 @@ async function cli(argv, env) {
       extra: env.EXTRA,
       ghApi: gh,
       // The marker App token (Variables permission); `github.token` cannot read variables.
-      varsApi: env.VARS_TOKEN ? ghWith(env.VARS_TOKEN) : gh,
+      // Rollback runs without a token when the mint failed; every other op then fails red on its 403.
+      varsApi: env.VARS_TOKEN ? ghWith(env.VARS_TOKEN) : op === 'rollback' ? null : gh,
       event: env.EVENT,
       actor: env.ACTOR,
       trigger: env.TRIGGER,

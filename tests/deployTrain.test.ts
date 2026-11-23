@@ -273,8 +273,16 @@ describe('recheckOp: an unreadable variable fails red, and the variables token i
     expect(r.reason).toContain('GitHub 403')
   })
 
-  it('rollback reads no variable: it decides from what C00 runs, even with variables unreadable', async () => {
-    const r = await ops({}, { ghApi: api({}), varsApi: forbidden })('rollback', ARMED, {
+  it('rollback with the variables token refuses a marker that changed while the candidate digest still runs', async () => {
+    const run = { running: async () => ({ digest: D_CAND, label: CAND }) }
+    for (const marker of ['armed:n9:2:' + CAND, CLEAR, CLEAR_LIFT, null, httpError(500)]) {
+      const r = await ops({ marker })('rollback', ARMED, run)
+      expect(r, String(marker)).toMatchObject({ go: false, skip: false })
+    }
+  })
+
+  it('rollback without a token (the mint failed) still rolls back from what C00 runs', async () => {
+    const r = await ops({}, { varsApi: null })('rollback', ARMED, {
       running: async () => ({ digest: D_CAND, label: CAND }),
     })
     expect(r).toMatchObject({ go: true, action: 'rollback' })
@@ -622,7 +630,7 @@ describe('recheckOp after the arm write (Done when 3)', () => {
     expect(await ops({ marker: ARMED, sw: 'off' })('pre-apply', ARMED)).toMatchObject({ go: false, skip: false })
   })
 
-  it.each(['pre-apply', 'confirm'])("%s refuses any marker that is not this run's own", async (op) => {
+  it.each(['pre-apply', 'confirm', 'rollback'])("%s refuses any marker that is not this run's own", async (op) => {
     const run = { running: async () => ({ digest: D_CAND, label: CAND }) }
     for (const marker of [
       'armed:n9:2:' + CAND,

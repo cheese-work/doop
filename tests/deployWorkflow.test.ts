@@ -197,12 +197,10 @@ describe('D2 suspension marker wiring (CHE-5545, C-10.1 to C-10.3)', () => {
     expect(j).toContain('repositories: doop')
     // The token is minted before the first marker write. Deploy and confirm mint before their checks, which read
     // variables, and `github.token` cannot (CHE-9181): the gate gets it as VARS_TOKEN, the marker writer as
-    // GH_TOKEN. Rollback mints after the rollback (see below) and its check reads no variable.
+    // GH_TOKEN. Rollback mints before its check, which runs even if the mint fails (see below).
     expect(at(j, 'create-github-app-token')).toBeLessThan(at(j, 'deploy-marker.mjs'))
-    if (j !== rollback) {
-      expect(at(j, 'create-github-app-token')).toBeLessThan(at(j, 'deploy-gate.mjs recheck'))
-      expect(j).toMatch(/VARS_TOKEN: \$\{\{ steps\.app\.outputs\.token \}\}/)
-    }
+    expect(at(j, 'create-github-app-token')).toBeLessThan(at(j, 'deploy-gate.mjs recheck'))
+    expect(j).toMatch(/VARS_TOKEN: \$\{\{ steps\.app\.outputs\.token \}\}/)
     expect(j).toMatch(/GH_TOKEN: \$\{\{ steps\.app\.outputs\.token \}\}/)
   })
 
@@ -266,8 +264,15 @@ describe('D2 suspension marker wiring (CHE-5545, C-10.1 to C-10.3)', () => {
     expect(step).toMatch(/if: \$\{\{ !cancelled\(\) && steps\.check\.outputs\.go == 'true' \}\}/)
     expect(step).toContain('MARKER_EXPECT')
     expect(rollback).not.toMatch(/deploy-marker\.mjs (arm|restore)/)
-    // A failed token mint can never keep a broken deploy from rolling back: it comes after the rollback.
-    expect(at(rollback, 'create-github-app-token')).toBeGreaterThan(at(rollback, 'c00.sh rollback'))
+    // A failed token mint can never keep a broken deploy from rolling back: the check and the rollback run after
+    // it (!cancelled()), the job still fails, and the check then decides from C00 alone. The check reads the marker when it has the token.
+    const mint = rollback.slice(rollback.lastIndexOf('- name:', at(rollback, 'create-github-app-token')))
+    expect(mint).not.toContain('continue-on-error')
+    expect(at(rollback, 'create-github-app-token')).toBeLessThan(at(rollback, '--op rollback'))
+    const check = rollback.slice(rollback.lastIndexOf('- name:', at(rollback, '--op rollback')))
+    expect(check).toMatch(/id: check\n\s+if: \$\{\{ !cancelled\(\) \}\}/)
+    expect(rollback).toMatch(/if: \$\{\{ !cancelled\(\) && steps\.check\.outputs\.action == 'rollback' \}\}/)
+    expect(check).toMatch(/VARS_TOKEN: \$\{\{ steps\.app\.outputs\.token \}\}/)
   })
 
   it('the marker is written by these three C00 jobs only', () => {
