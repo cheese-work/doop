@@ -2,9 +2,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Canvas, Frame, PageSnapshot } from '../shared/types.ts'
-import { systemContext } from '../server/writePolicy.ts'
-
-const sys = systemContext()
+import { erasureContext } from '../server/writePolicy.ts'
 
 /**
  * Named page snapshots (CHE-5307) over MCP. The real store, actions and
@@ -99,7 +97,7 @@ function seed(linkAccess?: Canvas['linkAccess']) {
       seedFrame('f3', 'Other page', '<p>elsewhere</p>', { pageId: 'p2', createdAt: T0 + 2 }),
     ],
   }
-  store.deleteCanvas(sys, 'c1') // the store keeps a canvas's trash across init
+  store.deleteCanvas(erasureContext(), 'c1') // the store keeps a canvas's trash across init
   store.init([canvas])
   actions.wire(
     () => {},
@@ -296,8 +294,9 @@ describe('restore_page_snapshot', () => {
   it('leaves a locked frame that is in the trash in the trash', async () => {
     const client = await connect()
     const a = await snapshot(client, 'A')
-    actions.updateFrame('f1', { locked: true }, actor())
     actions.deleteFrame('f1', actor())
+    /* a lock now refuses delete (CHE-6626), so a locked frame in the trash is one trashed before it: legacy rows */
+    store.getDeletedFrame('f1')!.locked = true
     const out = await call(client, 'restore_page_snapshot', { canvas_id: 'c1', snapshot_id: a.json.snapshot.id })
     expect(out.json.skipped).toEqual([{ frameId: 'f1', name: 'Hero', reason: 'locked' }])
     expect(store.getFrame('f1')).toBeUndefined()

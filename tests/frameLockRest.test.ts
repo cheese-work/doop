@@ -40,7 +40,7 @@ describe('a locked frame over REST', () => {
     expect((await owner.patch(`/api/frames/${frame.id}`, { locked: true })).status).toBe(200)
     const before = await read(frame.id)
 
-    for (const patch of [{ html: '<h1>After</h1>' }, { width: 111 }, { height: 111 }, { locked: false, width: 111 }]) {
+    for (const patch of [{ html: '<h1>After</h1>' }, { width: 111 }, { height: 111 }]) {
       const res = await owner.patch(`/api/frames/${frame.id}`, patch)
       expect(res.status).toBe(423)
       const body = (await res.json()) as { error: string }
@@ -50,16 +50,16 @@ describe('a locked frame over REST', () => {
     expect(await read(frame.id)).toEqual(before)
   })
 
-  it('still renames, moves and unlocks, then takes html again', async () => {
+  it('refuses rename, move, an unlock carrying a size change, and an unlock from a user who owns no lock', async () => {
     const frame = await newFrame()
     await owner.patch(`/api/frames/${frame.id}`, { html: '<h1>Before</h1>', locked: true })
-    const moved = await owner.patch(`/api/frames/${frame.id}`, { name: 'Renamed', x: 40, y: 50 })
-    expect(moved.status).toBe(200)
-    expect(await moved.json()).toMatchObject({ name: 'Renamed', x: 40, y: 50, html: '<h1>Before</h1>', locked: true })
-    expect((await owner.patch(`/api/frames/${frame.id}`, { locked: false })).status).toBe(200)
-    const after = await owner.patch(`/api/frames/${frame.id}`, { html: '<h1>After</h1>' })
-    expect(after.status).toBe(200)
-    expect(((await after.json()) as Frame).html).toBe('<h1>After</h1>')
+    const before = await read(frame.id)
+    for (const patch of [{ name: 'Renamed' }, { x: 40, y: 50 }, { locked: false, width: 111 }, { locked: false }]) {
+      const res = await owner.patch(`/api/frames/${frame.id}`, patch)
+      expect(res.status, JSON.stringify(patch)).toBe(423)
+      expect(((await res.json()) as { code: string }).code).toBe('policy_refused')
+    }
+    expect(await read(frame.id)).toEqual(before) // no DOOP_LOCK_OWNERS here: unlock has no taker
   })
 
   it('refuses a streamed append (first chunk and later chunk) with 423', async () => {

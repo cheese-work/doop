@@ -30,6 +30,10 @@ export interface Frame {
    *  deleted from the stage until it is unlocked (Layers panel, Inspector,
    *  ⌘⇧L, or an agent via update_frame) */
   locked?: boolean
+  /** Unlock count; raised on every unlock, never reused (CHE-6626). */
+  lockEpoch?: number
+  /** The G3 attestation this frame was locked against; dropped on unlock. */
+  lockAttestationId?: string
   /** Stacking order on its page (back to front; see shared/frameStack.ts).
    *  Unset on frames made before stacking existed: they stack by createdAt. */
   z?: number

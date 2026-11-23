@@ -133,17 +133,15 @@ describe('a locked frame over MCP', () => {
     }
   })
 
-  it('still renames, moves and unlocks, then takes HTML again', async () => {
+  it('refuses rename, move and unlock too: only a signed-in lock owner unlocks (CHE-6626)', async () => {
     const { client, close } = await connect()
     try {
-      expect((await call(client, 'update_frame', { frame_id: 'f1', name: 'Renamed', x: 40, y: 50 })).isError).toBe(
-        false,
-      )
-      expect(frame).toMatchObject({ name: 'Renamed', x: 40, y: 50, html: '<h1>Original</h1>', locked: true })
-      expect((await call(client, 'update_frame', { frame_id: 'f1', locked: false })).isError).toBe(false)
-      expect(frame.locked).toBe(false)
-      expect((await call(client, 'set_frame_html', { frame_id: 'f1', html: '<p>after</p>' })).isError).toBe(false)
-      expect(frame.html).toBe('<p>after</p>')
+      for (const args of [{ name: 'Renamed' }, { x: 40, y: 50 }, { locked: false }]) {
+        const out = await call(client, 'update_frame', { frame_id: 'f1', ...args })
+        expect(out.isError, JSON.stringify(args)).toBe(true)
+        expect(out.text).toMatch(/policy_refused|locked/)
+      }
+      expect(frame).toMatchObject({ name: 'Hero', x: 0, y: 0, html: '<h1>Original</h1>', locked: true })
     } finally {
       await close()
     }
@@ -154,7 +152,7 @@ describe('a locked frame over MCP', () => {
     try {
       const out = await call(client, 'update_frame', { frame_id: 'f1', locked: false, width: 10 })
       expect(out.isError).toBe(true)
-      expect(out.text).toMatch(/locked/)
+      expect(out.text).toMatch(/policy_refused/)
       expect(frame.locked).toBe(true)
       untouched()
     } finally {

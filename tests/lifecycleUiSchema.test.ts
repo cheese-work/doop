@@ -50,10 +50,10 @@ describe('0068_lifecycle_ui', () => {
     }
   })
 
-  it('keeps the lock columns of main out of this migration', async () => {
+  it('leaves the lock columns to 0070_frame_lock (CHE-8992), nullable, beside these', async () => {
     const cols = await columns('frames')
-    expect(cols.has('lock_epoch')).toBe(false)
-    expect(cols.has('lock_attestation_id')).toBe(false)
+    expect(cols.get('lock_epoch')).toMatchObject({ data_type: 'integer', is_nullable: 'YES' })
+    expect(cols.get('lock_attestation_id')).toMatchObject({ data_type: 'text', is_nullable: 'YES' })
   })
 
   it('an old-shape frame and comment insert still works and reads the new columns as null', async () => {

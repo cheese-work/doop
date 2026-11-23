@@ -128,6 +128,15 @@ describe.skipIf(!findBrowserPath())('components in the editor', { timeout: 60_00
     })
     canvasId = seeded.canvasId
     frameId = seeded.frameId
+    /* a lock is real (CHE-6626): only a user in DOOP_LOCK_OWNERS unlocks, so reboot the same database and port
+       with this session's user as the owner; the cookie stays valid across the restart */
+    const ownerId = await page.evaluate(
+      async () => ((await (await fetch('/api/auth/get-session')).json()) as { user: { id: string } }).user.id,
+    )
+    const dataDir = server.dataDir
+    server.stop({ keepData: true })
+    await server.stopped
+    server = await startServer({ DOOP_LOCK_OWNERS: ownerId, BETTER_AUTH_URL: origin }, dataDir)
     await page.goto(`${origin}/c/${canvasId}`)
     await page.waitForSelector('[data-slot="frame-section-heading"]')
   }, 60_000)

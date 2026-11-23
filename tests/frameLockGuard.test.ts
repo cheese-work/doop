@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Canvas, Frame, FrameVersion } from '../shared/types.ts'
-import { systemContext } from '../server/writePolicy.ts'
+import { setLockOwners, systemContext, writeContextFor } from '../server/writePolicy.ts'
 
 const sys = systemContext()
 
@@ -99,9 +99,17 @@ describe('store guard on a locked frame', () => {
     ['html', { html: '<p>x</p>' }],
     ['width', { width: 10 }],
     ['height', { height: 10 }],
-    ['an unlock carried with html', { locked: false, html: '<p>x</p>' }],
   ])('refuses a %s write, naming the frame and saying it is locked', (_label, patch) => {
     expect(() => store.updateFrame(sys, 'f1', patch, 'someone')).toThrow(/Hero.*f1.*locked|locked.*Hero/s)
+    unchanged()
+  })
+
+  it('refuses an unlock that carries html: an unlock changes nothing else', () => {
+    setLockOwners(['owner-1'])
+    const ctx = writeContextFor(HUMAN, 'owner-1')
+    expect(() => store.updateFrame(ctx, 'f1', { locked: false, html: '<p>x</p>' }, 'someone')).toThrow(
+      /unlock changes nothing else/,
+    )
     unchanged()
   })
 
@@ -119,11 +127,25 @@ describe('store guard on a locked frame', () => {
     unchanged()
   })
 
-  it('still renames, moves, hides and unlocks', () => {
-    actions.updateFrame('f1', { name: 'Renamed', x: 50, y: 60, hidden: true }, HUMAN)
-    expect(frame).toMatchObject({ name: 'Renamed', x: 50, y: 60, hidden: true, locked: true })
-    actions.updateFrame('f1', { locked: false }, HUMAN)
+  it('refuses rename, move and hide too (CHE-6626: a lock is every op, every actor)', () => {
+    for (const patch of [{ name: 'Renamed' }, { x: 50, y: 60 }, { hidden: true }]) {
+      expect(() => actions.updateFrame('f1', patch, HUMAN), JSON.stringify(patch)).toThrow(/locked/)
+    }
+    unchanged()
+  })
+
+  it('unlocks only for a signed-in lock owner, then takes writes again', () => {
+    setLockOwners([])
+    expect(() => actions.updateFrame('f1', { locked: false }, HUMAN, { userId: 'owner-1' })).toThrow(/policy_refused/)
+    setLockOwners(['owner-1'])
+    expect(() => actions.updateFrame('f1', { locked: false }, HUMAN, { userId: 'someone-else' })).toThrow(
+      /policy_refused/,
+    )
+    expect(() => actions.updateFrame('f1', { locked: false }, HUMAN)).toThrow(/policy_refused/)
+    expect(frame.locked).toBe(true)
+    actions.updateFrame('f1', { locked: false }, HUMAN, { userId: 'owner-1' })
     expect(frame.locked).toBe(false)
+    expect(frame.lockEpoch).toBe(1)
     /* a human write: an agent's would leave a reveal playback running into the next test */
     actions.updateFrame('f1', { html: '<p>after unlock</p>' }, HUMAN)
     expect(frame.html).toBe('<p>after unlock</p>')
