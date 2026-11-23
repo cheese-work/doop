@@ -10,10 +10,12 @@ import {
   AXE_TARGET_RULE_ID,
   FACT_COLOR_CAP,
   FACT_ELEMENT_CAP,
+  FACT_FOCUS_CAP,
   FRAME_RULES,
   type AppliedInput,
   type FactColor,
   type FactControlKind,
+  type FactFocusable,
   type AxeFact,
   type FactElement,
   type FactRect,
@@ -63,6 +65,8 @@ interface CollectedFacts {
   fonts_fell_back: boolean
   colors: FactColor[]
   colors_capped: boolean
+  focusables: FactFocusable[]
+  focusables_capped: boolean
 }
 
 /** Why a run was aborted: the abort reason `deadline` is the handler's, anything else is the caller leaving. */
@@ -174,9 +178,11 @@ async function runOnPage(
   /* a run that lost a source of facts is never clean: say which */
   const reason = collected.capped
     ? `fact cap ${FACT_ELEMENT_CAP} elements`
-    : wantsAxe && !axe
-      ? 'axe did not run'
-      : undefined
+    : collected.focusables_capped
+      ? `fact cap ${FACT_FOCUS_CAP} focusable controls`
+      : wantsAxe && !axe
+        ? 'axe did not run'
+        : undefined
   return {
     width: viewport.width,
     height: viewport.height,
@@ -199,7 +205,7 @@ async function collectFacts(page: Page): Promise<CollectedFacts> {
   /* tsx/esbuild annotates nested functions with __name; page.evaluate serializes the callback without that helper */
   await page.evaluate('globalThis.__name = (target) => target')
   return page.evaluate(
-    (cap: number, colorCap: number): CollectedFacts => {
+    (cap: number, colorCap: number, focusCap: number): CollectedFacts => {
       const SKIP = new Set(['HEAD', 'SCRIPT', 'STYLE', 'META', 'LINK', 'TITLE', 'NOSCRIPT', 'TEMPLATE', 'BASE'])
       const root = document.documentElement
       const selectorOf = (el: Element): string => {
@@ -423,6 +429,34 @@ async function collectFacts(page: Page): Promise<CollectedFacts> {
         if (el !== document.body) addClippingFacts(fact, el, style, rect)
         elements.push(fact)
       }
+      /* the controls the Tab key reaches, in document order (rule 21): natively focusable ones, and anything with a
+         valid tabindex of 0 or more; hidden, disabled, inert and tabindex="-1" ones are not in the Tab walk */
+      const NATIVE_FOCUSABLE =
+        'a[href],area[href],button,input:not([type="hidden"]),select,textarea,summary,iframe,audio[controls],video[controls]'
+      const focusables: FactFocusable[] = []
+      let focusablesCapped = false
+      for (const el of Array.from(document.querySelectorAll(`${NATIVE_FOCUSABLE},[contenteditable],[tabindex]`))) {
+        const attr = el.getAttribute('tabindex')
+        const parsed = attr !== null && /^\s*[+-]?\d+\s*$/.test(attr) ? parseInt(attr, 10) : null
+        const native = el.matches(NATIVE_FOCUSABLE) || (el as HTMLElement).isContentEditable
+        if ((parsed === null && !native) || (parsed !== null && parsed < 0)) continue
+        if (el.matches(':disabled') || el.closest('[inert]')) continue
+        const visible = (el as HTMLElement).checkVisibility
+          ? (el as HTMLElement).checkVisibility({ visibilityProperty: true })
+          : getComputedStyle(el).visibility === 'visible' && el.getClientRects().length > 0
+        if (!visible) continue
+        if (focusables.length >= focusCap) {
+          focusablesCapped = true
+          break
+        }
+        const doopId = el.getAttribute('data-doop-id')
+        focusables.push({
+          tag: el.tagName.toLowerCase(),
+          ...(doopId ? { doop_id: doopId } : {}),
+          selector: selectorOf(el),
+          tabindex: parsed ?? 0,
+        })
+      }
       const rootSize = parseFloat(getComputedStyle(root).fontSize) || 16
       let fontsFellBack = false
       document.fonts.forEach((face) => {
@@ -440,10 +474,13 @@ async function collectFacts(page: Page): Promise<CollectedFacts> {
         fonts_fell_back: fontsFellBack,
         colors: [...colors.values()],
         colors_capped: colorsCapped,
+        focusables,
+        focusables_capped: focusablesCapped,
       }
     },
     FACT_ELEMENT_CAP,
     FACT_COLOR_CAP,
+    FACT_FOCUS_CAP,
   )
 }
 

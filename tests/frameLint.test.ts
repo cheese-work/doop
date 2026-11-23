@@ -35,7 +35,7 @@ function facts(elements: FactElement[], over: Partial<FrameFacts> = {}): FrameFa
 const box = (x: number, y: number, width: number, height: number) => ({ x, y, width, height })
 
 describe('the registries', () => {
-  it('names the ruleset, the frame rules (rule 3 and the two axe rules) and the page rules registered so far', () => {
+  it('names the ruleset, the frame rules (rules 1 to 4, 7, 8, 16 and 21) and the page rules registered so far', () => {
     expect(FRAME_LINT_RULESET).toBe('fl-r1')
     expect(FRAME_RULES.map((rule) => rule.id)).toEqual([
       'outside-frame',
@@ -45,6 +45,7 @@ describe('the registries', () => {
       'radius-bleed',
       'interactive-name',
       'target-spacing',
+      'focus-order',
     ])
     expect(PAGE_RULES.map((rule) => rule.id)).toEqual(['states', 'repeated-markup'])
     expect(HALLMARK_PIN).toMatch(/^[0-9a-f]{40}$/)

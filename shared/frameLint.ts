@@ -210,6 +210,16 @@ export interface AxeFact {
   message: string
 }
 
+/** One control the Tab key reaches, in document order (plan rule 21). `tabindex` is the effective value: the
+ *  attribute when it is a non-negative integer, else 0 for a natively focusable control. Controls that are hidden,
+ *  disabled, inert or have `tabindex="-1"` are not in the Tab walk and are not collected. */
+export interface FactFocusable {
+  tag: string
+  doop_id?: string
+  selector: string
+  tabindex: number
+}
+
 export interface FrameFacts {
   /** the frame's own size: rule 3 compares boxes with `frame.height` */
   frame: { width: number; height: number }
@@ -226,10 +236,15 @@ export interface FrameFacts {
   colors: FactColor[]
   /** more distinct colors than `FACT_COLOR_CAP` were seen, so `colors` is a part */
   colors_capped: boolean
+  /** the controls the Tab key reaches, in document order; absent when the collector did not list them */
+  focusables?: FactFocusable[]
+  /** more focusable controls than `FACT_FOCUS_CAP` were seen, so `focusables` is a part */
+  focusables_capped?: boolean
 }
 
 export const FACT_ELEMENT_CAP = 5000
 export const FACT_COLOR_CAP = 256
+export const FACT_FOCUS_CAP = 1000
 
 export interface FrameRule {
   id: string
@@ -564,6 +579,51 @@ export const targetSpacingRule: FrameRule = {
       .map((node) => axeFinding(facts, node, 'target-spacing', 'warn')),
 }
 
+function ordinal(n: number): string {
+  const tail = n % 100
+  if (tail >= 11 && tail <= 13) return `${n}th`
+  return `${n}${({ 1: 'st', 2: 'nd', 3: 'rd' } as Record<number, string>)[n % 10] ?? 'th'}`
+}
+
+/** Rule 21 `focus-order`: the Tab walk compared with the reading order. The browser walks controls with a positive
+ *  `tabindex` first (lowest value first, document order on a tie), then the rest in document order. The reading
+ *  order is the document order, which a screen reader follows. A positive `tabindex` is the only way to make the two
+ *  differ, so each control that has one gets a finding: it says where the control lands in each order, and says
+ *  so even when the two orders happen to agree, because the next edit to the markup breaks that. */
+export const focusOrderRule: FrameRule = {
+  id: 'focus-order',
+  run(facts) {
+    const stops = facts.focusables ?? []
+    if (!stops.some((stop) => stop.tabindex > 0)) return []
+    const walk = stops
+      .map((stop, index) => ({ stop, index }))
+      .sort((a, b) => {
+        if (a.stop.tabindex > 0 && b.stop.tabindex > 0) return a.stop.tabindex - b.stop.tabindex || a.index - b.index
+        if (a.stop.tabindex > 0) return -1
+        if (b.stop.tabindex > 0) return 1
+        return a.index - b.index
+      })
+    const walkPosition = new Map(walk.map(({ index }, position) => [index, position + 1]))
+    const findings: LintFinding[] = []
+    stops.forEach((stop, index) => {
+      if (stop.tabindex <= 0) return
+      const tab = walkPosition.get(index) ?? index + 1
+      const reading = index + 1
+      findings.push({
+        rule: 'focus-order',
+        level: 'warn',
+        viewport: { width: facts.viewport.width, height: facts.viewport.height },
+        element: { ...(stop.doop_id ? { doop_id: stop.doop_id } : {}), selector: stop.selector },
+        message:
+          tab === reading
+            ? `tabindex="${stop.tabindex}" puts this control ${ordinal(tab)} in the Tab walk, as in the reading order, but a positive tabindex takes over the Tab order; use the document order instead`
+            : `tabindex="${stop.tabindex}" puts this control ${ordinal(tab)} in the Tab walk but ${ordinal(reading)} in the reading order; remove it and order the markup instead`,
+      })
+    })
+    return findings
+  },
+}
+
 export const FRAME_RULES: FrameRule[] = [
   outsideFrameRule,
   borderClippedRule,
@@ -572,5 +632,6 @@ export const FRAME_RULES: FrameRule[] = [
   radiusBleedRule,
   interactiveNameRule,
   targetSpacingRule,
+  focusOrderRule,
 ]
 export const PAGE_RULES: PageRule[] = [statesPageRule, repeatedMarkupRule]
