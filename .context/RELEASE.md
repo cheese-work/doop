@@ -50,7 +50,7 @@ in concurrency group `c00-deploy-doop`; `c00.sh apply` also takes a host `flock`
 variable `DOOP_DEPLOY_TRAIN` absent or not `on` means every scheduled run skips. The suspension marker
 `DOOP_DEPLOY_SUSPENDED` is armed by a train run before its first change, restored only by that run's passing
 confirm, and written `suspended:*` (never clear) by recovery, drill and rollback, via `scripts/deploy-marker.mjs`
-and a GitHub App token from environment `doop-deploy-marker`. Setup and rules:
+and a GitHub App token from environment `ci-app-token` (the `c00-multica` App). Setup and rules:
 [`deploy/cd/README.md`](../deploy/cd/README.md).
 
 Lifting a suspension is `cd-lift.yml` (S3b): dispatch with the id of an approved Multica decision; it checks the
