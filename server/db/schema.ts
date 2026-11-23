@@ -324,6 +324,16 @@ export const agentKeys = pgTable(
   (t) => [index('agent_keys_user_idx').on(t.userId), uniqueIndex('agent_keys_hash_idx').on(t.secretHash)],
 )
 
+/** Which canvas a Multica project designs on (CHE-5860). One row per project UUID: the primary
+ *  key is what makes "bind only a project with no binding" atomic. Keyed by the project UUID,
+ *  never by canvas name. A canvas may hold several projects' rows; the unbound ones are legacy. */
+export const projectBindings = pgTable('project_bindings', {
+  projectId: text('project_id').primaryKey(),
+  canvasId: text('canvas_id').notNull(),
+  boundBy: text('bound_by').notNull(),
+  boundAt: bigint('bound_at', { mode: 'number' }).notNull(),
+})
+
 /** A GitHub repo connected to a canvas as an import source. Two credential
  *  modes: a GitHub App installation (`installationId` set, short-lived
  *  tokens minted per call — the preferred flow) or a fine-grained PAT

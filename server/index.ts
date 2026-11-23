@@ -2,6 +2,7 @@ import { env } from './env.ts'
 import { listPageRuns, multicaCommentsSource, multicaRunsSource } from './multicaRuns.ts'
 import { setReconSources, storedReconAssets } from './reconGuard.ts'
 import { isUuid } from '../shared/pageIssue.ts'
+import * as projectBindings from './projectBindings.ts'
 import { canvasPages, framePageId, samePages } from '../shared/pages.ts'
 import { FIRST_CANVAS_PATH, SIGNUP_PARAM, parseSignupMethod } from '../shared/firstCanvas.ts'
 import { localAgentRouter, handleLocalAgentMcp } from './localAgent.ts'
@@ -1128,6 +1129,28 @@ app.post('/api/canvases', (req, res) => {
   const workspaceId = typeof req.body?.workspaceId === 'string' ? req.body.workspaceId : undefined
   if (workspaceId && !requireGrowableWorkspace(req, res, workspaceId)) return
   res.json(store.createCanvas(name, req.user!.id, workspaceId))
+})
+
+/* Project binding table (CHE-5860): which canvas a Multica project designs on. A canvas editor
+   binds a project that has no binding; a bound project answers 409 `project-bound` naming the
+   bound canvas. The id is never revealed beyond the 409 and the read, which ask for view access. */
+app.get('/api/projects/:projectId/canvas', async (req, res) => {
+  if (!isUuid(req.params.projectId)) return res.status(400).json({ error: 'projectId must be a UUID' })
+  const binding = await projectBindings.getBinding(req.params.projectId.toLowerCase())
+  if (!binding) return res.status(404).json({ error: 'not found' })
+  if (!requireCanvas(req, res, binding.canvasId, 'view')) return
+  res.json(binding)
+})
+
+app.put('/api/projects/:projectId/canvas', async (req, res) => {
+  if (!isUuid(req.params.projectId)) return res.status(400).json({ error: 'projectId must be a UUID' })
+  if (typeof req.body?.canvasId !== 'string' || !req.body.canvasId)
+    return res.status(400).json({ error: 'canvasId required' })
+  const canvas = requireCanvas(req, res, req.body.canvasId, 'edit')
+  if (!canvas) return
+  const bound = await projectBindings.bindProject(req.params.projectId.toLowerCase(), canvas.id, req.user!.id)
+  if (!bound.created) return res.status(409).json({ error: 'project-bound', canvasId: bound.canvasId })
+  res.json({ projectId: bound.projectId, canvasId: bound.canvasId })
 })
 
 app.post('/api/canvases/:id/duplicate', async (req, res) => {
