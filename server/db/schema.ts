@@ -15,7 +15,14 @@ import {
 import { sql } from 'drizzle-orm'
 import { open, seal } from '../secretBox.ts'
 import type { BridgeAgent } from '../../shared/bridge.ts'
-import type { CanvasGuide, CanvasPageInfo, DeletedPage, FrameApproval, SnapshotFrame } from '../../shared/types.ts'
+import type {
+  ActorKind,
+  CanvasGuide,
+  CanvasPageInfo,
+  DeletedPage,
+  FrameApproval,
+  SnapshotFrame,
+} from '../../shared/types.ts'
 import type { AutomationRunState, AutomationTrigger, Schedule, Step } from '../../shared/automations.ts'
 import type {
   ComponentCode,
@@ -576,6 +583,9 @@ export const commentEvents = pgTable(
     commentId: text('comment_id').notNull(),
     parentId: text('parent_id'),
     fromUserId: text('from_user_id'),
+    /* 'user' | 'agent': who wrote the comment, since an agent reply carries its key owner's user id.
+       Null on rows written before the column existed. */
+    actorKind: text('actor_kind').$type<ActorKind>(),
     at: bigint('at', { mode: 'number' }).notNull(),
     ackedAt: bigint('acked_at', { mode: 'number' }),
   },

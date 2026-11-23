@@ -477,6 +477,13 @@
       "when": 1795450408421,
       "tag": "0068_lifecycle_ui",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1795460000000,
+      "tag": "0069_comment_event_actor_kind",
+      "breakpoints": true
     }
   ]
 }

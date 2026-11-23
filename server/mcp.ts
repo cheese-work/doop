@@ -1284,7 +1284,7 @@ export function buildMcpServer(
     {
       title: 'List unacknowledged comment events',
       description:
-        'List comment events on a canvas that nobody has acknowledged yet, oldest first by event id, each with its comment (author, text, parentId, anchor). An event is stored in the same transaction as its comment, so a comment you can read always has one. There is no cursor: an event stays here until ack_comment_events names its id, so one that commits late is still returned on the next call. Reading does not acknowledge, claim or resolve anything.',
+        "List comment events on a canvas that nobody has acknowledged yet, oldest first by event id, each with its comment (author, text, parentId, anchor) and actorKind ('user' or 'agent'; null on events stored before the field existed). An agent reply carries its key owner user id, so use actorKind, not fromUserId, to tell agent writes from user comments. An event is stored in the same transaction as its comment, so a comment you can read always has one. There is no cursor: an event stays here until ack_comment_events names its id, so one that commits late is still returned on the next call. Reading does not acknowledge, claim or resolve anything.",
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: {
         canvas_id: z.string(),

@@ -1261,7 +1261,7 @@ async function postComment(
     ...(clientRequestId ? { clientRequestId } : {}),
   }
   /* a keyed reply that lost the race to its twin is the twin: nothing joins the log */
-  const first = await persist.saveNewComment(comment)
+  const first = await persist.saveNewComment(comment, kind)
   if (first) return { ...first, replay: true }
   prependComment(canvasId, comment, parentId)
   broadcast(canvasId, { type: 'comment', comment })

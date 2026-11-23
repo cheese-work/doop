@@ -100,7 +100,9 @@ describe.skipIf(!PG_URL)('comment events on PostgreSQL', () => {
     const result = (await client.callTool({ name, arguments: args })) as unknown as {
       content: Array<{ type: string; text?: string }>
     }
-    return JSON.parse(result.content.map((c) => c.text ?? '').join('')) as unknown
+    const raw = result.content.map((c) => c.text ?? '').join('')
+    if (raw.startsWith('MCP error')) throw new Error(raw)
+    return JSON.parse(raw) as unknown
   }
 
   it('stores the comment and one event together', async () => {
@@ -220,6 +222,37 @@ describe.skipIf(!PG_URL)('comment events on PostgreSQL', () => {
     await actions.resolveComment(root.id, 'alice')
     expect(await actions.replyToComment(root.id, 'too late', 'bob', 'user-2')).toBeUndefined()
     expect((await pool.query('select count(*)::int as n from comments')).rows[0].n).toBe(1)
+  })
+
+  it('marks a browser comment as a user event and an MCP reply as an agent event', async () => {
+    const root = (await post('From the browser'))!
+    const client = await connect()
+    try {
+      await callJson(client, 'reply_to_comment', {
+        canvas_id: CANVAS.id,
+        comment_id: root.id,
+        text: 'From the designer',
+        agent_name: 'designer',
+      })
+      const listed = (await callJson(client, 'list_unacked_comment_events', {
+        canvas_id: CANVAS.id,
+        limit: 10,
+      })) as Array<{ commentId: string; actorKind: string | null }>
+      expect(listed.map((e) => e.actorKind)).toEqual(['user', 'agent'])
+      expect(listed[0]!.commentId).toBe(root.id)
+    } finally {
+      await client.close()
+    }
+  })
+
+  it('lists an event written before actor_kind existed with a null actorKind', async () => {
+    await pool.query(
+      `insert into comments (id, canvas_id, selector, snippet, from_name, text, at) values ('old', $1, '', '', 'a', 'old', 1)`,
+      [CANVAS.id],
+    )
+    await pool.query(`insert into comment_events (canvas_id, comment_id, at) values ($1, 'old', 1)`, [CANVAS.id])
+    const [event] = await persist.listUnackedCommentEvents(CANVAS.id, 10)
+    expect(event!.actorKind).toBeNull()
   })
 
   it('exposes list and ack as MCP tools', async () => {
