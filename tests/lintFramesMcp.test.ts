@@ -83,7 +83,9 @@ function fakeBrowser() {
     createBrowserContext: async () => ({
       newPage: async () => ({
         emulateMediaFeatures: async () => {},
-        evaluate: async (fn: unknown) => (typeof fn === 'string' ? undefined : FACTS),
+        /* a script string is the helper or axe's source; the axe run takes the rule ids and reports no violations */
+        evaluate: async (fn: unknown, arg?: unknown) =>
+          typeof fn === 'string' ? undefined : Array.isArray(arg) ? [] : FACTS,
       }),
       close: async () => {},
     }),
