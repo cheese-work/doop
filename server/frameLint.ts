@@ -9,7 +9,10 @@ import {
   FACT_ELEMENT_CAP,
   FRAME_RULES,
   type AppliedInput,
+  type FactControlKind,
   type FactElement,
+  type FactRect,
+  type FactRef,
   type FrameFacts,
   type FrameViewportResult,
   type LintFinding,
@@ -184,14 +187,101 @@ async function collectFacts(page: Page): Promise<CollectedFacts> {
     }
     const indexOf = new Map<Element, number>()
     const clippedBy = new Map<Element, boolean>()
-    const elements: Array<{
-      tag: string
-      doop_id?: string
-      selector: string
-      rect: { x: number; y: number; width: number; height: number }
-      parent: number
-      clipped_y: boolean
-    }> = []
+    const elements: FactElement[] = []
+    const styles = new WeakMap<Element, CSSStyleDeclaration>()
+    const styleOf = (el: Element): CSSStyleDeclaration => {
+      let style = styles.get(el)
+      if (!style) {
+        style = getComputedStyle(el)
+        styles.set(el, style)
+      }
+      return style
+    }
+    const BIG = 1e7
+    const clipsAxis = (value: string): boolean => value === 'hidden' || value === 'clip'
+    /* The box that `overflow: hidden|clip` ancestors leave visible to `el` (null when none clips). A fixed box
+       escapes every ancestor and an absolute one the ancestors it is not inside, which the climb tracks in `mode`. */
+    const clipOf = (el: Element, includeSelf: boolean): { box: FactRect; truncates: boolean } | null => {
+      let left = -BIG
+      let top = -BIG
+      let right = BIG
+      let bottom = BIG
+      let found = false
+      let truncates = false
+      let mode = styleOf(el).position
+      for (
+        let node: Element | null = includeSelf ? el : el.parentElement;
+        node && node !== document.body && node !== root;
+        node = node.parentElement
+      ) {
+        if (mode === 'fixed') break
+        const style = styleOf(node)
+        if (mode === 'absolute' && style.position === 'static' && node !== el) continue
+        const clipX = clipsAxis(style.overflowX)
+        const clipY = clipsAxis(style.overflowY)
+        if (clipX || clipY) {
+          const box = node.getBoundingClientRect()
+          if (clipX) {
+            left = Math.max(left, box.left + node.clientLeft + scrollX)
+            right = Math.min(right, box.left + node.clientLeft + node.clientWidth + scrollX)
+          }
+          if (clipY) {
+            top = Math.max(top, box.top + node.clientTop + scrollY)
+            bottom = Math.min(bottom, box.top + node.clientTop + node.clientHeight + scrollY)
+          }
+          found = true
+          const clamp = style.getPropertyValue('-webkit-line-clamp')
+          if (style.textOverflow === 'ellipsis' || (clamp !== '' && clamp !== 'none')) truncates = true
+        }
+        mode = style.position
+      }
+      return found
+        ? { box: { x: left, y: top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) }, truncates }
+        : null
+    }
+    const ownTextLines = (el: Element): FactRect[] => {
+      const lines: FactRect[] = []
+      for (const node of Array.from(el.childNodes)) {
+        if (node.nodeType !== Node.TEXT_NODE || !(node.textContent ?? '').trim()) continue
+        const range = document.createRange()
+        range.selectNodeContents(node)
+        for (const box of Array.from(range.getClientRects())) {
+          if (box.width > 0 && box.height > 0) {
+            lines.push({ x: box.left + scrollX, y: box.top + scrollY, width: box.width, height: box.height })
+          }
+        }
+      }
+      return lines
+    }
+    const FIELD_SKIP_TYPES = new Set(['hidden', 'submit', 'button', 'reset', 'image'])
+    const controlKind = (el: Element): FactControlKind | null => {
+      const tag = el.tagName
+      if (tag === 'SELECT' || tag === 'TEXTAREA') return 'field'
+      if (tag === 'INPUT') return FIELD_SKIP_TYPES.has((el as HTMLInputElement).type) ? null : 'field'
+      const named = tag === 'BUTTON' || el.getAttribute('role') === 'button' || (tag === 'A' && el.hasAttribute('href'))
+      if (!named || (el.textContent ?? '').trim() !== '') return null
+      return tag === 'A' ? 'image-link' : 'icon-button'
+    }
+    const refOf = (el: Element): FactRef => {
+      const id = el.getAttribute('data-doop-id')
+      return { tag: el.tagName.toLowerCase(), ...(id ? { doop_id: id } : {}), selector: selectorOf(el) }
+    }
+    /* what the center of a control hits, when that is not the control, something inside it, something it sits inside
+       or its own label */
+    const occluderOf = (el: Element, style: CSSStyleDeclaration, box: DOMRect): FactRef | undefined => {
+      if (style.pointerEvents === 'none' || style.visibility !== 'visible' || style.opacity === '0') return undefined
+      if (box.width < 8 || box.height < 8) return undefined
+      const cx = box.left + box.width / 2
+      const cy = box.top + box.height / 2
+      if (cx < 0 || cy < 0 || cx >= innerWidth || cy >= innerHeight) return undefined
+      const hit = document.elementFromPoint(cx, cy)
+      if (!hit || hit === el || el.contains(hit) || hit.contains(el)) return undefined
+      const labels = (el as HTMLInputElement).labels
+      const label = hit.closest('label')
+      if (labels && label && Array.from(labels).includes(label)) return undefined
+      return refOf(hit)
+    }
+    const isTransparent = (color: string): boolean => color === 'transparent' || /,\s*0\)$/.test(color)
     let capped = false
     const nearestRecorded = (el: Element): number => {
       for (let node = el.parentElement; node; node = node.parentElement) {
@@ -199,6 +289,54 @@ async function collectFacts(page: Page): Promise<CollectedFacts> {
         if (found !== undefined) return found
       }
       return -1
+    }
+    /* the S4 facts: border, clips, own text, control occlusion, corner radii and what the box paints */
+    const addClippingFacts = (fact: FactElement, el: Element, style: CSSStyleDeclaration, rect: DOMRect): void => {
+      const border = {
+        top: parseFloat(style.borderTopWidth) || 0,
+        right: parseFloat(style.borderRightWidth) || 0,
+        bottom: parseFloat(style.borderBottomWidth) || 0,
+        left: parseFloat(style.borderLeftWidth) || 0,
+      }
+      const bordered = border.top > 0 || border.right > 0 || border.bottom > 0 || border.left > 0
+      if (bordered) {
+        fact.border = border
+        const clip = clipOf(el, false)
+        if (clip) fact.clip = clip.box
+      }
+      if (style.visibility === 'visible') {
+        const lines = ownTextLines(el)
+        const clip = lines.length > 0 ? clipOf(el, true) : null
+        /* a one-pixel box that clips is the screen-reader-only idiom, whose text is meant to be cut */
+        if (clip && clip.box.width > 2 && clip.box.height > 2) {
+          fact.text = { lines, truncates: clip.truncates }
+          fact.content_clip = clip.box
+        }
+      }
+      const kind = controlKind(el)
+      if (kind) {
+        const occluder = occluderOf(el, style, rect)
+        fact.control = { kind, ...(occluder ? { occluded_by: occluder } : {}) }
+      }
+      const radii = [
+        style.borderTopLeftRadius,
+        style.borderTopRightRadius,
+        style.borderBottomRightRadius,
+        style.borderBottomLeftRadius,
+      ].map((value) => {
+        const first = value.split(' ')[0] ?? ''
+        const size = parseFloat(first) || 0
+        const px = first.endsWith('%') ? (size * rect.width) / 100 : size
+        return Math.max(0, Math.min(px, rect.width / 2, rect.height / 2))
+      })
+      if (radii.some((r) => r > 0)) {
+        fact.radius = [radii[0] ?? 0, radii[1] ?? 0, radii[2] ?? 0, radii[3] ?? 0]
+        if (style.overflowX !== 'visible' || style.overflowY !== 'visible') fact.clips = true
+      }
+      const replaced = el.tagName === 'IMG' || el.tagName === 'VIDEO' || el.tagName === 'CANVAS'
+      if (bordered || replaced || style.backgroundImage !== 'none' || !isTransparent(style.backgroundColor)) {
+        fact.paints_box = true
+      }
     }
     const all = document.body ? [document.body, ...Array.from(document.body.querySelectorAll('*'))] : []
     for (const el of all) {
@@ -218,14 +356,16 @@ async function collectFacts(page: Page): Promise<CollectedFacts> {
       const rect = el.getBoundingClientRect()
       indexOf.set(el, elements.length)
       const doopId = el.getAttribute('data-doop-id')
-      elements.push({
+      const fact: FactElement = {
         tag: el.tagName.toLowerCase(),
         ...(doopId ? { doop_id: doopId } : {}),
         selector: selectorOf(el),
         rect: { x: rect.left + scrollX, y: rect.top + scrollY, width: rect.width, height: rect.height },
         parent: nearestRecorded(el),
         clipped_y: clippedAbove,
-      })
+      }
+      if (el !== document.body) addClippingFacts(fact, el, style, rect)
+      elements.push(fact)
     }
     const rootSize = parseFloat(getComputedStyle(root).fontSize) || 16
     let fontsFellBack = false
