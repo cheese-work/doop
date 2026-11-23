@@ -4,6 +4,7 @@
    nothing here blocks a gate, a publish or a lock. */
 
 import type { LintFinding, ViewportResult, RowStatus } from './frameLintResult.ts'
+import { statesPageRule } from './frameLintStates.ts'
 
 export { FRAME_LINT_RULESET } from './frameLintResult.ts'
 export type { LintFinding, FindingLevel } from './frameLintResult.ts'
@@ -172,10 +173,26 @@ export interface FrameRule {
   run(facts: FrameFacts): LintFinding[]
 }
 
-/** A rule over the HTML of every frame on a page (repeated markup, states). The registry starts empty: S6 and S7
- *  register theirs and S3p wires the scan. */
+/** One frame as a page rule sees it. `facts` is what the rule's `collect` returned for the frame's HTML, or `null` when
+ *  the frame was skipped (over the size or fact cap). A skipped frame is counted, never read as clean. */
+export interface PageFrameInput {
+  frame_id: string
+  hidden?: boolean
+  facts: unknown
+}
+
+/** A page finding names the frame it belongs to; the scan files it under that frame's row. */
+export interface PageFinding extends LintFinding {
+  frame_id: string
+}
+
+/** A rule over the HTML of every frame on a page (repeated markup, states). `collect` reads one frame's HTML
+ *  (parse5, no browser); `evaluate` runs over what was collected from every frame, so a conclusion never rests on
+ *  part of the page. S3p wires the scan; S6 and S7 register their rules. */
 export interface PageRule {
   id: string
+  collect(html: string): unknown
+  evaluate(frames: PageFrameInput[]): PageFinding[]
 }
 
 /** One viewport's outcome from `lintFrame` / `lintConfiguredPage`. */
@@ -217,4 +234,4 @@ export const outsideFrameRule: FrameRule = {
 }
 
 export const FRAME_RULES: FrameRule[] = [outsideFrameRule]
-export const PAGE_RULES: PageRule[] = []
+export const PAGE_RULES: PageRule[] = [statesPageRule]

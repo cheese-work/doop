@@ -32,10 +32,10 @@ function facts(elements: FactElement[], over: Partial<FrameFacts> = {}): FrameFa
 const box = (x: number, y: number, width: number, height: number) => ({ x, y, width, height })
 
 describe('the registries', () => {
-  it('names the ruleset and registers rule 3 only', () => {
+  it('names the ruleset, one frame rule (rule 3) and the page rules registered so far', () => {
     expect(FRAME_LINT_RULESET).toBe('fl-r1')
     expect(FRAME_RULES.map((rule) => rule.id)).toEqual(['outside-frame'])
-    expect(PAGE_RULES).toEqual([])
+    expect(PAGE_RULES.map((rule) => rule.id)).toEqual(['states'])
     expect(HALLMARK_PIN).toMatch(/^[0-9a-f]{40}$/)
   })
 })
