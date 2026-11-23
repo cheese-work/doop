@@ -19,6 +19,8 @@ function facts(elements: FactElement[], over: Partial<FrameFacts> = {}): FrameFa
     elements,
     capped: false,
     fonts_fell_back: false,
+    colors: [],
+    colors_capped: false,
     ...over,
   }
 }

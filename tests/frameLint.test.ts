@@ -25,6 +25,8 @@ function facts(elements: FactElement[], over: Partial<FrameFacts> = {}): FrameFa
     elements,
     capped: false,
     fonts_fell_back: false,
+    colors: [],
+    colors_capped: false,
     ...over,
   }
 }
@@ -41,7 +43,7 @@ describe('the registries', () => {
       'control-occluded',
       'radius-bleed',
     ])
-    expect(PAGE_RULES.map((rule) => rule.id)).toEqual(['states'])
+    expect(PAGE_RULES.map((rule) => rule.id)).toEqual(['states', 'repeated-markup'])
     expect(HALLMARK_PIN).toMatch(/^[0-9a-f]{40}$/)
   })
 })

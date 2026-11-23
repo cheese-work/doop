@@ -29,7 +29,7 @@ const input = (attrs: string) => `<input type="text" ${attrs}>`
 
 describe('registration', () => {
   it('registers the states rule in PAGE_RULES', () => {
-    expect(PAGE_RULES.map((rule) => rule.id)).toEqual(['states'])
+    expect(PAGE_RULES.map((rule) => rule.id)).toContain('states')
   })
 })
 
