@@ -14,7 +14,7 @@
 #
 # Env: DEPLOY_REF (image@sha256:...), DEPLOY_SHA, C00_COMPOSE_DIR (compose project on C00),
 #      apply also needs DEPLOY_MODE (train|recovery|drill) and MARKER_EXPECT (this run's own
-#      DOOP_DEPLOY_SUSPENDED value), plus the GH_TOKEN/REPO/EXTRA env that deploy-gate.mjs reads,
+#      DOOP_DEPLOY_SUSPENDED value), plus the GH_TOKEN/VARS_TOKEN/REPO/EXTRA env that deploy-gate.mjs reads (VARS_TOKEN: the marker App token that can read variables),
 #      C00_PG_CONTAINER (the live Postgres container; read through `docker exec`, read-only; default: the
 #      compose project's `db` service, C00_PG_SERVICE),
 #      DEPLOY_RUN_ID (apply with DOOP_DEPLOY_TRAIN=on only: [a-z0-9-], names the one-shot container and its DB sessions).

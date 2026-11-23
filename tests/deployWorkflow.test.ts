@@ -195,9 +195,23 @@ describe('D2 suspension marker wiring (CHE-5545, C-10.1 to C-10.3)', () => {
     expect(j).toMatch(/uses: actions\/create-github-app-token@[0-9a-f]{40}/)
     expect(j).toContain('permission-variables: write')
     expect(j).toContain('repositories: doop')
-    // The token is minted just before the first marker write, never ahead of a check or a rollback it could block.
+    // The token is minted before the first marker write. Deploy and confirm mint before their checks, which read
+    // variables, and `github.token` cannot (CHE-9181): the gate gets it as VARS_TOKEN, the marker writer as
+    // GH_TOKEN. Rollback mints after the rollback (see below) and its check reads no variable.
     expect(at(j, 'create-github-app-token')).toBeLessThan(at(j, 'deploy-marker.mjs'))
+    if (j !== rollback) {
+      expect(at(j, 'create-github-app-token')).toBeLessThan(at(j, 'deploy-gate.mjs recheck'))
+      expect(j).toMatch(/VARS_TOKEN: \$\{\{ steps\.app\.outputs\.token \}\}/)
+    }
     expect(j).toMatch(/GH_TOKEN: \$\{\{ steps\.app\.outputs\.token \}\}/)
+  })
+
+  it('resolve/decide reads the switches through vars, not the variables API (CHE-9181)', () => {
+    const decide = job(d2, 'resolve')
+    const step = decide.slice(decide.indexOf('- id: decide'), decide.indexOf('- id: pick'))
+    for (const name of ['DOOP_DEPLOY_TRAIN', 'MAIN_RED_PAUSED', 'DOOP_DEPLOY_SUSPENDED'])
+      expect(step).toContain(`${name}: \${{ vars.${name} }}`)
+    expect(step).not.toContain('github.token')
   })
 
   it('hosted jobs never get the marker token or the environment', () => {
