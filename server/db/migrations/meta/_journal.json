@@ -470,6 +470,13 @@
       "when": 1795344341778,
       "tag": "0067_canvas_project_id",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1795450408421,
+      "tag": "0068_lifecycle_ui",
+      "breakpoints": true
     }
   ]
 }
