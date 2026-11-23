@@ -1,4 +1,5 @@
 import { canvasPages } from '../shared/pages.ts'
+import { checkReconGate, isReconHtml, reconRefusal } from './reconGuard.ts'
 import type { Actor, Canvas, CanvasPageInfo, Frame } from '../shared/types.ts'
 
 /**
@@ -32,6 +33,8 @@ export type WriteTarget = {
   pageIds?: string[]
   /** set_pages: the list being saved */
   nextPages?: CanvasPageInfo[]
+  /** create_frame: the HTML the new frame starts with (the recon frame itself is exempt from G2) */
+  html?: string
 }
 
 /** A refused write. A separate type: the store's `undefined` means "not found". */
@@ -117,6 +120,30 @@ const OPS: ReadonlySet<string> = new Set<WriteOp>([
  */
 export function assertWritable(ctx: WriteContext, op: WriteOp, target: WriteTarget): void {
   if (ctx.kind !== 'agent') return
+  assertBinding(ctx, op, target)
+  if (op === 'create_frame') assertRecon(ctx, target)
+}
+
+/**
+ * G2: a design frame on a page bound to an issue waits for a complete, confirmed, locked recon. The
+ * recon frame is exempt, so it can be made first. Fail closed: a throw anywhere inside is a refusal.
+ */
+function assertRecon(ctx: WriteContext, target: WriteTarget): void {
+  if (target.html !== undefined && isReconHtml(target.html)) return
+  for (const pageId of target.pageIds ?? []) {
+    if (!canvasPages(target.canvas).find((page) => page.id === pageId)?.issueId) continue
+    let reasons: string[]
+    try {
+      reasons = checkReconGate(target.canvas, pageId, ctx, Date.now())
+    } catch {
+      reasons = ['the recon check failed']
+    }
+    if (reasons.length) throw new PolicyRefused('create_frame', reconRefusal(reasons))
+  }
+}
+
+/** G1: the project and issue binding. */
+function assertBinding(ctx: WriteContext, op: WriteOp, target: WriteTarget): void {
   const { canvas } = target
   if (!OPS.has(op)) throw new PolicyRefused(op, 'unknown operation')
   if (op === 'bind_project') throw new PolicyRefused(op, 'an agent cannot bind a canvas to a project')

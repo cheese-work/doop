@@ -39,7 +39,8 @@ import {
 } from '../shared/designTokens.ts'
 import { webFontFamilies, webFontsBrief } from '../shared/webFonts.ts'
 import * as actions from './actions.ts'
-import { warmTaskIdentity } from './writePolicy.ts'
+import { warmReconEvidence } from './reconGuard.ts'
+import { warmTaskIdentity, writeContextFor } from './writePolicy.ts'
 import { canvasRole } from './access.ts'
 import { roleAllows, type CanvasRole } from '../shared/canvasRole.ts'
 import { isAgentKeySecret, verifyAgentKey } from './agentKeys.ts'
@@ -1795,10 +1796,14 @@ export function buildMcpServer(
       },
     },
     async ({ canvas_id, pageId, name, html, x, y, width, height, agent_name }) => {
-      if (!canvasFor(canvas_id, 'edit')) return noCanvas(canvas_id)
+      const target = canvasFor(canvas_id, 'edit')
+      if (!target) return noCanvas(canvas_id)
       const inline = inlineDataRefusal(html)
       if (inline) return err(inline)
-      const frame = actions.createFrame(canvas_id, { name, pageId, html, x, y, width, height }, actorFrom(agent_name))
+      /* G2 judges the recon in the synchronous store: fetch the images and the issue's comments first */
+      const actor = actorFrom(agent_name)
+      await warmReconEvidence(target, pageId ?? canvasPages(target)[0]!.id, writeContextFor(actor))
+      const frame = actions.createFrame(canvas_id, { name, pageId, html, x, y, width, height }, actor)
       if (!frame) return noCanvas(canvas_id)
       const canvas = store.getCanvas(canvas_id)
       const summary = {

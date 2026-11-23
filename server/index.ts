@@ -41,7 +41,8 @@ import { previewDocument } from './componentPreview.ts'
 import { codeSchema, propSchema } from './componentTools.ts'
 import { activeComponents } from '../shared/components.ts'
 import { PRO_UPLOAD_BYTES } from '../shared/billing.ts'
-import { listPageRuns, multicaRunsSource } from './multicaRuns.ts'
+import { listPageRuns, multicaCommentsSource, multicaRunsSource } from './multicaRuns.ts'
+import { setReconSources, storedReconAssets } from './reconGuard.ts'
 import { isUuid } from '../shared/pageIssue.ts'
 import { canvasPages, framePageId, samePages } from '../shared/pages.ts'
 import { normalizePageBackground } from '../shared/pageBackground.ts'
@@ -3591,6 +3592,9 @@ if (env.isProduction) {
    answers 422 */
 app.use(undoRequest)
 app.use(workBudgetRefusal)
+
+/* G2 reads the issue's comments from Multica; without its settings no design frame on an issue page passes */
+setReconSources({ assets: storedReconAssets, comments: multicaCommentsSource(env)?.comments })
 
 const server = http.createServer(app)
 const wss = new WebSocketServer({ server, path: '/ws' })

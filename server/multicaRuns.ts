@@ -107,3 +107,56 @@ export function multicaRunsSource(settings: {
   if (!apiUrl || !token || !workspaceId || !webUrl) return undefined
   return httpRunsSource({ apiUrl: apiUrl.replace(/\/$/, ''), token, workspaceId, webUrl: webUrl.replace(/\/$/, '') })
 }
+
+export interface CommentsSource {
+  comments(issueId: string): Promise<{ agentId: string; at: number; body: string }[]>
+}
+
+interface CommentRow {
+  author_type?: unknown
+  author_id?: unknown
+  content?: unknown
+  created_at?: unknown
+}
+
+/**
+ * Issue comments from Multica's `GET /api/issues/:id/comments` for G2's confirmation. Only an agent's
+ * comment counts (a member's text can quote the confirmation but is not the agent's), and Multica's
+ * own author id and time are used, never anything written in the body. Any failure throws, and the
+ * guard then refuses. Limits: the first page Multica returns, and a reply folded away inside a resolved
+ * thread is not seen (post the confirmation as a top-level comment).
+ */
+export function httpCommentsSource(config: MulticaConfig, fetchImpl: typeof fetch = fetch): CommentsSource {
+  return {
+    async comments(issueId) {
+      const res = await fetchImpl(`${config.apiUrl}/api/issues/${encodeURIComponent(issueId)}/comments`, {
+        headers: { Authorization: `Bearer ${config.token}`, 'X-Workspace-ID': config.workspaceId },
+        signal: AbortSignal.timeout(10_000),
+      })
+      if (!res.ok) throw new Error(`Multica answered ${res.status} for the issue's comments`)
+      const rows = (await res.json()) as CommentRow[]
+      if (!Array.isArray(rows)) throw new Error('Multica returned an unexpected comments payload')
+      return rows.flatMap((row) => {
+        const agentId = str(row.author_id)
+        const body = str(row.content)
+        const at = Date.parse(str(row.created_at) ?? '')
+        return row.author_type === 'agent' && agentId && body !== null && !Number.isNaN(at)
+          ? [{ agentId, at, body }]
+          : []
+      })
+    },
+  }
+}
+
+/** The comment source when all four settings exist, else undefined (G2 then refuses every design frame on an issue page). */
+export function multicaCommentsSource(settings: Parameters<typeof multicaRunsSource>[0]): CommentsSource | undefined {
+  const { MULTICA_API_URL: apiUrl, MULTICA_API_TOKEN: token, MULTICA_WORKSPACE_ID: workspaceId } = settings
+  const webUrl = settings.MULTICA_WEB_URL
+  if (!apiUrl || !token || !workspaceId || !webUrl) return undefined
+  return httpCommentsSource({
+    apiUrl: apiUrl.replace(/\/$/, ''),
+    token,
+    workspaceId,
+    webUrl: webUrl.replace(/\/$/, ''),
+  })
+}
