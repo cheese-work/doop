@@ -12,6 +12,7 @@ import {
   resolveWindow,
   walkOrder,
   type AssembledLintResult,
+  type LintResult,
   type LintRowInput,
   type WindowFrame,
 } from '../shared/frameLintResult.ts'
@@ -126,6 +127,22 @@ async function lintOne(frame: WindowFrame, source: FrameSource, signal: AbortSig
     )
   }
   return merge(frame, source, outs)
+}
+
+/** The properties of the PostHog event `frame_lint_run` (S8): counts and timing only. No frame name, HTML, text or
+ *  selector goes in, and no frame id: the rule ids in `by_rule` are the registered rule names. */
+export function frameLintRunProperties(result: LintResult): Record<string, unknown> {
+  return {
+    ruleset: result.ruleset,
+    frames_on_page: result.window.frames_on_page,
+    rows: result.window.rows,
+    frames_ok: result.summary.frames_ok,
+    frames_not_run: result.summary.frames_not_run,
+    page_complete: result.page_complete,
+    by_rule: { ...result.summary.by_rule },
+    omitted: { ...result.omitted },
+    ms: result.elapsed_ms,
+  }
 }
 
 const isDeadlineRow = (r: LintRowInput) => r.status === 'NOT-RUN' && (r.reason === 'deadline' || r.reason === 'aborted')

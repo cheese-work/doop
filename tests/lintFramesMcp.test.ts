@@ -31,6 +31,8 @@ const rig = vi.hoisted(() => ({
   loadMs: 0,
   live: 0,
   peak: 0,
+  /** every server-side analytics event the handler sent */
+  captures: [] as Array<{ distinctId: string; event: string; properties: Record<string, unknown> }>,
 }))
 
 const never = () => new Promise<never>(() => {})
@@ -42,6 +44,15 @@ vi.mock('../server/auth.ts', () => ({
   getUserName: async () => 'Lint Owner',
   isBanned: async () => false,
 }))
+vi.mock('../server/analytics.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../server/analytics.ts')>()
+  return {
+    ...actual,
+    capture: (distinctId: string, event: string, properties: Record<string, unknown> = {}) => {
+      rig.captures.push({ distinctId, event, properties })
+    },
+  }
+})
 vi.mock('../server/screenshot.ts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../server/screenshot.ts')>()
   return {
@@ -130,6 +141,7 @@ afterAll(async () => {
 
 let renderer: Renderer
 beforeEach(() => {
+  rig.captures = []
   rig.loads = []
   rig.hangs = () => false
   rig.loadMs = 0
@@ -468,5 +480,78 @@ describe('lint_frames: the whole-page rule scan', () => {
     expect(body.frames.map((f) => f.page_rules)).toEqual(['ok', 'skipped', 'ok'])
     expect(body.summary.coverage).toMatchObject({ page_rules_ok: 2, page_rules_skipped: 1, page_rules_not_run: 0 })
     expect(body.page_complete).toBe(false)
+  })
+})
+
+describe('lint_frames: run tracking (S8)', () => {
+  const runs = () => rig.captures.filter((c) => c.event === 'frame_lint_run')
+
+  it('sends one frame_lint_run per call, with counts only: no frame name, html, text or selector', async () => {
+    const SECRET_NAME = 'Checkout secret name'
+    const SECRET_TEXT = 'secret label text'
+    const canvas = seedCanvas(3, (i) => ({
+      name: `${SECRET_NAME} ${i}`,
+      html: `<!--f${i}--><button data-doop-id="pay-${i}">${SECRET_TEXT}</button>`,
+      width: 393,
+      height: 852,
+    }))
+    const stub: FrameRule = {
+      id: 'stub-rule',
+      run: (facts) => [
+        {
+          rule: 'stub-rule',
+          level: 'warn' as const,
+          viewport: facts.viewport,
+          element: { doop_id: 'pay-0', selector: '[data-doop-id="pay-0"]' },
+          message: SECRET_TEXT,
+        },
+      ],
+    }
+    FRAME_RULES.push(stub)
+    let body: LintResult
+    try {
+      body = (await lint({ canvas_id: canvas })).body
+    } finally {
+      FRAME_RULES.splice(FRAME_RULES.indexOf(stub), 1)
+    }
+    expect(runs()).toHaveLength(1)
+    const [run] = runs()
+    expect(run!.distinctId).toBe('lint-owner')
+    expect(run!.properties).toMatchObject({
+      ruleset: 'fl-r1',
+      frames_on_page: 3,
+      rows: 3,
+      frames_ok: 3,
+      frames_not_run: 0,
+      by_rule: { 'stub-rule': 6 },
+      omitted: { not_reached: 0, rows_byte_cap: 0, findings: 0, strings_cut: 0 },
+    })
+    expect(run!.properties.ms).toBe(body.elapsed_ms)
+    const sent = JSON.stringify(run!.properties)
+    for (const leak of [SECRET_NAME, SECRET_TEXT, 'pay-0', '<button', 'data-doop-id', 'Frame ']) {
+      expect(sent, `the event holds no ${leak}`).not.toContain(leak)
+    }
+    expect(sent).not.toContain('f0')
+  })
+
+  it('counts a second call as a second event, and a refused call sends none', async () => {
+    const canvas = seedCanvas(2)
+    await lint({ canvas_id: canvas })
+    await lint({ canvas_id: canvas, after: '1:f0' })
+    expect(runs()).toHaveLength(2)
+    const before = runs().length
+    await client.callTool({
+      name: 'lint_frames',
+      arguments: { canvas_id: canvas, agent_name: 'R', after: '1:f0', frame_ids: ['f1'] },
+    })
+    expect(runs()).toHaveLength(before)
+  })
+
+  it('reports not-reached and not-run counts of a cut walk', async () => {
+    const canvas = seedCanvas(6)
+    rig.hangs = (marker, width) => marker === '<!--f1-->' && width === 320
+    const { body } = await lint({ canvas_id: canvas })
+    const [run] = runs()
+    expect(run!.properties).toMatchObject({ rows: body.frames.length, frames_not_run: 1, omitted: { not_reached: 4 } })
   })
 })
