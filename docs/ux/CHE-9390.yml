@@ -16,7 +16,7 @@ pages:
     remove: []
   - id: a2-archive-and-trash-states
     design: design/lifecycle-ui/approved/A2-archive-and-trash.html @ 572cc77
-    url: same component; copy passed in by the A2 slice
+    url: storybook Shell/PanelState (shell-panelstate--trash-loading, --trash-empty, --trash-error-with-retry, --trash-disconnected); the A2 slice passes this copy
     keep: []
     change:
       - panel-state-loading: '"Reading Archive and Trash…"'
@@ -26,7 +26,7 @@ pages:
     remove: []
   - id: a4-comment-resolution-states
     design: design/lifecycle-ui/approved/A4-comment-resolution.html @ 572cc77
-    url: same component; copy passed in by the A4 slice
+    url: storybook Shell/PanelState (shell-panelstate--threads-loading, --threads-empty, --threads-error-with-retry, --threads-disconnected); the A4 slice passes this copy
     keep: []
     change:
       - panel-state-loading: '"Reading threads…"'
