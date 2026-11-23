@@ -162,6 +162,8 @@ async function runOnPage(
   const collected = await collectFacts(page)
   const wantsAxe = FRAME_RULES.some((rule) => rule.needsAxe && (!opts.rules || opts.rules.includes(rule.id)))
   const axe = wantsAxe ? await collectAxe(page) : undefined
+  /* an abort during axe is the caller's NOT-RUN, not a partial result */
+  if (opts.signal.aborted) throw new Error('aborted')
   const facts: FrameFacts = {
     frame: { width: frame.width, height: frame.height },
     viewport: { width: viewport.width, height: viewport.height },
