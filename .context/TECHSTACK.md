@@ -730,6 +730,17 @@ data-doop-webfonts>` for the roster families the frame names and does not load i
   unlocked Finished frame and a token rename that would change one refuses the whole edit (`PageFinishedError`);
   component propagation, element-id stamping (the comment falls back to the frame), stamp backfill (rows stay legacy)
   and heal-from-main leave a Finished frame alone. Tests: `finishedPageGuard.test.ts`, `finishedSystemWriters.test.ts`.
+  Setting the state (CHE-9468, L5): `PUT /api/canvases/:id/pages/:pageId/finished { finished, expectedName }` (edit role) and
+  MCP `set_page_finished` call `actions.setPageFinished` / `store.setPageFinished`, which runs
+  `assertWritable(ctx, 'set_page_state', …)` (agent binding applies). `true` sets `{ at, by }` (a repeat writes, logs and
+  broadcasts nothing); `false` clears it and moves the page to the end of the open pages, then in the same tick broadcasts
+  `canvas:pages`, logs "moved to Finished" / "restored from Finished" and runs the catch-up: every unlocked, non-streaming
+  frame gets its token block rewritten (annotation, `withCanvasFaces`) and one propagation pass is queued; locked and streaming
+  frames are left alone and listed in the reply's `skipped` (`reason: 'locked' | 'streaming'`). Refusals: stale `expectedName`
+  409 `page_changed` (with `pages`), a snapshot restore running on the page 409 `page_busy` (nothing written), the Ledger page
+  400 `ledger_page`, the Archive 400 `archive_page`, unknown page 404, view role 403. A page-list save (REST and
+  `set_canvas_pages`, MCP and resident) that renames or drops a Finished page is refused 400 `page_finished`; a plain
+  `{ id, name }` save keeps the flags. Tests: `pageFinished.test.ts` (including the restore-race cases FP-01 and FP-03).
 - Frame write keys (`frame_write_keys`, migration 0045; `actions.writeFrameHtmlOnce`): MCP `set_frame_html` /
   `edit_frame_html` / `append_frame_html` and REST `PATCH /api/frames/:id` (html only) and
   `POST /api/frames/:id/append` take `idempotency_key` and an optional `version_name`. The key row,

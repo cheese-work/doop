@@ -37,6 +37,7 @@ export type WriteOp =
   | 'bind_project'
   | 'lock_frame'
   | 'unlock_frame'
+  | 'set_page_state'
 
 export type WriteTarget = {
   canvas: Canvas
@@ -125,6 +126,7 @@ const OPS: ReadonlySet<string> = new Set<WriteOp>([
   'bind_project',
   'lock_frame',
   'unlock_frame',
+  'set_page_state',
 ])
 
 function assertLockRules(ctx: WriteContext, op: WriteOp, target: WriteTarget): void {

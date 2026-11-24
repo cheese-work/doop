@@ -39,6 +39,22 @@ export function dropsLedger(current: CanvasPageInfo[], next: { id: string }[]): 
   return !!ledger && !next.some((page) => page.id === ledger.id)
 }
 
+/** The first Finished page a page-list save would rename or drop (a refusal: restore the page first, L5).
+ *  A save that sends only `{ id, name }` keeps every flag, so an unchanged Finished page passes. */
+export function changesFinished(
+  current: CanvasPageInfo[],
+  next: { id: string; name: string }[],
+): CanvasPageInfo | undefined {
+  return current.find((page) => {
+    if (!page.finished) return false
+    const kept = next.find((candidate) => candidate.id === page.id)
+    return !kept || kept.name.trim() !== page.name
+  })
+}
+
+export const finishedKept = (page: Pick<CanvasPageInfo, 'name'>) =>
+  `Page “${page.name}” is Finished and cannot be renamed or removed. Restore the page first.`
+
 export const LEDGER_KEPT = 'The ledger page cannot be removed. Mark another page as the ledger first.'
 
 /** Where a write that names no page lands: the first page that is not the ledger, Finished or Archive.

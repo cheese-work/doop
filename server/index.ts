@@ -44,7 +44,15 @@ import { PRO_UPLOAD_BYTES } from '../shared/billing.ts'
 import { listPageRuns, multicaCommentsSource, multicaRunsSource } from './multicaRuns.ts'
 import { setReconSources, storedReconAssets } from './reconGuard.ts'
 import { isUuid } from '../shared/pageIssue.ts'
-import { canvasPages, dropsLedger, framePageId, LEDGER_KEPT, samePages } from '../shared/pages.ts'
+import {
+  canvasPages,
+  changesFinished,
+  dropsLedger,
+  finishedKept,
+  framePageId,
+  LEDGER_KEPT,
+  samePages,
+} from '../shared/pages.ts'
 import { normalizePageBackground } from '../shared/pageBackground.ts'
 import { MAX_STACK_WRITES, type StackWrite } from '../shared/frameStack.ts'
 import { normalizeRotation } from '../shared/frameRotation.ts'
@@ -2246,6 +2254,8 @@ app.put('/api/canvases/:id/pages', (req, res) => {
       .status(409)
       .json({ error: 'Pages changed since you opened them. Please try again.', pages: canvasPages(canvas) })
   if (dropsLedger(canvasPages(canvas), pages)) return res.status(400).json({ error: LEDGER_KEPT, code: 'ledger_kept' })
+  const finished = changesFinished(canvasPages(canvas), pages)
+  if (finished) return res.status(400).json({ error: finishedKept(finished), code: 'page_finished' })
   const firstId = canvas.pages?.[0]?.id ?? `${canvas.id}:page1`
   if (canvas.frames.some((f) => !pages.some((p) => p.id === (f.pageId ?? firstId)))) {
     return res.status(400).json({ error: 'Move the frames to another page before deleting this page.' })
@@ -2332,6 +2342,38 @@ app.put('/api/canvases/:id/pages/:pageId/ledger', (req, res) => {
   const error =
     done.code === 'archive_page' ? 'The Archive page cannot be the ledger.' : 'A Finished page cannot be the ledger.'
   res.status(400).json({ error, code: done.code })
+})
+
+/* Move to Finished / Restore (CHE-9398 L5). `expectedName` is the name the caller saw; a page renamed since
+   answers 409 `page_changed` with the page list, and a snapshot restore running on the page 409 `page_busy`.
+   Restoring answers `skipped`: the frames the catch-up left alone (locked, or with an open append stream). */
+app.put('/api/canvases/:id/pages/:pageId/finished', (req, res) => {
+  const canvas = requireCanvas(req, res, req.params.id, 'edit')
+  if (!canvas) return
+  const finished: unknown = req.body?.finished
+  const expectedName: unknown = req.body?.expectedName
+  if (typeof finished !== 'boolean') return res.status(400).json({ error: 'finished must be true or false' })
+  if (typeof expectedName !== 'string')
+    return res.status(400).json({ error: 'expectedName must be the page name you saw' })
+  const actor = actions.resolveActor({ name: req.user!.name, kind: 'user' })
+  const done = actions.setPageFinished(canvas.id, req.params.pageId, finished, expectedName, actor, req.user!.id)
+  if (done.ok) return res.json({ pages: done.pages, skipped: done.skipped })
+  switch (done.code) {
+    case 'not_found':
+      return res.status(404).json({ error: 'page not found', code: done.code })
+    case 'page_changed':
+      return res
+        .status(409)
+        .json({ error: 'The page changed since you opened it. Please try again.', code: done.code, pages: done.pages })
+    case 'page_busy':
+      return res
+        .status(409)
+        .json({ error: 'A snapshot restore is writing this page. Try again once it is done.', code: done.code })
+    case 'ledger_page':
+      return res.status(400).json({ error: 'The ledger page cannot be Finished.', code: done.code })
+    case 'archive_page':
+      return res.status(400).json({ error: 'The Archive page cannot be Finished.', code: done.code })
+  }
 })
 
 /* The Multica runs of a page: its bound issue's runs plus the DM's chat runs. */
