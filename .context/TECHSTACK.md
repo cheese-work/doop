@@ -1140,8 +1140,16 @@ data-doop-webfonts>` for the roster families the frame names and does not load i
   no receipt. `store.unlockFrame` (async) answers `pinned` while a pin exists and writes the row before memory changes;
   the synchronous unlock in `updateFrame` refuses a pinned frame too. `store.lockIfVersionDurable` (MCP
   `lock_frame_if_version`) answers only after its row is written and reverts memory if that write fails. Pins are read
-  back at boot (`loadPins`). Not wired yet: the Multica port itself (A1 `ref_status`/`abort_ref`) and an HTTP/MCP route
-  for P4/P6/K2/K5/F1. Tests: `framePins.test.ts` (temporary pglite).
+  back at boot (`loadPins`). Not wired yet: the Multica port itself (A1 `ref_status`/`abort_ref`, A2 `abort_if_pending`)
+  and an HTTP/MCP route for P4/P6/K2/K5/F1. Tests: `framePins.test.ts` (temporary pglite).
+  Pin reconcile (G5c, CHE-7063, `server/pinReconcile.ts`): `startPinReconcile` (30 s, started at boot) calls
+  `reconcilePins`, which asks Multica about every pin older than `T_RECONCILE_MS` (120 s since its last state change)
+  and never releases by time (B4). `pending` or missing -> A2 `abortIfPending` (a conditional CAS: a card that is
+  already `open` is left as it is, with its HELD pin); `decided` / `void` -> `releasePin`; `open` / `pick_pending` ->
+  nothing; Multica silent -> the pin is listed by `stuckPins()` with its age (the "ghim treo" warning), never released.
+  `MulticaPort.abortRef` (A1, unconditional) stays for `forceRelease` only. Tests: `pinInterleave.test.ts` (the 12 x 5
+  table, `pin/G1..V2/E1..E5`), `pinConcurrent.test.ts`, harness `tests/support/pinHarness.ts` (`pauseAfter`, fake clock,
+  `crashMultica`/`restartMultica`, `dropResponse`, `assertInvariants` over both databases).
 
 ## 6. Build and Dependency Management
 
