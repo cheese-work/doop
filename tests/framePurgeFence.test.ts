@@ -241,6 +241,41 @@ describe('T6a: frame writers entered after the fence', () => {
     expect(landedRows('insert:frames', f.id)).toHaveLength(0)
   })
 
+  it('a debounced saveFrame entered after the fence is held, survives settle, and lands on kept with no idle retry', async () => {
+    const f = frame(newId())
+    const fence = fenceFrame(f.id)
+    persist.saveFrame(f) // entered while fenced
+    expect(frameWriteState(f.id).dirty).toBe(true)
+    await settleFrameWrites(f.id, { timeoutMs: 1000 })
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(landedRows('insert:frames', f.id)).toHaveLength(0)
+    fence.release()
+    await vi.advanceTimersByTimeAsync(1000) // one debounce window, no idle sweep
+    expect(landedRows('insert:frames', f.id)).toHaveLength(1)
+  })
+
+  it('a debounced saveFrame entered after the fence is dropped on purged, even after settle', async () => {
+    const f = frame(newId())
+    fenceFrame(f.id)
+    persist.saveFrame(f)
+    await settleFrameWrites(f.id, { timeoutMs: 1000 })
+    forgetFrame(f.id)
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(landedRows('insert:frames', f.id)).toHaveLength(0)
+    expect(frameWriteState(f.id)).toEqual({ dirty: false, timer: false, inFlight: false, versions: false })
+  })
+
+  it('repeated debounced saveFrame calls while fenced collapse to one write on kept', async () => {
+    const f = frame(newId())
+    const fence = fenceFrame(f.id)
+    persist.saveFrame(f)
+    persist.saveFrame(f)
+    persist.saveFrame(f)
+    fence.release()
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(landedRows('insert:frames', f.id)).toHaveLength(1)
+  })
+
   it('retryFrameWrite is held by the fence, then writes on kept', async () => {
     const f = frame(newId())
     persist.saveFrame(f) // dirty, debounce pending

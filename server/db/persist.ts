@@ -787,6 +787,14 @@ export function saveFrame(f: Frame, immediate = false) {
     swallow(admit(f.id, () => writeFrame(f)))
     return
   }
+  /* entered while fenced: no timer (settle would clear it and nothing would reschedule). The save waits
+   * on the fence: `kept` schedules it as a normal debounce, `purged` drops it. The frame stays dirty
+   * meanwhile, so it is not evicted. Repeated calls collapse into one timer when they resume. */
+  const gate = fenceGate(f.id)
+  if (gate) {
+    swallow(gate.then((outcome) => (outcome === 'kept' ? saveFrame(f) : undefined)))
+    return
+  }
   frameTimers.set(
     f.id,
     setTimeout(() => {
