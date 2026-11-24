@@ -7,6 +7,8 @@ name: CD live revision
 # build arg of `image.yml`. The last successful D2 SHA comes from the deployment record D2 writes after each confirmed deploy (the `deploy-evidence`
 # artifacts are the fallback); an unreadable history fails this run too.
 #
+# The host is repo variable DOOP_C00_HOST, or the default in `scripts/cd-watch.mjs` (`c00Host`) when it is unset.
+#
 # Read only: no deploy secret, no build, no write to C00. Schedule only. It does nothing while repo variable
 # DOOP_DEPLOY_TRAIN is not `on`.
 on:

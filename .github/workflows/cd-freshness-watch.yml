@@ -13,6 +13,11 @@ name: CD freshness watch
 on:
   schedule:
     - cron: '12,27,42,57 * * * *'
+  # GitHub's cron skips runs here (CHE-9479), so the backup must not hang on one schedule. These events are other
+  # sources of the same check; the dispatch is guarded by "no D2 run since the slot", so an extra run is harmless.
+  workflow_run:
+    workflows: ['CD live revision', 'Image']
+    types: [completed]
   workflow_dispatch:
 
 permissions:
