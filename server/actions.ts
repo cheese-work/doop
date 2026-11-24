@@ -66,7 +66,7 @@ import {
 } from '../shared/designTokens.ts'
 import { emitCanvasEvent } from './events.ts'
 import { PolicyRefused, systemContext, writeContextFor } from './writePolicy.ts'
-import { PageFinishedError, beginRestore, endRestore } from './pageState.ts'
+import { PageFinishedError, beginRestore, endRestore, isFrameFinished, refuseFinishedFrame } from './pageState.ts'
 import type {
   Actor,
   Canvas,
@@ -844,6 +844,9 @@ export async function ensureElementId(
   if (!stamped) return undefined
   /* a lock freezes the HTML, stamps included: the comment falls back to the frame */
   if (frame.locked && stamped.html !== frame.html) return undefined
+  /* a Finished page is frozen the same way (CHE-9398 L4): the comment falls back to the frame */
+  const canvas = store.getCanvas(frame.canvasId)
+  if (canvas && isFrameFinished(canvas, frame) && stamped.html !== frame.html) return undefined
   if (stamped.html === frame.html) {
     if (!(await stampSaved(frameId, stamped.id))) return undefined
     /* the frame may have been deleted while the write was awaited */
@@ -964,6 +967,9 @@ export async function backfillElementIds(
     const current = await store.loadFrame(frameId)
     /* a locked frame cannot take stamps: its rows stay legacy until it is unlocked */
     if (!current || current.locked) continue
+    /* a Finished page stays as it is: its rows stay legacy until Restore (CHE-9398 L4) */
+    const finishedOn = store.getCanvas(current.canvasId)
+    if (finishedOn && isFrameFinished(finishedOn, current)) continue
     let html = current.html
     for (const { comment, selector } of rows) {
       try {
@@ -2389,6 +2395,8 @@ function propagateIntoFrame(
   const canvas = store.getCanvas(canvasId)
   const frame = store.getFrame(frameId)
   if (!canvas || !frame || frame.canvasId !== canvasId) return {}
+  /* a Finished page is frozen: its frames catch up at Restore (CHE-9398 L4) */
+  if (isFrameFinished(canvas, frame)) return {}
   /* a one-shot reveal is only playback of what is already stored, so it updates like any frame */
   const followed = componentIds.filter((id) => !isDeleted(canvas.components?.find((def) => def.id === id)))
   if (streams.has(frame.id) || !followed.some((id) => referencesComponent(frame.html, id))) return {}
@@ -2526,6 +2534,8 @@ function healFromMain(canvas: Canvas, frame: Frame, ids: ReadonlySet<string>) {
   const { html, saved } = rederiveFromMains(canvas, frame.id, ids, actor.name)
   for (const def of saved) broadcastComponent(canvas.id, def, actor)
   if (html === frame.html) return
+  /* a Finished main keeps its markup as it is (CHE-9398 L4); the definition above is still healed */
+  if (isFrameFinished(canvas, frame)) return
   const next = store.updateFrame(systemContext(), frame.id, { html }, frame.updatedBy, { annotation: true })
   if (next) broadcast(canvas.id, { type: 'frame:updated', frame: next, actor })
 }
@@ -3512,9 +3522,17 @@ function restyleTokenFrames(canvasId: string, actor: Actor, renames: TokenRename
     }
     let html = frame.html
     for (const rename of renames) html = applyRename(html, rename)
+    const renamed = html
     html = withCanvasFaces(canvasId, html)
     if (html === frame.html) continue
+    /* the lock check stays first (F04): a locked frame refuses the whole edit on any page */
     if (frame.locked) throw new FrameLockedError(frame)
+    if (isFrameFinished(canvas, frame)) {
+      /* a Finished frame takes no value change (it catches up at Restore); a rename it
+         names would leave it on a token that no longer exists, so that refuses the whole edit */
+      if (renamed !== frame.html) refuseFinishedFrame(canvas, frame)
+      continue
+    }
     plan.push({ frame, html })
   }
   for (const frame of deferred)

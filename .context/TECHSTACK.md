@@ -726,7 +726,10 @@ data-doop-webfonts>` for the roster families the frame names and does not load i
   `setFlowStart`, `archiveFrames`. REST answers 409 `{ code: 'page_finished' }`, MCP the text, design sync skips the frame
   (`finished: true`). `restorePageSnapshot` refuses a Finished target before reading or filing anything, counts itself
   in per page (`beginRestore` / `endRestore`, `restoring`) until it returns or throws, and skips a frame sitting on
-  another Finished page (`reason: 'page_finished'`). Tests: `finishedPageGuard.test.ts`.
+  another Finished page (`reason: 'page_finished'`). System writers respect it too (CHE-9467, L4, `isFrameFinished`): after the lock check, a token value edit skips an
+  unlocked Finished frame and a token rename that would change one refuses the whole edit (`PageFinishedError`);
+  component propagation, element-id stamping (the comment falls back to the frame), stamp backfill (rows stay legacy)
+  and heal-from-main leave a Finished frame alone. Tests: `finishedPageGuard.test.ts`, `finishedSystemWriters.test.ts`.
 - Frame write keys (`frame_write_keys`, migration 0045; `actions.writeFrameHtmlOnce`): MCP `set_frame_html` /
   `edit_frame_html` / `append_frame_html` and REST `PATCH /api/frames/:id` (html only) and
   `POST /api/frames/:id/append` take `idempotency_key` and an optional `version_name`. The key row,
