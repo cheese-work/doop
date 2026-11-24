@@ -1,0 +1,39 @@
+issue: CHE-9469
+design: design/lifecycle-ui/approved/A5-project-ledger.html @ 572cc77
+# L7 (CHE-9398 plan r5): the desktop Pages list. Every row of "What the lock asks for" that is
+# not marked CHE-9448 is named once below: under `keep` when this slice leaves it as it is (it
+# belongs to L5 or L8), under `change` when this slice draws it. The two landing rows are
+# delivered by CHE-9448. The state rows cite U0 (CHE-9390, docs/ux/CHE-9390.yml), the shared
+# PanelState: loading, empty, error with one retry, and the offline banner.
+pages:
+  - id: a5-pages-list-desktop
+    design: design/lifecycle-ui/approved/A5-project-ledger.html @ 572cc77
+    url: doop page che-5478, the Pages list in the left panel (reference frame), 1440 and 390
+    keep:
+      - ledger-caption: '"Ledger page. The latest approved designs. It changes only when a locked proposal lands." stays out of this slice (L8)'
+      - activity-row-finished: '"CHE-5162 · checkout moved to Finished" is written by the server (L5); the Activity feed is not touched here'
+      - page-menu-rename: 'Rename, on open pages; a Finished page has none'
+      - page-menu-duplicate: 'Duplicate page, on open pages; a Finished page has none'
+      - page-menu-copy-link: 'Copy link to page, on every row, viewers too'
+      - page-row-drag: 'drag a page by its name to reorder open pages; the Archive row stays last'
+      - page-add: 'the + button in the Pages heading'
+      - move-selection: 'the Move selection picker below the list, for editors with frames selected'
+    change:
+      - ledger-tag: 'a "Ledger" tag on the ledger page, which is always first in Pages'
+      - finished-group: 'a folded "Finished <count>" row above Archive; unfolding lists the Finished pages and the line "Read only. Restore to move one back."'
+      - finished-row: 'a Finished page shows its name and one Restore button; no rename, no drag'
+      - page-menu-ledger: '"Project ledger on" on the ledger, "Project ledger off" on an open page; each sends the ledger flag'
+      - page-menu-finish: '"Move to Finished" on an open page; on the ledger it is disabled and reads "Not for the ledger"'
+      - page-menu-delete: '"Delete page" on an open page; on the ledger it is disabled and reads "Ledger is kept"'
+      - page-menu-restore: '"Restore" on a Finished page'
+      - drag-limits: 'a page cannot be dropped above the ledger or onto Finished rows'
+      - state-loading: 'PanelState loading, "Reading pages…" (U0 state-loading)'
+      - state-empty: 'PanelState empty, "No ledger page", the hint and "Mark Baseline as ledger" (the first open page when none is named Baseline); editors only (U0 state-empty)'
+      - state-error-changed: 'PanelState error, "Could not move to Finished (409). The page changed." and Reload pages (U0 state-error)'
+      - state-error-busy: 'PanelState error, "A restore is running. Try again." and Try again'
+      - state-error-lost: 'PanelState error after a lost reply: the canvas is read again first, then "No reply came back, and the page was not changed." or Reload pages'
+      - state-offline: 'PanelState offline banner, "Offline. Pages are read only until it reconnects." plus "Reconnecting…"; page writes pause, reading stays (U0 state-offline)'
+      - activity-row-landing: 'delivered by CHE-9448'
+      - phone-landing-line: 'delivered by CHE-9448'
+    remove:
+      - move-selection-finished-pages: 'a Finished page is no longer a target of Move selection'

@@ -50,6 +50,57 @@ async function savePagesAndRecord(canvas: Canvas, next: CanvasPageInfo[], select
   }
 }
 
+/** How a ledger or Finished change ended, for the panel to word. `lost`: no reply came back and the
+ *  re-read shows the page unchanged; `unknown`: no reply and the re-read failed too. */
+export type PageStateOutcome =
+  | { kind: 'done' }
+  | { kind: 'changed' }
+  | { kind: 'busy' }
+  | { kind: 'lost' }
+  | { kind: 'unknown' }
+  | { kind: 'failed'; message?: string }
+
+/** Send one ledger or Finished change and settle what the person sees. A reply shows its pages. A 409
+ *  names its state (`page_changed`, `page_busy`). A lost reply (no HTTP answer) is never reported as a
+ *  result: the canvas is re-read first, and `landed` says whether the change is in the fresh pages. */
+export async function changePageState(
+  canvas: Canvas,
+  send: () => Promise<{ pages: CanvasPageInfo[] }>,
+  landed: (pages: CanvasPageInfo[]) => boolean,
+): Promise<PageStateOutcome> {
+  const expected = canvasPages(canvas)
+  try {
+    const saved = (await send()).pages
+    const state = useStore.getState()
+    if (state.canvas?.id !== canvas.id) return { kind: 'done' }
+    /* a newer broadcast can arrive before this reply: leave it be */
+    const shown = canvasPages(state.canvas)
+    if (samePages(shown, expected) || samePages(shown, saved)) state.setPages(saved, canvas.id)
+    return { kind: 'done' }
+  } catch (error) {
+    if (error instanceof ApiError) {
+      if (error.status === 409 && error.body.code === 'page_changed') return { kind: 'changed' }
+      if (error.status === 409 && error.body.code === 'page_busy') return { kind: 'busy' }
+      return { kind: 'failed', message: typeof error.body.error === 'string' ? error.body.error : undefined }
+    }
+    try {
+      const fresh = canvasPages(await api.getCanvas(canvas.id))
+      const state = useStore.getState()
+      if (state.canvas?.id === canvas.id) state.setPages(fresh, canvas.id)
+      return landed(fresh) ? { kind: 'done' } : { kind: 'lost' }
+    } catch {
+      return { kind: 'unknown' }
+    }
+  }
+}
+
+/** Re-read the canvas's page list (the error states' "Reload pages"). */
+export async function reloadPages(canvasId: string) {
+  const fresh = await api.getCanvas(canvasId)
+  const state = useStore.getState()
+  if (state.canvas?.id === canvasId) state.setPages(canvasPages(fresh), canvasId)
+}
+
 /** Copy a page and its frames in one server call, then show the copy. */
 export function duplicatePage(canvas: Canvas, pageId: string) {
   const task = (async () => {
