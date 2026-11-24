@@ -342,4 +342,8 @@ export const panels = {
   protoNothing: 'Nothing to play yet',
   protoNothingText: 'This page of the canvas has no frames.',
   protoOpenCanvas: 'Open the canvas',
+
+  /* PanelState: the shared loading, empty, error and offline states of a panel */
+  panelStateRetry: 'Try again',
+  panelStateReconnecting: 'Reconnecting…',
 } as const
