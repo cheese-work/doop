@@ -4,29 +4,32 @@ import * as watch from '../scripts/cd-watch.mjs'
 
 /* CHE-5550 (train S7, plan CHE-5474 C-7): the two watchers' decisions as pure functions. The CLI and the
    workflows only feed them facts read from GitHub and from C00's /healthz. */
-const { lastSlot, freshness, liveVerdict, lastDeployed, deploymentRecord, ghPostArgs, recordDeployment } = watch as {
-  lastSlot: (nowMs: number) => number
-  freshness: (f: Record<string, unknown>) => { action: string; reason: string; rerunD1: boolean }
-  liveVerdict: (f: Record<string, unknown>) => Promise<{ ok: boolean; reason: string }>
-  lastDeployed: (h: {
-    recorded: { sha: string; runId: number | null; confirmedAt: number } | null
-    listRuns: (page: number) => Promise<Record<string, unknown>[]>
-    read: (id: number) => Promise<Record<string, unknown> | null>
-    maxScan?: number
-    nowMs?: number
-  }) => Promise<{ state: string; sha?: string; reason?: string }>
-  deploymentRecord: (
-    evidence: Record<string, unknown>,
-  ) => { ref: string; environment: string; confirmedAt: string | null } | null
-  ghPostArgs: (repo: string, route: string, fields: Record<string, string | boolean>) => string[]
-  recordDeployment: (h: {
-    repo: string
-    evidence: Record<string, unknown>
-    runId: string
-    gh: (args: string[]) => string
-    recordedSha: () => { sha: string; runId: number | null; confirmedAt?: number } | null
-  }) => string
-}
+const { lastSlot, freshness, liveVerdict, lastDeployed, deploymentRecord, ghPostArgs, recordDeployment, c00Host } =
+  watch as {
+    c00Host: (env: Record<string, string | undefined>) => string
+    lastSlot: (nowMs: number) => number
+    freshness: (f: Record<string, unknown>) => { action: string; reason: string; rerunD1: boolean }
+    liveVerdict: (f: Record<string, unknown>) => Promise<{ ok: boolean; reason: string }>
+    lastDeployed: (h: {
+      recorded: { sha: string; runId: number | null; confirmedAt: number } | null
+      listRuns: (page: number) => Promise<Record<string, unknown>[]>
+      read: (id: number) => Promise<Record<string, unknown> | null>
+      deploySkipped?: (id: number) => Promise<boolean>
+      maxScan?: number
+      nowMs?: number
+    }) => Promise<{ state: string; sha?: string; reason?: string }>
+    deploymentRecord: (
+      evidence: Record<string, unknown>,
+    ) => { ref: string; environment: string; confirmedAt: string | null } | null
+    ghPostArgs: (repo: string, route: string, fields: Record<string, string | boolean>) => string[]
+    recordDeployment: (h: {
+      repo: string
+      evidence: Record<string, unknown>
+      runId: string
+      gh: (args: string[]) => string
+      recordedSha: () => { sha: string; runId: number | null; confirmedAt?: number } | null
+    }) => string
+  }
 
 const A = 'a'.repeat(40)
 const B = 'b'.repeat(40)
@@ -357,6 +360,71 @@ describe('lastDeployed: the last successful D2 SHA, ordered by confirmation time
     expect(out.state).toBe('unknown')
   })
 
+  // CHE-9479: a run whose `deploy` job was skipped never touched C00, so it cannot have confirmed anything. It writes no
+  // evidence when the run predates the evidence job, or the job did not run. That is a skip, not an unreadable history.
+  describe('a clean skip that left no evidence (CHE-9479)', () => {
+    const skipped = (ids: number[]) => async (id: number) => ids.includes(id)
+
+    it('is read as skipped: the record stays the answer', async () => {
+      const out = await lastDeployed({
+        recorded: rec(A),
+        listRuns: pages([skip(51), skip(50)]),
+        read: reader({}),
+        deploySkipped: skipped([51]),
+      })
+      expect(out).toMatchObject({ state: 'known', sha: A })
+    })
+
+    it('is read as skipped with no record: none, not unknown, so a candidate is dispatched', async () => {
+      const out = await lastDeployed({
+        recorded: null,
+        listRuns: pages([skip(2), skip(1)]),
+        read: reader({}),
+        deploySkipped: skipped([1, 2]),
+      })
+      expect(out).toEqual({ state: 'none' })
+      const f = freshness({ ...base, deployed: out, nowMs: SLOT + 50 * MIN })
+      expect(f.action).toBe('dispatch')
+    })
+
+    it('still finds a deploy confirmed behind skipped runs that left no evidence', async () => {
+      const out = await lastDeployed({
+        recorded: null,
+        listRuns: pages([skip(3), skip(2), skip(1)]),
+        read: reader({ 1: conf(1, A) }),
+        deploySkipped: skipped([3, 2]),
+      })
+      expect(out).toMatchObject({ state: 'known', sha: A })
+    })
+
+    it('is still unknown when the deploy job ran (a deploy could have confirmed before the upload failed)', async () => {
+      const out = await lastDeployed({
+        recorded: rec(A),
+        listRuns: pages([failed(51), skip(50)]),
+        read: reader({}),
+        deploySkipped: skipped([]),
+      })
+      expect(out.state).toBe('unknown')
+      expect(out.reason).toContain('51')
+    })
+
+    it('is still unknown without a way to read the jobs', async () => {
+      const out = await lastDeployed({ recorded: rec(A), listRuns: pages([skip(51)]), read: reader({}) })
+      expect(out.state).toBe('unknown')
+    })
+
+    it('does not trust the job check when the run left evidence: evidence wins', async () => {
+      const out = await lastDeployed({
+        recorded: rec(A),
+        listRuns: pages([skip(51)]),
+        read: reader({ 51: conf(51, B) }),
+        deploySkipped: skipped([51]),
+      })
+      expect(out.state).toBe('unknown')
+      expect(out.reason).toContain('record')
+    })
+  })
+
   it('fails the live watcher on confirm B, evidence upload failed, record A, live A', async () => {
     const deployed = await lastDeployed({ recorded: rec(A), listRuns: pages([failed(52), skip(50)]), read: reader({}) })
     const out = await liveVerdict({ body: { ok: true, revision: A }, deployed, isAncestor: async () => false })
@@ -628,5 +696,20 @@ describe('the deployment record request (typed fields, read back)', () => {
     })
     expect(out).toContain('nothing to record')
     expect(f.calls).toHaveLength(0)
+  })
+})
+
+describe('c00Host: where the live watcher reads the host (CHE-9479)', () => {
+  it('is the repo variable when set', () => {
+    expect(c00Host({ DOOP_C00_HOST: 'doop.example.ts.net' })).toBe('doop.example.ts.net')
+  })
+
+  it('falls back to the documented default when the variable is unset or blank, never to an empty host', () => {
+    expect(c00Host({})).toBe('congvc-c00.taila6fa8a.ts.net:34443')
+    expect(c00Host({ DOOP_C00_HOST: '  ' })).toBe('congvc-c00.taila6fa8a.ts.net:34443')
+  })
+
+  it('has no scheme and no path', () => {
+    expect(c00Host({})).not.toMatch(/[/]/)
   })
 })

@@ -197,6 +197,8 @@ running before the switch can turn on. The last successful D2 SHA has four state
    100 evidence reads (a skipped D2 ends green, so a run conclusion is not used). A run whose artifact is gone or
    unreadable, a confirmed artifact with a bad SHA, or hitting the scan limit is `unknown`.
 
+A D2 run whose `deploy` job was skipped never touched C00: with no evidence it is read as a clean skip, not `unknown`
+(CHE-9479). A run whose deploy job ran and left no evidence is still `unknown`.
 `unknown` fails visibly: the freshness watch alarms at once when a candidate exists, and the live watch fails. A
 deployed candidate is never treated as overdue, and an unreachable `/healthz` never passes, because of missing history.
 The decisions are pure functions in `scripts/cd-watch.mjs`, tested in `tests/cdWatch.test.ts`.
@@ -219,8 +221,9 @@ The decisions are pure functions in `scripts/cd-watch.mjs`, tested in `tests/cdW
 
 Read-back before the switch: before `DOOP_DEPLOY_TRAIN` is set to `on`, each watcher shows a green scheduled run on
 the Actions page (`gh run list --workflow cd-freshness-watch.yml --event schedule`, and the same for
-`cd-live-revision.yml`) from after the merge of this slice. Repo variable `DOOP_C00_HOST` (the doop host name on
-C00's tailnet, no scheme) must be set before the switch too: the live watcher fails when it is `on` and the host is unset.
+`cd-live-revision.yml`) from after the merge of this slice. The live watcher reads the doop host from repo variable
+`DOOP_C00_HOST` (host name on C00's tailnet, no scheme, port allowed); when it is unset or blank it uses the default
+`c00Host` in `scripts/cd-watch.mjs` (`congvc-c00.taila6fa8a.ts.net:34443`, the doop port on C00). Set the variable only to override it.
 
 ## Prerequisites (set once; not in this repo)
 
@@ -229,7 +232,7 @@ C00's tailnet, no scheme) must be set before the switch too: the live watcher fa
 | Runner         | label `cheese-c00-deploy` | self-hosted runner on C00 with Docker and `docker compose` (node 22 comes from `actions/setup-node`; the runner needs egress to download it), in runner group `c00-deploy` (D1), limited to `cheese-work/doop` and `cheese-work/multica`                       |
 | Repo variable  | `C00_DOOP_COMPOSE_DIR`    | optional; default `/home/congvc/.local/share/doop` (`compose.yaml`, service `app`, its `.env`)                                                                                                                                                                 |
 | Repo variable  | `C00_DEPLOY_AUTHORIZERS`  | extra logins, e.g. the agent-merge identity                                                                                                                                                                                                                    |
-| Repo variable  | `DOOP_C00_HOST`           | doop's host name on C00's tailnet, no scheme; read by `cd-live-revision.yml`                                                                                                                                                                                   |
+| Repo variable  | `DOOP_C00_HOST`           | optional override; default in `scripts/cd-watch.mjs` `c00Host`; read by `cd-live-revision.yml`                                                                                                                                                                 |
 | Repo variable  | `MAIN_RED_PAUSED`         | empty, or a reason to pause                                                                                                                                                                                                                                    |
 | Environment    | `c00-readback-delay`      | on `cheese-work/doop`, with a **15 minute wait timer** and no secret. Created by hand before the C-11 drill: GitHub creates a missing environment with no timer, and `c00.sh confirm` then refuses (delay not honoured)                                        |
 | Environment    | `ci-app-token`            | on `cheese-work/doop`, deploys from `cheese/main` only. Holds the `c00-multica` App's `C00_MULTICADO_APP_ID` and `C00_MULTICADO_CI_PRIVATE_KEY`. The three C00 jobs run in it and mint the marker token with `permission-variables: write`; no hosted job does |

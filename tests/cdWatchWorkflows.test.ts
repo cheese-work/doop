@@ -16,6 +16,13 @@ describe('cd-freshness-watch.yml (C-7.1)', () => {
     expect(freshness).toMatch(/cron: '12,27,42,57 \* \* \* \*'/)
   })
 
+  it('does not depend on one schedule: it also runs when the live watcher or an image build finishes (CHE-9479)', () => {
+    expect(freshness).toMatch(
+      /workflow_run:\s*\n\s*workflows: \['CD live revision', 'Image'\]\s*\n\s*types: \[completed\]/,
+    )
+    expect(freshness).toMatch(/cron: '12,27,42,57 \* \* \* \*'/)
+  })
+
   it('runs on a GitHub-hosted runner, so a dead deploy runner cannot silence it', () => {
     expect(freshness).toMatch(/runs-on: ubuntu-24\.04/)
     expect(noComments(freshness)).not.toMatch(/self-hosted|c00/i)

@@ -30,6 +30,10 @@ const ALARM_AFTER = 90 * MIN
 const SKEW = 5 * MIN // runner clock against GitHub clock
 const RERUN_WINDOW = 30 * 24 * 60 * MIN // GitHub allows a rerun up to 30 days after the run
 const STUCK_AFTER = 3 * 60 * MIN // D2's job timeouts add up to under 2 h
+// Where C00 serves doop's /healthz over the tailnet (host[:port], no scheme). Repo variable DOOP_C00_HOST overrides it; a
+// missing or blank variable is not a failure (CHE-9479). Documented in deploy/cd/README.md.
+const DEFAULT_C00_HOST = 'congvc-c00.taila6fa8a.ts.net:34443'
+export const c00Host = (env) => env.DOOP_C00_HOST?.trim() || DEFAULT_C00_HOST
 const short = (sha) => String(sha ?? 'none').slice(0, 7)
 
 // The newest D2 slot at or before `nowMs`, as epoch ms.
@@ -112,14 +116,16 @@ export async function liveVerdict({ body, deployed, isAncestor }) {
 // after the record's confirmation is checked (newest created first):
 //   - unfinished: `pending` while it is young (it may confirm any minute), `unknown` once it is stuck;
 //   - last activity (`updated_at`, which a rerun moves) earlier than the record's confirmation: it finished before, skipped;
-//   - no evidence: unknown, whatever its conclusion (a deploy can confirm and then fail before the evidence upload);
+//   - no evidence: unknown, whatever its conclusion (a deploy can confirm and then fail before the evidence upload),
+//     unless `deploySkipped(id)` proves the run's `deploy` job was skipped: it never touched C00, so it is a clean skip;
 //   - confirmed with a different SHA confirmed after the record: unknown (its record write failed); before it: older.
 // Runs created more than 30 days (GitHub's rerun limit) before the record's confirmation cannot be active; reaching one
 // ends the scan. With no record, the first confirmed evidence found takes the record's place (a later confirmation
 // replaces it). With every run readable and none confirmed, and no record, "none" is proven. At most `maxScan`
 // evidence reads. `listRuns(page)` gives D2 runs of any status, newest created first, an empty page at the end;
-// `read(id)` gives a run's deploy-evidence, or null when it has none.
-export async function lastDeployed({ recorded, listRuns, read, maxScan = 100, nowMs = Date.now() }) {
+// `read(id)` gives a run's deploy-evidence, or null when it has none. `deploySkipped(id)` (optional) says whether the
+// run's `deploy` job was skipped.
+export async function lastDeployed({ recorded, listRuns, read, deploySkipped, maxScan = 100, nowMs = Date.now() }) {
   let best =
     SHA40.test(recorded?.sha ?? '') && Number.isFinite(recorded?.confirmedAt)
       ? {
@@ -156,8 +162,10 @@ export async function lastDeployed({ recorded, listRuns, read, maxScan = 100, no
       }
       const evidence = await read(run.id)
       if (evidence === null || evidence === undefined) {
-        // Evidence is written on every run, so a run without it is unproven, whatever its conclusion: a deploy can
-        // confirm and then fail (or be cancelled) before the evidence upload. Only evidence says it did not confirm.
+        // A run whose deploy job never ran touched nothing, so the missing evidence is not a gap (CHE-9479). Any other
+        // run without evidence is unproven, whatever its conclusion: a deploy can confirm and then fail (or be
+        // cancelled) before the evidence upload.
+        if (deploySkipped && (await deploySkipped(run.id))) continue
         return unknown(
           `D2 run ${run.id} (${run.conclusion ?? 'unfinished'}) has no evidence: it could have confirmed a deploy after the last record`,
         )
@@ -227,6 +235,12 @@ function evidenceOf(repo, id) {
   }
 }
 
+// True when the newest attempt of a D2 run has a `deploy` job that was skipped: the run never reached C00.
+function deployJobSkipped(repo, id) {
+  const { jobs } = api(repo, `actions/runs/${id}/jobs?per_page=100`)
+  return jobs.some((j) => j.name === 'deploy' && j.conclusion === 'skipped')
+}
+
 // The newest deployment record whose newest status is success, from the newest 30 records, as `{ sha, runId,
 // confirmedAt }` (both from the description `... (D2 run <id>, confirmed <UTC time>)`; null when absent); or null.
 function recordedSha(repo) {
@@ -247,6 +261,7 @@ const deployedSha = (repo) =>
     recorded: recordedSha(repo),
     listRuns: async (page) => api(repo, `actions/workflows/cd-deploy.yml/runs?per_page=100&page=${page}`).workflow_runs,
     read: async (id) => evidenceOf(repo, id),
+    deploySkipped: async (id) => deployJobSkipped(repo, id),
   })
 
 // `gh api -X POST` arguments: a string field goes with -f, a boolean with -F so that GitHub gets a JSON boolean.
@@ -342,12 +357,11 @@ async function cli(argv, env) {
       console.log('cd-watch live: DOOP_DEPLOY_TRAIN is not on: nothing is due')
       return
     }
-    if (!env.DOOP_C00_HOST) throw new Error('repo variable DOOP_C00_HOST is not set')
     let body = null
     let timer
     try {
       // A host that does not answer is a failed read, not a hung job.
-      const read = fetch(`https://${env.DOOP_C00_HOST}/healthz`).then((res) => res.json())
+      const read = fetch(`https://${c00Host(env)}/healthz`).then((res) => res.json())
       const late = new Promise((_, reject) => {
         timer = setTimeout(() => reject(new Error('no answer in 15 s')), 15_000)
       })
