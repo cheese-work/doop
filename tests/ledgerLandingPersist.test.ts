@@ -2,10 +2,12 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { eq } from 'drizzle-orm'
-import { afterAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, describe, expect, it } from 'vitest'
 
 /* CHE-9675 (A5 landing S1): persist.saveLanding writes the copied frames, their asset refs and one receipt in
-   one transaction on a real database (temporary pglite). FP-02 is the REQUIRED_TEST of the CHE-9448 plan. */
+   one transaction on a real database (temporary pglite). FP-02 is the REQUIRED_TEST of the CHE-9448 plan.
+   The broadcast half of FP-02 is not at this boundary (saveLanding takes no broadcast); S3b CHE-9671 asserts it.
+   Overlapping page saves need two connections: ledgerLandingPersistPg.test.ts (real PostgreSQL). */
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'doop-landing-'))
 const cwd = process.cwd()
 process.chdir(dir)
@@ -20,15 +22,6 @@ const pages = [
   { id: 'ledger', name: 'Ledger' },
   { id: 'src', name: 'Source' },
 ]
-const canvas = (id: string, updatedAt = 100) => ({
-  id,
-  name: id,
-  ownerId: 'u',
-  createdAt: 1,
-  updatedAt,
-  pages,
-  frames: [],
-})
 async function seed(id: string, updatedAt = 100) {
   await dbm.db.insert(t.canvases).values({ id, name: id, ownerId: 'u', pages, updatedAt, createdAt: 1 })
 }
@@ -77,6 +70,7 @@ describe('FP-02 (persist): saveLanding is all or nothing', () => {
     await seed('c-fp02', 100)
     const copies = [frame('c-fp02', 'f1'), frame('c-fp02', 'f2')] as never
     const rec = receipt('c-fp02') as never
+    const activityBefore = await dbm.db.select().from(t.activity).where(eq(t.activity.canvasId, 'c-fp02'))
     await expect(
       persist.saveLanding('c-fp02', 500, copies, rec, {
         afterFirstFrame: () => {
@@ -84,11 +78,20 @@ describe('FP-02 (persist): saveLanding is all or nothing', () => {
         },
       }),
     ).rejects.toThrow(/db down/)
+
+    // reload from the database (hydrate), not the in-memory row
+    const reloaded = (await persist.hydrate()).canvases.find((c) => c.id === 'c-fp02')!
+    expect(reloaded.frames.map((f) => f.id)).toEqual([])
+    expect(reloaded.updatedAt).toBe(100)
     const after = await rows('c-fp02')
     expect(after.frames).toHaveLength(0)
     expect(after.receipts).toHaveLength(0)
+    expect(await dbm.db.select().from(t.assetRefs).where(eq(t.assetRefs.frameId, 'f1'))).toHaveLength(0)
     expect(after.canvas.updatedAt).toBe(100)
     expect(await persist.findLanding('c-fp02', 'a'.repeat(40), 'design/x/approved/lock.json')).toBeUndefined()
+    expect(await persist.landingsFor('c-fp02')).toEqual([])
+    // no success activity: the persistence layer writes none, failed or not
+    expect(await dbm.db.select().from(t.activity).where(eq(t.activity.canvasId, 'c-fp02'))).toEqual(activityBefore)
 
     // a retry creates exactly one set
     await persist.saveLanding('c-fp02', 500, copies, rec, {})
@@ -96,6 +99,7 @@ describe('FP-02 (persist): saveLanding is all or nothing', () => {
     expect(retried.frames.map((f) => f.id).sort()).toEqual(['f1', 'f2'])
     expect(retried.receipts).toHaveLength(1)
     expect(retried.canvas.updatedAt).toBe(500)
+    expect(await dbm.db.select().from(t.activity).where(eq(t.activity.canvasId, 'c-fp02'))).toEqual(activityBefore)
   })
 
   it('a throw from beforeCommit also rolls everything back', async () => {
@@ -140,25 +144,6 @@ describe('saveLanding: the receipt and the copies', () => {
     expect(loaded.frames.find((f) => f.id === 'l1')).toMatchObject({ locked: true })
     const refs = await dbm.db.select().from(t.assetRefs).where(eq(t.assetRefs.frameId, 'l1'))
     expect(refs).toEqual([{ assetId: 'ast_abc123', frameId: 'l1' }])
-  })
-
-  it('a saveCanvas of other pages committed during the open transaction survives with its pages', async () => {
-    await seed('c-over', 100)
-    const saved = { ...canvas('c-over', 400), pages: [...pages, { id: 'new', name: 'Added meanwhile' }] }
-    await persist.saveLanding('c-over', 300, [frame('c-over', 'o1')] as never, receipt('c-over') as never, {
-      beforeCommit: () => {
-        /* the page-list save is queued behind the landing's transaction; it must not be lost */
-        persist.saveCanvas(saved as never)
-      },
-    })
-    await vi.waitFor(async () => {
-      const { canvas: row } = await rows('c-over')
-      expect((row.pages as { id: string }[]).map((p) => p.id)).toContain('new')
-    })
-    const after = await rows('c-over')
-    expect(after.frames.map((f) => f.id)).toEqual(['o1'])
-    expect(after.receipts).toHaveLength(1)
-    expect(after.canvas.updatedAt).toBeGreaterThanOrEqual(400)
   })
 
   it('updated_at never moves backwards (GREATEST)', async () => {
