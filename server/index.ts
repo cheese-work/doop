@@ -63,7 +63,7 @@ import { eq, inArray } from 'drizzle-orm'
 import { toNodeHandler, fromNodeHeaders } from 'better-auth/node'
 import { oAuthDiscoveryMetadata } from 'better-auth/plugins'
 import { WebSocketServer, WebSocket } from 'ws'
-import { FrameDeletedError, FrameStaleError, GuideLimitError, PageLimitError, store } from './store.ts'
+import { FrameDeletedError, FrameStaleError, GuideLimitError, NoOpenPageError, PageLimitError, store } from './store.ts'
 import { parseGuide } from '../shared/guides.ts'
 import { getImage } from './previews.ts'
 import { LayerNotFoundError, layerRefFromQuery, layerSelector } from './layerExport.ts'
@@ -2368,26 +2368,30 @@ app.post('/api/canvases/:id/frames', (req, res) => {
   if (pageId !== undefined && !store.getCanvas(req.params.id)?.pages?.some((p) => p.id === pageId))
     return res.status(400).json({ error: 'page not found' })
   const actor = userActor(req)
-  /* `hidden`, `locked` and `z` let undo bring a deleted frame back as it was */
-  const frame = actions.createFrame(
-    req.params.id,
-    {
-      name: String(name || 'Frame'),
-      pageId,
-      x,
-      y,
-      width,
-      height,
-      html,
-      hidden: hidden === true,
-      locked: locked === true,
-      z: Number.isFinite(z) ? z : undefined,
-      rotation: normalizeRotation(rotation),
-    },
-    actor,
-  )
-  if (!frame) return res.status(404).json({ error: 'canvas not found' })
-  res.json(frame)
+  try {
+    /* `hidden`, `locked` and `z` let undo bring a deleted frame back as it was */
+    const frame = actions.createFrame(
+      req.params.id,
+      {
+        name: String(name || 'Frame'),
+        pageId,
+        x,
+        y,
+        width,
+        height,
+        html,
+        hidden: hidden === true,
+        locked: locked === true,
+        z: Number.isFinite(z) ? z : undefined,
+        rotation: normalizeRotation(rotation),
+      },
+      actor,
+    )
+    if (!frame) return res.status(404).json({ error: 'canvas not found' })
+    res.json(frame)
+  } catch (e) {
+    frameWriteFailed(res, e)
+  }
 })
 
 /** Answer a failed frame write: the refusal it maps to, else 500. Express 4 does not route an async
@@ -2416,6 +2420,11 @@ function frameWriteRefused(res: express.Response, e: unknown): boolean {
   }
   if (e instanceof actions.FrameWriteKeyConflictError) {
     res.status(409).json({ error: e.message })
+    return true
+  }
+  /* every page is the ledger, Finished or Archive: no default page to write to */
+  if (e instanceof NoOpenPageError) {
+    res.status(409).json({ error: e.message, code: e.code })
     return true
   }
   return false
@@ -3006,9 +3015,13 @@ app.post('/api/frames/:id/restore', async (req, res) => {
   const canvas = frame && store.getCanvas(frame.canvasId)
   if (!frame || !canvas) return res.status(404).json({ error: 'deleted frame not found' })
   if (!checkRole(req, res, canvas, 'edit')) return
-  const restored = await actions.restoreFrame(frame.id, userActor(req))
-  if (!restored) return res.status(404).json({ error: 'deleted frame not found' })
-  res.json(restored)
+  try {
+    const restored = await actions.restoreFrame(frame.id, userActor(req))
+    if (!restored) return res.status(404).json({ error: 'deleted frame not found' })
+    res.json(restored)
+  } catch (e) {
+    frameWriteFailed(res, e)
+  }
 })
 
 app.get('/api/canvases/:id/trash', (req, res) => {

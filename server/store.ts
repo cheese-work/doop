@@ -5,8 +5,10 @@ import {
   archiveLast,
   canvasPages,
   copyPageName,
+  defaultWritePageId,
   framePageId,
   pageFrames,
+  recoveryPageId,
   samePages,
 } from '../shared/pages.ts'
 import { defaultSpot } from './frameLayout.ts'
@@ -55,6 +57,17 @@ export class FrameLockedError extends PolicyRefused {
   override readonly name = 'FrameLockedError'
   constructor(frame: Pick<Frame, 'id' | 'name'>) {
     super('update_frame', `frame "${frame.name}" (${frame.id}) is locked; only a lock owner can unlock it`)
+  }
+}
+
+/** A new frame, or a restored one whose page is gone, has no page to go to: every page is the ledger, Finished or
+ *  Archive (CHE-9398 L1). Nothing is written. REST answers 409 `no_open_page`, MCP an error. */
+export const NO_OPEN_PAGE = 'no open page: pass page_id'
+export class NoOpenPageError extends Error {
+  override readonly name = 'NoOpenPageError'
+  readonly code = 'no_open_page'
+  constructor() {
+    super(NO_OPEN_PAGE)
   }
 }
 
@@ -1345,7 +1358,8 @@ class Store {
   ): Frame | undefined {
     const c = this.canvases.get(canvasId)
     if (!c) return undefined
-    const pageId = input.pageId ?? canvasPages(c)[0]!.id
+    const pageId = input.pageId ?? defaultWritePageId(c)
+    if (!pageId) throw new NoOpenPageError()
     if (!canvasPages(c).some((page) => page.id === pageId)) return undefined
     assertWritable(ctx, 'create_frame', { canvas: c, pageIds: [pageId], html: input.html })
     const frames = pageFrames(c, pageId)
@@ -1584,21 +1598,24 @@ class Store {
     return frame
   }
 
-  /** Bring a deleted frame back to its page (the first page when that page
-   *  is gone too). Undefined when it is not in the trash. */
+  /** Bring a deleted frame back to its page (an open page, else the ledger, when that page is gone;
+   *  NoOpenPageError when neither exists). Undefined when it is not in the trash. */
   restoreFrame(frameId: string): Frame | undefined {
     const canvasId = this.deletedIndex.get(frameId)
     const c = canvasId ? this.canvases.get(canvasId) : undefined
     const entry = canvasId ? this.trash.get(canvasId) : undefined
     const frame = entry?.frames.find((f) => f.id === frameId)
     if (!canvasId || !c || !entry || !frame) return undefined
+    const pages = canvasPages(c)
+    const pageId = frame.pageId && pages.some((page) => page.id === frame.pageId) ? frame.pageId : recoveryPageId(c)
+    /* before anything moves: the frame stays in the trash */
+    if (!pageId) throw new NoOpenPageError()
     requireBoundary('store.restoreFrame')
     const before = { pageId: frame.pageId, updatedAt: frame.updatedAt, deletedAt: frame.deletedAt }
     entry.frames = entry.frames.filter((f) => f !== frame)
     this.deletedIndex.delete(frameId)
     delete frame.deletedAt
-    const pages = canvasPages(c)
-    if (!frame.pageId || !pages.some((page) => page.id === frame.pageId)) frame.pageId = pages[0]!.id
+    frame.pageId = pageId
     frame.updatedAt = Math.max(Date.now(), frame.updatedAt + 1)
     c.frames.push(frame)
     c.frames.sort(byStack)

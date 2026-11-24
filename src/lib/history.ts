@@ -1,5 +1,5 @@
 import { stackOf, type StackWrite } from '../../shared/frameStack'
-import { applyPageChanges, canvasPages, samePages } from '../../shared/pages'
+import { applyPageChanges, canvasPages, recoveryPageId, samePages } from '../../shared/pages'
 import { pageBackground } from '../../shared/pageBackground'
 import type { Canvas, CanvasGuide, CanvasPageInfo, Frame } from '../../shared/types'
 import { api } from './api'
@@ -502,7 +502,8 @@ async function recreate(e: { frameId: string; snapshot: Snapshot }) {
   const canvas = useStore.getState().canvas
   if (!canvas || canvas.id !== canvasId) throw new Error('Canvas changed')
   const pages = canvasPages(canvas)
-  if (!rest.pageId || !pages.some((p) => p.id === rest.pageId)) rest.pageId = pages[0]!.id
+  /* none: leave the id as it was and let the server answer 409 no_open_page */
+  if (!rest.pageId || !pages.some((p) => p.id === rest.pageId)) rest.pageId = recoveryPageId(canvas) ?? rest.pageId
   const f = await api.createFrame(canvasId, rest)
   useStore.getState().upsertFrame(f)
   remapId(e.frameId, f.id)
@@ -657,7 +658,7 @@ async function apply(e: Entry, direction: 'undo' | 'redo'): Promise<Entry | null
     const canvas = useStore.getState().canvas
     if (patch.pageId !== undefined && canvas) {
       const pages = canvasPages(canvas)
-      if (!pages.some((page) => page.id === patch.pageId)) patch.pageId = pages[0]!.id
+      if (!pages.some((page) => page.id === patch.pageId)) patch.pageId = recoveryPageId(canvas) ?? patch.pageId
     }
     const frame = canvas?.frames.find((frame) => frame.id === e.frameId)
     const rollback = frame

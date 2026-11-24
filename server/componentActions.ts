@@ -1,5 +1,5 @@
 import { serializeOuter, type DefaultTreeAdapterTypes as Tree } from 'parse5'
-import { canvasPages, COMPONENTS_PAGE } from '../shared/pages.ts'
+import { canvasPages, COMPONENTS_PAGE, defaultWritePageId } from '../shared/pages.ts'
 import {
   BIND_ATTR,
   COMPONENT_ATTR,
@@ -83,7 +83,7 @@ import * as propagation from './propagation.ts'
 import { optional, parse, parseFragment, usage as workUsage, WorkBudgetError } from './workBudget.ts'
 import { afterCommit, atomic, checkpoint, transaction } from './journal.ts'
 import { usageByComponent, usageOf, type ComponentUsage } from './componentUsage.ts'
-import { store } from './store.ts'
+import { NO_OPEN_PAGE, store } from './store.ts'
 import { mayPublishLibrary } from './workspaces.ts'
 
 /**
@@ -530,7 +530,11 @@ function componentsPageId(canvasId: string, actor: Actor): string {
   if (existing) return existing.id
   const id = `page-${Date.now().toString(36)}`
   const next = actions.setCanvasPages(canvasId, [...pages, { id, name: COMPONENTS_PAGE }], actor)
-  return next.find((page) => page.name === COMPONENTS_PAGE)?.id ?? pages[0]!.id
+  return (
+    next.find((page) => page.name === COMPONENTS_PAGE)?.id ??
+    defaultWritePageId({ id: canvasId, pages: next }) ??
+    fail(NO_OPEN_PAGE)
+  )
 }
 
 function singleRoot(html: string): Element {

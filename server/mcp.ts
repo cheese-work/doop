@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto'
 import { eq } from 'drizzle-orm'
 import { db } from './db/index.ts'
 import * as authSchema from './db/auth-schema.ts'
-import { ARCHIVE_PAGE_ID, canvasPages, framePageId, MAX_PAGE_NAME } from '../shared/pages.ts'
+import { ARCHIVE_PAGE_ID, canvasPages, defaultWritePageId, framePageId, MAX_PAGE_NAME } from '../shared/pages.ts'
 import { normalizePageBackground } from '../shared/pageBackground.ts'
 import { MULTICA_TASK_HEADER, parseMulticaTaskId } from '../shared/pageIssue.ts'
 import { prototypeReport, prototypeUrl, setPrototypeStart } from './prototypeTools.ts'
@@ -20,7 +20,7 @@ import type { Request, Response } from 'express'
 import { fromNodeHeaders } from 'better-auth/node'
 import { z } from 'zod'
 import { SnapshotError } from './pageSnapshots.ts'
-import { FrameStaleError, PageLimitError, store } from './store.ts'
+import { FrameStaleError, NO_OPEN_PAGE, NoOpenPageError, PageLimitError, store } from './store.ts'
 import { PolicyRefused } from './writePolicy.ts'
 import { addPage, savePages, updateFrameMeta } from './pageTools.ts'
 import { fontsForCanvas } from './fonts.ts'
@@ -244,7 +244,8 @@ function refusalOf(e: unknown) {
     e instanceof PolicyRefused /* a locked frame (FrameLockedError is one), or any other store policy refusal */ ||
     e instanceof FrameStaleError ||
     e instanceof actions.FrameWriteKeyConflictError ||
-    e instanceof actions.FrameEditError
+    e instanceof actions.FrameEditError ||
+    e instanceof NoOpenPageError
   )
     return err(e.message)
   throw e
@@ -1610,7 +1611,10 @@ export function buildMcpServer(
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: {
         canvas_id: z.string(),
-        page_id: z.string().optional().describe('Page ID from get_canvas; defaults to the first page'),
+        page_id: z
+          .string()
+          .optional()
+          .describe('Page ID from get_canvas; defaults to the first open page (not the ledger, Finished or Archive)'),
         color: z.string().nullable().describe('A hex colour such as #1e1e1e, or null to clear'),
         agent_name: agentName,
       },
@@ -1619,7 +1623,8 @@ export function buildMcpServer(
       const canvas = canvasFor(canvas_id, 'edit')
       if (!canvas) return noCanvas(canvas_id)
       const pages = canvasPages(canvas)
-      const pageId = page_id ?? pages[0]!.id
+      const pageId = page_id ?? defaultWritePageId(canvas)
+      if (!pageId) return err(NO_OPEN_PAGE)
       if (!pages.some((p) => p.id === pageId)) return err(`no page ${pageId} on canvas ${canvas_id}`)
       const background = color === null ? null : normalizePageBackground(color)
       if (color !== null && !background) return err('color must be a hex colour such as #f5f5f5, or null')
@@ -1783,7 +1788,12 @@ export function buildMcpServer(
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       inputSchema: {
         canvas_id: z.string(),
-        pageId: z.string().optional().describe('Target page ID from get_canvas; defaults to the first page'),
+        pageId: z
+          .string()
+          .optional()
+          .describe(
+            'Target page ID from get_canvas; defaults to the first open page (not the ledger, Finished or Archive)',
+          ),
         name: z.string().describe('Frame title, e.g. "Landing hero" or "Pricing card"'),
         html: z
           .string()
@@ -1804,8 +1814,10 @@ export function buildMcpServer(
       if (inline) return err(inline)
       /* G2 judges the recon in the synchronous store: fetch the images and the issue's comments first */
       const actor = actorFrom(agent_name)
-      await warmReconEvidence(target, pageId ?? canvasPages(target)[0]!.id, writeContextFor(actor))
-      const frame = actions.createFrame(canvas_id, { name, pageId, html, x, y, width, height }, actor)
+      const targetPageId = pageId ?? defaultWritePageId(target)
+      if (!targetPageId) return err(NO_OPEN_PAGE)
+      await warmReconEvidence(target, targetPageId, writeContextFor(actor))
+      const frame = actions.createFrame(canvas_id, { name, pageId: targetPageId, html, x, y, width, height }, actor)
       if (!frame) return noCanvas(canvas_id)
       const canvas = store.getCanvas(canvas_id)
       const summary = {
@@ -3102,7 +3114,12 @@ export function buildMcpServer(
       const gone = store.getDeletedFrame(frame_id)
       if (!gone || !canvasFor(gone.canvasId, 'edit'))
         return err(`no deleted frame with id ${frame_id} on a canvas this account can edit`)
-      const frame = await actions.restoreFrame(frame_id, actorFrom(agent_name))
+      let frame
+      try {
+        frame = await actions.restoreFrame(frame_id, actorFrom(agent_name))
+      } catch (e) {
+        return refusalOf(e)
+      }
       if (!frame) return noFrame(frame_id)
       return text({ ok: true, frame: frameSummary(frame) })
     },

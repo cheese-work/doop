@@ -33,7 +33,7 @@ import {
   type Roster,
 } from '../shared/agents.ts'
 import { rosterFor, teamOfCanvas } from './customAgents.ts'
-import { canvasPages, framePageId, pageFrames } from '../shared/pages.ts'
+import { canvasPages, defaultWritePageId, framePageId, pageFrames } from '../shared/pages.ts'
 import { conflicts, defaultSpot, freeSpot, visibleBox } from './frameLayout.ts'
 import { normalizeRotation } from '../shared/frameRotation.ts'
 import { SnapshotError, capturePage, compareFrames, sameState, signature, stateOf } from './pageSnapshots.ts'
@@ -2880,7 +2880,7 @@ function clearOfOverlap<
   T extends { pageId?: string; x?: number; y?: number; width?: number; height?: number; rotation?: number },
 >(canvasId: string, input: T): { input: T; moved: boolean } {
   const canvas = store.getCanvas(canvasId)
-  const pageId = canvas && (input.pageId ?? canvasPages(canvas)[0]?.id)
+  const pageId = canvas && (input.pageId ?? defaultWritePageId(canvas))
   if (!canvas || !pageId) return { input, moved: false }
   const frames = pageFrames(canvas, pageId)
   const at = defaultSpot(frames)
