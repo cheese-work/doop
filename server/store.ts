@@ -13,6 +13,7 @@ import {
 } from '../shared/pages.ts'
 import { defaultSpot } from './frameLayout.ts'
 import * as persist from './db/persist.ts'
+import { exclusive, isPinned, pinHooks } from './pinState.ts'
 import { assertWritable, PolicyRefused, type WriteContext } from './writePolicy.ts'
 import type { LinkAccess } from '../shared/canvasRole.ts'
 import { MAX_GUIDES } from '../shared/guides.ts'
@@ -1458,6 +1459,9 @@ class Store {
       frame,
       pageIds: patch.pageId !== undefined ? [framePageId(c, frame), patch.pageId] : [framePageId(c, frame)],
     })
+    /* B5: a pin outranks an owner; the owner's way out is force_release */
+    if (unlocking && isPinned(frameId))
+      throw new PolicyRefused('unlock_frame', 'pinned: a decision card holds this frame')
     const designChanged =
       !opts.annotation && DESIGN_KEYS.some((key) => patch[key] !== undefined && patch[key] !== frame[key])
     requireBoundary('store.updateFrame')
@@ -1516,6 +1520,13 @@ class Store {
     | { ok: true; frame: Frame; already?: true }
     | { ok: false; error: 'version_changed'; currentUpdatedAt: number }
     | undefined {
+    const out = this.applyLock(ctx, frameId, attestedUpdatedAt, attestationId)
+    if (out?.ok && !out.already) this.saveFrameLater(out.frame, true)
+    return out
+  }
+
+  /** The in-memory half of a lock; the callers decide how it becomes durable. */
+  private applyLock(ctx: WriteContext, frameId: string, attestedUpdatedAt: number, attestationId: string) {
     const frame = this.writableFrame(frameId)
     if (!frame) return undefined
     const c = this.canvases.get(frame.canvasId)!
@@ -1524,8 +1535,8 @@ class Store {
       throw new PolicyRefused('lock_frame', 'the frame is locked with another attestation; an owner unlocks it first')
     /* the version check comes first for a retry too: a late retry of an older attempt must not pass */
     if (frame.updatedAt !== attestedUpdatedAt)
-      return { ok: false, error: 'version_changed', currentUpdatedAt: frame.updatedAt }
-    if (frame.locked) return { ok: true, frame, already: true }
+      return { ok: false as const, error: 'version_changed' as const, currentUpdatedAt: frame.updatedAt }
+    if (frame.locked) return { ok: true as const, frame, already: true as const }
     requireBoundary('store.lockIfVersion')
     const before = inTransaction() ? frameState(frame) : undefined
     frame.locked = true
@@ -1534,8 +1545,93 @@ class Store {
       recordUndo(() => {
         if (this.getFrame(frame.id) === frame && frame.lockAttestationId === attestationId) restoreFrame(frame, before)
       })
-    this.saveFrameLater(frame, true)
-    return { ok: true, frame }
+    return { ok: true as const, frame }
+  }
+
+  /** Durable lock (CHE-7062 B7): a narrowing write. The lock shows in memory at once (so nothing slips in) but the
+   *  answer waits for the row; a failed write puts the frame back as it was. Serialised with every pin step. */
+  lockIfVersionDurable(
+    ctx: WriteContext,
+    frameId: string,
+    attestedUpdatedAt: number,
+    attestationId: string,
+  ): Promise<
+    | { ok: true; frame: Frame; epoch: number; already?: true }
+    | { ok: false; error: 'version_changed' | 'persist_failed'; currentUpdatedAt?: number }
+    | undefined
+  > {
+    return exclusive(async () => {
+      const before = this.getFrame(frameId)
+      const was = { locked: before?.locked, attestationId: before?.lockAttestationId }
+      const out = this.applyLock(ctx, frameId, attestedUpdatedAt, attestationId)
+      if (!out || !out.ok) return out
+      const { frame } = out
+      if (out.already) return { ...out, epoch: frame.lockEpoch ?? 0 }
+      try {
+        await pinHooks.beforeWrite?.('lock')
+        await persist.saveFrameNow(frame)
+      } catch {
+        frame.locked = was.locked
+        if (was.attestationId === undefined) delete frame.lockAttestationId
+        else frame.lockAttestationId = was.attestationId
+        return { ok: false, error: 'persist_failed' }
+      }
+      return { ...out, epoch: frame.lockEpoch ?? 0 }
+    })
+  }
+
+  /** Durable unlock (CHE-7062 B5/B7): `pinned` while a pin holds the frame; otherwise a loosening write, so the row
+   *  goes first and memory changes only once it is durable. Same policy as the synchronous unlock (owners only). */
+  unlockFrame(
+    ctx: WriteContext,
+    frameId: string,
+    by: string,
+    expectedUpdatedAt?: number,
+  ): Promise<
+    | { ok: true; frame: Frame }
+    | { ok: false; error: 'pinned' | 'version_changed' | 'persist_failed' | 'not_locked' }
+    | undefined
+  > {
+    return exclusive(async () => {
+      const frame = this.getFrame(frameId)
+      if (!frame) return undefined
+      if (!frame.locked) return { ok: false, error: 'not_locked' }
+      const c = this.canvases.get(frame.canvasId)!
+      assertWritable(ctx, 'unlock_frame', { canvas: c, frame, pageIds: [framePageId(c, frame)] })
+      if (isPinned(frameId)) return { ok: false, error: 'pinned' }
+      if (expectedUpdatedAt !== undefined && frame.updatedAt !== expectedUpdatedAt)
+        return { ok: false, error: 'version_changed' }
+      const next: Frame = {
+        ...frame,
+        locked: false,
+        lockEpoch: (frame.lockEpoch ?? 0) + 1,
+        updatedAt: Math.max(Date.now(), frame.updatedAt + 1),
+        updatedBy: by,
+      }
+      delete next.lockAttestationId
+      try {
+        await pinHooks.beforeWrite?.('unlock')
+        await persist.saveFrameNow(next)
+      } catch {
+        return { ok: false, error: 'persist_failed' }
+      }
+      frame.locked = false
+      frame.lockEpoch = next.lockEpoch
+      delete frame.lockAttestationId
+      frame.updatedAt = next.updatedAt
+      frame.updatedBy = by
+      c.updatedAt = frame.updatedAt
+      persist.saveCanvas(c)
+      return { ok: true, frame }
+    })
+  }
+
+  /** F1 on a void card (CHE-7062): after the database has the new epochs, memory takes them. */
+  setLockEpochs(epochs: { frameId: string; epoch: number }[]): void {
+    for (const e of epochs) {
+      const frame = this.getFrame(e.frameId)
+      if (frame) frame.lockEpoch = e.epoch
+    }
   }
 
   /** Schedule the write of a frame as it is now, without changing it. A pass-through for callers outside

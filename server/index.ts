@@ -118,6 +118,7 @@ import { handleMcpRequest } from './mcp.ts'
 import { RendererBusyError } from './renderBrowser.ts'
 import { getAsset, reconcileAssetRefs, beginTicketUpload, endTicketUpload, createAsset } from './assets.ts'
 import * as ingest from './ingest.ts'
+import { configurePins, loadPins } from './framePins.ts'
 import { PolicyRefused, setLockOwners } from './writePolicy.ts'
 import * as agentKeys from './agentKeys.ts'
 import * as backgrounds from './backgrounds.ts'
@@ -187,6 +188,10 @@ if (data.canvases.length === 0 && (await persist.importLegacyJson())) {
   data = await persist.hydrate()
 }
 store.init(data.canvases, data.trash)
+/* G5b: pins are read back before the first request, so no unlock is answered without them. The Multica side of the
+   port (A1 ref_status / abort_ref) is not wired here: until it is, release_pin answers multica_unreachable. */
+configurePins({ secret: env.DOOP_PIN_SECRET })
+await loadPins()
 await workspaces.hydrateWorkspaces() // before the first request: canvasRole reads membership
 await hydrateInstanceSettings() // the sign-in policy, read on every signup
 await webhooks.hydrateWebhooks()
@@ -2516,8 +2521,10 @@ app.patch('/api/frames/:id', async (req, res) => {
   if (
     patch.pageId !== undefined &&
     !store.getCanvas(store.getFrame(req.params.id)!.canvasId)?.pages?.some((p) => p.id === patch.pageId)
-  )
-    return res.status(400).json({ error: 'page not found' })
+  ) {
+    res.status(400).json({ error: 'page not found' })
+    return
+  }
   const allowed = ['name', 'pageId', 'x', 'y', 'width', 'height', 'html'] as const
   const clean: Record<string, unknown> = {}
   for (const k of allowed) if (patch[k] !== undefined) clean[k] = patch[k]
@@ -2536,6 +2543,17 @@ app.patch('/api/frames/:id', async (req, res) => {
     clean.rotation = normalizeRotation(patch.rotation)
   }
   try {
+    /* a bare unlock goes through its own durable path: a pin answers `pinned`, the row is written before the reply.
+       An unlock that carries other changes falls through to the guard, which refuses it. */
+    if (current.locked && clean.locked === false && Object.keys(clean).length === 1) {
+      const out = await actions.unlockFrameDurable(req.params.id, actor, {
+        userId: req.user!.id,
+        expectedUpdatedAt: req.body?.expectedUpdatedAt,
+      })
+      if (out.ok) return res.json(out.frame)
+      if (out.error === 'not_found') return res.status(404).json({ error: 'frame not found' })
+      return res.status(out.error === 'persist_failed' ? 503 : 409).json({ error: out.error, code: out.error })
+    }
     /* the account id, not the display name, decides who may unlock a frame (DOOP_LOCK_OWNERS) */
     const frame = actions.updateFrame(req.params.id, clean, actor, { userId: req.user!.id })
     if (!frame) return res.status(404).json({ error: 'frame not found' })
