@@ -128,6 +128,8 @@ const schema = {
   ADMIN_EMAILS: list({ default: [] }),
   /* account ids that may unlock a locked frame (CHE-6626); empty = nobody can */
   DOOP_LOCK_OWNERS: list({ default: [] }),
+  /* HMAC secret shared with Multica for lock-pin receipts R1/R2 (CHE-7062); unset = doop issues no receipt */
+  DOOP_PIN_SECRET: str({ default: undefined }),
   REQUIRE_EMAIL_VERIFICATION: bool({ default: true }),
   OIDC_ISSUER: str({ default: undefined }),
   OIDC_CLIENT_ID: str({ default: undefined }),

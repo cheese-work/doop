@@ -727,6 +727,35 @@ export const agentOverrides = pgTable(
   (t) => [primaryKey({ columns: [t.scope, t.roleId] })],
 )
 
+/** Lock pins (CHE-7062, G5b of CHE-6078): one row per card request, state RESERVED -> HELD -> SEALED -> RELEASED.
+ *  No column is a deadline: a pin is released only after Multica reports the card decided or void. */
+export const framePins = pgTable('frame_pins', {
+  cardRequestId: text('card_request_id').primaryKey(),
+  pinId: text('pin_id').notNull().unique(),
+  state: text('state').$type<'RESERVED' | 'HELD' | 'SEALED' | 'RELEASED'>().notNull(),
+  /** every frame the card covers, at the version and epoch the lock was taken at */
+  frames: jsonb('frames')
+    .$type<{ frameId: string; updatedAt: number; attestationId: string; epoch: number }[]>()
+    .notNull(),
+  pickRequestId: text('pick_request_id'),
+  pickedFrameId: text('picked_frame_id'),
+  /** receipts doop issued (HMAC); kept so a retry returns the same one */
+  r1: text('r1'),
+  r2: text('r2'),
+  releaseReason: text('release_reason'),
+  /** informational only (pin age for the stale-pin list); never a deadline */
+  stateChangedAt: bigint('state_changed_at', { mode: 'number' }).notNull(),
+  createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+})
+
+/** The active pin of each frame: the primary key is the "one pin per frame" constraint. A row goes with its release. */
+export const framePinFrames = pgTable('frame_pin_frames', {
+  frameId: text('frame_id').primaryKey(),
+  cardRequestId: text('card_request_id')
+    .notNull()
+    .references(() => framePins.cardRequestId),
+})
+
 /** Named design docs per canvas (brand rules, style recipes) — markdown
  *  written mostly for agents. Small and cold-path; hydrated with the canvas. */
 export const guidelines = pgTable(
