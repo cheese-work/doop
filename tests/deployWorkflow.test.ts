@@ -205,8 +205,12 @@ describe('D2 suspension marker wiring (CHE-5545, C-10.1 to C-10.3)', () => {
     ['deploy', deploy],
     ['readback-confirm', confirm],
     ['rollback', rollback],
-  ])('%s writes the marker with a GitHub App token from the doop-deploy-marker environment', (_n, j) => {
-    expect(j).toMatch(/environment: doop-deploy-marker/)
+  ])('%s writes the marker with a GitHub App token from the ci-app-token environment', (_n, j) => {
+    expect(j).toMatch(/environment: ci-app-token/)
+    // The c00-multica App already lives there; no new App or environment (CHE-9181).
+    expect(j).toContain('app-id: ${{ secrets.C00_MULTICADO_APP_ID }}')
+    expect(j).toContain('private-key: ${{ secrets.C00_MULTICADO_CI_PRIVATE_KEY }}')
+    expect(j).not.toMatch(/doop-deploy-marker|DOOP_MARKER_APP/)
     expect(j).toMatch(/uses: actions\/create-github-app-token@[0-9a-f]{40}/)
     expect(j).toContain('permission-variables: write')
     expect(j).toContain('repositories: doop')
@@ -231,7 +235,7 @@ describe('D2 suspension marker wiring (CHE-5545, C-10.1 to C-10.3)', () => {
 
   it('hosted jobs never get the marker token or the environment', () => {
     for (const name of ['resolve', 'admit']) {
-      expect(job(d2, name)).not.toContain('doop-deploy-marker')
+      expect(job(d2, name)).not.toContain('ci-app-token')
       expect(job(d2, name)).not.toContain('create-github-app-token')
     }
   })
@@ -330,7 +334,7 @@ describe('D2 S5: readback delay, confirm, rollback, evidence (CHE-5549, C-9, C-1
     expect(delay).toMatch(/needs: \[admit, deploy\]/)
     expect(delay).toContain("needs.deploy.result == 'success'")
     expect(delay).toContain("needs.deploy.outputs.attempted == 'true'")
-    expect(delay).not.toMatch(/doop-deploy-marker|secrets\./)
+    expect(delay).not.toMatch(/ci-app-token|secrets\./)
   })
 
   it('confirm follows the delay, under the lock group, and runs the checks before the restore', () => {
@@ -384,7 +388,7 @@ describe('D2 S5: readback delay, confirm, rollback, evidence (CHE-5549, C-9, C-1
 
   it('the delay wait is not a C00 job: the lock group and the marker environment stay on the three C00 jobs', () => {
     expect(d2.match(/group: c00-deploy-doop/g)).toHaveLength(3)
-    expect(d2.match(/environment: doop-deploy-marker/g)).toHaveLength(3)
+    expect(d2.match(/environment: ci-app-token/g)).toHaveLength(3)
   })
 })
 
