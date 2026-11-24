@@ -192,6 +192,10 @@ export interface CanvasPageInfo {
   /** who wrote `issueId`: 'member' links survive the Design-URL sync, 'design'
    *  links follow it and are cleared when the issue's Design URL stops naming the page */
   issueSource?: 'member' | 'design'
+  /** the project ledger page (CHE-9398): the one page that is not a default write target. Nothing sets it yet. */
+  ledger?: true
+  /** the page was marked Finished (CHE-9398), by whom and when: not a default write target. Nothing sets it yet. */
+  finished?: { at: number; by: string }
 }
 
 /** A page that was deleted: kept so a restore brings it back. */

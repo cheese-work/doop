@@ -1,4 +1,4 @@
-import { canvasPages } from '../../shared/pages'
+import { defaultWritePageId } from '../../shared/pages'
 import { useStore } from '../lib/store'
 import { useT } from '../lib/i18n'
 import { AgentIcon } from './AgentIcon'
@@ -17,7 +17,7 @@ export function GhostFrames() {
   const presences = useStore((s) => s.presences)
   const tasks = useStore((s) => s.tasks)
   const t = useT()
-  if (!canvas || activePageId !== canvasPages(canvas)[0]!.id) return null
+  if (!canvas || activePageId !== defaultWritePageId(canvas)) return null
   const working = Object.values(presences).filter(
     (p) =>
       p.kind === 'agent' &&

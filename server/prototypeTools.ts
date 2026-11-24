@@ -1,6 +1,7 @@
 import { env } from './env.ts'
 import * as actions from './actions.ts'
-import { canvasPages, framePageId } from '../shared/pages.ts'
+import { NO_OPEN_PAGE } from './store.ts'
+import { canvasPages, defaultWritePageId, framePageId } from '../shared/pages.ts'
 import { actionString, flowStartFrame, prototypeLinks, targetsFrame, triggerString } from '../shared/prototype.ts'
 import type { Actor, Canvas, CanvasPageInfo } from '../shared/types.ts'
 
@@ -60,7 +61,8 @@ export function setPrototypeStart(
   if (frameId && !frame)
     return { ok: false, error: `no frame ${frameId} on canvas ${canvas.id} — use a frame id from the canvas` }
   const pages = canvasPages(canvas)
-  const page = pageId ?? (frame ? framePageId(canvas, frame) : pages[0]!.id)
+  const page = pageId ?? (frame ? framePageId(canvas, frame) : defaultWritePageId(canvas))
+  if (!page) return { ok: false, error: NO_OPEN_PAGE }
   if (!pages.some((p) => p.id === page)) return { ok: false, error: `no page ${page} on canvas ${canvas.id}` }
   if (frame && framePageId(canvas, frame) !== page)
     return { ok: false, error: 'the start frame must be on the same page' }

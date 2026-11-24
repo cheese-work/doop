@@ -24,6 +24,18 @@ export function archiveLast(pages: CanvasPageInfo[]): CanvasPageInfo[] {
   return archive.length ? [...pages.filter((page) => page.id !== ARCHIVE_PAGE_ID), ...archive] : pages
 }
 
+/** Where a write that names no page lands: the first page that is not the ledger, Finished or Archive.
+ *  Display order never decides it (CHE-9398 L1). Undefined when every page is one of those. */
+export function defaultWritePageId(canvas: Pick<Canvas, 'id' | 'pages'>): string | undefined {
+  return canvasPages(canvas).find((page) => !page.ledger && !page.finished && page.id !== ARCHIVE_PAGE_ID)?.id
+}
+
+/** Where undo or a trash restore puts a frame whose page is gone: the default write page, else the ledger.
+ *  Never a Finished page or Archive. */
+export function recoveryPageId(canvas: Pick<Canvas, 'id' | 'pages'>): string | undefined {
+  return defaultWritePageId(canvas) ?? canvasPages(canvas).find((page) => page.ledger)?.id
+}
+
 /** The name for a copy of `name`: "<name> copy", then "<name> copy 2", "… 3"
  *  while `taken` already holds it. The base is trimmed so the result fits
  *  the page name limit. */
