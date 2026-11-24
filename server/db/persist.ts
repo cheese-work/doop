@@ -547,6 +547,31 @@ export function saveProposal(canvasId: string, p: MemoryProposal) {
 const frameTimers = new Map<string, NodeJS.Timeout>()
 const FRAME_DEBOUNCE_MS = 400
 
+/** the `frames` row of a new frame */
+function frameInsertRow(frame: Frame) {
+  return {
+    id: frame.id,
+    canvasId: frame.canvasId,
+    pageId: frame.pageId ?? null,
+    name: frame.name,
+    x: frame.x,
+    y: frame.y,
+    width: frame.width,
+    height: frame.height,
+    html: frame.html,
+    createdAt: frame.createdAt,
+    updatedAt: frame.updatedAt,
+    updatedBy: frame.updatedBy,
+    demo: frame.demo ?? null,
+    hidden: frame.hidden ?? null,
+    locked: frame.locked ?? null,
+    lockEpoch: frame.lockEpoch ?? null,
+    lockAttestationId: frame.lockAttestationId ?? null,
+    z: frame.z ?? null,
+    rotation: frame.rotation ?? null,
+  }
+}
+
 /** Persist a duplicated page as one unit: the canvas's new page list and
  * every copied frame land together or not at all, so a copy is never half
  * there after a crash. Like saveCanvasCopy, success means durable. */
@@ -554,29 +579,7 @@ export async function savePageCopy(c: Canvas, frames: Frame[], beforeCommit?: ()
   await db.transaction(async (tx) => {
     await tx.update(t.canvases).set(canvasColumns(c)).where(eq(t.canvases.id, c.id))
     if (!frames.length) return beforeCommit?.()
-    await tx.insert(t.frames).values(
-      frames.map((frame) => ({
-        id: frame.id,
-        canvasId: frame.canvasId,
-        pageId: frame.pageId ?? null,
-        name: frame.name,
-        x: frame.x,
-        y: frame.y,
-        width: frame.width,
-        height: frame.height,
-        html: frame.html,
-        createdAt: frame.createdAt,
-        updatedAt: frame.updatedAt,
-        updatedBy: frame.updatedBy,
-        demo: frame.demo ?? null,
-        hidden: frame.hidden ?? null,
-        locked: frame.locked ?? null,
-        lockEpoch: frame.lockEpoch ?? null,
-        lockAttestationId: frame.lockAttestationId ?? null,
-        z: frame.z ?? null,
-        rotation: frame.rotation ?? null,
-      })),
-    )
+    await tx.insert(t.frames).values(frames.map(frameInsertRow))
     const refs = frames.flatMap((frame) =>
       [...extractAssetIds(frame.html)].map((assetId) => ({ assetId, frameId: frame.id })),
     )
@@ -584,6 +587,66 @@ export async function savePageCopy(c: Canvas, frames: Frame[], beforeCommit?: ()
     /* the last word before the rows become durable: a throw here rolls the whole copy back */
     beforeCommit?.()
   })
+}
+
+/** One landing receipt (a `ledger_landings` row). */
+export type LandingReceipt = typeof t.ledgerLandings.$inferSelect
+
+/** Persist a landing as one unit (CHE-9448 A5): the copied frames (as given, `locked` included), their asset
+ *  refs and the receipt commit together or not at all. The canvas row is touched only to move `updated_at`
+ *  forward (GREATEST), never rewritten, so a `saveCanvas` of other pages committed meanwhile keeps its pages.
+ *  Success means durable. Hooks are the failure-path seams: `afterFirstFrame` runs after the first frame
+ *  insert, `beforeCommit` after everything else; a throw from either rolls the whole landing back. */
+export async function saveLanding(
+  canvasId: string,
+  now: number,
+  frames: Frame[],
+  receipt: LandingReceipt,
+  hooks: { afterFirstFrame?: () => void | Promise<void>; beforeCommit?: () => void | Promise<void> } = {},
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    for (const [i, frame] of frames.entries()) {
+      await tx.insert(t.frames).values(frameInsertRow(frame))
+      if (i === 0) await hooks.afterFirstFrame?.()
+    }
+    const refs = frames.flatMap((frame) =>
+      [...extractAssetIds(frame.html)].map((assetId) => ({ assetId, frameId: frame.id })),
+    )
+    if (refs.length) await tx.insert(t.assetRefs).values(refs)
+    await tx.insert(t.ledgerLandings).values({ ...receipt, canvasId })
+    await tx
+      .update(t.canvases)
+      .set({ updatedAt: sql`GREATEST(${t.canvases.updatedAt}, ${now})` })
+      .where(eq(t.canvases.id, canvasId))
+    await hooks.beforeCommit?.()
+  })
+}
+
+export async function findLanding(
+  canvasId: string,
+  mergeSha: string,
+  lockPath: string,
+): Promise<LandingReceipt | undefined> {
+  const [row] = await db
+    .select()
+    .from(t.ledgerLandings)
+    .where(
+      and(
+        eq(t.ledgerLandings.canvasId, canvasId),
+        eq(t.ledgerLandings.mergeSha, mergeSha),
+        eq(t.ledgerLandings.lockPath, lockPath),
+      ),
+    )
+  return row
+}
+
+/** A canvas's receipts, newest first. */
+export function landingsFor(canvasId: string): Promise<LandingReceipt[]> {
+  return db
+    .select()
+    .from(t.ledgerLandings)
+    .where(eq(t.ledgerLandings.canvasId, canvasId))
+    .orderBy(desc(t.ledgerLandings.createdAt), desc(t.ledgerLandings.mergeSha))
 }
 
 /** Write the frame now and resolve once it is on disk, for a caller that
