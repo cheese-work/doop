@@ -34,6 +34,10 @@ export interface Frame {
   lockEpoch?: number
   /** The G3 attestation this frame was locked against; dropped on unlock. */
   lockAttestationId?: string
+  /** Who locked it, when (ms) and why (S1, CHE-9308). Set by the first lock, kept by a repeat, cleared by an unlock. */
+  lockedBy?: string
+  lockedAt?: number
+  lockReason?: string
   /** Stacking order on its page (back to front; see shared/frameStack.ts).
    *  Unset on frames made before stacking existed: they stack by createdAt. */
   z?: number

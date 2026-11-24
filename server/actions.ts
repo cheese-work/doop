@@ -304,6 +304,40 @@ function logActivity(canvasId: string, actor: Actor, message: string, frameId?: 
   broadcast(canvasId, { type: 'activity', item })
 }
 
+const refusalsNoted = new WeakSet<object>()
+
+/** One "edit refused" line for a write a lock turned away (S1, CHE-9308). Logged here, outside the write's own
+ *  savepoint: the throw undoes everything the write queued, so a line logged inside it would never be kept. */
+function noteRefusal(err: unknown, actor: Actor): void {
+  if (!(err instanceof FrameLockedError) || !err.canvasId || refusalsNoted.has(err)) return
+  refusalsNoted.add(err)
+  logActivity(
+    err.canvasId,
+    actor,
+    `edit refused on “${err.frameName}”: locked by ${err.lockedBy ?? 'unknown'}`,
+    err.frameId,
+  )
+}
+
+/** `write`, with a lock refusal noted in the activity feed and rethrown as it was (an async write too). */
+function logsRefusal<A extends unknown[], R>(write: (...args: A) => R, actorAt: number): (...args: A) => R {
+  return (...args) => {
+    const actor = args[actorAt] as Actor
+    try {
+      const out = write(...args)
+      if (out instanceof Promise)
+        return out.catch((err: unknown) => {
+          noteRefusal(err, actor)
+          throw err
+        }) as R
+      return out
+    } catch (err) {
+      noteRefusal(err, actor)
+      throw err
+    }
+  }
+}
+
 export function resolveActor(
   raw:
     | {
@@ -1921,7 +1955,7 @@ export type RestoredFrame = {
 /** Put a frame back to one of its recorded versions (HTML and size; the name
  *  and position stay). null = no such version on this frame. The state being
  *  replaced is filed as a version first, so a restore is itself reversible. */
-export const restoreFrameVersion = atomic(async function restoreFrameVersion(
+const restoreFrameVersionWrite = atomic(async function restoreFrameVersion(
   frameId: string,
   versionId: string,
   actor: Actor,
@@ -1952,6 +1986,7 @@ export const restoreFrameVersion = atomic(async function restoreFrameVersion(
   touch(frame.canvasId, actor, frame.id)
   return { frame, replaced }
 })
+export const restoreFrameVersion = logsRefusal(restoreFrameVersionWrite, 2)
 
 /* ------------------------------------------------------------------ */
 /* Live rendering of agent writes.                                     */
@@ -2530,7 +2565,7 @@ function healFromMain(canvas: Canvas, frame: Frame, ids: ReadonlySet<string>) {
   if (next) broadcast(canvas.id, { type: 'frame:updated', frame: next, actor })
 }
 
-export const appendFrameHtml = atomic(function appendFrameHtml(
+const appendFrameHtmlWrite = atomic(function appendFrameHtml(
   frameId: string,
   chunk: string,
   actor: Actor,
@@ -2605,6 +2640,7 @@ export const appendFrameHtml = atomic(function appendFrameHtml(
   touch(frame.canvasId, actor, frameId)
   return frame
 })
+export const appendFrameHtml = logsRefusal(appendFrameHtmlWrite, 2)
 
 /* ------------------------------------------------------------------ */
 /* Idempotent frame HTML writes: at most once per (frame, idempotency key),
@@ -2929,6 +2965,8 @@ export const createFrame = atomic(function createFrame(
     demo?: boolean
     hidden?: boolean
     locked?: boolean
+    /** why it is locked (S1); kept only when `locked` is true */
+    lockReason?: string
     z?: number
     rotation?: number
   },
@@ -2965,10 +3003,24 @@ export const createFrame = atomic(function createFrame(
  *  always opens a history burst, even when the new document keeps most of
  *  the old one's wrapper — only the reveal-or-morph choice stays similarity
  *  based. Without it a write is judged by how much it changed. */
-export const updateFrame = atomic(function updateFrame(
+const updateFrameWrite = atomic(function updateFrame(
   frameId: string,
   patch: Partial<
-    Pick<Frame, 'name' | 'pageId' | 'x' | 'y' | 'width' | 'height' | 'html' | 'hidden' | 'locked' | 'z' | 'rotation'>
+    Pick<
+      Frame,
+      | 'name'
+      | 'pageId'
+      | 'x'
+      | 'y'
+      | 'width'
+      | 'height'
+      | 'html'
+      | 'hidden'
+      | 'locked'
+      | 'lockReason'
+      | 'z'
+      | 'rotation'
+    >
   >,
   actor: Actor,
   opts: {
@@ -3045,6 +3097,7 @@ export const updateFrame = atomic(function updateFrame(
   touch(frame.canvasId, actor, frame.id)
   return frame
 })
+export const updateFrame = logsRefusal(updateFrameWrite, 2)
 
 /** Several frames' places in the stack at once (the Layers panel renumbering
  *  a page, or undoing that): every frame is checked before any is written,
@@ -3144,7 +3197,13 @@ export async function lockFrameIfVersionDurable(
   const { frameId, attestedUpdatedAt, attestationId } = entry
   let res: Awaited<ReturnType<typeof store.lockIfVersionDurable>>
   try {
-    res = await store.lockIfVersionDurable(writeContextFor(actor), frameId, attestedUpdatedAt, attestationId)
+    res = await store.lockIfVersionDurable(
+      writeContextFor(actor),
+      frameId,
+      attestedUpdatedAt,
+      attestationId,
+      actor.name,
+    )
   } catch (err) {
     if (err instanceof PolicyRefused) return { frameId, ok: false, error: 'policy_refused' }
     throw err

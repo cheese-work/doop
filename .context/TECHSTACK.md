@@ -708,7 +708,14 @@ data-doop-webfonts>` for the roster families the frame names and does not load i
   `lockAttestationId` (columns `lock_epoch`, `lock_attestation_id`, migration 0070). Copies of a frame
   (duplicate canvas / page) start unlocked. A canvas holding a locked frame cannot be deleted, and `set_pages`
   cannot drop a page holding one; only `erasureContext()` (account deletion) bypasses that. `FrameLockedError`
-  extends `PolicyRefused`; REST answers 423 `{ error, code: 'policy_refused' }`, MCP an error naming the frame.
+  extends `PolicyRefused` (its message keeps the `policy_refused:` text); REST answers 423
+  `{ error, code: 'frame_locked', lockedBy, lockedAt, reason }`, MCP an error naming the frame. Lock metadata (S1, CHE-9308):
+  a lock (`PATCH /api/frames/:id { locked: true, reason? }` with `reason` trimmed, at most 500 characters, else 400; create
+  with `locked`; MCP `update_frame` with `reason`; `lock_frame_if_version`) sets `lockedBy` (the actor), `lockedAt` and
+  `lockReason` (`locked_by`, `locked_at`, `lock_reason`, migration 0068); a repeat lock on a locked frame changes nothing, so
+  the first values stay; an unlock clears all three and stays `{ locked: false }` alone; a copy starts empty. A refused
+  write on a locked frame logs one "edit refused" activity with the actor (`logsRefusal` in `server/actions.ts`, outside the
+  write's savepoint, which a throw would undo). S1 never touches `lock_epoch`, `lock_attestation_id` or pins.
   MCP `lock_frame_if_version` (`actions.lockFrameIfVersion`, `lockFramesForPublish`) is a compare-and-set on the
   attested `updatedAt`: a frame that changed is not locked (`version_changed`); locking does not move
   `updatedAt`; a retry with the same attestation id at the current version answers `already`, another

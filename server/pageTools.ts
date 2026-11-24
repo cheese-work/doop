@@ -23,7 +23,7 @@ import type { Actor, Canvas, CanvasPageInfo, Frame } from '../shared/types.ts'
 export type PageToolResult<T> = { ok: true; value: T } | { ok: false; error: string }
 
 export type FrameMetaPatch = Partial<
-  Pick<Frame, 'name' | 'pageId' | 'x' | 'y' | 'width' | 'height' | 'locked' | 'rotation'>
+  Pick<Frame, 'name' | 'pageId' | 'x' | 'y' | 'width' | 'height' | 'locked' | 'lockReason' | 'rotation'>
 >
 
 const MAX_PAGE_ID = 100

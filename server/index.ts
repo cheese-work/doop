@@ -63,7 +63,15 @@ import { eq, inArray } from 'drizzle-orm'
 import { toNodeHandler, fromNodeHeaders } from 'better-auth/node'
 import { oAuthDiscoveryMetadata } from 'better-auth/plugins'
 import { WebSocketServer, WebSocket } from 'ws'
-import { FrameDeletedError, FrameStaleError, GuideLimitError, NoOpenPageError, PageLimitError, store } from './store.ts'
+import {
+  FrameDeletedError,
+  FrameLockedError,
+  FrameStaleError,
+  GuideLimitError,
+  NoOpenPageError,
+  PageLimitError,
+  store,
+} from './store.ts'
 import { parseGuide } from '../shared/guides.ts'
 import { getImage } from './previews.ts'
 import { LayerNotFoundError, layerRefFromQuery, layerSelector } from './layerExport.ts'
@@ -2399,7 +2407,9 @@ app.post('/api/canvases/:id/pages/:pageId/duplicate', async (req, res) => {
 
 app.post('/api/canvases/:id/frames', (req, res) => {
   if (!requireCanvas(req, res, req.params.id, 'edit')) return
-  const { name, pageId, x, y, width, height, html, hidden, locked, z, rotation } = req.body ?? {}
+  const { name, pageId, x, y, width, height, html, hidden, locked, reason, z, rotation } = req.body ?? {}
+  const lockReason = lockReasonOf(reason)
+  if (lockReason === false) return res.status(400).json({ error: LOCK_REASON_ERROR })
   if (pageId !== undefined && !store.getCanvas(req.params.id)?.pages?.some((p) => p.id === pageId))
     return res.status(400).json({ error: 'page not found' })
   const actor = userActor(req)
@@ -2417,6 +2427,7 @@ app.post('/api/canvases/:id/frames', (req, res) => {
         html,
         hidden: hidden === true,
         locked: locked === true,
+        lockReason: locked === true ? lockReason : undefined,
         z: Number.isFinite(z) ? z : undefined,
         rotation: normalizeRotation(rotation),
       },
@@ -2428,6 +2439,15 @@ app.post('/api/canvases/:id/frames', (req, res) => {
     frameWriteFailed(res, e)
   }
 })
+
+const LOCK_REASON_ERROR = 'reason must be a string of at most 500 characters'
+
+/** The lock reason a request carries: trimmed text, undefined when absent or blank, false when not a string or too long. */
+function lockReasonOf(reason: unknown): string | undefined | false {
+  if (reason === undefined || reason === null) return undefined
+  if (typeof reason !== 'string' || reason.length > 500) return false
+  return reason.trim() || undefined
+}
 
 /** Answer a failed frame write: the refusal it maps to, else 500. Express 4 does not route an async
  *  handler's rejection, so a rethrown error would leave the request hanging. */
@@ -2449,7 +2469,18 @@ function frameWriteRefused(res: express.Response, e: unknown): boolean {
     res.status(409).json({ error: e.message, code: e.code })
     return true
   }
-  /* a locked frame (FrameLockedError is one) or any other store policy refusal */
+  /* a locked frame (S1): who locked it, when and why ride along; the `error` text is the same as ever */
+  if (e instanceof FrameLockedError) {
+    res.status(423).json({
+      error: e.message,
+      code: e.code,
+      lockedBy: e.lockedBy,
+      lockedAt: e.lockedAt,
+      reason: e.lockReason,
+    })
+    return true
+  }
+  /* any other store policy refusal */
   if (e instanceof PolicyRefused) {
     res.status(423).json({ error: e.message, code: e.code })
     return true
@@ -2566,6 +2597,12 @@ app.patch('/api/frames/:id', async (req, res) => {
   /* the eye in the Layers panel: anything but a literal true shows the frame */
   if (patch.hidden !== undefined) clean.hidden = patch.hidden === true
   if (patch.locked !== undefined) clean.locked = !!patch.locked
+  /* why it is locked: read on a lock only. An unlock stays `{ locked: false }` alone, so the reason adds no key to it */
+  if (clean.locked === true && patch.reason !== undefined) {
+    const lockReason = lockReasonOf(patch.reason)
+    if (lockReason === false) return res.status(400).json({ error: LOCK_REASON_ERROR })
+    if (lockReason !== undefined) clean.lockReason = lockReason
+  }
   /* the stacking order the Layers panel sets */
   if (patch.z !== undefined) {
     if (!Number.isFinite(patch.z)) return res.status(400).json({ error: 'z must be a finite number' })

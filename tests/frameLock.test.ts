@@ -29,7 +29,7 @@ it('locks and unlocks a frame through the frame update API', async () => {
   /* CHE-6626: a lock is real. Every write is refused, the owner's own included (423 Locked), nothing changes */
   const moved = await owner.patch(`/api/frames/${frame.id}`, { x: 40, name: 'Hero v2' })
   expect(moved.status).toBe(423)
-  expect(((await moved.json()) as { code: string }).code).toBe('policy_refused')
+  expect(((await moved.json()) as { code: string }).code).toBe('frame_locked')
   const after: Canvas = await (await owner.get(`/api/canvases/${canvas.id}`)).json()
   expect(after.frames.find((f) => f.id === frame.id)).toMatchObject({ name: 'Hero', locked: true })
 

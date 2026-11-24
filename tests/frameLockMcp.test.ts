@@ -248,3 +248,79 @@ describe('expected_updated_at over MCP', () => {
     }
   })
 })
+
+describe('lock metadata over MCP (S1)', () => {
+  beforeEach(() => {
+    frame.locked = false
+  })
+
+  it('update_frame locked:true records who, when and why', async () => {
+    const { client, close } = await connect()
+    try {
+      const before = Date.now()
+      const out = await call(client, 'update_frame', { frame_id: 'f1', locked: true, reason: 'ready for dev' })
+      expect(out.isError).toBe(false)
+      expect(store.getFrame('f1')).toMatchObject({ locked: true, lockedBy: 'Claude', lockReason: 'ready for dev' })
+      expect(store.getFrame('f1')!.lockedAt).toBeGreaterThanOrEqual(before)
+    } finally {
+      await close()
+    }
+  })
+
+  it('a second lock keeps the first locked_by, locked_at and reason', async () => {
+    const { client, close } = await connect()
+    try {
+      await call(client, 'update_frame', { frame_id: 'f1', locked: true, reason: 'ready for dev' })
+      const first = { ...store.getFrame('f1')! }
+      const again = await client.callTool({
+        name: 'update_frame',
+        arguments: { agent_name: 'Other', frame_id: 'f1', locked: true, reason: 'later' },
+      })
+      expect(again.isError).toBeFalsy()
+      expect(store.getFrame('f1')).toMatchObject({
+        lockedBy: 'Claude',
+        lockedAt: first.lockedAt,
+        lockReason: 'ready for dev',
+      })
+    } finally {
+      await close()
+    }
+  })
+
+  it('lock_frame_if_version sets the same fields, and a retry keeps the first', async () => {
+    const { client, close } = await connect()
+    try {
+      const args = {
+        frame_id: 'f1',
+        attested_updated_at: new Date(frame.updatedAt).toISOString(),
+        attestation_id: 'a1',
+      }
+      const out = await call(client, 'lock_frame_if_version', args)
+      expect(out.isError).toBe(false)
+      const first = { ...store.getFrame('f1')! }
+      expect(first).toMatchObject({ locked: true, lockedBy: 'Claude', lockAttestationId: 'a1' })
+      expect(first.lockedAt).toBeGreaterThan(0)
+      const retry = await client.callTool({
+        name: 'lock_frame_if_version',
+        arguments: { agent_name: 'Other', ...args },
+      })
+      expect(retry.isError).toBeFalsy()
+      expect(store.getFrame('f1')).toMatchObject({ lockedBy: 'Claude', lockedAt: first.lockedAt })
+    } finally {
+      await close()
+    }
+  })
+
+  it('a refused write on a locked frame still names the frame and says it is locked', async () => {
+    const { client, close } = await connect()
+    try {
+      await call(client, 'update_frame', { frame_id: 'f1', locked: true, reason: 'ready for dev' })
+      const out = await call(client, 'update_frame', { frame_id: 'f1', name: 'Renamed' })
+      expect(out.isError).toBe(true)
+      expect(out.text).toMatch(/Hero/)
+      expect(out.text).toMatch(/locked/)
+    } finally {
+      await close()
+    }
+  })
+})
