@@ -1,7 +1,15 @@
 import { normalizeRotation } from '../shared/frameRotation.ts'
 import * as actions from './actions.ts'
 import { MAX_PAGES, PageLimitError } from './store.ts'
-import { canvasPages, framePageId, MAX_PAGE_NAME, pageFrames, samePages } from '../shared/pages.ts'
+import {
+  canvasPages,
+  dropsLedger,
+  framePageId,
+  LEDGER_KEPT,
+  MAX_PAGE_NAME,
+  pageFrames,
+  samePages,
+} from '../shared/pages.ts'
 import { conflicts, freeSpot, visibleBox, FRAME_GAP } from './frameLayout.ts'
 import type { Actor, Canvas, CanvasPageInfo, Frame } from '../shared/types.ts'
 
@@ -75,6 +83,7 @@ export function savePages(
   if (!samePages(expected, canvasPages(canvas)))
     return { ok: false, error: `Pages changed. The pages are now: ${pageListText(canvas)}. Retry with that list.` }
   if (new Set(pages.map((p) => p.id)).size !== pages.length) return { ok: false, error: 'Page IDs must be unique' }
+  if (dropsLedger(canvasPages(canvas), pages)) return { ok: false, error: LEDGER_KEPT }
   const stranded = canvas.frames.find((f) => !pages.some((p) => p.id === framePageId(canvas, f)))
   if (stranded)
     return {

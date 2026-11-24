@@ -18,11 +18,28 @@ export const MAX_PAGE_NAME = 100
 export const ARCHIVE_PAGE_ID = 'archive'
 export const ARCHIVE_PAGE_NAME = 'Archive'
 
-/** `pages` with the Archive page (when present) moved to the end. */
-export function archiveLast(pages: CanvasPageInfo[]): CanvasPageInfo[] {
-  const archive = pages.filter((page) => page.id === ARCHIVE_PAGE_ID)
-  return archive.length ? [...pages.filter((page) => page.id !== ARCHIVE_PAGE_ID), ...archive] : pages
+/** The one page order (CHE-9398 L2): the ledger first, then open pages in saved order, then Finished
+ *  pages, then Archive last. Stable inside each group; whatever order a save sends. */
+export function pageOrder(pages: CanvasPageInfo[]): CanvasPageInfo[] {
+  const rank = (page: CanvasPageInfo) => (page.id === ARCHIVE_PAGE_ID ? 3 : page.ledger ? 0 : page.finished ? 2 : 1)
+  return pages
+    .map((page, at) => ({ page, at }))
+    .sort((a, b) => rank(a.page) - rank(b.page) || a.at - b.at)
+    .map(({ page }) => page)
 }
+
+/** `pages` with the Archive page (when present) moved to the end, and the rest in `pageOrder`. */
+export function archiveLast(pages: CanvasPageInfo[]): CanvasPageInfo[] {
+  return pageOrder(pages)
+}
+
+/** Whether a page list saved over `current` leaves out its ledger page (a refusal: the ledger is kept). */
+export function dropsLedger(current: CanvasPageInfo[], next: { id: string }[]): boolean {
+  const ledger = current.find((page) => page.ledger)
+  return !!ledger && !next.some((page) => page.id === ledger.id)
+}
+
+export const LEDGER_KEPT = 'The ledger page cannot be removed. Mark another page as the ledger first.'
 
 /** Where a write that names no page lands: the first page that is not the ledger, Finished or Archive.
  *  Display order never decides it (CHE-9398 L1). Undefined when every page is one of those. */

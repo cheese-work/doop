@@ -2,7 +2,7 @@ import { nanoid } from 'nanoid'
 import {
   ARCHIVE_PAGE_ID,
   ARCHIVE_PAGE_NAME,
-  archiveLast,
+  pageOrder,
   canvasPages,
   copyPageName,
   defaultWritePageId,
@@ -607,8 +607,9 @@ class Store {
       .map((guide) => ({ ...guide, id: nanoid(10), pageId: page.id }))
     /* the copy's guides count against the canvas like any other */
     if ((canvas.guides?.length ?? 0) + guides.length > MAX_GUIDES) throw new GuideLimitError()
-    const next = [...pages]
-    next.splice(pages.indexOf(source) + 1, 0, page)
+    const spliced = [...pages]
+    spliced.splice(pages.indexOf(source) + 1, 0, page)
+    const next = pageOrder(spliced)
     /* the copy is async: judge again at the commit, not only at the start. The check runs inside the
        database transaction, before it commits, so a refusal rolls the copy back and nothing becomes durable. */
     await persist.savePageCopy(
@@ -625,8 +626,9 @@ class Store {
     const live = canvasPages(canvas)
     if (names(live).includes(page.name)) page.name = copyPageName(source.name, names(live))
     const at = live.findIndex((candidate) => candidate.id === pageId)
-    canvas.pages = [...live]
-    canvas.pages.splice(at === -1 ? live.length : at + 1, 0, page)
+    const placed = [...live]
+    placed.splice(at === -1 ? live.length : at + 1, 0, page)
+    canvas.pages = pageOrder(placed)
     canvas.frames.push(...frames)
     canvas.frames.sort(byStack)
     for (const frame of frames) this.frameIndex.set(frame.id, canvasId)
@@ -654,32 +656,33 @@ class Store {
     requireBoundary('store.setPages')
     assertWritable(ctx, 'set_pages', { canvas, nextPages: pages })
     this.remember(canvas, ['pages', 'guides', 'updatedAt'])
-    const firstId = canvasPages(canvas)[0]!.id
-    for (const frame of canvas.frames) {
-      if (!frame.pageId) {
-        frame.pageId = firstId
-        recordUndo(() => {
-          if (frame.pageId === firstId) delete frame.pageId
-        })
-        this.saveFrameLater(frame, true)
-      }
-    }
+    this.fillFramePageIds(canvas)
     /* a page-list save renames, reorders, adds or deletes pages — it never
        moves a flow start or recolours a page, which only setFlowStart and
-       setPageBackground change */
+       setPageBackground change; the ledger and Finished flags stay with the page the same way */
     const current = canvasPages(canvas)
     const merged = pages.map(
-      ({ startFrameId: _start, background: _background, issueId: _issue, issueSource: _source, ...page }) => {
+      ({
+        startFrameId: _start,
+        background: _background,
+        issueId: _issue,
+        issueSource: _source,
+        ledger: _ledger,
+        finished: _finished,
+        ...page
+      }) => {
         const kept = current.find((p) => p.id === page.id)
         return {
           ...page,
+          ...(kept?.ledger ? { ledger: true as const } : {}),
+          ...(kept?.finished ? { finished: kept.finished } : {}),
           ...(kept?.startFrameId ? { startFrameId: kept.startFrameId } : {}),
           ...(kept?.background ? { background: kept.background } : {}),
           ...(kept?.issueId ? { issueId: kept.issueId, issueSource: kept.issueSource } : {}),
         }
       },
     )
-    const ordered = archiveLast(merged)
+    const ordered = pageOrder(merged)
     /* a removed page is kept in the trash, with its (deleted) frames still pointing at it */
     const now = Date.now()
     const removed = current.filter((page) => !ordered.some((p) => p.id === page.id))
@@ -735,6 +738,45 @@ class Store {
     canvas.updatedAt = Date.now()
     this.saveCanvasLater(canvas)
     return canvas.pages
+  }
+
+  /** A frame with no page id is on the first page; name it before the order can move that page. */
+  private fillFramePageIds(canvas: Canvas) {
+    const firstId = canvasPages(canvas)[0]!.id
+    for (const frame of canvas.frames) {
+      if (frame.pageId) continue
+      frame.pageId = firstId
+      recordUndo(() => {
+        if (frame.pageId === firstId) delete frame.pageId
+      })
+      this.saveFrameLater(frame, true)
+    }
+  }
+
+  /** Mark a page as the ledger (clearing it everywhere else) or clear the mark, then put the pages in
+   *  `pageOrder`: one write. Archive and Finished pages cannot be the ledger. A repeat writes nothing
+   *  (`changed: false`). Server-owned like `issueId`: no page-list save, copy or restore sets it. */
+  setLedger(canvasId: string, pageId: string, on: boolean): LedgerResult {
+    const canvas = this.canvases.get(canvasId)
+    const page = canvas && canvasPages(canvas).find((p) => p.id === pageId)
+    if (!canvas || !page) return { ok: false, code: 'not_found' }
+    const pages = canvasPages(canvas)
+    if (on && pageId === ARCHIVE_PAGE_ID) return { ok: false, code: 'archive_page' }
+    if (on && page.finished) return { ok: false, code: 'page_finished' }
+    const current = pages.filter((p) => p.ledger).map((p) => p.id)
+    if (on ? current.length === 1 && current[0] === pageId : !page.ledger) return { ok: true, pages, changed: false }
+    requireBoundary('store.setLedger')
+    this.remember(canvas, ['pages', 'updatedAt'])
+    this.fillFramePageIds(canvas)
+    canvas.pages = pageOrder(
+      pages.map((p) => {
+        const { ledger: _ledger, ...rest } = p
+        return on && p.id === pageId ? { ...rest, ledger: true as const } : rest
+      }),
+    )
+    canvas.updatedAt = Date.now()
+    this.saveCanvasLater(canvas)
+    return { ok: true, pages: canvas.pages, changed: true }
   }
 
   /** Set (a `#rrggbb`) or clear (null) a page's own canvas colour. */
@@ -1650,7 +1692,9 @@ class Store {
       ? { ...deleted.page, name: copyPageName(deleted.page.name, names(pages)) }
       : deleted.page
     entry.pages = entry.pages.filter((d) => d !== deleted)
-    c.pages = archiveLast([...pages, page])
+    /* the flags are the page's own state, set by their routes: a restored page comes back open */
+    const { ledger: _ledger, finished: _finished, ...restoredPage } = page
+    c.pages = pageOrder([...pages, restoredPage])
     const keptPages = [...entry.pages]
     afterCommit(() => persist.saveDeletedPages(canvasId, keptPages), `trashpages:${canvasId}`)
     this.saveCanvasLater(c)
@@ -1658,7 +1702,7 @@ class Store {
       .filter((f) => f.pageId === pageId)
       .map((f) => this.restoreFrame(f.id))
       .filter((f): f is Frame => !!f)
-    return { pages: c.pages, page, frames }
+    return { pages: c.pages, page: restoredPage, frames }
   }
 
   /** Move frames to the Archive page (made last on first use) and hide them. */
@@ -1675,12 +1719,16 @@ class Store {
     const pages = canvasPages(c)
     if (!pages.some((p) => p.id === ARCHIVE_PAGE_ID)) {
       if (pages.length >= MAX_PAGES) throw new PageLimitError()
-      c.pages = archiveLast([...pages, { id: ARCHIVE_PAGE_ID, name: ARCHIVE_PAGE_NAME }])
+      c.pages = pageOrder([...pages, { id: ARCHIVE_PAGE_ID, name: ARCHIVE_PAGE_NAME }])
       this.saveCanvasLater(c)
     }
     for (const frame of frames) this.updateFrame(ctx, frame.id, { pageId: ARCHIVE_PAGE_ID, hidden: true }, by)
     return { pages: c.pages!, frames }
   }
 }
+
+export type LedgerResult =
+  | { ok: true; pages: CanvasPageInfo[]; changed: boolean }
+  | { ok: false; code: 'not_found' | 'archive_page' | 'page_finished' }
 
 export const store = new Store()
