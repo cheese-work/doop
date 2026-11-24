@@ -320,9 +320,12 @@ function noteRefusal(err: unknown, actor: Actor): void {
 }
 
 /** `write`, with a lock refusal noted in the activity feed and rethrown as it was (an async write too). */
-function logsRefusal<A extends unknown[], R>(write: (...args: A) => R, actorAt: number): (...args: A) => R {
+function logsRefusal<A extends unknown[], R>(
+  write: (...args: A) => R,
+  actorAt: number | ((args: A) => Actor),
+): (...args: A) => R {
   return (...args) => {
-    const actor = args[actorAt] as Actor
+    const actor = typeof actorAt === 'number' ? (args[actorAt] as Actor) : actorAt(args)
     try {
       const out = write(...args)
       if (out instanceof Promise)
@@ -3103,7 +3106,7 @@ export const updateFrame = logsRefusal(updateFrameWrite, 2)
  *  a page, or undoing that): every frame is checked before any is written,
  *  so the order changes whole or not at all. Undefined when a frame is
  *  gone or on another canvas. Not a design edit: no activity line. */
-export const restackFrames = atomic(function restackFrames(
+const restackFramesWrite = atomic(function restackFrames(
   canvasId: string,
   writes: StackWrite[],
   actor: Actor,
@@ -3114,11 +3117,12 @@ export const restackFrames = atomic(function restackFrames(
   touch(canvasId, actor, frames[0]?.id)
   return frames
 })
+export const restackFrames = logsRefusal(restackFramesWrite, 2)
 
 /** Sign-off is a human action, separate from ordinary frame editing. An agent may set it
  *  for the person it works for: the approval stays theirs (`approvedBy`), with the agent
  *  recorded as `approvedVia` and as the actor of the broadcast and activity line. */
-export const setFrameApproval = atomic(function setFrameApproval(
+const setFrameApprovalWrite = atomic(function setFrameApproval(
   frameId: string,
   ready: boolean,
   user: { id: string; name: string },
@@ -3150,6 +3154,10 @@ export const setFrameApproval = atomic(function setFrameApproval(
   )
   return frame
 })
+export const setFrameApproval = logsRefusal(
+  setFrameApprovalWrite,
+  ([, , user, agent]) => agent ?? resolveActor({ name: user.name, kind: 'user' }),
+)
 
 /** An agent's approval request, shared by the MCP tool and the resident agent. */
 export function agentSetFrameApproval(
@@ -3257,7 +3265,7 @@ export function isCanvasStreaming(canvasId: string): boolean {
   return false
 }
 
-export const deleteFrame = atomic(function deleteFrame(frameId: string, actor: Actor): Frame | undefined {
+const deleteFrameWrite = atomic(function deleteFrame(frameId: string, actor: Actor): Frame | undefined {
   /* close any live stream or playback while the frame still exists,
      so their auto “Designing…” tasks end with it */
   finishStream(frameId, false)
@@ -3273,6 +3281,7 @@ export const deleteFrame = atomic(function deleteFrame(frameId: string, actor: A
   touch(frame.canvasId, actor, null)
   return frame
 })
+export const deleteFrame = logsRefusal(deleteFrameWrite, 1)
 
 /** Bring a deleted frame back with its version history; peers get the frame. Its canvas is
  *  loaded first: a trashed frame's html is read from the database like a live one's. */
@@ -3308,7 +3317,7 @@ const restoreLoadedPage = atomic(function restoreLoadedPage(canvasId: string, pa
 })
 
 /** Move frames to the Archive page and hide them in one step. */
-export function archiveFrames(canvasId: string, frameIds: string[], actor: Actor) {
+function archiveFramesWrite(canvasId: string, frameIds: string[], actor: Actor) {
   const archived = store.archiveFrames(writeContextFor(actor), canvasId, frameIds, actor.name)
   if (!archived) return undefined
   broadcast(canvasId, { type: 'canvas:pages', pages: archived.pages, actor })
@@ -3317,6 +3326,7 @@ export function archiveFrames(canvasId: string, frameIds: string[], actor: Actor
   touch(canvasId, actor, null)
   return { moved: archived.frames.map((f) => f.id), pages: archived.pages }
 }
+export const archiveFrames = logsRefusal(archiveFramesWrite, 2)
 
 /** Remove a canvas with everything attached to it; viewers are told to leave. */
 export const deleteCanvas = atomic(function deleteCanvas(canvasId: string, actor: Actor): boolean {

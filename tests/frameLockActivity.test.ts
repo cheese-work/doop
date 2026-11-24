@@ -131,6 +131,28 @@ describe('frame lock metadata (S1)', () => {
     expect(store.getFrame(frame.id)).toEqual(before)
   })
 
+  it('logs one "edit refused" line for a refused delete, restack, archive and approval', () => {
+    const frame = lockedFrame()
+    const before = { ...store.getFrame(frame.id)! }
+    const refusals = () => actions.getActivity(canvasId).filter((a) => a.message.startsWith('edit refused'))
+    const writes: [string, () => unknown][] = [
+      ['delete', () => actions.deleteFrame(frame.id, agent)],
+      ['restack', () => actions.restackFrames(canvasId, [{ id: frame.id, z: 5 }], agent)],
+      ['archive', () => actions.archiveFrames(canvasId, [frame.id], agent)],
+      ['approval', () => actions.setFrameApproval(frame.id, true, { id: 'u1', name: 'kevin' }, agent)],
+    ]
+    writes.forEach(([label, write], i) => {
+      expect(write, label).toThrow(/locked/)
+      expect(refusals(), label).toHaveLength(i + 1)
+      expect(refusals()[0], label).toMatchObject({
+        message: 'edit refused on “Hero”: locked by kevin',
+        actorName: 'Claude',
+        frameId: frame.id,
+      })
+    })
+    expect(store.getFrame(frame.id)).toEqual(before)
+  })
+
   it('logs no "edit refused" line for a write that is not refused', () => {
     const frame = actions.createFrame(canvasId, { name: 'Free' }, user)!
     actions.updateFrame(frame.id, { name: 'Free 2' }, agent)
