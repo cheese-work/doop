@@ -1553,7 +1553,7 @@ export function buildMcpServer(
     {
       title: 'Set canvas pages',
       description:
-        'Rename, reorder or delete canvas pages by sending the complete ordered page list back (read get_canvas first; keep the ids it returned). To add a page, call create_canvas_page instead. A page containing frames cannot be deleted: move its frames with update_frame first.',
+        'Rename, reorder or delete canvas pages by sending the complete ordered page list back (read get_canvas first; keep the ids it returned). To add a page, call create_canvas_page instead. A page containing frames cannot be deleted: move its frames with update_frame first. The ledger page cannot be dropped, and it always stays first (Finished after the open pages, Archive last).',
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
       inputSchema: {
         canvas_id: z.string(),

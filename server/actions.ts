@@ -2836,6 +2836,22 @@ export function setPageBackground(canvasId: string, pageId: string, background: 
   return pages
 }
 
+/** A member marks a page as the ledger (or clears it); peers get the page list. A repeat is a no-op:
+ *  nothing is broadcast or logged. */
+export const setPageLedger = atomic(function setPageLedger(
+  canvasId: string,
+  pageId: string,
+  ledger: boolean,
+  actor: Actor,
+) {
+  const done = store.setLedger(canvasId, pageId, ledger)
+  if (!done.ok || !done.changed) return done
+  broadcast(canvasId, { type: 'canvas:pages', pages: done.pages, actor })
+  const name = done.pages.find((p) => p.id === pageId)?.name ?? pageId
+  logActivity(canvasId, actor, ledger ? `marked “${name}” as the ledger` : 'cleared the ledger')
+  return done
+})
+
 /** A member binds a page to a Multica issue (or unbinds it); peers get the page list. */
 export function setPageIssue(canvasId: string, pageId: string, issueId: string | null, actor: Actor) {
   const pages = store.setPageIssue(canvasId, pageId, issueId, 'member')

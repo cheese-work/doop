@@ -127,6 +127,15 @@ it('restores a deleted frame on the first remaining page when its original page 
   expect(useStore.getState().canvas!.frames[0]).toMatchObject({ id: 'restored', pageId: 'first' })
 })
 
+it('undo sends no page when no page can take the frame, so the server answers no_open_page', async () => {
+  deleteFrameTracked(frame)
+  useStore.getState().removeFrame(frame.id)
+  useStore.getState().setPages([{ id: 'archive', name: 'Archive' }])
+  await undo()
+  expect(api.createFrame).toHaveBeenCalledTimes(1)
+  expect(api.createFrame.mock.calls[0]![1]).not.toHaveProperty('pageId')
+})
+
 it('ignores frame-move replies after navigating away and stops moving the remaining frames', async () => {
   let resolve!: (value: Frame) => void
   api.updateFrame.mockReturnValue(

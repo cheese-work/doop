@@ -502,8 +502,12 @@ async function recreate(e: { frameId: string; snapshot: Snapshot }) {
   const canvas = useStore.getState().canvas
   if (!canvas || canvas.id !== canvasId) throw new Error('Canvas changed')
   const pages = canvasPages(canvas)
-  /* none: leave the id as it was and let the server answer 409 no_open_page */
-  if (!rest.pageId || !pages.some((p) => p.id === rest.pageId)) rest.pageId = recoveryPageId(canvas) ?? rest.pageId
+  /* none: send no page at all, so the server answers 409 no_open_page, not 400 for an id it never had */
+  if (rest.pageId && !pages.some((p) => p.id === rest.pageId)) {
+    const recovered = recoveryPageId(canvas)
+    if (recovered) rest.pageId = recovered
+    else delete rest.pageId
+  }
   const f = await api.createFrame(canvasId, rest)
   useStore.getState().upsertFrame(f)
   remapId(e.frameId, f.id)

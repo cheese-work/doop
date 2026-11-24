@@ -44,7 +44,7 @@ import { PRO_UPLOAD_BYTES } from '../shared/billing.ts'
 import { listPageRuns, multicaCommentsSource, multicaRunsSource } from './multicaRuns.ts'
 import { setReconSources, storedReconAssets } from './reconGuard.ts'
 import { isUuid } from '../shared/pageIssue.ts'
-import { canvasPages, framePageId, samePages } from '../shared/pages.ts'
+import { canvasPages, dropsLedger, framePageId, LEDGER_KEPT, samePages } from '../shared/pages.ts'
 import { normalizePageBackground } from '../shared/pageBackground.ts'
 import { MAX_STACK_WRITES, type StackWrite } from '../shared/frameStack.ts'
 import { normalizeRotation } from '../shared/frameRotation.ts'
@@ -2245,6 +2245,7 @@ app.put('/api/canvases/:id/pages', (req, res) => {
     return res
       .status(409)
       .json({ error: 'Pages changed since you opened them. Please try again.', pages: canvasPages(canvas) })
+  if (dropsLedger(canvasPages(canvas), pages)) return res.status(400).json({ error: LEDGER_KEPT, code: 'ledger_kept' })
   const firstId = canvas.pages?.[0]?.id ?? `${canvas.id}:page1`
   if (canvas.frames.some((f) => !pages.some((p) => p.id === (f.pageId ?? firstId)))) {
     return res.status(400).json({ error: 'Move the frames to another page before deleting this page.' })
@@ -2316,6 +2317,21 @@ app.put('/api/canvases/:id/pages/:pageId/issue', (req, res) => {
     return res.status(404).json({ error: 'page not found' })
   const actor = actions.resolveActor({ name: req.user!.name, kind: 'user' })
   res.json(actions.setPageIssue(canvas.id, req.params.pageId, issueId, actor))
+})
+
+/* The ledger page (CHE-9398 L2): at most one per canvas, always first. Members only, like the issue link. */
+app.put('/api/canvases/:id/pages/:pageId/ledger', (req, res) => {
+  const canvas = requireCanvas(req, res, req.params.id, 'edit')
+  if (!canvas) return
+  const ledger: unknown = req.body?.ledger
+  if (typeof ledger !== 'boolean') return res.status(400).json({ error: 'ledger must be true or false' })
+  const actor = actions.resolveActor({ name: req.user!.name, kind: 'user' })
+  const done = actions.setPageLedger(canvas.id, req.params.pageId, ledger, actor)
+  if (done.ok) return res.json({ pages: done.pages })
+  if (done.code === 'not_found') return res.status(404).json({ error: 'page not found', code: done.code })
+  const error =
+    done.code === 'archive_page' ? 'The Archive page cannot be the ledger.' : 'A Finished page cannot be the ledger.'
+  res.status(400).json({ error, code: done.code })
 })
 
 /* The Multica runs of a page: its bound issue's runs plus the DM's chat runs. */

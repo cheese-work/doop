@@ -183,8 +183,15 @@ describe('a write with no page lands on the first open page', () => {
 
 describe('flow start with no page named', () => {
   it('clearing it targets the first open page, and is refused when there is none', () => {
-    const canvas = seed([ledger(), open('open1'), archive()])
+    const canvas = seed([
+      { ...ledger(), startFrameId: 'led-start' },
+      { ...open('open1'), startFrameId: 'open-start' },
+      archive(),
+    ])
     expect(setPrototypeStart(canvas, undefined, null, actor)).toMatchObject({ ok: true })
+    const pages = store.getCanvas(canvas.id)!.pages!
+    expect(pages.find((p) => p.id === 'open1')?.startFrameId).toBeUndefined()
+    expect(pages.find((p) => p.id === 'ledger')?.startFrameId).toBe('led-start')
     const closed = seed(structuredClone(CLOSED['Finished + Archive']!))
     expect(setPrototypeStart(closed, undefined, null, actor)).toEqual({
       ok: false,
