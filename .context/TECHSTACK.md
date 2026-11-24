@@ -733,7 +733,21 @@ data-doop-webfonts>` for the roster families the frame names and does not load i
   `setFlowStart`, `archiveFrames`. REST answers 409 `{ code: 'page_finished' }`, MCP the text, design sync skips the frame
   (`finished: true`). `restorePageSnapshot` refuses a Finished target before reading or filing anything, counts itself
   in per page (`beginRestore` / `endRestore`, `restoring`) until it returns or throws, and skips a frame sitting on
-  another Finished page (`reason: 'page_finished'`). Tests: `finishedPageGuard.test.ts`.
+  another Finished page (`reason: 'page_finished'`). System writers respect it too (CHE-9467, L4, `isFrameFinished`): after the lock check, a token value edit skips an
+  unlocked Finished frame and a token rename that would change one refuses the whole edit (`PageFinishedError`);
+  component propagation, element-id stamping (the comment falls back to the frame), stamp backfill (rows stay legacy)
+  and heal-from-main leave a Finished frame alone. Tests: `finishedPageGuard.test.ts`, `finishedSystemWriters.test.ts`.
+  Setting the state (CHE-9468, L5): `PUT /api/canvases/:id/pages/:pageId/finished { finished, expectedName }` (edit role) and
+  MCP `set_page_finished` call `actions.setPageFinished` / `store.setPageFinished`, which runs
+  `assertWritable(ctx, 'set_page_state', …)` (agent binding applies). `true` sets `{ at, by }` (a repeat writes, logs and
+  broadcasts nothing); `false` clears it and moves the page to the end of the open pages, then in the same tick broadcasts
+  `canvas:pages`, logs "moved to Finished" / "restored from Finished" and runs the catch-up: every unlocked, non-streaming
+  frame gets its token block rewritten (annotation, `withCanvasFaces`) and one propagation pass is queued; locked and streaming
+  frames are left alone and listed in the reply's `skipped` (`reason: 'locked' | 'streaming'`). Refusals: stale `expectedName`
+  409 `page_changed` (with `pages`), a snapshot restore running on the page 409 `page_busy` (nothing written), the Ledger page
+  400 `ledger_page`, the Archive 400 `archive_page`, unknown page 404, view role 403. A page-list save (REST and
+  `set_canvas_pages`, MCP and resident) that renames or drops a Finished page is refused 400 `page_finished`; a plain
+  `{ id, name }` save keeps the flags. Tests: `pageFinished.test.ts` (including the restore-race cases FP-01 and FP-03).
 - Frame write keys (`frame_write_keys`, migration 0045; `actions.writeFrameHtmlOnce`): MCP `set_frame_html` /
   `edit_frame_html` / `append_frame_html` and REST `PATCH /api/frames/:id` (html only) and
   `POST /api/frames/:id/append` take `idempotency_key` and an optional `version_name`. The key row,
@@ -961,6 +975,12 @@ data-doop-webfonts>` for the roster families the frame names and does not load i
   re-anchors the root and its replies together and broadcasts each; a drop on the same anchor
   sends nothing, Esc mid-drag puts the pin back. Tests: `commentMove.test.ts`,
   `canvasCommentsRoute.test.ts`, `elementIds.test.ts`, the drag case in `drawingGeometryBrowser.test.ts`.
+- Comment resolve reasons (CHE-9308 S4, `parseResolveBody` in `shared/comments.ts`): `POST /api/comments/:id/resolve`
+  takes `{ reason: 'addressed' | 'wont_fix' | 'moved', ref?, note? }`: `addressed` needs a `ref` (free text until page
+  versions), `wont_fix` a one-line `note`, `moved` a `ref` (Multica issue key), else 400. A body-less call resolves with
+  no reason (MCP `resolve_comment` unchanged). Stored in `comments.resolution`, `resolution_ref`, `resolution_note`
+  (migration 0068) on the comment resolved, not its replies; the first resolution stands. The row upsert writes all
+  three, so a future unresolve that clears `resolvedAt` clears them too. Tests: `commentResolveReason.test.ts`.
 - Components (`.context/specs/components.md`): a main is an element marked `data-doop-component`; an
   instance is full markup marked `data-doop-instance`, so frame consumers need no changes. Every
   frame write passes `prepareFrameHtml` (`server/components.ts`): `<doop-use>` expands, a changed main

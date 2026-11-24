@@ -1,4 +1,4 @@
-import type { ElementComment } from './types.ts'
+import type { CommentResolution, ElementComment } from './types.ts'
 
 /** A comment pinned to a point on the canvas rather than to an element. */
 export type CanvasComment = ElementComment & { frameId?: undefined; pageId: string; x: number; y: number }
@@ -94,4 +94,46 @@ export function elementCommentPosition(
   )
     return { x: comment.x, y: comment.y }
   return { x: origin.x, y: origin.y }
+}
+
+/** The longest ref and note a resolution keeps. */
+export const MAX_RESOLUTION_REF = 200
+export const MAX_RESOLUTION_NOTE = 280
+
+/** What a resolve call records besides who and when. */
+export interface CommentResolutionInput {
+  resolution: CommentResolution
+  resolutionRef?: string
+  resolutionNote?: string
+}
+
+/**
+ * Read the body of `POST /api/comments/:id/resolve` (CHE-9308 S4). No body, or
+ * an empty one, resolves without a reason (`value` undefined, as MCP
+ * `resolve_comment` does). `addressed` needs a `ref`, `wont_fix` a one-line
+ * `note`, `moved` a `ref` (a Multica issue key); anything else is an error.
+ */
+export function parseResolveBody(
+  body: unknown,
+): { ok: true; value?: CommentResolutionInput } | { ok: false; error: string } {
+  if (body === undefined || body === null) return { ok: true }
+  if (typeof body !== 'object' || Array.isArray(body)) return { ok: false, error: 'body must be an object' }
+  const { reason, ref, note, ...rest } = body as Record<string, unknown>
+  if (Object.keys(rest).length) return { ok: false, error: `unknown field ${Object.keys(rest)[0]}` }
+  if (reason === undefined && ref === undefined && note === undefined) return { ok: true }
+  if (reason !== 'addressed' && reason !== 'wont_fix' && reason !== 'moved')
+    return { ok: false, error: "reason must be 'addressed', 'wont_fix' or 'moved'" }
+  const text = (v: unknown, max: number, what: string): string | { error: string } => {
+    if (typeof v !== 'string' || !v.trim()) return { error: `${what} is required for ${reason}` }
+    const t = v.trim()
+    if (t.length > max) return { error: `${what} is over ${max} characters` }
+    if (/[\r\n]/.test(t)) return { error: `${what} must be one line` }
+    return t
+  }
+  if (reason === 'wont_fix') {
+    const n = text(note, MAX_RESOLUTION_NOTE, 'note')
+    return typeof n === 'string' ? { ok: true, value: { resolution: reason, resolutionNote: n } } : { ok: false, ...n }
+  }
+  const r = text(ref, MAX_RESOLUTION_REF, 'ref')
+  return typeof r === 'string' ? { ok: true, value: { resolution: reason, resolutionRef: r } } : { ok: false, ...r }
 }

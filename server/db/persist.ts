@@ -545,6 +545,171 @@ export function saveProposal(canvasId: string, p: MemoryProposal) {
   )
 }
 
+/* ------------------------------------------------------------------ */
+/* Frame fence (CHE-9399 step 1)                                      */
+/* ------------------------------------------------------------------ */
+
+/* A purge must not race a frame write on its way to the database. `fenceFrame` raises a fence on one
+   frame: every top-level frame writer checks it ONCE, on entry, before its first await. A fenced write
+   waits for `fence.outcome`: `kept` runs it as it would have run, `purged` drops it. A write admitted
+   before the fence (or called with a transaction: it inherits its caller's admission) finishes whole,
+   and `settleFrameWrites` waits for it. Nothing in this block deletes a row. */
+
+export type FrameFenceOutcome = 'kept' | 'purged'
+
+export interface FrameFence {
+  readonly frameId: string
+  /** settles `kept` on `release()`, `purged` on `forgetFrame` */
+  readonly outcome: Promise<FrameFenceOutcome>
+  release(): void
+}
+
+/** a keyed frame write refused because its frame was purged while it waited */
+export class FramePurgedError extends Error {
+  constructor(readonly frameId: string) {
+    super(`frame ${frameId} was purged`)
+    this.name = 'FramePurgedError'
+  }
+}
+
+/** `settleFrameWrites` gave up; nothing has been deleted */
+export class SettleTimeout extends Error {
+  constructor(
+    readonly frameId: string,
+    readonly timeoutMs: number,
+  ) {
+    super(`frame ${frameId} still has writes in flight after ${timeoutMs} ms`)
+    this.name = 'SettleTimeout'
+  }
+}
+
+const SETTLE_TIMEOUT_MS = 30_000
+
+type OpenFence = FrameFence & { settle: (outcome: FrameFenceOutcome) => void }
+const fences = new Map<string, OpenFence>()
+/** frames a purge has finished with; for the life of the process a later writer for one drops */
+const purgedFrames = new Set<string>()
+/** admitted top-level frame writes, per frame, until each settles; a held write is not here */
+const frameWritesInFlight = new Map<string, Set<Promise<unknown>>>()
+/** comment writes per frame: read-only, no fence and no hold, so a comment write is never delayed or dropped */
+const commentWritesByFrame = new Map<string, number>()
+const commentWritePromises = new Map<string, Set<Promise<unknown>>>()
+
+export function fenceFrame(frameId: string): FrameFence {
+  const open = fences.get(frameId)
+  if (open) return open
+  let settle!: (outcome: FrameFenceOutcome) => void
+  const outcome = new Promise<FrameFenceOutcome>((resolve) => (settle = resolve))
+  const fence: OpenFence = {
+    frameId,
+    outcome,
+    settle,
+    release() {
+      if (fences.get(frameId) === fence) fences.delete(frameId)
+      settle('kept')
+    },
+  }
+  fences.set(frameId, fence)
+  return fence
+}
+
+/** the fence a writer must wait for, if one is up; a purged frame answers `purged` at once */
+function fenceGate(frameId: string): Promise<FrameFenceOutcome> | undefined {
+  if (purgedFrames.has(frameId)) return Promise.resolve('purged')
+  return fences.get(frameId)?.outcome
+}
+
+function track(registry: Map<string, Set<Promise<unknown>>>, frameId: string, write: Promise<unknown>) {
+  const set = registry.get(frameId) ?? new Set<Promise<unknown>>()
+  registry.set(frameId, set)
+  set.add(write)
+  const done = () => {
+    set.delete(write)
+    if (set.size === 0 && registry.get(frameId) === set) registry.delete(frameId)
+  }
+  write.then(done, done)
+}
+
+/** Admission for a top-level frame writer: runs `write` now when no fence is up (registered until it
+ *  settles), else waits for the fence. Resolves `undefined` when the write was dropped. */
+function admit<T>(frameId: string, write: () => Promise<T>): Promise<T | undefined> {
+  const gate = fenceGate(frameId)
+  if (!gate) {
+    const running = write()
+    track(frameWritesInFlight, frameId, running)
+    return running
+  }
+  return gate.then((outcome) => (outcome === 'kept' ? admit(frameId, write) : undefined))
+}
+
+/** Wait until every write admitted for the frame has settled: its registry, its version queue and its
+ *  comment writes. A debounce still pending is cleared (it stays dirty, so the idle sweep writes it if
+ *  the fence is kept). Rejects with `SettleTimeout` when they do not end in time. */
+export async function settleFrameWrites(
+  frameId: string,
+  { timeoutMs = SETTLE_TIMEOUT_MS }: { timeoutMs?: number } = {},
+): Promise<void> {
+  const timer = frameTimers.get(frameId)
+  if (timer) clearTimeout(timer)
+  frameTimers.delete(frameId)
+  const waits = [
+    ...(frameWritesInFlight.get(frameId) ?? []),
+    ...(commentWritePromises.get(frameId) ?? []),
+    ...(versionWrites.has(frameId) ? [versionWrites.get(frameId)!.queued] : []),
+  ]
+  let timeout: NodeJS.Timeout | undefined
+  const expired = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => reject(new SettleTimeout(frameId, timeoutMs)), timeoutMs)
+  })
+  try {
+    await Promise.race([Promise.allSettled(waits), expired])
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+/** Called only by the purge's finalizer: held writers drop, a later writer for the frame drops, and
+ *  nothing is left for the idle sweep or `retryFrameWrite` to write again. */
+export function forgetFrame(frameId: string): void {
+  purgedFrames.add(frameId)
+  const timer = frameTimers.get(frameId)
+  if (timer) clearTimeout(timer)
+  frameTimers.delete(frameId)
+  dirtyFrames.delete(frameId)
+  writesInFlight.delete(frameId)
+  versionWrites.delete(frameId)
+  const open = fences.get(frameId)
+  fences.delete(frameId)
+  open?.settle('purged')
+}
+
+/** how many writes for comments anchored on this frame are on their way to the database */
+export function commentWritesPending(frameId: string): number {
+  return commentWritesByFrame.get(frameId) ?? 0
+}
+
+function trackCommentWrite(frameId: string | null | undefined, write: Promise<unknown>) {
+  if (!frameId) return
+  commentWritesByFrame.set(frameId, (commentWritesByFrame.get(frameId) ?? 0) + 1)
+  track(commentWritePromises, frameId, write)
+  const done = () => {
+    const left = (commentWritesByFrame.get(frameId) ?? 1) - 1
+    if (left > 0) commentWritesByFrame.set(frameId, left)
+    else commentWritesByFrame.delete(frameId)
+  }
+  write.then(done, done)
+}
+
+/** what persist still holds for one frame (a read-only view for tests and the purge's final check) */
+export function frameWriteState(frameId: string) {
+  return {
+    dirty: dirtyFrames.has(frameId),
+    timer: frameTimers.has(frameId),
+    inFlight: writesInFlight.has(frameId),
+    versions: versionWrites.has(frameId),
+  }
+}
+
 /* Streaming appends update a frame's html on every chunk — debounce per frame
    so the DB sees one row write per burst, not one per keystroke of the reveal. */
 const frameTimers = new Map<string, NodeJS.Timeout>()
@@ -610,27 +775,37 @@ function markDirty(frameId: string) {
 }
 
 export async function saveFrameNow(f: Frame): Promise<void> {
+  if (purgedFrames.has(f.id)) return
   markDirty(f.id)
   const existing = frameTimers.get(f.id)
   if (existing) clearTimeout(existing)
   frameTimers.delete(f.id)
-  await writeFrame(f)
+  await admit(f.id, () => writeFrame(f))
 }
 
 export function saveFrame(f: Frame, immediate = false) {
+  if (purgedFrames.has(f.id)) return
   markDirty(f.id)
   const existing = frameTimers.get(f.id)
   if (existing) clearTimeout(existing)
   if (immediate) {
     frameTimers.delete(f.id)
-    swallow(writeFrame(f))
+    swallow(admit(f.id, () => writeFrame(f)))
+    return
+  }
+  /* entered while fenced: no timer (settle would clear it and nothing would reschedule). The save waits
+   * on the fence: `kept` schedules it as a normal debounce, `purged` drops it. The frame stays dirty
+   * meanwhile, so it is not evicted. Repeated calls collapse into one timer when they resume. */
+  const gate = fenceGate(f.id)
+  if (gate) {
+    swallow(gate.then((outcome) => (outcome === 'kept' ? saveFrame(f) : undefined)))
     return
   }
   frameTimers.set(
     f.id,
     setTimeout(() => {
       frameTimers.delete(f.id)
-      swallow(writeFrame(f)) // f is mutated in place by the store, so the ref holds the latest state
+      swallow(admit(f.id, () => writeFrame(f))) // f is mutated in place by the store, so the ref holds the latest state
     }, FRAME_DEBOUNCE_MS),
   )
 }
@@ -712,13 +887,18 @@ export function frameWritePending(frameId: string): boolean {
  *  write failed. The idle sweep calls this for the frames that keep their
  *  canvas from being dropped. */
 export function retryFrameWrite(f: Frame) {
+  const gate = fenceGate(f.id)
+  if (gate) {
+    swallow(gate.then((outcome) => (outcome === 'kept' ? retryFrameWrite(f) : undefined)))
+    return
+  }
   if (dirtyFrames.has(f.id) && !frameTimers.has(f.id) && !writesInFlight.has(f.id)) saveFrame(f)
 }
 
 /** Move a frame to another page without touching its html, for a frame
  *  whose canvas is not loaded (store.init's repair of an orphaned frame). */
 export function saveFramePage(frameId: string, pageId: string) {
-  swallow(writeFramePage(frameId, pageId))
+  swallow(admit(frameId, () => writeFramePage(frameId, pageId)))
 }
 
 async function writeFramePage(frameId: string, pageId: string) {
@@ -727,7 +907,7 @@ async function writeFramePage(frameId: string, pageId: string) {
 
 /** A frame moved into or out of the trash, without its html (which may not be loaded). */
 export function saveFrameTrash(f: Frame) {
-  swallow(writeFrameTrash(f))
+  swallow(admit(f.id, () => writeFrameTrash(f)))
 }
 
 async function writeFrameTrash(f: Frame) {
@@ -793,6 +973,11 @@ function queueVersionWrite(frameId: string, canvasId: string, work: () => Promis
 }
 
 export function saveFrameVersion(version: FrameVersion) {
+  const gate = fenceGate(version.frameId)
+  if (gate) {
+    swallow(gate.then((outcome) => outcome === 'kept' && saveFrameVersion(version)))
+    return
+  }
   queueVersionWrite(version.frameId, version.canvasId, () => appendFrameVersion(version))
 }
 
@@ -877,11 +1062,19 @@ export async function commitKeyedFrameWrite(
     result: FrameWriteKeyRow['result']
   },
 ): Promise<FrameWriteKeyRow | undefined> {
+  const gate = fenceGate(frame.id)
+  if (gate) {
+    return gate.then((outcome) => {
+      if (outcome === 'purged') throw new FramePurgedError(frame.id)
+      return commitKeyedFrameWrite(frame, write)
+    })
+  }
   /* any pending debounced write holds the very state committed below */
   const timer = frameTimers.get(frame.id)
   if (timer) clearTimeout(timer)
   frameTimers.delete(frame.id)
-  return db.transaction(async (tx) => {
+  /* admitted: the whole transaction is registered, and its nested writeFrame(frame, tx) never checks the fence */
+  const committed = db.transaction(async (tx) => {
     const [claimed] = await tx
       .insert(t.frameWriteKeys)
       .values({
@@ -920,6 +1113,8 @@ export async function commitKeyedFrameWrite(
     })
     return undefined
   })
+  track(frameWritesInFlight, frame.id, committed)
+  return committed
 }
 
 /* Named page snapshots. Unlike version writes these are awaited by the caller:
@@ -1322,6 +1517,11 @@ function commentFromRow(
     ...(failureReason !== undefined ? { failureReason } : {}),
     ...(row.resolvedBy != null ? { resolvedBy: row.resolvedBy } : {}),
     ...(row.resolvedAt != null ? { resolvedAt: row.resolvedAt } : {}),
+    ...(row.resolution === 'addressed' || row.resolution === 'wont_fix' || row.resolution === 'moved'
+      ? { resolution: row.resolution }
+      : {}),
+    ...(row.resolutionRef != null ? { resolutionRef: row.resolutionRef } : {}),
+    ...(row.resolutionNote != null ? { resolutionNote: row.resolutionNote } : {}),
     ...(row.parentId != null ? { parentId: row.parentId } : {}),
     ...(row.clientRequestId != null ? { clientRequestId: row.clientRequestId } : {}),
   }
@@ -1352,6 +1552,9 @@ function commentRow(c: ElementComment) {
     failureReason: c.failureReason ?? null,
     resolvedBy: c.resolvedBy ?? null,
     resolvedAt: c.resolvedAt ?? null,
+    resolution: c.resolution ?? null,
+    resolutionRef: c.resolutionRef ?? null,
+    resolutionNote: c.resolutionNote ?? null,
     parentId: c.parentId ?? null,
     clientRequestId: c.clientRequestId ?? null,
   }
@@ -1375,6 +1578,7 @@ const commentWrites = new Map<string, Promise<void>>()
 function writeComment(c: ElementComment): Promise<void> {
   const row = commentRow(c)
   const write = (commentWrites.get(c.id) ?? Promise.resolve()).then(() => upsertComment(row))
+  trackCommentWrite(row.frameId, write)
   const tail = write.catch(() => {})
   commentWrites.set(c.id, tail)
   void tail.then(() => commentWrites.get(c.id) === tail && commentWrites.delete(c.id))
@@ -1405,6 +1609,10 @@ async function upsertComment(row: ReturnType<typeof commentRow>): Promise<void> 
         failureReason: row.failureReason,
         resolvedBy: row.resolvedBy,
         resolvedAt: row.resolvedAt,
+        /* an unresolve clears all three with the resolved stamp */
+        resolution: row.resolution,
+        resolutionRef: row.resolutionRef,
+        resolutionNote: row.resolutionNote,
       },
     })
 }
@@ -1427,10 +1635,13 @@ export class ClientRequestConflictError extends Error {
  *  key and text repeat, and throws ClientRequestConflictError when the text
  *  differs. Two concurrent callers queue on the index entry, so one inserts
  *  and the other reads the committed row. */
-export async function saveNewComment(
-  c: ElementComment,
-  actorKind: ActorKind = 'user',
-): Promise<ElementComment | undefined> {
+export function saveNewComment(c: ElementComment, actorKind: ActorKind = 'user'): Promise<ElementComment | undefined> {
+  const write = insertNewComment(c, actorKind)
+  trackCommentWrite(c.frameId, write)
+  return write
+}
+
+async function insertNewComment(c: ElementComment, actorKind: ActorKind): Promise<ElementComment | undefined> {
   return db.transaction(async (tx) => {
     if (c.clientRequestId !== undefined && c.parentId !== undefined) {
       const inserted = await tx

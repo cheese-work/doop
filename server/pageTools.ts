@@ -3,7 +3,9 @@ import * as actions from './actions.ts'
 import { MAX_PAGES, PageLimitError } from './store.ts'
 import {
   canvasPages,
+  changesFinished,
   dropsLedger,
+  finishedKept,
   framePageId,
   LEDGER_KEPT,
   MAX_PAGE_NAME,
@@ -84,6 +86,8 @@ export function savePages(
     return { ok: false, error: `Pages changed. The pages are now: ${pageListText(canvas)}. Retry with that list.` }
   if (new Set(pages.map((p) => p.id)).size !== pages.length) return { ok: false, error: 'Page IDs must be unique' }
   if (dropsLedger(canvasPages(canvas), pages)) return { ok: false, error: LEDGER_KEPT }
+  const finished = changesFinished(canvasPages(canvas), pages)
+  if (finished) return { ok: false, error: `page_finished: ${finishedKept(finished)}` }
   const stranded = canvas.frames.find((f) => !pages.some((p) => p.id === framePageId(canvas, f)))
   if (stranded)
     return {

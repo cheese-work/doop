@@ -1642,6 +1642,49 @@ export function buildMcpServer(
   )
 
   server.registerTool(
+    'set_page_finished',
+    {
+      title: 'Move a page to Finished, or restore it',
+      description:
+        "Move a page to Finished (finished true) or restore it (finished false). A Finished page is frozen: no frame on it is made, changed, moved or deleted until it is restored, it sits behind the open pages and is never the default page to write to. Pass expected_name, the page's name as you last read it: a page renamed since answers page_changed with the current pages. The ledger and Archive pages cannot be Finished, and a page a snapshot restore is writing answers page_busy (retry once it is done). Restoring puts the page at the end of the open pages and brings its frames up to date with the tokens and components changed meanwhile; `skipped` lists the frames it left alone (locked, or with an open stream).",
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: {
+        canvas_id: z.string(),
+        page_id: z.string().describe('Page ID from get_canvas'),
+        finished: z.boolean().describe('true moves the page to Finished, false restores it'),
+        expected_name: z.string().describe("The page's name as get_canvas lists it"),
+        agent_name: agentName,
+      },
+    },
+    async ({ canvas_id, page_id, finished, expected_name, agent_name }) => {
+      const canvas = canvasFor(canvas_id, 'edit')
+      if (!canvas) return noCanvas(canvas_id)
+      const actor = actorFrom(agent_name)
+      let done
+      try {
+        done = actions.setPageFinished(canvas_id, page_id, finished, expected_name, actor)
+      } catch (e) {
+        return refusalOf(e)
+      }
+      if (done.ok) return withFeedback(text({ ok: true, pages: done.pages, skipped: done.skipped }), canvas_id, actor)
+      switch (done.code) {
+        case 'not_found':
+          return err(`no page ${page_id} on canvas ${canvas_id}`)
+        case 'page_changed':
+          return err(
+            `page_changed: the pages are now ${done.pages.map((p) => `${p.id} ("${p.name}")`).join(', ')}. Retry with the current name.`,
+          )
+        case 'page_busy':
+          return err('page_busy: a snapshot restore is writing this page. Retry once it is done.')
+        case 'ledger_page':
+          return err('ledger_page: the ledger page cannot be Finished.')
+        case 'archive_page':
+          return err('archive_page: the Archive page cannot be Finished.')
+      }
+    },
+  )
+
+  server.registerTool(
     'get_prototype',
     {
       title: 'Read a canvas prototype',

@@ -628,12 +628,20 @@ export interface ElementComment {
   failureReason?: string
   resolvedBy?: string
   resolvedAt?: number
+  /** how the thread was closed (CHE-9308 S4); absent on a body-less resolve */
+  resolution?: CommentResolution
+  /** `addressed`: what addressed it (free text until page versions); `moved`: the Multica issue key */
+  resolutionRef?: string
+  /** `wont_fix`: why, in one line */
+  resolutionNote?: string
   /** set on a reply: the root comment of its thread. Replies inherit the
    *  root's anchor and are listed under its pin instead of getting their own */
   parentId?: string
   /** set on a reply the caller keyed: one reply per (thread, key), so a retry cannot post it twice */
   clientRequestId?: string
 }
+
+export type CommentResolution = 'addressed' | 'wont_fix' | 'moved'
 
 export interface ActivityItem {
   id: string

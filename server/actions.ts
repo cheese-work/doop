@@ -37,7 +37,13 @@ import { canvasPages, defaultWritePageId, framePageId, pageFrames } from '../sha
 import { conflicts, defaultSpot, freeSpot, visibleBox } from './frameLayout.ts'
 import { normalizeRotation } from '../shared/frameRotation.ts'
 import { SnapshotError, capturePage, compareFrames, sameState, signature, stateOf } from './pageSnapshots.ts'
-import { FRAME_COMMENT_SELECTOR, isCanvasComment, trimComments, type CommentAnchorInput } from '../shared/comments.ts'
+import {
+  FRAME_COMMENT_SELECTOR,
+  isCanvasComment,
+  trimComments,
+  type CommentAnchorInput,
+  type CommentResolutionInput,
+} from '../shared/comments.ts'
 import { isElementId } from '../shared/elementId.ts'
 import { parseRunnerPick, runnerKey, type RunnerPick } from '../shared/agentRunner.ts'
 import { hasElementId, stampElementId } from './elementIds.ts'
@@ -66,7 +72,7 @@ import {
 } from '../shared/designTokens.ts'
 import { emitCanvasEvent } from './events.ts'
 import { PolicyRefused, systemContext, writeContextFor } from './writePolicy.ts'
-import { PageFinishedError, beginRestore, endRestore } from './pageState.ts'
+import { PageFinishedError, beginRestore, endRestore, isFrameFinished, refuseFinishedFrame } from './pageState.ts'
 import type {
   Actor,
   Canvas,
@@ -881,6 +887,9 @@ export async function ensureElementId(
   if (!stamped) return undefined
   /* a lock freezes the HTML, stamps included: the comment falls back to the frame */
   if (frame.locked && stamped.html !== frame.html) return undefined
+  /* a Finished page is frozen the same way (CHE-9398 L4): the comment falls back to the frame */
+  const canvas = store.getCanvas(frame.canvasId)
+  if (canvas && isFrameFinished(canvas, frame) && stamped.html !== frame.html) return undefined
   if (stamped.html === frame.html) {
     if (!(await stampSaved(frameId, stamped.id))) return undefined
     /* the frame may have been deleted while the write was awaited */
@@ -1001,6 +1010,9 @@ export async function backfillElementIds(
     const current = await store.loadFrame(frameId)
     /* a locked frame cannot take stamps: its rows stay legacy until it is unlocked */
     if (!current || current.locked) continue
+    /* a Finished page stays as it is: its rows stay legacy until Restore (CHE-9398 L4) */
+    const finishedOn = store.getCanvas(current.canvasId)
+    if (finishedOn && isFrameFinished(finishedOn, current)) continue
     let html = current.html
     for (const { comment, selector } of rows) {
       try {
@@ -1429,13 +1441,18 @@ export function handBackComment(commentId: string, by: string): ElementComment |
 export const resolveComment = atomic(async function resolveComment(
   commentId: string,
   by: string,
+  reason?: CommentResolutionInput,
 ): Promise<ElementComment | undefined> {
   const found = await findComment(commentId)
   if (!found) return undefined
-  return withThreadLock(found.parentId ?? found.id, () => closeComment(commentId, by))
+  return withThreadLock(found.parentId ?? found.id, () => closeComment(commentId, by, reason))
 })
 
-async function closeComment(commentId: string, by: string): Promise<ElementComment | undefined> {
+async function closeComment(
+  commentId: string,
+  by: string,
+  reason?: CommentResolutionInput,
+): Promise<ElementComment | undefined> {
   const row = await findComment(commentId)
   if (!row) return undefined
   if (row.resolvedAt) return row
@@ -1450,6 +1467,8 @@ async function closeComment(commentId: string, by: string): Promise<ElementComme
     for (const item of closing) {
       edit(item).resolvedBy = by
       item.resolvedAt = Date.now()
+      /* the reason belongs to the comment that was resolved, not to the replies it closed with it */
+      if (reason && item.id === commentId) Object.assign(item, reason)
       stored.saveComment(item)
       broadcast(canvasId, { type: 'comment', comment: item })
       /* a resolved @agent comment was an instruction that got carried out —
@@ -2427,6 +2446,8 @@ function propagateIntoFrame(
   const canvas = store.getCanvas(canvasId)
   const frame = store.getFrame(frameId)
   if (!canvas || !frame || frame.canvasId !== canvasId) return {}
+  /* a Finished page is frozen: its frames catch up at Restore (CHE-9398 L4) */
+  if (isFrameFinished(canvas, frame)) return {}
   /* a one-shot reveal is only playback of what is already stored, so it updates like any frame */
   const followed = componentIds.filter((id) => !isDeleted(canvas.components?.find((def) => def.id === id)))
   if (streams.has(frame.id) || !followed.some((id) => referencesComponent(frame.html, id))) return {}
@@ -2564,6 +2585,8 @@ function healFromMain(canvas: Canvas, frame: Frame, ids: ReadonlySet<string>) {
   const { html, saved } = rederiveFromMains(canvas, frame.id, ids, actor.name)
   for (const def of saved) broadcastComponent(canvas.id, def, actor)
   if (html === frame.html) return
+  /* a Finished main keeps its markup as it is (CHE-9398 L4); the definition above is still healed */
+  if (isFrameFinished(canvas, frame)) return
   const next = store.updateFrame(systemContext(), frame.id, { html }, frame.updatedBy, { annotation: true })
   if (next) broadcast(canvas.id, { type: 'frame:updated', frame: next, actor })
 }
@@ -2890,6 +2913,62 @@ export const setPageLedger = atomic(function setPageLedger(
   logActivity(canvasId, actor, ledger ? `marked “${name}” as the ledger` : 'cleared the ledger')
   return done
 })
+
+/** A frame Restore left as it was, and why: locked (restore never unlocks) or an open append stream
+ *  (its token block comes with the stream's close). */
+export type CatchUpSkip = { frameId: string; reason: 'locked' | 'streaming' }
+
+/**
+ * Move a page to Finished or restore it (CHE-9398 L5). The flag, the page order, the `canvas:pages`
+ * broadcast and the activity line land in one synchronous tick. Restoring then catches the page up on
+ * what Finished pages missed (L4): each frame's token block is rewritten as an annotation, and the
+ * components its frames use are queued for one propagation pass. A locked frame or one with an open
+ * append stream is skipped and reported, so no catch-up write meets a lock. A repeat writes, logs
+ * and broadcasts nothing.
+ */
+export const setPageFinished = atomic(function setPageFinished(
+  canvasId: string,
+  pageId: string,
+  finished: boolean,
+  expectedName: string,
+  actor: Actor,
+  userId?: string,
+) {
+  const done = store.setPageFinished(
+    writeContextFor(actor, userId),
+    canvasId,
+    pageId,
+    finished,
+    expectedName,
+    actor.name,
+  )
+  if (!done.ok || !done.changed) return done.ok ? { ...done, skipped: [] as CatchUpSkip[] } : done
+  broadcast(canvasId, { type: 'canvas:pages', pages: done.pages, actor })
+  const name = done.pages.find((p) => p.id === pageId)?.name ?? pageId
+  logActivity(canvasId, actor, finished ? `“${name}” moved to Finished` : `“${name}” restored from Finished`)
+  return { ...done, skipped: finished ? [] : catchUpPage(canvasId, pageId, actor) }
+})
+
+/** What a Finished page missed, brought to the frames of the page just restored. */
+function catchUpPage(canvasId: string, pageId: string, actor: Actor): CatchUpSkip[] {
+  const canvas = store.getCanvas(canvasId)
+  if (!canvas) return []
+  const skipped: CatchUpSkip[] = []
+  const used = new Set<string>()
+  for (const frame of pageFrames(canvas, pageId)) {
+    if (frame.locked) skipped.push({ frameId: frame.id, reason: 'locked' })
+    else if (streams.has(frame.id)) skipped.push({ frameId: frame.id, reason: 'streaming' })
+    else {
+      const html = withCanvasFaces(canvasId, frame.html)
+      if (html !== frame.html) writeRestyledFrame(canvasId, frame, html, actor)
+    }
+    /* a skipped frame's components are still queued: propagation skips it by its own rules */
+    for (const def of canvas.components ?? []) if (referencesComponent(frame.html, def.id)) used.add(def.id)
+  }
+  const changed = (canvas.components ?? []).filter((def) => used.has(def.id) && !isDeleted(def))
+  if (changed.length) queuePropagation(canvasId, changed, actor)
+  return skipped
+}
 
 /** A member binds a page to a Multica issue (or unbinds it); peers get the page list. */
 export function setPageIssue(canvasId: string, pageId: string, issueId: string | null, actor: Actor) {
@@ -3581,28 +3660,40 @@ function restyleTokenFrames(canvasId: string, actor: Actor, renames: TokenRename
     }
     let html = frame.html
     for (const rename of renames) html = applyRename(html, rename)
+    const renamed = html
     html = withCanvasFaces(canvasId, html)
     if (html === frame.html) continue
+    /* the lock check stays first (F04): a locked frame refuses the whole edit on any page */
     if (frame.locked) throw new FrameLockedError(frame)
+    if (isFrameFinished(canvas, frame)) {
+      /* a Finished frame takes no value change (it catches up at Restore); a rename it
+         names would leave it on a token that no longer exists, so that refuses the whole edit */
+      if (renamed !== frame.html) refuseFinishedFrame(canvas, frame)
+      continue
+    }
     plan.push({ frame, html })
   }
   for (const frame of deferred)
     if (renames.length) setKey(pendingRenames, frame.id, [...(pendingRenames.get(frame.id) ?? []), ...renames])
   let changed = 0
-  for (const { frame, html } of plan) {
-    const prevHtml = frame.html
-    const updated = store.updateFrame(systemContext(), frame.id, { html }, actor.name, { annotation: true })
-    if (!updated) continue
-    afterCommit(() => thumbs.purge(frame.id))
-    const openReveal = reveals.get(frame.id)
-    if (openReveal) {
-      /* mid-playback: rewind to where the documents diverge, as a rewrite does */
-      edit(openReveal).shown = Math.min(openReveal.shown, sharedSpan(prevHtml, updated.html).prefix)
-      openReveal.deadline = Date.now() + revealDuration(updated.html.length - openReveal.shown)
-    } else broadcast(canvasId, { type: 'frame:updated', frame: updated, actor })
-    changed++
-  }
+  for (const { frame, html } of plan) if (writeRestyledFrame(canvasId, frame, html, actor)) changed++
   return changed
+}
+
+/** One frame's restyle write: an annotation (sign-off stands, no version), the thumbnail purged, the room
+ *  told (an open reveal is rewound to where the documents diverge instead). False when the frame is gone. */
+function writeRestyledFrame(canvasId: string, frame: Frame, html: string, actor: Actor): boolean {
+  const prevHtml = frame.html
+  const updated = store.updateFrame(systemContext(), frame.id, { html }, actor.name, { annotation: true })
+  if (!updated) return false
+  afterCommit(() => thumbs.purge(frame.id))
+  const openReveal = reveals.get(frame.id)
+  if (openReveal) {
+    /* mid-playback: rewind to where the documents diverge, as a rewrite does */
+    edit(openReveal).shown = Math.min(openReveal.shown, sharedSpan(prevHtml, updated.html).prefix)
+    openReveal.deadline = Date.now() + revealDuration(updated.html.length - openReveal.shown)
+  } else broadcast(canvasId, { type: 'frame:updated', frame: updated, actor })
+  return true
 }
 
 function renameTokenRefs(html: string, from: string, to: string): string {

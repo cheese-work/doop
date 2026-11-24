@@ -15,7 +15,7 @@ import { defaultSpot } from './frameLayout.ts'
 import * as persist from './db/persist.ts'
 import { exclusive, isPinned, pinHooks } from './pinState.ts'
 import { assertWritable, FrameLockedError, PolicyRefused, type WriteContext } from './writePolicy.ts'
-import { assertPagesOpen } from './pageState.ts'
+import { assertPagesOpen, restoring } from './pageState.ts'
 import type { LinkAccess } from '../shared/canvasRole.ts'
 import { MAX_GUIDES } from '../shared/guides.ts'
 import { remapFrameTargets } from '../shared/prototype.ts'
@@ -793,6 +793,45 @@ class Store {
         return on && p.id === pageId ? { ...rest, ledger: true as const } : rest
       }),
     )
+    canvas.updatedAt = Date.now()
+    this.saveCanvasLater(canvas)
+    return { ok: true, pages: canvas.pages, changed: true }
+  }
+
+  /** Move a page to Finished (`on`) or restore it (CHE-9398 L5). `expectedName` is the name the caller saw:
+   *  a page renamed since answers `page_changed`. The ledger and Archive cannot be finished, and a page a
+   *  snapshot restore is writing answers `page_busy` (finishing only). The page goes to the END of its new
+   *  group: behind the other Finished pages, or behind the open pages. A repeat writes nothing
+   *  (`changed: false`); the first `{at, by}` stands. Agent binding runs as `set_page_state`. */
+  setPageFinished(
+    ctx: WriteContext,
+    canvasId: string,
+    pageId: string,
+    on: boolean,
+    expectedName: string,
+    by: string,
+  ): PageFinishedResult {
+    const canvas = this.canvases.get(canvasId)
+    if (!canvas) return { ok: false, code: 'not_found' }
+    if (pageId === ARCHIVE_PAGE_ID) return { ok: false, code: 'archive_page' }
+    const pages = canvasPages(canvas)
+    const page = pages.find((p) => p.id === pageId)
+    if (!page) return { ok: false, code: 'not_found' }
+    if (page.name !== expectedName) return { ok: false, code: 'page_changed', pages }
+    if (page.ledger) return { ok: false, code: 'ledger_page' }
+    assertWritable(ctx, 'set_page_state', { canvas, pageIds: [pageId] })
+    if (on === !!page.finished) return { ok: true, pages, changed: false }
+    if (on && restoring(canvasId, pageId)) return { ok: false, code: 'page_busy' }
+    requireBoundary('store.setPageFinished')
+    this.remember(canvas, ['pages', 'updatedAt'])
+    this.fillFramePageIds(canvas)
+    const moved = pages.map((p) => {
+      if (p.id !== pageId) return p
+      const { finished: _finished, ...rest } = p
+      return on ? { ...rest, finished: { at: Date.now(), by } } : rest
+    })
+    const mine = moved.find((p) => p.id === pageId)!
+    canvas.pages = pageOrder([...moved.filter((p) => p.id !== pageId), mine])
     canvas.updatedAt = Date.now()
     this.saveCanvasLater(canvas)
     return { ok: true, pages: canvas.pages, changed: true }
@@ -1894,5 +1933,10 @@ class Store {
 export type LedgerResult =
   | { ok: true; pages: CanvasPageInfo[]; changed: boolean }
   | { ok: false; code: 'not_found' | 'archive_page' | 'page_finished' }
+
+export type PageFinishedResult =
+  | { ok: true; pages: CanvasPageInfo[]; changed: boolean }
+  | { ok: false; code: 'page_changed'; pages: CanvasPageInfo[] }
+  | { ok: false; code: 'not_found' | 'ledger_page' | 'archive_page' | 'page_busy' }
 
 export const store = new Store()

@@ -1,5 +1,5 @@
-import { canvasPages } from '../shared/pages.ts'
-import type { Canvas } from '../shared/types.ts'
+import { canvasPages, framePageId } from '../shared/pages.ts'
+import type { Canvas, Frame } from '../shared/types.ts'
 import { PolicyRefused } from './policyRefused.ts'
 
 /**
@@ -22,6 +22,24 @@ export function assertPagesOpen(canvas: Canvas, pageIds: readonly string[], op =
     const page = pages.find((candidate) => candidate.id === pageId)
     if (page?.finished) throw new PageFinishedError(op, page.name)
   }
+}
+
+/** The frame sits on a Finished page. System writers (token restyle, propagation, stamps, heal) skip it
+ *  or refuse before they reach the store; the store rule stays the backstop (CHE-9398 L4). */
+export function isFrameFinished(canvas: Canvas, frame: Frame): boolean {
+  const pageId = framePageId(canvas, frame)
+  return !!canvasPages(canvas).find((page) => page.id === pageId)?.finished
+}
+
+/** The page a Finished frame sits on, for the refusal text. */
+function finishedPageName(canvas: Canvas, frame: Frame): string {
+  const pageId = framePageId(canvas, frame)
+  return canvasPages(canvas).find((page) => page.id === pageId)?.name ?? pageId
+}
+
+/** Refuses with `PageFinishedError` naming the frame's page. */
+export function refuseFinishedFrame(canvas: Canvas, frame: Frame, op = 'update_frame'): never {
+  throw new PageFinishedError(op, finishedPageName(canvas, frame))
 }
 
 /** Ops the freeze covers: frame writes. `lock_frame` and `unlock_frame` stay open. */

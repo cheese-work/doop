@@ -49,6 +49,7 @@ const MISSING = [
   'compare_page_snapshots',
   'restore_page_snapshot',
   'set_page_background',
+  'set_page_finished', // Move to Finished / Restore (CHE-9468): MCP and REST only for now, a person's call
   'export_frame',
   'upload_asset',
   'check_design_completeness', // the G3 reviewer check (CHE-6078); resident agents do not review
