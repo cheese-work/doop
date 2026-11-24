@@ -4,32 +4,42 @@ import * as watch from '../scripts/cd-watch.mjs'
 
 /* CHE-5550 (train S7, plan CHE-5474 C-7): the two watchers' decisions as pure functions. The CLI and the
    workflows only feed them facts read from GitHub and from C00's /healthz. */
-const { lastSlot, freshness, liveVerdict, lastDeployed, deploymentRecord, ghPostArgs, recordDeployment, c00Host } =
-  watch as {
-    c00Host: (env: Record<string, string | undefined>) => string
-    lastSlot: (nowMs: number) => number
-    freshness: (f: Record<string, unknown>) => { action: string; reason: string; rerunD1: boolean }
-    liveVerdict: (f: Record<string, unknown>) => Promise<{ ok: boolean; reason: string }>
-    lastDeployed: (h: {
-      recorded: { sha: string; runId: number | null; confirmedAt: number } | null
-      listRuns: (page: number) => Promise<Record<string, unknown>[]>
-      read: (id: number) => Promise<Record<string, unknown> | null>
-      deploySkipped?: (id: number) => Promise<boolean>
-      maxScan?: number
-      nowMs?: number
-    }) => Promise<{ state: string; sha?: string; reason?: string }>
-    deploymentRecord: (
-      evidence: Record<string, unknown>,
-    ) => { ref: string; environment: string; confirmedAt: string | null } | null
-    ghPostArgs: (repo: string, route: string, fields: Record<string, string | boolean>) => string[]
-    recordDeployment: (h: {
-      repo: string
-      evidence: Record<string, unknown>
-      runId: string
-      gh: (args: string[]) => string
-      recordedSha: () => { sha: string; runId: number | null; confirmedAt?: number } | null
-    }) => string
-  }
+const {
+  lastSlot,
+  freshness,
+  liveVerdict,
+  lastDeployed,
+  deployJobsAllSkipped,
+  deploymentRecord,
+  ghPostArgs,
+  recordDeployment,
+  c00Host,
+} = watch as {
+  c00Host: (env: Record<string, string | undefined>) => string
+  lastSlot: (nowMs: number) => number
+  deployJobsAllSkipped: (jobs: { name: string; conclusion: string | null }[] | undefined) => boolean
+  freshness: (f: Record<string, unknown>) => { action: string; reason: string; rerunD1: boolean }
+  liveVerdict: (f: Record<string, unknown>) => Promise<{ ok: boolean; reason: string }>
+  lastDeployed: (h: {
+    recorded: { sha: string; runId: number | null; confirmedAt: number } | null
+    listRuns: (page: number) => Promise<Record<string, unknown>[]>
+    read: (id: number) => Promise<Record<string, unknown> | null>
+    deploySkipped?: (id: number) => Promise<boolean>
+    maxScan?: number
+    nowMs?: number
+  }) => Promise<{ state: string; sha?: string; reason?: string }>
+  deploymentRecord: (
+    evidence: Record<string, unknown>,
+  ) => { ref: string; environment: string; confirmedAt: string | null } | null
+  ghPostArgs: (repo: string, route: string, fields: Record<string, string | boolean>) => string[]
+  recordDeployment: (h: {
+    repo: string
+    evidence: Record<string, unknown>
+    runId: string
+    gh: (args: string[]) => string
+    recordedSha: () => { sha: string; runId: number | null; confirmedAt?: number } | null
+  }) => string
+}
 
 const A = 'a'.repeat(40)
 const B = 'b'.repeat(40)
@@ -403,6 +413,37 @@ describe('lastDeployed: the last successful D2 SHA, ordered by confirmation time
         listRuns: pages([failed(51), skip(50)]),
         read: reader({}),
         deploySkipped: skipped([]),
+      })
+      expect(out.state).toBe('unknown')
+      expect(out.reason).toContain('51')
+    })
+
+    // Review P1: a deploy may confirm in attempt 1, lose its evidence and record, then a full rerun skips `deploy`.
+    it('reads the deploy jobs of every attempt, not only the newest', () => {
+      const job = (conclusion: string | null) => ({ name: 'deploy', conclusion })
+      expect(deployJobsAllSkipped([job('skipped')])).toBe(true)
+      expect(deployJobsAllSkipped([job('skipped'), job('skipped')])).toBe(true)
+      // deployed first attempt, skipped later attempt
+      expect(deployJobsAllSkipped([job('success'), job('skipped')])).toBe(false)
+      expect(deployJobsAllSkipped([job('failure'), job('skipped')])).toBe(false)
+      expect(deployJobsAllSkipped([job('cancelled'), job('skipped')])).toBe(false)
+      expect(deployJobsAllSkipped([job(null), job('skipped')])).toBe(false)
+      // no deploy job at all is no proof
+      expect(deployJobsAllSkipped([])).toBe(false)
+      expect(deployJobsAllSkipped([{ name: 'resolve', conclusion: 'success' }])).toBe(false)
+      expect(deployJobsAllSkipped(undefined)).toBe(false)
+    })
+
+    it('stays unknown when a deployed first attempt is followed by a skipped rerun with no evidence', async () => {
+      const out = await lastDeployed({
+        recorded: rec(A),
+        listRuns: pages([skip(51), skip(50)]),
+        read: reader({}),
+        deploySkipped: async () =>
+          deployJobsAllSkipped([
+            { name: 'deploy', conclusion: 'success' },
+            { name: 'deploy', conclusion: 'skipped' },
+          ]),
       })
       expect(out.state).toBe('unknown')
       expect(out.reason).toContain('51')

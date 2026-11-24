@@ -117,14 +117,14 @@ export async function liveVerdict({ body, deployed, isAncestor }) {
 //   - unfinished: `pending` while it is young (it may confirm any minute), `unknown` once it is stuck;
 //   - last activity (`updated_at`, which a rerun moves) earlier than the record's confirmation: it finished before, skipped;
 //   - no evidence: unknown, whatever its conclusion (a deploy can confirm and then fail before the evidence upload),
-//     unless `deploySkipped(id)` proves the run's `deploy` job was skipped: it never touched C00, so it is a clean skip;
+//     unless `deploySkipped(id)` proves the `deploy` job was skipped in every attempt: it never touched C00, so it is a clean skip;
 //   - confirmed with a different SHA confirmed after the record: unknown (its record write failed); before it: older.
 // Runs created more than 30 days (GitHub's rerun limit) before the record's confirmation cannot be active; reaching one
 // ends the scan. With no record, the first confirmed evidence found takes the record's place (a later confirmation
 // replaces it). With every run readable and none confirmed, and no record, "none" is proven. At most `maxScan`
 // evidence reads. `listRuns(page)` gives D2 runs of any status, newest created first, an empty page at the end;
 // `read(id)` gives a run's deploy-evidence, or null when it has none. `deploySkipped(id)` (optional) says whether the
-// run's `deploy` job was skipped.
+// run's `deploy` job was skipped in every attempt.
 export async function lastDeployed({ recorded, listRuns, read, deploySkipped, maxScan = 100, nowMs = Date.now() }) {
   let best =
     SHA40.test(recorded?.sha ?? '') && Number.isFinite(recorded?.confirmedAt)
@@ -235,10 +235,17 @@ function evidenceOf(repo, id) {
   }
 }
 
-// True when the newest attempt of a D2 run has a `deploy` job that was skipped: the run never reached C00.
+// True when the run has `deploy` jobs and EVERY attempt's `deploy` job was skipped. A deploy may confirm in one attempt,
+// lose its evidence and record, and a full rerun may then skip `deploy`: the newest attempt alone would hide that
+// confirmation. So the jobs of all attempts are read (`filter=all`); a missing or non-skipped `deploy` job is no proof.
+export function deployJobsAllSkipped(jobs) {
+  const deploys = (jobs ?? []).filter((j) => j.name === 'deploy')
+  return deploys.length > 0 && deploys.every((j) => j.conclusion === 'skipped')
+}
+
 function deployJobSkipped(repo, id) {
-  const { jobs } = api(repo, `actions/runs/${id}/jobs?per_page=100`)
-  return jobs.some((j) => j.name === 'deploy' && j.conclusion === 'skipped')
+  const { jobs } = api(repo, `actions/runs/${id}/jobs?per_page=100&filter=all`)
+  return deployJobsAllSkipped(jobs)
 }
 
 // The newest deployment record whose newest status is success, from the newest 30 records, as `{ sha, runId,
