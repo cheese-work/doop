@@ -48,7 +48,7 @@ import { canvasPages, dropsLedger, framePageId, LEDGER_KEPT, samePages } from '.
 import { normalizePageBackground } from '../shared/pageBackground.ts'
 import { MAX_STACK_WRITES, type StackWrite } from '../shared/frameStack.ts'
 import { normalizeRotation } from '../shared/frameRotation.ts'
-import type { CommentAnchorInput } from '../shared/comments.ts'
+import { parseResolveBody, type CommentAnchorInput } from '../shared/comments.ts'
 import type { LocaleConfig } from '../shared/locales.ts'
 import { FIRST_CANVAS_PATH, SIGNUP_PARAM, parseSignupMethod } from '../shared/firstCanvas.ts'
 import { localAgentRouter, handleLocalAgentMcp, wake as wakeUserWork } from './localAgent.ts'
@@ -3309,7 +3309,9 @@ app.post('/api/comments/:id/resolve', async (req, res) => {
   const found = await actions.findComment(req.params.id)
   if (!found) return res.status(404).json({ error: 'comment not found' })
   if (!requireCanvas(req, res, found.canvasId, 'comment')) return
-  res.json(await actions.resolveComment(req.params.id, req.user!.name))
+  const parsed = parseResolveBody(req.body)
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error })
+  res.json(await actions.resolveComment(req.params.id, req.user!.name, parsed.value))
 })
 
 /* drag a thread's pin somewhere else: onto an element, a frame as a whole
