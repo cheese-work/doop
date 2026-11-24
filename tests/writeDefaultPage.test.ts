@@ -225,7 +225,8 @@ describe.each(Object.entries(CLOSED))('layout %s: no open page', (_name, pages) 
   it('an explicit page passes, the ledger included', async () => {
     const canvas = seed(structuredClone(pages))
     const client = await connect()
-    const pageId = pages[0]!.id
+    /* a Finished page is frozen (CHE-9466): the explicit page is the first one that is not */
+    const pageId = pages.find((page) => !page.finished)!.id
     const out = await call(client, 'create_frame', { canvas_id: canvas.id, pageId, name: 'x', html: '<p>x</p>' })
     expect(out.isError, out.text).toBe(false)
     expect(pageOf(canvas.id, created(out.text))).toBe(pageId)
@@ -339,7 +340,7 @@ describe('REST frame create and trash restore', () => {
       expect(res.status).toBe(409)
       expect(((await res.json()) as { code: string }).code).toBe('no_open_page')
       expect((await canvasOf(name)).frames).toHaveLength(before)
-      const pageId = layouts[name]![0]!.id
+      const pageId = layouts[name]!.find((page) => !page.finished)!.id
       const ok = await owner.post(`/api/canvases/${canvasId}/frames`, { name: 'New', pageId })
       expect(ok.status).toBe(200)
       expect(((await ok.json()) as { pageId: string }).pageId).toBe(pageId)

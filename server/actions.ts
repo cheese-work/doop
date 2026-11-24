@@ -66,6 +66,7 @@ import {
 } from '../shared/designTokens.ts'
 import { emitCanvasEvent } from './events.ts'
 import { PolicyRefused, systemContext, writeContextFor } from './writePolicy.ts'
+import { PageFinishedError, beginRestore, endRestore } from './pageState.ts'
 import type {
   Actor,
   Canvas,
@@ -4027,7 +4028,19 @@ export async function comparePageSnapshots(canvasId: string, snapshotId: string,
  *  Frames made after the snapshot are left alone. */
 export async function restorePageSnapshot(canvasId: string, snapshotId: string, actor: Actor) {
   const target = await snapshotOf(canvasId, snapshotId)
-  pageOf(canvasId, target.pageId)
+  const { page } = pageOf(canvasId, target.pageId)
+  /* a Finished page takes no restore: refused before any read or safety snapshot */
+  if (page.finished) throw new PageFinishedError('restore_page_snapshot', page.name)
+  /* counted in until this returns or throws, so a check of "is a restore writing this page" sees it */
+  beginRestore(canvasId, target.pageId)
+  try {
+    return await applyPageSnapshot(canvasId, snapshotId, target, actor)
+  } finally {
+    endRestore(canvasId, target.pageId)
+  }
+}
+
+async function applyPageSnapshot(canvasId: string, snapshotId: string, target: PageSnapshot, actor: Actor) {
   const html = await persist.getSnapshotHtml(canvasId, [...new Set(target.frames.map((f) => f.hash))])
   const missing = target.frames.find((f) => !html.has(f.hash))
   if (missing) throw new SnapshotError(`Snapshot ${snapshotId} has lost the html of “${missing.name}”`)
@@ -4046,14 +4059,24 @@ export async function restorePageSnapshot(canvasId: string, snapshotId: string, 
   if (!safety) throw new SnapshotError('The page keeps changing; try the restore again')
 
   /* no await from here to the return */
+  const { canvas: now, page: targetPage } = pageOf(canvasId, target.pageId)
+  /* the page may have been Finished while the safety snapshot was filed */
+  if (targetPage.finished) throw new PageFinishedError('restore_page_snapshot', targetPage.name)
+  const pages = canvasPages(now)
   const restored: Array<{ frameId: string; name: string }> = []
-  const skipped: Array<{ frameId: string; name: string; reason: 'locked' }> = []
+  const skipped: Array<{ frameId: string; name: string; reason: 'locked' | 'page_finished' }> = []
   for (const want of target.frames) {
     const live = store.getFrame(want.frameId)
     const cur = live ?? store.getDeletedFrame(want.frameId)
     if (!cur || cur.canvasId !== canvasId) continue
     const has = stateOf(cur, !live)
-    if (sameState(want, has) && framePageId(store.getCanvas(canvasId)!, cur) === target.pageId) continue
+    const curPageId = framePageId(now, cur)
+    if (sameState(want, has) && curPageId === target.pageId) continue
+    /* a frame sitting on another Finished page stays there: skipped like a locked one, before any write */
+    if (curPageId !== target.pageId && pages.find((p) => p.id === curPageId)?.finished) {
+      skipped.push({ frameId: want.frameId, name: cur.name, reason: 'page_finished' })
+      continue
+    }
     if (cur.locked) {
       skipped.push({ frameId: want.frameId, name: cur.name, reason: 'locked' })
       continue
@@ -4086,7 +4109,7 @@ export async function restorePageSnapshot(canvasId: string, snapshotId: string, 
   logActivity(
     canvasId,
     actor,
-    `restored page “${safety.pageName}” to snapshot “${target.name}” (${restored.length} frame(s), ${skipped.length} locked and skipped)`,
+    `restored page “${safety.pageName}” to snapshot “${target.name}” (${restored.length} frame(s), ${skipped.length} skipped)`,
   )
   touch(canvasId, actor, null)
   return { safetySnapshot: safety, restored, skipped }

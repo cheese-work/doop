@@ -119,6 +119,7 @@ import { RendererBusyError } from './renderBrowser.ts'
 import { getAsset, reconcileAssetRefs, beginTicketUpload, endTicketUpload, createAsset } from './assets.ts'
 import * as ingest from './ingest.ts'
 import { PolicyRefused, setLockOwners } from './writePolicy.ts'
+import { PageFinishedError } from './pageState.ts'
 import * as agentKeys from './agentKeys.ts'
 import * as backgrounds from './backgrounds.ts'
 import { serveIcon } from './iconProxy.ts'
@@ -2256,7 +2257,12 @@ app.put('/api/canvases/:id/pages/:pageId/background', (req, res) => {
   if (!canvasPages(canvas).some((p) => p.id === req.params.pageId))
     return res.status(404).json({ error: 'page not found' })
   const actor = userActor(req)
-  const pages = actions.setPageBackground(canvas.id, req.params.pageId, background, actor)
+  let pages
+  try {
+    pages = actions.setPageBackground(canvas.id, req.params.pageId, background, actor)
+  } catch (e) {
+    return frameWriteFailed(res, e)
+  }
   if (pages)
     captureFeature(req.user!.id, 'page_background_changed', 'ui', { canvas_id: canvas.id, cleared: !background })
   res.json(pages)
@@ -2278,7 +2284,12 @@ app.put('/api/canvases/:id/pages/:pageId/flow-start', (req, res) => {
       return res.status(400).json({ error: 'the start frame must be on the same page' })
   }
   const actor = userActor(req)
-  const pages = actions.setFlowStart(canvas.id, req.params.pageId, frameId, actor)
+  let pages
+  try {
+    pages = actions.setFlowStart(canvas.id, req.params.pageId, frameId, actor)
+  } catch (e) {
+    return frameWriteFailed(res, e)
+  }
   if (pages)
     captureFeature(req.user!.id, 'prototype_start_set', 'ui', { canvas_id: canvas.id, cleared: frameId === null })
   res.json(pages)
@@ -2407,6 +2418,11 @@ function frameWriteRefused(res: express.Response, e: unknown): boolean {
   /* too costly to parse: the atomic write that threw has undone itself, so nothing was stored */
   if (e instanceof WorkBudgetError) {
     res.status(422).json({ error: e.message, code: 'work_budget_exceeded' })
+    return true
+  }
+  /* a Finished page: a state to restore, not a lock (checked before the PolicyRefused it extends) */
+  if (e instanceof PageFinishedError) {
+    res.status(409).json({ error: e.message, code: e.code })
     return true
   }
   /* a locked frame (FrameLockedError is one) or any other store policy refusal */

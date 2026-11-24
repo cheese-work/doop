@@ -14,6 +14,7 @@ import {
 import { defaultSpot } from './frameLayout.ts'
 import * as persist from './db/persist.ts'
 import { assertWritable, PolicyRefused, type WriteContext } from './writePolicy.ts'
+import { assertPagesOpen } from './pageState.ts'
 import type { LinkAccess } from '../shared/canvasRole.ts'
 import { MAX_GUIDES } from '../shared/guides.ts'
 import { remapFrameTargets } from '../shared/prototype.ts'
@@ -725,6 +726,7 @@ class Store {
     if (!canvas) return undefined
     const pages = canvasPages(canvas)
     if (!pages.some((p) => p.id === pageId)) return undefined
+    assertPagesOpen(canvas, [pageId], 'set_flow_start')
     requireBoundary('store.setFlowStart')
     this.remember(canvas, ['pages', 'updatedAt'])
     canvas.pages = pages.map((page) => {
@@ -743,6 +745,7 @@ class Store {
     if (!canvas) return undefined
     const pages = canvasPages(canvas)
     if (!pages.some((p) => p.id === pageId)) return undefined
+    assertPagesOpen(canvas, [pageId], 'set_page_background')
     requireBoundary('store.setPageBackground')
     this.remember(canvas, ['pages', 'updatedAt'])
     canvas.pages = pages.map((page) => {
@@ -1453,10 +1456,16 @@ class Store {
     )
       return undefined
     const c = this.canvases.get(frame.canvasId)!
+    /* the one write a Finished page lets through: the lifecycle locking a frame, with nothing else in the patch */
+    const lockOnly =
+      !frame.locked &&
+      patch.locked === true &&
+      Object.keys(patch).every((key) => key === 'locked' || patch[key as keyof typeof patch] === undefined)
     assertWritable(ctx, unlocking ? 'unlock_frame' : 'update_frame', {
       canvas: c,
       frame,
       pageIds: patch.pageId !== undefined ? [framePageId(c, frame), patch.pageId] : [framePageId(c, frame)],
+      ...(lockOnly ? { lockOnly } : {}),
     })
     const designChanged =
       !opts.annotation && DESIGN_KEYS.some((key) => patch[key] !== undefined && patch[key] !== frame[key])
@@ -1610,6 +1619,7 @@ class Store {
     const pageId = frame.pageId && pages.some((page) => page.id === frame.pageId) ? frame.pageId : recoveryPageId(c)
     /* before anything moves: the frame stays in the trash */
     if (!pageId) throw new NoOpenPageError()
+    assertPagesOpen(c, [pageId], 'restore_frame')
     requireBoundary('store.restoreFrame')
     const before = { pageId: frame.pageId, updatedAt: frame.updatedAt, deletedAt: frame.deletedAt }
     entry.frames = entry.frames.filter((f) => f !== frame)
@@ -1672,6 +1682,13 @@ class Store {
     if (!c) return undefined
     const frames = frameIds.map((id) => this.getFrame(id)).filter((f): f is Frame => !!f && f.canvasId === canvasId)
     if (!frames.length) return undefined
+    /* before the Archive page is made or any frame moves, so a refusal leaves nothing half done; a locked
+       frame is left to updateFrame, whose lock refusal answers first */
+    assertPagesOpen(
+      c,
+      frames.filter((f) => !f.locked).map((f) => framePageId(c, f)),
+      'archive_frames',
+    )
     const pages = canvasPages(c)
     if (!pages.some((p) => p.id === ARCHIVE_PAGE_ID)) {
       if (pages.length >= MAX_PAGES) throw new PageLimitError()

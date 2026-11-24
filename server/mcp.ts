@@ -21,6 +21,7 @@ import { fromNodeHeaders } from 'better-auth/node'
 import { z } from 'zod'
 import { SnapshotError } from './pageSnapshots.ts'
 import { FrameStaleError, NO_OPEN_PAGE, NoOpenPageError, PageLimitError, store } from './store.ts'
+import { PageFinishedError } from './pageState.ts'
 import { PolicyRefused } from './writePolicy.ts'
 import { addPage, savePages, updateFrameMeta } from './pageTools.ts'
 import { fontsForCanvas } from './fonts.ts'
@@ -1628,7 +1629,12 @@ export function buildMcpServer(
       if (!pages.some((p) => p.id === pageId)) return err(`no page ${pageId} on canvas ${canvas_id}`)
       const background = color === null ? null : normalizePageBackground(color)
       if (color !== null && !background) return err('color must be a hex colour such as #f5f5f5, or null')
-      const saved = actions.setPageBackground(canvas_id, pageId, background, actorFrom(agent_name))
+      let saved
+      try {
+        saved = actions.setPageBackground(canvas_id, pageId, background, actorFrom(agent_name))
+      } catch (e) {
+        return refusalOf(e)
+      }
       if (!saved) return noCanvas(canvas_id)
       captureFeature(ownerId, 'page_background_changed', 'mcp', { canvas_id, cleared: !background })
       return withFeedback(text({ ok: true, pages: saved }), canvas_id, actorFrom(agent_name))
@@ -3163,14 +3169,14 @@ export function buildMcpServer(
         if (!out) return err('none of those frames are on this canvas')
         return text({ ok: true, archived: out.moved, page: ARCHIVE_PAGE_ID })
       } catch (e) {
-        if (e instanceof PageLimitError) return err(e.message)
+        if (e instanceof PageLimitError || e instanceof PageFinishedError) return err(e.message)
         throw e
       }
     },
   )
 
   const snapshotErr = (e: unknown) => {
-    if (e instanceof SnapshotError) return err(e.message)
+    if (e instanceof SnapshotError || e instanceof PageFinishedError) return err(e.message)
     throw e
   }
 

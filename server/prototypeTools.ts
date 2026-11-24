@@ -1,6 +1,7 @@
 import { env } from './env.ts'
 import * as actions from './actions.ts'
 import { NO_OPEN_PAGE } from './store.ts'
+import { PageFinishedError } from './pageState.ts'
 import { canvasPages, defaultWritePageId, framePageId } from '../shared/pages.ts'
 import { actionString, flowStartFrame, prototypeLinks, targetsFrame, triggerString } from '../shared/prototype.ts'
 import type { Actor, Canvas, CanvasPageInfo } from '../shared/types.ts'
@@ -66,7 +67,14 @@ export function setPrototypeStart(
   if (!pages.some((p) => p.id === page)) return { ok: false, error: `no page ${page} on canvas ${canvas.id}` }
   if (frame && framePageId(canvas, frame) !== page)
     return { ok: false, error: 'the start frame must be on the same page' }
-  const saved = actions.setFlowStart(canvas.id, page, frame?.id ?? null, actor)
+  let saved
+  try {
+    saved = actions.setFlowStart(canvas.id, page, frame?.id ?? null, actor)
+  } catch (e) {
+    /* a Finished page keeps its flow start */
+    if (e instanceof PageFinishedError) return { ok: false, error: e.message }
+    throw e
+  }
   if (!saved) return { ok: false, error: `canvas ${canvas.id} not found` }
   return { ok: true, pages: saved }
 }
