@@ -604,7 +604,8 @@ export async function saveLanding(
   receipt: LandingReceipt,
   hooks: { afterFirstFrame?: () => void | Promise<void>; beforeCommit?: () => void | Promise<void> } = {},
 ): Promise<void> {
-  await db.transaction(async (tx) => {
+  {
+    const tx = db
     for (const [i, frame] of frames.entries()) {
       await tx.insert(t.frames).values(frameInsertRow(frame))
       if (i === 0) await hooks.afterFirstFrame?.()
@@ -619,7 +620,7 @@ export async function saveLanding(
       .set({ updatedAt: sql`GREATEST(${t.canvases.updatedAt}, ${now})` })
       .where(eq(t.canvases.id, canvasId))
     await hooks.beforeCommit?.()
-  })
+  }
 }
 
 export async function findLanding(
