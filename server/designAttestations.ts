@@ -16,6 +16,7 @@ import {
   checkPageCompleteness,
   currentAttestation,
   type CompletenessReport,
+  type SloplintEntry,
 } from '../shared/designCompleteness.ts'
 import { canvasPages } from '../shared/pages.ts'
 import { resolvePageIssue } from '../shared/pageIssue.ts'
@@ -37,7 +38,7 @@ export type AttestedReport = CompletenessReport & {
 }
 
 type RequirementRead =
-  | { kind: 'lines'; lines: RequirementLine[]; hash: string; issue: string }
+  | { kind: 'lines'; lines: RequirementLine[]; hash: string; issue: string; key: string }
   | { kind: 'unavailable'; reason: string }
   | { kind: 'not_checked'; reason: string }
 
@@ -54,8 +55,8 @@ async function readRequirements(
     return { kind: 'unavailable', reason: 'the page has an invalid issue link; a member must rebind it' }
   if (!issueId) return { kind: 'not_checked', reason: 'the page is not bound to a Multica issue' }
   try {
-    const lines = await source.lines(issueId)
-    return { kind: 'lines', lines, hash: requirementsHash(lines), issue: issueId }
+    const [lines, key] = await Promise.all([source.lines(issueId), source.issueKey(issueId)])
+    return { kind: 'lines', lines, hash: requirementsHash(lines), issue: issueId, key }
   } catch (error) {
     return {
       kind: 'unavailable',
@@ -69,10 +70,13 @@ export async function attestPage(
   pageId: string,
   by: string,
   source: RequirementSource | undefined = multicaRequirementSource(env),
+  sloplint: SloplintEntry[] = [],
 ): Promise<AttestedReport> {
   const requirements = await readRequirements(canvas, pageId, source)
   let ledger: ReturnType<typeof ledgerReport> | undefined
   const report = checkPageCompleteness(canvas, pageId, {
+    issueKey: requirements.kind === 'lines' ? requirements.key : null,
+    sloplint,
     extraChecks: [
       (ctx) => {
         if (requirements.kind === 'unavailable')
@@ -140,4 +144,14 @@ export async function readAttestation(
       requirementsHold &&
       currentAttestation(canvas, head.pageId, rows, requirementsNow?.hash ?? null)?.runId === runId,
   }
+}
+
+/** The view plus the issue the attested page is bound to now (null when unbound): the G4 service route's answer. */
+export async function readServiceAttestation(
+  runId: string,
+): Promise<(AttestationView & { pageIssueId: string | null }) | null> {
+  const view = await readAttestation(runId)
+  if (!view) return null
+  const page = store.getCanvas(view.canvasId)?.pages?.find((p) => p.id === view.pageId)
+  return { ...view, pageIssueId: page?.issueId ?? null }
 }

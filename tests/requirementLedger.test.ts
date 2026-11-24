@@ -1,6 +1,11 @@
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import { checkPageCompleteness, type CompletenessReport } from '../shared/designCompleteness.ts'
+import {
+  SLOPLINT_SHA,
+  checkPageCompleteness,
+  designFrames,
+  type CompletenessReport,
+} from '../shared/designCompleteness.ts'
 import {
   ledgerReport,
   requirementLedgerCheck,
@@ -10,6 +15,7 @@ import {
   type SourceComment,
 } from '../server/requirementLedger.ts'
 import type { Canvas, Frame } from '../shared/types.ts'
+import { ANIM_HTML, BUTTON_HTML, DOC_HTML, SPEC_HTML, TOKENS_HTML } from './motionFixtures.ts'
 
 /* CHE-6629: the minimap L1 requirement ledger (CHE-6373 mechanism) as one row of
    the real G3 check. Replays the CHE-5452 omission: Cheese's own comment is the
@@ -74,11 +80,12 @@ const reconWith = (l: unknown) =>
   `<script type="application/json" id="doop-recon">${JSON.stringify({ scanHash: 's', candidates: [] })}</script>` +
   (l === undefined ? '' : `<script type="application/json" id="doop-reqledger">${JSON.stringify(l)}</script>`)
 
-function frame(id: string, html: string): Frame {
+function frame(id: string, html: string, name = id, pageId?: string): Frame {
   return {
     id,
     canvasId: 'c1',
-    name: id,
+    name,
+    ...(pageId ? { pageId } : {}),
     x: 0,
     y: 0,
     width: 400,
@@ -94,14 +101,42 @@ function canvasWith(l: unknown, hifiBody: string, recon?: string): Canvas {
   return {
     id: 'c1',
     name: 'Proposal',
-    pages: [{ id: PAGE, name: 'Direction A', startFrameId: 'wire' }],
-    frames: [frame('recon', recon ?? reconWith(l)), frame('wire', WIRE), frame('hifi', hifi(hifiBody))],
+    pages: [
+      { id: PAGE, name: 'Direction A', startFrameId: 'wire' },
+      { id: 'c1:motion', name: 'Motion' },
+      { id: 'c1:components', name: 'Components' },
+    ],
+    frames: [
+      frame('recon', recon ?? reconWith(l)),
+      frame('wire', WIRE),
+      frame('hifi', hifi(hifiBody)),
+      frame('hifidoc', DOC_HTML, 'hifi · doc'),
+      frame('spec', SPEC_HTML, 'CHE-9 · motion', 'c1:motion'),
+      frame('fade', ANIM_HTML, 'Fade', 'c1:motion'),
+      frame('tokens', TOKENS_HTML, 'Tokens', 'c1:components'),
+      frame('button', BUTTON_HTML, 'Button', 'c1:components'),
+    ],
   } as Canvas
 }
 
 const lines = requirementLines(null, COMMENTS)
-const run = (l: unknown, hifiBody: string, recon?: string): CompletenessReport =>
-  checkPageCompleteness(canvasWith(l, hifiBody, recon), PAGE, { extraChecks: [requirementLedgerCheck(lines)] })
+/** a sloplint result per design frame, so the g3-r7 row does not hide what these tests look at */
+const slop = (canvas: Canvas) =>
+  designFrames(canvas, PAGE).map((f) => ({
+    frameId: f.id,
+    updatedAt: f.updatedAt,
+    toolSha: SLOPLINT_SHA,
+    sha256: 'a'.repeat(64),
+    status: 'ok' as const,
+  }))
+const run = (l: unknown, hifiBody: string, recon?: string): CompletenessReport => {
+  const canvas = canvasWith(l, hifiBody, recon)
+  return checkPageCompleteness(canvas, PAGE, {
+    issueKey: 'CHE-9',
+    sloplint: slop(canvas),
+    extraChecks: [requirementLedgerCheck(lines)],
+  })
+}
 const codes = (r: CompletenessReport) => r.missing.map((m) => m.code)
 const idsOf = (r: CompletenessReport, code: string) =>
   r.missing.filter((m) => m.code === code).map((m) => m.detail.match(/\[([^\]]+)\]/)?.[1])
@@ -205,7 +240,12 @@ describe('G3 row: Cheese requirement ledger (replay of the CHE-5452 minimap omis
 
   it('07 Cheese adds a line after the ledger was written: blocked', () => {
     const edited = requirementLines(null, [AGENT, { ...CHEESE, content: CHEESE.content + '\nvà thêm dark mode' }])
-    const r = checkPageCompleteness(canvasWith(ledger(), ALL), PAGE, { extraChecks: [requirementLedgerCheck(edited)] })
+    const canvas = canvasWith(ledger(), ALL)
+    const r = checkPageCompleteness(canvas, PAGE, {
+      issueKey: 'CHE-9',
+      sloplint: slop(canvas),
+      extraChecks: [requirementLedgerCheck(edited)],
+    })
     expect(r.complete).toBe(false)
     expect(codes(r)).toEqual(['req_missing'])
   })

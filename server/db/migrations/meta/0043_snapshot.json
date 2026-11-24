@@ -1,5 +1,5 @@
 {
-  "id": "a61c68ad-f37c-4650-89f5-f5e6142d2839",
+  "id": "01e9b2b0-93f8-4a70-a54d-0b29f7eb34d6",
   "prevId": "82a317f8-d81f-4e90-aabe-1a4445d746cc",
   "version": "7",
   "dialect": "postgresql",
@@ -1282,6 +1282,126 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.frame_pin_frames": {
+      "name": "frame_pin_frames",
+      "schema": "",
+      "columns": {
+        "frame_id": {
+          "name": "frame_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "card_request_id": {
+          "name": "card_request_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "frame_pin_frames_card_request_id_frame_pins_card_request_id_fk": {
+          "name": "frame_pin_frames_card_request_id_frame_pins_card_request_id_fk",
+          "tableFrom": "frame_pin_frames",
+          "tableTo": "frame_pins",
+          "columnsFrom": ["card_request_id"],
+          "columnsTo": ["card_request_id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.frame_pins": {
+      "name": "frame_pins",
+      "schema": "",
+      "columns": {
+        "card_request_id": {
+          "name": "card_request_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "pin_id": {
+          "name": "pin_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "frames": {
+          "name": "frames",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pick_request_id": {
+          "name": "pick_request_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "picked_frame_id": {
+          "name": "picked_frame_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "r1": {
+          "name": "r1",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "r2": {
+          "name": "r2",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "release_reason": {
+          "name": "release_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "state_changed_at": {
+          "name": "state_changed_at",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "frame_pins_pin_id_unique": {
+          "name": "frame_pins_pin_id_unique",
+          "nullsNotDistinct": false,
+          "columns": ["pin_id"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.frame_versions": {
       "name": "frame_versions",
       "schema": "",
@@ -2553,183 +2673,6 @@
         }
       },
       "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.page_authors": {
-      "name": "page_authors",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "canvas_id": {
-          "name": "canvas_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "page_id": {
-          "name": "page_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "frame_id": {
-          "name": "frame_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "''"
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "agent_id": {
-          "name": "agent_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "''"
-        },
-        "task_id": {
-          "name": "task_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "''"
-        },
-        "provider": {
-          "name": "provider",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "''"
-        },
-        "model": {
-          "name": "model",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "''"
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "''"
-        },
-        "source": {
-          "name": "source",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_page_id": {
-          "name": "source_page_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "''"
-        },
-        "first_at": {
-          "name": "first_at",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {
-        "page_authors_writer_uniq": {
-          "name": "page_authors_writer_uniq",
-          "columns": [
-            {
-              "expression": "canvas_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "page_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "kind",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "agent_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "task_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "source",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "source_page_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "page_authors_page_idx": {
-          "name": "page_authors_page_idx",
-          "columns": [
-            {
-              "expression": "canvas_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "page_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},

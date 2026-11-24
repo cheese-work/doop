@@ -78,6 +78,8 @@ export function setLockOwners(ids: readonly string[] | undefined): void {
   lockOwners = new Set(ids ?? [])
 }
 
+export const isLockOwner = (userId: string | undefined): boolean => !!userId && lockOwners.has(userId)
+
 /** Account erasure: the one caller allowed to delete a canvas that still holds a locked frame. */
 export const erasureContext = (): WriteContext => ({ kind: 'system', erasure: true })
 

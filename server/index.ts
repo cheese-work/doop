@@ -9,7 +9,7 @@ import { handleGeminiCloudMcp } from './geminiCloudMcp.ts'
 import { serveClient } from './clientStatic.ts'
 import { geminiCloudWorkerFor } from './geminiCloudRuns.ts'
 import http from 'node:http'
-import { createHash } from 'node:crypto'
+import { createHash, timingSafeEqual } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import express from 'express'
@@ -48,7 +48,7 @@ import * as demo from './demo.ts'
 import { db, initDb } from './db/index.ts'
 import * as authSchema from './db/auth-schema.ts'
 import * as persist from './db/persist.ts'
-import { readAttestation } from './designAttestations.ts'
+import { readAttestation, readServiceAttestation } from './designAttestations.ts'
 import { handleMcpRequest } from './mcp.ts'
 import {
   getAsset,
@@ -59,6 +59,8 @@ import {
   MAX_ASSET_BYTES,
 } from './assets.ts'
 import * as ingest from './ingest.ts'
+import { configurePins, loadPins } from './framePins.ts'
+import { startPinReconcile } from './pinReconcile.ts'
 import { PolicyRefused, setLockOwners, VersionChanged } from './writePolicy.ts'
 import * as agentKeys from './agentKeys.ts'
 import * as backgrounds from './backgrounds.ts'
@@ -109,6 +111,12 @@ if (data.canvases.length === 0 && (await persist.importLegacyJson())) {
   data = await persist.hydrate()
 }
 store.init(data.canvases)
+/* G5b: pins are read back before the first request, so no unlock is answered without them. The Multica side of the
+   port (A1 ref_status / abort_ref, A2 abort_if_pending) is not wired here: until it is, release_pin answers
+   multica_unreachable and the reconcile job below only lists pins as stuck. It asks every 30 s and never releases by time. */
+configurePins({ secret: env.DOOP_PIN_SECRET })
+await loadPins()
+startPinReconcile()
 await store.backfillPageAuthors() // CHE-7082: every page with frames and no ledger row gets one legacy `unknown` row, once
 await workspaces.hydrateWorkspaces() // before the first request: canvasRole reads membership
 await webhooks.hydrateWebhooks()
@@ -659,6 +667,18 @@ declare global {
    the gate looks at that session (shared/desktopConnect.ts) */
 app.get('/api/integrations/:provider/callback', relayDesktopCallback)
 app.use('/api/live-activities', logLiveActivityRequests)
+/* G4 (CHE-7080): Multica reads an attestation with one shared bearer token, not a session. Registered
+   before the /api session gate; GET only; SHA-256 digests are compared so the token's length leaks nothing. */
+const sha256 = (value: string) => createHash('sha256').update(value).digest()
+app.get('/api/service/design-attestations/:id', async (req, res) => {
+  const expected = env.DOOP_ATTESTATION_READ_TOKEN
+  if (!expected) return res.status(503).json({ error: 'attestation read token not configured' })
+  const presented = /^Bearer (.+)$/.exec(req.headers.authorization ?? '')?.[1] ?? ''
+  if (!timingSafeEqual(sha256(presented), sha256(expected))) return res.status(401).json({ error: 'unauthorized' })
+  const view = await readServiceAttestation(req.params.id)
+  if (!view) return res.status(404).json({ error: 'attestation not found' })
+  res.json(view)
+})
 app.use('/api', async (req, res, next) => {
   try {
     const session = await auth.api.getSession({ headers: fromNodeHeaders(req.headers) })
@@ -1781,7 +1801,12 @@ app.post('/api/canvases/:id/frames', (req, res) => {
   res.json(frame)
 })
 
-app.patch('/api/frames/:id', (req, res) => {
+app.patch('/api/frames/:id', (req, res, next) => {
+  patchFrame(req, res).catch(next)
+})
+
+/* Express 4 drops an async handler's rejection, so the route wraps this and forwards it (423/409 or the 500 page) */
+async function patchFrame(req: express.Request<{ id: string }>, res: express.Response): Promise<void> {
   const current = requireFrame(req, res, req.params.id, 'edit', req.body?.expectedUpdatedAt)
   if (!current) return
   const { actor: _ignored, expectedUpdatedAt: _version, ...patch } = req.body ?? {}
@@ -1789,19 +1814,41 @@ app.patch('/api/frames/:id', (req, res) => {
   if (
     patch.pageId !== undefined &&
     !store.getCanvas(store.getFrame(req.params.id)!.canvasId)?.pages?.some((p) => p.id === patch.pageId)
-  )
-    return res.status(400).json({ error: 'page not found' })
+  ) {
+    res.status(400).json({ error: 'page not found' })
+    return
+  }
   const allowed = ['name', 'pageId', 'x', 'y', 'width', 'height', 'html'] as const
   const clean: Record<string, unknown> = {}
   for (const k of allowed) if (patch[k] !== undefined) clean[k] = patch[k]
   /* the eye in the Layers panel: anything but a literal true shows the frame */
   if (patch.hidden !== undefined) clean.hidden = patch.hidden === true
   if (patch.locked !== undefined) clean.locked = !!patch.locked
+  /* an unlock goes through its own durable path: a pin answers `pinned`, the row is written before the reply */
+  if (patch.locked === false && current.locked) {
+    const out = await actions.unlockFrameDurable(req.params.id, actor, {
+      userId: req.user!.id,
+      expectedUpdatedAt: req.body?.expectedUpdatedAt,
+    })
+    if (out.ok) {
+      res.json(out.frame)
+      return
+    }
+    if (out.error === 'not_found') {
+      res.status(404).json({ error: 'frame not found' })
+      return
+    }
+    res.status(out.error === 'persist_failed' ? 503 : 409).json({ error: out.error, code: out.error })
+    return
+  }
   /* the account id, not the display name, decides who may unlock a frame (DOOP_LOCK_OWNERS) */
   const frame = actions.updateFrame(req.params.id, clean, actor, { userId: req.user!.id })
-  if (!frame) return res.status(404).json({ error: 'frame not found' })
+  if (!frame) {
+    res.status(404).json({ error: 'frame not found' })
+    return
+  }
   res.json(frame)
-})
+}
 
 /* G3 attestations (CHE-6078): read-only. Rows are written by the server's own
    check run only; there is deliberately no way to edit or delete one here. */

@@ -33,6 +33,7 @@ vi.mock('../server/db/persist.ts', () => {
     saveCanvasCopy: noop,
     saveFeedback: noop,
     saveFrame: db.saveFrame,
+    saveFrameNow: async (f: unknown) => db.saveFrame(f), // the durable lock (CHE-7062) awaits this one
     saveFrameVersion: noop,
     getFrameVersion: db.getFrameVersion,
     saveGuideline: noop,
@@ -295,11 +296,11 @@ describe('lock_if_version, lockEpoch, unlock voids the attestation', () => {
     expect(db.saveFrame).not.toHaveBeenCalled()
   })
 
-  it('a stale same-id retry through lockFramesForPublish withholds the card', () => {
+  it('a stale same-id retry through lockFramesForPublish withholds the card', async () => {
     const f = locked()
     const reopened = store.updateFrame(cheese, f.f.id, { locked: false }, 'c')!
     store.lockIfVersion(agent, f.f.id, reopened.updatedAt, 'att-1')
-    const out = actions.lockFramesForPublish(
+    const out = await actions.lockFramesForPublish(
       [{ frameId: f.f.id, attestedUpdatedAt: f.f.updatedAt, attestationId: 'att-1' }],
       agentActor,
     )
@@ -331,12 +332,12 @@ describe('lock_if_version, lockEpoch, unlock voids the attestation', () => {
 
   it('actions and MCP surface the refusal; the publish lifecycle gets no card', async () => {
     const f = locked()
-    const retry = actions.lockFramesForPublish(
+    const retry = await actions.lockFramesForPublish(
       [{ frameId: f.f.id, attestedUpdatedAt: f.f.updatedAt, attestationId: 'att-1' }],
       agentActor,
     )
     expect(retry.cardAllowed).toBe(true)
-    const other = actions.lockFramesForPublish(
+    const other = await actions.lockFramesForPublish(
       [{ frameId: f.f.id, attestedUpdatedAt: f.f.updatedAt, attestationId: 'att-other' }],
       agentActor,
     )
@@ -447,12 +448,12 @@ describe('the publish lifecycle: attest -> lock every frame -> card', () => {
     attestationId,
   })
 
-  it('(e) frame 1 locks, frame 2 fails: no card; the retry locks the rest and allows the card', () => {
+  it('(e) frame 1 locks, frame 2 fails: no card; the retry locks the rest and allows the card', async () => {
     const f = fixture()
     const attested = [entry(f.f), entry(f.g)]
     /* frame 2 was edited after it was attested */
     store.updateFrame(sys, f.g.id, { html: '<p>g2</p>' }, 'x')
-    const first = actions.lockFramesForPublish(attested, agentActor)
+    const first = await actions.lockFramesForPublish(attested, agentActor)
     expect(first.cardAllowed).toBe(false)
     expect(first.results.map((r) => r.ok)).toEqual([true, false])
     expect(store.getFrame(f.f.id)?.locked).toBe(true) // the safe side stays locked
@@ -460,18 +461,18 @@ describe('the publish lifecycle: attest -> lock every frame -> card', () => {
 
     /* the designer attests the edited frame again and publishes again; the frame that already holds its
        lock is retried with the attestation it holds (a no-op), and the new frame locks with the new one */
-    const second = actions.lockFramesForPublish([entry(f.f), entry(store.getFrame(f.g.id)!, 'att-9')], agentActor)
+    const second = await actions.lockFramesForPublish([entry(f.f), entry(store.getFrame(f.g.id)!, 'att-9')], agentActor)
     expect(second.cardAllowed).toBe(true)
     expect(store.getFrame(f.f.id)?.lockAttestationId).toBe('att-1')
     expect(store.getFrame(f.g.id)?.lockAttestationId).toBe('att-9')
   })
 
-  it('(f) an open append stream ends when the frame locks, and a later chunk is refused', () => {
+  it('(f) an open append stream ends when the frame locks, and a later chunk is refused', async () => {
     const f = fixture()
     actions.appendFrameHtml(f.f.id, '<p>v1</p><b>', agentActor, { start: true })
     expect(actions.isFrameStreaming(f.f.id)).toBe(true)
     const v = store.getFrame(f.f.id)!
-    const done = actions.lockFramesForPublish([entry(v)], agentActor)
+    const done = await actions.lockFramesForPublish([entry(v)], agentActor)
     expect(done.cardAllowed).toBe(true)
     expect(actions.isFrameStreaming(f.f.id)).toBe(false)
     expect(() => actions.appendFrameHtml(f.f.id, '</b>', agentActor, {})).toThrow(PolicyRefused)
@@ -487,19 +488,19 @@ describe('the publish lifecycle: attest -> lock every frame -> card', () => {
     expect(store.getFrame(f.f.id)?.html).toBe('<p>v1</p>')
   })
 
-  it('(h) a write between attest and lock gives version_changed and no card', () => {
+  it('(h) a write between attest and lock gives version_changed and no card', async () => {
     const f = fixture()
     const attested = entry(f.f)
     store.updateFrame(agent, f.f.id, { html: '<p>sneaked in</p>' }, 'a')
-    const out = actions.lockFramesForPublish([attested], agentActor)
+    const out = await actions.lockFramesForPublish([attested], agentActor)
     expect(out.cardAllowed).toBe(false)
     expect(out.results[0]).toMatchObject({ ok: false, error: 'version_changed' })
     expect(store.getFrame(f.f.id)?.locked).toBeFalsy()
   })
 
-  it('(i) a write between lock_if_version and the next step is refused and the version does not move', () => {
+  it('(i) a write between lock_if_version and the next step is refused and the version does not move', async () => {
     const f = fixture()
-    const out = actions.lockFramesForPublish([entry(f.f)], agentActor)
+    const out = await actions.lockFramesForPublish([entry(f.f)], agentActor)
     expect(out.cardAllowed).toBe(true)
     expect(() => actions.updateFrame(f.f.id, { html: '<p>late</p>' }, agentActor)).toThrow(PolicyRefused)
     expect(store.getFrame(f.f.id)?.updatedAt).toBe(f.f.updatedAt)

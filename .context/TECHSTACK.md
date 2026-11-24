@@ -182,9 +182,17 @@
 
 - Design completeness (G3, CHE-6078): MCP `check_design_completeness` runs `shared/designCompleteness.ts`
   over one page (recon inventory `doop-recon` with `data-recon-ref` per Keep/Change item, wireframe,
-  states, `data-doop-motion` blocks, prototype wiring and reachability) and stores the result in
+  states, `data-doop-motion` blocks, prototype wiring and reachability; ruleset `g3-r6` (CHE-6853) adds a motion block
+  per transition, the `Motion` page with the issue's `<KEY> · motion` spec frame whose rows each name an animated frame,
+  and a `<screen> · doc` frame with the 7 filled headings per hi-fi screen; `g3-r7` (CHE-6854) adds a Hallmark `sloplint`
+  result per design frame at its `updatedAt` (the reviewer's JSON with its SHA256, checked in `server/sloplintInput.ts`),
+  the `Components` page (tokens frame, components, `component_unknown`, variants and states, motion per micro-interaction)) and stores the result in
   `design_attestations`, one row per design frame at its `updatedAt`, append-only. The route
   `/api/design-attestations/:id` reads a run with `current` (false once any frame changed).
+  `GET /api/service/design-attestations/:id` (G4, CHE-7080) serves the same JSON plus `pageIssueId` (the attested
+  page's current Multica issue, or null) to Multica: it sits before the `/api` session gate, wants
+  `Authorization: Bearer <DOOP_ATTESTATION_READ_TOKEN>` (compared as SHA-256 digests with `timingSafeEqual`; 401 if
+  missing or wrong, 503 while the variable is unset, at least 32 characters), is GET only, and 404s an unknown id.
   `extraChecks` is the plug-in point for the requirement ledger. Tests: `designCompleteness.test.ts`,
   `designAttestation.test.ts`.
 
@@ -236,6 +244,26 @@
   `append_frame_html` and `update_frame` (`VersionChanged`, `version_changed`). REST answers a refusal 423 and a lost
   fence 409. `tests/frameLockPolicy.test.ts` covers it. `tests/writePolicy.test.ts` also scans `server/` so a new
   writer outside `store.ts` and `db/persist.ts` fails CI.
+
+- Lock pins (G5b, CHE-7062, `server/framePins.ts`, `server/pinState.ts`, table `frame_pins` + `frame_pin_frames`,
+  migration 0043): a decision card holds the frames it shows. States RESERVED -> HELD -> SEALED -> RELEASED; no clock
+  moves a pin. Steps: `reserveLock` (P4, all or none, idempotent on `cardRequestId`), `confirmPin` (P6, receipt R1),
+  `pinForPick` (K2, one transaction HELD -> SEALED, receipt R2), `releasePin` (K5/C2: doop asks Multica itself through
+  `MulticaPort` and releases only on `decided` or `void`), `forceRelease` (F1: a lock owner; `abort_ref` first; a `void`
+  raises `lockEpoch`). Receipts are HMAC-SHA256 over card, pin, state, epochs (+ pick) with `DOOP_PIN_SECRET`; unset =
+  no receipt. `store.unlockFrame` (async) answers `pinned` while a pin exists and writes the row before memory changes;
+  the synchronous unlock in `updateFrame` refuses a pinned frame too. `store.lockIfVersionDurable` (MCP
+  `lock_frame_if_version`) answers only after its row is written and reverts memory if that write fails. Pins are read
+  back at boot (`loadPins`). Not wired yet: the Multica port itself (A1 `ref_status`/`abort_ref`, A2 `abort_if_pending`)
+  and an HTTP/MCP route for P4/P6/K2/K5/F1. Tests: `framePins.test.ts` (temporary pglite).
+  Pin reconcile (G5c, CHE-7063, `server/pinReconcile.ts`): `startPinReconcile` (30 s, started at boot) calls
+  `reconcilePins`, which asks Multica about every pin older than `T_RECONCILE_MS` (120 s since its last state change)
+  and never releases by time (B4). `pending` or missing -> A2 `abortIfPending` (a conditional CAS: a card that is
+  already `open` is left as it is, with its HELD pin); `decided` / `void` -> `releasePin`; `open` / `pick_pending` ->
+  nothing; Multica silent -> the pin is listed by `stuckPins()` with its age (the "ghim treo" warning), never released.
+  `MulticaPort.abortRef` (A1, unconditional) stays for `forceRelease` only. Tests: `pinInterleave.test.ts` (the 12 x 5
+  table, `pin/G1..V2/E1..E5`), `pinConcurrent.test.ts`, harness `tests/support/pinHarness.ts` (`pauseAfter`, fake clock,
+  `crashMultica`/`restartMultica`, `dropResponse`, `assertInvariants` over both databases).
 
 ## 6. Build and Dependency Management
 

@@ -5,6 +5,7 @@ import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import { db } from './index.ts'
 import * as t from './schema.ts'
 import { extractAssetIds } from '../assets.ts'
+import type { Pin } from '../pinState.ts'
 import { roleByAgentName } from '../../shared/agents.ts'
 import { framePageId } from '../../shared/pages.ts'
 import type { AttestationRow } from '../../shared/designCompleteness.ts'
@@ -375,6 +376,15 @@ async function withAuthors(frameId: string, work: (tx: Tx) => Promise<unknown>) 
     pendingAuthors.set(frameId, [...authors, ...(pendingAuthors.get(frameId) ?? [])])
     throw err
   }
+}
+
+/** Awaited frame write (CHE-7062 B7): a lock or unlock is answered only once this resolves. It cancels the
+ *  debounced write of the same frame, which would only repeat it. */
+export async function saveFrameNow(f: Frame): Promise<void> {
+  const pending = frameTimers.get(f.id)
+  if (pending) clearTimeout(pending)
+  frameTimers.delete(f.id)
+  await writeFrame(f)
 }
 
 function writeFrame(f: Frame) {
@@ -1177,4 +1187,58 @@ export async function importLegacyJson(): Promise<Canvas[] | null> {
   fs.renameSync(file, `${file}.imported`)
   console.log(`[db] imported ${parsed.length} canvas(es) from legacy store.json`)
   return parsed
+}
+
+/* Lock pins (CHE-7062, G5b). `frame_pins` is the truth; `frame_pin_frames` holds one row per frame of an active
+   pin, its primary key being what stops two pins from holding one frame even across processes. */
+function pinRowOf(pin: Pin) {
+  return {
+    cardRequestId: pin.cardRequestId,
+    pinId: pin.pinId,
+    state: pin.state,
+    frames: pin.frames,
+    pickRequestId: pin.pickRequestId ?? null,
+    pickedFrameId: pin.pickedFrameId ?? null,
+    r1: pin.r1 ?? null,
+    r2: pin.r2 ?? null,
+    releaseReason: pin.releaseReason ?? null,
+    stateChangedAt: pin.stateChangedAt,
+    createdAt: pin.createdAt,
+  }
+}
+
+export async function loadPins(): Promise<Pin[]> {
+  const rows = await db.select().from(t.framePins)
+  return rows.map((r) => ({
+    cardRequestId: r.cardRequestId,
+    pinId: r.pinId,
+    state: r.state,
+    frames: r.frames,
+    ...(r.pickRequestId ? { pickRequestId: r.pickRequestId } : {}),
+    ...(r.pickedFrameId ? { pickedFrameId: r.pickedFrameId } : {}),
+    ...(r.r1 ? { r1: r.r1 } : {}),
+    ...(r.r2 ? { r2: r.r2 } : {}),
+    ...(r.releaseReason ? { releaseReason: r.releaseReason } : {}),
+    stateChangedAt: r.stateChangedAt,
+    createdAt: r.createdAt,
+  }))
+}
+
+/** One transaction per pin step. `insert` takes the active rows with it; a RELEASED pin gives them up and may raise
+ *  the epoch of its frames in the same commit (F1 on a void card). */
+export async function writePin(pin: Pin, mode: 'insert' | 'update', epochs: { frameId: string; epoch: number }[] = []) {
+  await db.transaction(async (tx) => {
+    if (mode === 'insert') {
+      await tx.insert(t.framePins).values(pinRowOf(pin))
+      await tx
+        .insert(t.framePinFrames)
+        .values(pin.frames.map((f) => ({ frameId: f.frameId, cardRequestId: pin.cardRequestId })))
+    } else {
+      const { cardRequestId, ...set } = pinRowOf(pin)
+      await tx.update(t.framePins).set(set).where(eq(t.framePins.cardRequestId, cardRequestId))
+      if (pin.state === 'RELEASED')
+        await tx.delete(t.framePinFrames).where(eq(t.framePinFrames.cardRequestId, cardRequestId))
+    }
+    for (const e of epochs) await tx.update(t.frames).set({ lockEpoch: e.epoch }).where(eq(t.frames.id, e.frameId))
+  })
 }
