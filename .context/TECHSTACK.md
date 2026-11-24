@@ -717,6 +717,16 @@ data-doop-webfonts>` for the roster families the frame names and does not load i
   append / update_frame). `persist.writeFrame` keeps the stored html and size while both the stored and the
   incoming row are locked in the same `lock_epoch` (an unlock whose save an immediate relock cancelled shows as a higher epoch, so the edit between them lands with the relock). `tests/frameLockGuard.test.ts` scans `server/` so a new writer of those columns
   outside the guard fails the build.
+- Finished page guard (CHE-9466, `server/pageState.ts`): a page with `finished` set is frozen. `assertWritable` runs
+  `assertPageRules` right after `assertLockRules`, for every context: `create_frame`, `update_frame` (source and
+  destination page) and `delete_frame` on it throw `PageFinishedError` (`extends PolicyRefused`, code `page_finished`,
+  text "Restore the page first"); a locked frame still answers 423 first. `lock_frame` / `unlock_frame` are not frozen,
+  and a patch that is nothing but `locked: true` on an unlocked frame (`lockOnly`, set by `store.updateFrame`) passes.
+  Paths with no `assertWritable` call `assertPagesOpen` themselves: `restoreFrame`, `setPageBackground`,
+  `setFlowStart`, `archiveFrames`. REST answers 409 `{ code: 'page_finished' }`, MCP the text, design sync skips the frame
+  (`finished: true`). `restorePageSnapshot` refuses a Finished target before reading or filing anything, counts itself
+  in per page (`beginRestore` / `endRestore`, `restoring`) until it returns or throws, and skips a frame sitting on
+  another Finished page (`reason: 'page_finished'`). Tests: `finishedPageGuard.test.ts`.
 - Frame write keys (`frame_write_keys`, migration 0045; `actions.writeFrameHtmlOnce`): MCP `set_frame_html` /
   `edit_frame_html` / `append_frame_html` and REST `PATCH /api/frames/:id` (html only) and
   `POST /api/frames/:id/append` take `idempotency_key` and an optional `version_name`. The key row,

@@ -1,5 +1,7 @@
 import { canvasPages, framePageId } from '../shared/pages.ts'
 import { checkReconGate, isReconHtml, reconRefusal } from './reconGuard.ts'
+import { assertPageRules } from './pageState.ts'
+import { PolicyRefused } from './policyRefused.ts'
 import type { Actor, Canvas, CanvasPageInfo, Frame } from '../shared/types.ts'
 
 /**
@@ -45,18 +47,11 @@ export type WriteTarget = {
   nextPages?: CanvasPageInfo[]
   /** create_frame: the HTML the new frame starts with (the recon frame itself is exempt from G2) */
   html?: string
+  /** update_frame: the patch is nothing but `locked: true` on an unlocked frame (the one write a Finished page allows) */
+  lockOnly?: boolean
 }
 
-/** A refused write. A separate type: the store's `undefined` means "not found". */
-export class PolicyRefused extends Error {
-  readonly code = 'policy_refused'
-  constructor(
-    readonly op: string,
-    readonly reason: string,
-  ) {
-    super(`policy_refused: ${op}: ${reason}`)
-  }
-}
+export { PolicyRefused }
 
 let lockOwners: ReadonlySet<string> = new Set()
 /** Who may unlock a frame (Cheese). Empty or unset = nobody: unlock fails closed. */
@@ -159,7 +154,8 @@ function assertLockRules(ctx: WriteContext, op: WriteOp, target: WriteTarget): v
  * (a lock the server's own code can bypass is a flag). Exceptions: `unlock_frame` by a user session
  * whose account id is in `setLockOwners`; account erasure (`erasureContext`) deleting the canvas.
  * A canvas holding a locked frame cannot be deleted, and `set_pages` cannot drop its page.
- * Past the lock rules, users and the system pass; an agent is held to the project binding:
+ * Next the page rules (`assertPageRules`): a Finished page refuses every frame write from every actor,
+ * except a lock-only patch. Past those, users and the system pass; an agent is held to the project binding:
  *  - an agent with a Multica task must be verified, and write only to the canvas bound to its
  *    project, on pages bound to its issue;
  *  - an agent with no task may write to canvases nobody bound, never to a bound one; once a Multica
@@ -169,6 +165,7 @@ function assertLockRules(ctx: WriteContext, op: WriteOp, target: WriteTarget): v
 export function assertWritable(ctx: WriteContext, op: WriteOp, target: WriteTarget): void {
   if (!OPS.has(op)) throw new PolicyRefused(op, 'unknown operation')
   assertLockRules(ctx, op, target)
+  assertPageRules(op, target)
   if (ctx.kind !== 'agent') return
   assertBinding(ctx, op, target)
   if (op === 'create_frame') assertRecon(ctx, target)
