@@ -2236,11 +2236,11 @@ app.put('/api/canvases/:id/pages', (req, res) => {
     return res
       .status(409)
       .json({ error: 'Pages changed since you opened them. Please try again.', pages: canvasPages(canvas) })
+  if (dropsLedger(canvasPages(canvas), pages)) return res.status(400).json({ error: LEDGER_KEPT, code: 'ledger_kept' })
   const firstId = canvas.pages?.[0]?.id ?? `${canvas.id}:page1`
   if (canvas.frames.some((f) => !pages.some((p) => p.id === (f.pageId ?? firstId)))) {
     return res.status(400).json({ error: 'Move the frames to another page before deleting this page.' })
   }
-  if (dropsLedger(canvasPages(canvas), pages)) return res.status(400).json({ error: LEDGER_KEPT, code: 'ledger_kept' })
   const clean = pages.map((p) => ({ id: p.id, name: p.name.trim() }))
   const actor = userActor(req)
   res.json(actions.setCanvasPages(canvas.id, clean, actor))

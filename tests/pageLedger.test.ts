@@ -417,6 +417,29 @@ describe('REST ledger route and page-list saves', () => {
     expect(await pagesNow()).toEqual(before)
   })
 
+  it('dropping a ledger page that holds frames is ledger_kept, not the frame error', async () => {
+    const cid = (await (await owner.post('/api/canvases', { name: 'Ledger frames' })).json()).id as string
+    const first = (await pagesNow(cid))[0]!
+    expect(
+      (
+        await savePages(
+          [
+            { id: first.id, name: first.name },
+            { id: 'q-b', name: 'B' },
+          ],
+          cid,
+        )
+      ).status,
+    ).toBe(200)
+    expect((await route(owner, 'q-b', true, cid)).status).toBe(200)
+    expect((await owner.post(`/api/canvases/${cid}/frames`, { name: 'F', pageId: 'q-b' })).status).toBe(200)
+    const before = await pagesNow(cid)
+    const res = await savePages([{ id: first.id, name: first.name }], cid)
+    expect(res.status).toBe(400)
+    expect(((await res.json()) as { code?: string }).code).toBe('ledger_kept')
+    expect(await pagesNow(cid)).toEqual(before)
+  })
+
   it('a copy of the ledger is an open page, and the order is the same after a reload', async () => {
     const res = await owner.post(`/api/canvases/${canvasId}/pages/p-b/duplicate`)
     expect(res.status).toBe(200)
