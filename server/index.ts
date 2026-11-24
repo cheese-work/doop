@@ -3156,6 +3156,56 @@ app.post('/api/frames/:id/restore', async (req, res) => {
   }
 })
 
+/* Archive: both paths write the frame's origin in the same store call. A repeat of the same request
+   changes nothing, so a client whose reply was lost can send it again. */
+app.post('/api/canvases/:id/frames/archive', (req, res) => {
+  const canvas = requireCanvas(req, res, req.params.id, 'edit')
+  if (!canvas) return
+  const frameIds: unknown = req.body?.frameIds
+  if (
+    !Array.isArray(frameIds) ||
+    !frameIds.length ||
+    frameIds.length > 200 ||
+    frameIds.some((id) => typeof id !== 'string')
+  )
+    return res.status(400).json({ error: 'Provide 1–200 frame ids as frameIds.' })
+  try {
+    const out = actions.archiveFrames(canvas.id, frameIds as string[], userActor(req))
+    if (!out) return res.status(404).json({ error: 'none of those frames are on this canvas' })
+    res.json({ pages: out.pages, frames: out.frames })
+  } catch (e) {
+    if (e instanceof PageLimitError) return res.status(400).json({ error: e.message })
+    frameWriteFailed(res, e)
+  }
+})
+
+/* Undo of an archive: to `pageId`, else to the page the frame came from, with the `hidden` it had. */
+app.post('/api/frames/:id/unarchive', (req, res) => {
+  const frame = store.getFrame(req.params.id)
+  const canvas = frame && store.getCanvas(frame.canvasId)
+  if (!frame || !canvas) return res.status(404).json({ error: 'frame not found' })
+  if (!checkRole(req, res, canvas, 'edit')) return
+  const pageId: unknown = req.body?.pageId
+  if (pageId !== undefined && (typeof pageId !== 'string' || !pageId))
+    return res.status(400).json({ error: 'pageId must be a page id.' })
+  try {
+    const out = actions.unarchiveFrame(frame.id, pageId, userActor(req))
+    if (!out) return res.status(404).json({ error: 'frame not found' })
+    if (out.ok) return res.json({ frame: out.frame, changed: out.changed })
+    const message = {
+      origin_missing: 'The page this frame came from is gone. Choose a page.',
+      page_not_found: 'page not found',
+      archive_page: 'Choose a page other than the Archive.',
+    }[out.code]
+    res.status(out.code === 'origin_missing' ? 409 : out.code === 'page_not_found' ? 404 : 400).json({
+      error: message,
+      code: out.code,
+    })
+  } catch (e) {
+    frameWriteFailed(res, e)
+  }
+})
+
 app.get('/api/canvases/:id/trash', (req, res) => {
   const canvas = requireCanvas(req, res, req.params.id, 'edit')
   if (!canvas) return

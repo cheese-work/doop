@@ -3395,15 +3395,28 @@ const restoreLoadedPage = atomic(function restoreLoadedPage(canvasId: string, pa
   return { page: restored.page, frames: restored.frames }
 })
 
-/** Move frames to the Archive page and hide them in one step. */
+/** Move frames to the Archive page and hide them in one step, recording where each came from. A frame
+ *  already archived is left as it is, so a repeated request changes and announces nothing more. */
 function archiveFramesWrite(canvasId: string, frameIds: string[], actor: Actor) {
   const archived = store.archiveFrames(writeContextFor(actor), canvasId, frameIds, actor.name)
   if (!archived) return undefined
-  broadcast(canvasId, { type: 'canvas:pages', pages: archived.pages, actor })
-  for (const frame of archived.frames) broadcast(canvasId, { type: 'frame:updated', frame, actor })
-  logActivity(canvasId, actor, `archived ${archived.frames.length} frame(s)`)
-  touch(canvasId, actor, null)
-  return { moved: archived.frames.map((f) => f.id), pages: archived.pages }
+  if (archived.changed.length) {
+    broadcast(canvasId, { type: 'canvas:pages', pages: archived.pages, actor })
+    for (const frame of archived.changed) broadcast(canvasId, { type: 'frame:updated', frame, actor })
+    logActivity(canvasId, actor, `archived ${archived.changed.length} frame(s)`)
+    touch(canvasId, actor, null)
+  }
+  return { moved: archived.frames.map((f) => f.id), pages: archived.pages, frames: archived.frames }
+}
+
+/** Take a frame out of the Archive: to `pageId`, else to the page it came from. */
+export function unarchiveFrame(frameId: string, pageId: string | undefined, actor: Actor) {
+  const out = store.unarchiveFrame(writeContextFor(actor), frameId, pageId, actor.name)
+  if (!out?.ok || !out.changed) return out
+  broadcast(out.frame.canvasId, { type: 'frame:updated', frame: out.frame, actor })
+  logActivity(out.frame.canvasId, actor, `unarchived frame “${out.frame.name}”`, out.frame.id)
+  touch(out.frame.canvasId, actor, out.frame.id)
+  return out
 }
 export const archiveFrames = logsRefusal(archiveFramesWrite, 2)
 
