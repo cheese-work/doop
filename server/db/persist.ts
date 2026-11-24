@@ -1310,6 +1310,11 @@ function commentFromRow(
     ...(failureReason !== undefined ? { failureReason } : {}),
     ...(row.resolvedBy != null ? { resolvedBy: row.resolvedBy } : {}),
     ...(row.resolvedAt != null ? { resolvedAt: row.resolvedAt } : {}),
+    ...(row.resolution === 'addressed' || row.resolution === 'wont_fix' || row.resolution === 'moved'
+      ? { resolution: row.resolution }
+      : {}),
+    ...(row.resolutionRef != null ? { resolutionRef: row.resolutionRef } : {}),
+    ...(row.resolutionNote != null ? { resolutionNote: row.resolutionNote } : {}),
     ...(row.parentId != null ? { parentId: row.parentId } : {}),
     ...(row.clientRequestId != null ? { clientRequestId: row.clientRequestId } : {}),
   }
@@ -1340,6 +1345,9 @@ function commentRow(c: ElementComment) {
     failureReason: c.failureReason ?? null,
     resolvedBy: c.resolvedBy ?? null,
     resolvedAt: c.resolvedAt ?? null,
+    resolution: c.resolution ?? null,
+    resolutionRef: c.resolutionRef ?? null,
+    resolutionNote: c.resolutionNote ?? null,
     parentId: c.parentId ?? null,
     clientRequestId: c.clientRequestId ?? null,
   }
@@ -1393,6 +1401,10 @@ async function upsertComment(row: ReturnType<typeof commentRow>): Promise<void> 
         failureReason: row.failureReason,
         resolvedBy: row.resolvedBy,
         resolvedAt: row.resolvedAt,
+        /* an unresolve clears all three with the resolved stamp */
+        resolution: row.resolution,
+        resolutionRef: row.resolutionRef,
+        resolutionNote: row.resolutionNote,
       },
     })
 }

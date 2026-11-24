@@ -37,7 +37,13 @@ import { canvasPages, defaultWritePageId, framePageId, pageFrames } from '../sha
 import { conflicts, defaultSpot, freeSpot, visibleBox } from './frameLayout.ts'
 import { normalizeRotation } from '../shared/frameRotation.ts'
 import { SnapshotError, capturePage, compareFrames, sameState, signature, stateOf } from './pageSnapshots.ts'
-import { FRAME_COMMENT_SELECTOR, isCanvasComment, trimComments, type CommentAnchorInput } from '../shared/comments.ts'
+import {
+  FRAME_COMMENT_SELECTOR,
+  isCanvasComment,
+  trimComments,
+  type CommentAnchorInput,
+  type CommentResolutionInput,
+} from '../shared/comments.ts'
 import { isElementId } from '../shared/elementId.ts'
 import { parseRunnerPick, runnerKey, type RunnerPick } from '../shared/agentRunner.ts'
 import { hasElementId, stampElementId } from './elementIds.ts'
@@ -1392,13 +1398,18 @@ export function handBackComment(commentId: string, by: string): ElementComment |
 export const resolveComment = atomic(async function resolveComment(
   commentId: string,
   by: string,
+  reason?: CommentResolutionInput,
 ): Promise<ElementComment | undefined> {
   const found = await findComment(commentId)
   if (!found) return undefined
-  return withThreadLock(found.parentId ?? found.id, () => closeComment(commentId, by))
+  return withThreadLock(found.parentId ?? found.id, () => closeComment(commentId, by, reason))
 })
 
-async function closeComment(commentId: string, by: string): Promise<ElementComment | undefined> {
+async function closeComment(
+  commentId: string,
+  by: string,
+  reason?: CommentResolutionInput,
+): Promise<ElementComment | undefined> {
   const row = await findComment(commentId)
   if (!row) return undefined
   if (row.resolvedAt) return row
@@ -1413,6 +1424,8 @@ async function closeComment(commentId: string, by: string): Promise<ElementComme
     for (const item of closing) {
       edit(item).resolvedBy = by
       item.resolvedAt = Date.now()
+      /* the reason belongs to the comment that was resolved, not to the replies it closed with it */
+      if (reason && item.id === commentId) Object.assign(item, reason)
       stored.saveComment(item)
       broadcast(canvasId, { type: 'comment', comment: item })
       /* a resolved @agent comment was an instruction that got carried out —

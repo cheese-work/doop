@@ -954,6 +954,12 @@ data-doop-webfonts>` for the roster families the frame names and does not load i
   re-anchors the root and its replies together and broadcasts each; a drop on the same anchor
   sends nothing, Esc mid-drag puts the pin back. Tests: `commentMove.test.ts`,
   `canvasCommentsRoute.test.ts`, `elementIds.test.ts`, the drag case in `drawingGeometryBrowser.test.ts`.
+- Comment resolve reasons (CHE-9308 S4, `parseResolveBody` in `shared/comments.ts`): `POST /api/comments/:id/resolve`
+  takes `{ reason: 'addressed' | 'wont_fix' | 'moved', ref?, note? }`: `addressed` needs a `ref` (free text until page
+  versions), `wont_fix` a one-line `note`, `moved` a `ref` (Multica issue key), else 400. A body-less call resolves with
+  no reason (MCP `resolve_comment` unchanged). Stored in `comments.resolution`, `resolution_ref`, `resolution_note`
+  (migration 0068) on the comment resolved, not its replies; the first resolution stands. The row upsert writes all
+  three, so a future unresolve that clears `resolvedAt` clears them too. Tests: `commentResolveReason.test.ts`.
 - Components (`.context/specs/components.md`): a main is an element marked `data-doop-component`; an
   instance is full markup marked `data-doop-instance`, so frame consumers need no changes. Every
   frame write passes `prepareFrameHtml` (`server/components.ts`): `<doop-use>` expands, a changed main
