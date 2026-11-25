@@ -18,6 +18,7 @@
 import { randomBytes } from 'node:crypto'
 import { appendFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
+import { ghFetch } from './lib/gh-fetch.mjs'
 
 const NAME = 'DOOP_DEPLOY_SUSPENDED'
 const NONCE = '[0-9a-f]{32}'
@@ -94,7 +95,7 @@ export async function suspend({ ghApi, repo, runId, sha, reason, expected, any =
 const api =
   (token) =>
   async (path, init = {}) => {
-    const res = await fetch(`${process.env.GITHUB_API_URL || 'https://api.github.com'}/${path}`, {
+    const res = await ghFetch(`${process.env.GITHUB_API_URL || 'https://api.github.com'}/${path}`, {
       method: init.method ?? 'GET',
       headers: {
         Authorization: `Bearer ${token}`,
@@ -103,8 +104,13 @@ const api =
       },
       body: init.body ? JSON.stringify(init.body) : undefined,
     })
-    if (!res.ok)
-      throw Object.assign(new Error(`GitHub ${res.status} for ${init.method ?? 'GET'} ${path}`), { status: res.status })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      const why = typeof body?.message === 'string' ? `: ${body.message.slice(0, 200)}` : ''
+      throw Object.assign(new Error(`GitHub ${res.status} for ${init.method ?? 'GET'} ${path}${why}`), {
+        status: res.status,
+      })
+    }
     const text = await res.text()
     return text ? JSON.parse(text) : {}
   }

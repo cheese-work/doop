@@ -21,6 +21,7 @@
 //              lock: LIFT_QUIESCENT (true), LIFT_DIGEST, LIFT_REVISION, LIFT_CONTAINER_HEALTH.
 import { appendFileSync, writeFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
+import { ghFetch } from './lib/gh-fetch.mjs'
 import { kindOf, lift as writeLift, readMarker } from './deploy-marker.mjs'
 
 const ACTION_TYPE = 'doop.deploy_lift'
@@ -257,7 +258,7 @@ function record(ev, env) {
 const api =
   (token) =>
   async (path, init = {}) => {
-    const res = await fetch(`${process.env.GITHUB_API_URL || 'https://api.github.com'}/${path}`, {
+    const res = await ghFetch(`${process.env.GITHUB_API_URL || 'https://api.github.com'}/${path}`, {
       method: init.method ?? 'GET',
       headers: {
         Authorization: `Bearer ${token}`,
