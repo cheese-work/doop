@@ -202,6 +202,18 @@ export function pickCandidate(runs) {
 // How old the job-start `vars` snapshot may be before a pre-arm or pre-apply stops on it.
 const VARS_SNAPSHOT_BOUND_SECONDS = 180
 
+// When this job's `vars` snapshot cannot be older than: the job record's `created_at` (epoch seconds). The job exists
+// before GitHub dispatches it to a runner, and the snapshot is taken at dispatch, so the age counted from here covers the
+// queue wait, the runner start and the job setup, not only the time after the first step (CHE-9877). Anything but
+// exactly one job of this name and attempt with a parseable time throws: the caller fails closed.
+export function jobCreatedEpoch(jobs, name, attempt) {
+  const hits = (jobs ?? []).filter((j) => name && j?.name === name && Number(j.run_attempt) === Number(attempt))
+  if (hits.length !== 1) throw new Error(`expected one job '${name}' in attempt ${attempt}, found ${hits.length}`)
+  const ms = Date.parse(hits[0].created_at ?? '')
+  if (!Number.isFinite(ms)) throw new Error(`job '${name}' has no readable created_at`)
+  return Math.floor(ms / 1000)
+}
+
 // One operation of the C-5 table. `expect` is this run's own marker value. Before the arm write
 // (`pre-arm`) a "no" is a skip; after it every "no" is a refusal, because the marker already reads
 // as suspended and the run must fail loudly.
@@ -455,6 +467,15 @@ async function cli(argv, env) {
       },
     )
   }
+  if (command === 'snapshot-epoch') {
+    // `actions: read` on the run's own `github.token`; no Variables permission is involved.
+    const { jobs } = await gh(`repos/${repo}/actions/runs/${env.RUN_ID}/attempts/${env.RUN_ATTEMPT}/jobs?per_page=100`)
+    const epoch = jobCreatedEpoch(jobs, env.JOB_NAME, env.RUN_ATTEMPT)
+    console.log(`deploy gate: job '${env.JOB_NAME}' created at epoch ${epoch}; vars snapshot age counts from there`)
+    if (!env.GITHUB_ENV) throw new Error('GITHUB_ENV is not set')
+    appendFileSync(env.GITHUB_ENV, `VARS_READ_EPOCH=${epoch}\n`)
+    return
+  }
   if (command === 'recheck') {
     const [mode] = rest
     const op = flag(rest, '--op')
@@ -467,10 +488,11 @@ async function cli(argv, env) {
       ghApi: gh,
       // The switch and the pause as the workflow passed them; the marker is the file on this C00 host.
       vars: env,
-      // Seconds since the job's first step stamped VARS_READ_EPOCH (unset or garbage reads as unknown).
+      // Seconds since the job record was created (`snapshot-epoch` sets VARS_READ_EPOCH; unset or garbage is unknown).
       varsAgeSeconds: /^\d+$/.test(env.VARS_READ_EPOCH ?? '') ? Date.now() / 1000 - Number(env.VARS_READ_EPOCH) : NaN,
+      // The bound may be tightened by env, never widened past the accepted 180 s.
       varsMaxAgeSeconds: /^\d+$/.test(env.C00_VARS_SNAPSHOT_BOUND_SECONDS ?? '')
-        ? Number(env.C00_VARS_SNAPSHOT_BOUND_SECONDS)
+        ? Math.min(VARS_SNAPSHOT_BOUND_SECONDS, Number(env.C00_VARS_SNAPSHOT_BOUND_SECONDS))
         : undefined,
       markerStore: fileStore(markerFile(env)),
       event: env.EVENT,

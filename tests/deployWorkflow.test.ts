@@ -181,7 +181,11 @@ describe('D2 C00 jobs: deploy, readback-confirm, rollback', () => {
     for (const name of c00jobs) {
       const j = job(d2, name)
       expect(j).toMatch(/timeout-minutes: (\d|[1-5]\d)\b/)
-      expect(j).not.toMatch(/continue-on-error|nohup|setsid|disown/)
+      // The one allowed exception is the deploy job's snapshot-epoch read: when it fails the epoch stays unset, which
+      // train and drill refuse as an unknown age (see the snapshot age test below). Nothing else may swallow a failure.
+      const rest =
+        name === 'deploy' ? j.replace(/- name: Read when the job was created\n\s+continue-on-error: true\n/, '') : j
+      expect(rest).not.toMatch(/continue-on-error|nohup|setsid|disown/)
     }
   })
 
@@ -208,7 +212,8 @@ describe('D2 C00 jobs run trusted control scripts, not the candidate (CHE-9877 r
   it.each(c00jobs)('%s runs every script from control/, never from the candidate checkout', (name) => {
     const scripts = invoked(job(d2, name))
     expect(scripts.length).toBeGreaterThan(0)
-    for (const s of scripts) expect(s, s).toMatch(/^(\.\.\/control\/|scripts\/deploy-marker\.mjs$)/)
+    for (const s of scripts)
+      expect(s, s).toMatch(/^(\.\.\/control\/|control\/scripts\/deploy-gate\.mjs$|scripts\/deploy-marker\.mjs$)/)
     // Marker steps run inside control/; git-history steps run inside candidate/ so ancestry sees the candidate's commits.
     for (const step of steps(job(d2, name))) {
       if (/deploy-marker\.mjs/.test(step)) expect(step).toContain('working-directory: control')
@@ -225,12 +230,20 @@ describe('D2 C00 jobs run trusted control scripts, not the candidate (CHE-9877 r
     }
   })
 
-  it('the deploy job stamps the vars snapshot time first, before any checkout', () => {
+  it('the deploy job counts the vars snapshot age from the job record created_at, not from a runner step clock', () => {
     const j = job(d2, 'deploy')
-    const stamp = j.indexOf('VARS_READ_EPOCH=$(date +%s)')
-    expect(stamp).toBeGreaterThan(-1)
-    expect(stamp).toBeLessThan(j.indexOf('actions/checkout@v4'))
-    expect(j.indexOf('--op pre-arm')).toBeGreaterThan(stamp)
+    const step = j.indexOf('snapshot-epoch')
+    expect(step).toBeGreaterThan(-1)
+    // Before the pre-arm check, and no step stamps the clock itself after the fact.
+    expect(step).toBeLessThan(j.indexOf('--op pre-arm'))
+    expect(j).not.toMatch(/VARS_READ_EPOCH=\$\(date/)
+    // It runs the trusted control script, with the run's own token and only `actions: read` (never Variables).
+    expect(j).toMatch(/run: node control\/scripts\/deploy-gate\.mjs snapshot-epoch/)
+    expect(j).toMatch(/permissions:\s*\n\s*contents: read\s*\n\s*actions: read\s*\n\s*packages: read/)
+    expect(j).not.toMatch(/variables:/)
+    // A failed read leaves the epoch unset (train and drill refuse an unknown age); recovery is not blocked by it.
+    const from = j.indexOf('- name: Read when the job was created')
+    expect(j.slice(from).split('\n      - ')[0]).toContain('continue-on-error: true')
   })
 })
 

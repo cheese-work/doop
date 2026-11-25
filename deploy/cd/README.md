@@ -57,11 +57,14 @@ on C00, once; no job creates it.
   the hosted runner.
 - **Where the reads come from.** `github.token` cannot be granted the Variables permission, so the REST read of a
   variable fails with 403 (CHE-9181). Every job therefore takes `DOOP_DEPLOY_TRAIN` and `MAIN_RED_PAUSED` from
-  env (`${{ vars.X }}`; unset reads as empty, i.e. absent). A job's `vars` are a snapshot from job start and no
-  token may read them live, so the deploy job stamps `VARS_READ_EPOCH` as its first step and `pre-arm` and
-  `pre-apply` (train and drill) refuse when the snapshot is older than `C00_VARS_SNAPSHOT_BOUND_SECONDS` (default 180)
-  or of unknown age. A job that waited for the host lock past the bound stops (a skip at `pre-arm`, a refusal at
-  `pre-apply`, which leaves the marker armed for the rollback job), and a rerun takes a fresh snapshot. Recovery reads
+  env (`${{ vars.X }}`; unset reads as empty, i.e. absent). A job's `vars` are a snapshot taken when GitHub dispatches the job and no
+  token may read them live, so the deploy job counts their age from the job record's `created_at` (Jobs API,
+  `actions: read` on the run's own token; the `snapshot-epoch` step sets `VARS_READ_EPOCH`). That time is before the
+  dispatch, so the age covers the queue wait and the runner start as well as the lock wait. Measured on real C00 deploy
+  jobs (25 Nov 2026): job created to the first step 8 to 10 s. `pre-arm` and `pre-apply` (train and drill) refuse when
+  the age is above 180 s (`C00_VARS_SNAPSHOT_BOUND_SECONDS` may only tighten it) or unknown (the read failed). A job
+  that waited past the bound stops (a skip at `pre-arm`, a refusal at `pre-apply`, which leaves the marker armed for
+  the rollback job), and a rerun is a new job record with a fresh snapshot. Recovery reads
   neither the switch nor the pause, so it is exempt; `confirm` and `rollback` ignore the age. The marker is read
   from the host file, every time, under the same checks.
 - **Control scripts are trusted, the candidate is data.** The three C00 jobs check out this workflow's own revision

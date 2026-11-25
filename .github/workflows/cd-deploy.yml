@@ -161,6 +161,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+      actions: read
       packages: read
     # One C00 job at a time; a started deploy is never cancelled midway.
     concurrency:
@@ -201,11 +202,6 @@ jobs:
       INPUT_MODE: ${{ inputs.mode }}
       INPUT_SCHEDULE_BACKUP: ${{ inputs.schedule_backup }}
     steps:
-      # The job's `vars.*` (the switch and the pause) are a snapshot taken at job start; this stamps when. The gate
-      # refuses a pre-arm or pre-apply on a snapshot older than its bound, so a wait for the host lock cannot act on a
-      # stale switch or pause (CHE-9877).
-      - name: Stamp the vars snapshot
-        run: echo "VARS_READ_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
       # The control scripts (gate, marker, c00.sh and what it sources) come from this workflow's own revision, never from the
       # candidate: a recovery to a pre-change SHA must still run today's gate and the host marker. The candidate is
       # checked out beside it, for inventory and history only.
@@ -226,6 +222,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # The job's `vars.*` (the switch and the pause) are a snapshot taken when GitHub dispatches the job. The age is counted
+      # from the job record's created_at, which is before that dispatch, so it covers the queue wait and the runner start
+      # as well as the lock wait. The gate refuses a pre-arm or pre-apply past 180 s or when this step fails (CHE-9877).
+      # If the read fails the epoch stays unset, which train and drill refuse as an unknown age, and
+      # recovery (which never reads the switch or the pause) is not blocked by it.
+      - name: Read when the job was created
+        continue-on-error: true
+        env:
+          JOB_NAME: ${{ github.job }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: node control/scripts/deploy-gate.mjs snapshot-epoch
       # Step 1 (C-5): nothing below runs on a skip, and nothing on C00 has changed yet.
       - name: Pre-arm check
         id: prearm
