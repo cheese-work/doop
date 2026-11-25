@@ -34,7 +34,10 @@ const val = (v: string | null | Error | undefined, dflt: string | null) => () =>
   return { value: x }
 }
 /* `marker` is a getter-friendly object so a test can change it between operations. */
-function api(vars: Vars, mergers: Record<string, string | null> = { [MID]: 'congvc-dev', [CAND]: 'congvc-bot-x99' }) {
+function api(
+  vars: Vars,
+  mergers: Record<string, string | null> = { [MID]: 'congvc-dev', [CAND]: 'congvc-bot-x99[bot]' },
+) {
   const routes: Record<string, unknown> = {
     [`repos/${REPO}/actions/variables/DOOP_DEPLOY_TRAIN`]: () => val(vars.sw, 'on')(),
     [`repos/${REPO}/actions/variables/MAIN_RED_PAUSED`]: () => val(vars.paused, null)(),
@@ -496,6 +499,18 @@ describe('recheckOp pre-arm (deploy step 1)', () => {
   })
   it('skips when a non-allowed login merged a commit in running..candidate', async () => {
     const r = await ops({}, { ghApi: api({}, { [MID]: 'stranger', [CAND]: 'congvc-dev' }) })('pre-arm')
+    expect(r).toMatchObject({ go: false, skip: true })
+  })
+  // GitHub reports an App's merge as `<slug>[bot]` (CHE-9781). Only the exact trusted login is admitted.
+  it('admits the agent merger congvc-bot-x99[bot]', async () => {
+    const r = await ops(
+      {},
+      { ghApi: api({}, { [MID]: 'congvc-bot-x99[bot]', [CAND]: 'congvc-bot-x99[bot]' }) },
+    )('pre-arm')
+    expect(r).toMatchObject({ go: true })
+  })
+  it.each(['other-app[bot]', 'congvc-bot-x99-evil[bot]', 'congvc-dev[bot]'])('skips a merge by %s', async (login) => {
+    const r = await ops({}, { ghApi: api({}, { [MID]: 'congvc-dev', [CAND]: login }) })('pre-arm')
     expect(r).toMatchObject({ go: false, skip: true })
   })
   it.each([
