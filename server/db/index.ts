@@ -28,7 +28,16 @@ export async function initDb(): Promise<void> {
   const url = env.DATABASE_URL
   if (url) {
     const { drizzle } = await import('drizzle-orm/node-postgres')
-    db = drizzle(url, { schema })
+    const { default: pg } = await import('pg')
+    const pool = new pg.Pool({ connectionString: url })
+    /* A connection that drops (a killed backend, a network loss, a Postgres restart) emits 'error'. The pool
+       listens only while a client is idle; a checked-out client has none, and an 'error' with no listener
+       throws and ends the process. Listen on every client for its whole life: the query in flight rejects with
+       the real error, which callers such as purgeTrashedFrame turn into an outcome they can settle (CHE-9643). */
+    const lost = (error: Error) => console.error('[db] postgres connection error:', error.message)
+    pool.on('error', lost)
+    pool.on('connect', (client) => client.on('error', lost))
+    db = drizzle({ client: pool, schema })
     /* C00 migrates in a supervised one-shot container first (server/db/migrate.ts, CHE-5474 C-8.8) */
     if (env.DOOP_SKIP_MIGRATIONS) return
     const { migrate } = await import('drizzle-orm/node-postgres/migrator')

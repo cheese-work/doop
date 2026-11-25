@@ -139,6 +139,7 @@ describe('nothing is hard-deleted', () => {
   /* the only server code allowed to remove rows, each with its reason */
   const ALLOWED: Record<string, string> = {
     'server/db/persist.ts': 'deleteCanvas (whole-canvas delete) and the 50-version retention trim',
+    'server/db/purge.ts': 'single-frame "Delete forever": one bounded transaction (CHE-9399)',
   }
 
   function sources(dir: string): string[] {
