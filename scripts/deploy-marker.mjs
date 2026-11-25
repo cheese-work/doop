@@ -18,6 +18,7 @@
 import { randomBytes } from 'node:crypto'
 import { appendFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
+import { fetchWithRateLimit } from './gh-rate-limit.mjs'
 
 const NAME = 'DOOP_DEPLOY_SUSPENDED'
 const NONCE = '[0-9a-f]{32}'
@@ -94,15 +95,19 @@ export async function suspend({ ghApi, repo, runId, sha, reason, expected, any =
 const api =
   (token) =>
   async (path, init = {}) => {
-    const res = await fetch(`${process.env.GITHUB_API_URL || 'https://api.github.com'}/${path}`, {
-      method: init.method ?? 'GET',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/vnd.github+json',
-        'Content-Type': 'application/json',
-      },
-      body: init.body ? JSON.stringify(init.body) : undefined,
-    })
+    const res = await fetchWithRateLimit(
+      () =>
+        fetch(`${process.env.GITHUB_API_URL || 'https://api.github.com'}/${path}`, {
+          method: init.method ?? 'GET',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/vnd.github+json',
+            'Content-Type': 'application/json',
+          },
+          body: init.body ? JSON.stringify(init.body) : undefined,
+        }),
+      { label: `${init.method ?? 'GET'} ${path}` },
+    )
     if (!res.ok)
       throw Object.assign(new Error(`GitHub ${res.status} for ${init.method ?? 'GET'} ${path}`), { status: res.status })
     const text = await res.text()
