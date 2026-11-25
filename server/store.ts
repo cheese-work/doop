@@ -97,7 +97,7 @@ export class PurgeInProgressError extends Error {
 }
 
 /** `beginPurge` turned the purge away before it changed anything. */
-export type PurgeRefusalCode = 'not_in_trash' | 'stale_confirmation' | 'has_comments'
+export type PurgeRefusalCode = 'not_in_trash' | 'stale_confirmation' | 'has_comments' | 'component_main'
 export class PurgeRefusedError extends Error {
   override readonly name = 'PurgeRefusedError'
   constructor(
@@ -1509,9 +1509,12 @@ class Store {
     const canvas = canvasId ? this.canvases.get(canvasId) : undefined
     const frame = canvasId ? this.trash.get(canvasId)?.frames.find((f) => f.id === frameId) : undefined
     if (!canvasId || !canvas || !frame) throw new PurgeRefusedError('not_in_trash', frameId)
-    assertWritable(ctx, 'purge_frame', { canvas, frame })
+    requireBoundary('store.beginPurge')
+    assertWritable(ctx, 'purge_frame', { canvas, frame, pageIds: frame.pageId ? [frame.pageId] : [] })
     if (this.purging.has(frameId)) throw new PurgeInProgressError(frameId)
     if (frame.deletedAt !== deletedAt) throw new PurgeRefusedError('stale_confirmation', frameId)
+    if (canvas.components?.some((def) => def.mainFrameId === frameId))
+      throw new PurgeRefusedError('component_main', frameId)
     if (hasComments() || persist.commentWritesPending(frameId) > 0) throw new PurgeRefusedError('has_comments', frameId)
 
     const fence = persist.fenceFrame(frameId)
@@ -1549,6 +1552,11 @@ class Store {
    * `purged`, so held writers drop. Idempotent: a second call changes nothing and returns the first receipt.
    * Only the same frame object leaves the Trash. Not undoable: the rows cannot come back.
    */
+  /** Has `commitPurge` run for this lease? (`lease.receipt` is not the answer: the commit path sets it before COMMIT.) */
+  purgeFinalized(lease: PurgeLease): boolean {
+    return leases.get(lease)?.status === 'purged'
+  }
+
   commitPurge(lease: PurgeLease, receipt: PurgeReceipt): PurgeReceipt {
     const state = leases.get(lease)
     if (!state) throw new Error(`commitPurge: no lease for frame ${lease.frameId}`)

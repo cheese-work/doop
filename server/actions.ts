@@ -3374,20 +3374,26 @@ export const deleteFrame = logsRefusal(deleteFrameWrite, 1)
  * memory, settle the fence as `purged` and tell the room. Idempotent: a second call changes nothing, logs nothing and
  * returns the first receipt. A throwing broadcast or activity line is logged and never changes the outcome.
  */
-export const finishCommitted = atomic(function finishCommitted(
+export function finishCommitted(
   lease: PurgeLease,
   receipt: PurgeReceipt,
   actor: Actor = resolveActor({ name: 'Doop', kind: 'user' }),
 ): PurgeReceipt {
-  if (lease.receipt) return lease.receipt
-  const done = store.commitPurge(lease, receipt)
-  try {
-    logActivity(lease.canvasId, actor, `deleted frame “${lease.frameName}” forever`, lease.frameId)
-  } catch (error) {
-    console.error('[purge] activity failed', lease.frameId, error)
-  }
-  return done
-})
+  /* a transaction of its own: the database has committed, so an outer operation that is undone later must not take
+   * the finalizer's activity line with it */
+  return detached(() =>
+    transaction(() => {
+      if (store.purgeFinalized(lease)) return lease.receipt ?? receipt
+      const done = store.commitPurge(lease, receipt)
+      try {
+        logActivity(lease.canvasId, actor, `deleted frame “${lease.frameName}” forever`, lease.frameId)
+      } catch (error) {
+        console.error('[purge] activity failed', lease.frameId, error)
+      }
+      return done
+    }),
+  )
+}
 
 /** Bring a deleted frame back with its version history; peers get the frame. Its canvas is
  *  loaded first: a trashed frame's html is read from the database like a live one's. */

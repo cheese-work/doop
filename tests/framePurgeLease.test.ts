@@ -70,7 +70,7 @@ const { store, PurgeInProgressError } = await import('../server/store.ts')
 const actions = await import('../server/actions.ts')
 const { assertWritable, systemContext, userContext, FrameLockedError, PolicyRefused } =
   await import('../server/writePolicy.ts')
-const { transaction } = await import('../server/journal.ts')
+const { transaction, WriteBoundaryError } = await import('../server/journal.ts')
 const persist = await import('../server/db/persist.ts')
 const { pageSnapshots, snapshotBlobs, frames: frameRows } = await import('../server/db/schema.ts')
 const { canvasPages } = await import('../shared/pages.ts')
@@ -419,6 +419,81 @@ describe('T12u the finalizer', () => {
     expect(store.getDeletedFrame(f.id)).toBe(swapped)
     entry.frames = entry.frames.filter((x) => x !== swapped)
     ;(store as unknown as { deletedIndex: Map<string, string> }).deletedIndex.delete(f.id)
+  })
+})
+
+describe('T12u finalizer: receipt, rollback and boundary', () => {
+  const activityOf = (f: Frame) =>
+    actions.getActivity(canvasId).filter((a) => a.message === `deleted frame “${f.name}” forever`)
+
+  it('a receipt set before COMMIT is not a completion marker: the finalizer still finishes once', async () => {
+    const f = await makeTrashed('pre-commit receipt')
+    const l = lease(f)
+    l.receipt = receiptOf(f) // what the commit path sets before COMMIT
+    expect(store.purgeFinalized(l)).toBe(false)
+    actions.finishCommitted(l, receiptOf(f))
+    expect(store.purgeFinalized(l)).toBe(true)
+    expect(store.getDeletedFrame(f.id)).toBeUndefined()
+    await expect(l.outcome).resolves.toBe('purged')
+    expect(activityOf(f)).toHaveLength(1)
+    actions.finishCommitted(l, receiptOf(f))
+    expect(activityOf(f)).toHaveLength(1)
+  })
+
+  it('a finalizer inside an outer transaction that is rolled back keeps its activity line and its outcome', async () => {
+    const f = await makeTrashed('outer rollback')
+    const l = lease(f)
+    expect(() =>
+      transaction(() => {
+        actions.finishCommitted(l, receiptOf(f))
+        throw new Error('outer failed')
+      }),
+    ).toThrow('outer failed')
+    expect(store.getDeletedFrame(f.id)).toBeUndefined()
+    await expect(l.outcome).resolves.toBe('purged')
+    expect(activityOf(f)).toHaveLength(1)
+  })
+
+  it('beginPurge outside any write boundary throws before any change', async () => {
+    const f = await makeTrashed('no boundary')
+    expect(() =>
+      store.beginPurge(
+        ctxOf(),
+        f.id,
+        f.deletedAt!,
+        () => false,
+        () => {},
+      ),
+    ).toThrow(WriteBoundaryError)
+    expect(store.isPurging(f.id)).toBe(false)
+    lease(f).release() // the fence was never raised, so a clean lease opens and closes
+  })
+
+  it('beginPurge refuses a component main frame before fencing, and changes nothing', async () => {
+    const f = await makeTrashed('component main')
+    const canvas = store.getCanvas(canvasId)!
+    const before = JSON.stringify(store.listTrash(canvasId))
+    const sent: PurgeEvent[] = []
+    canvas.components = [{ id: 'cmp-main', mainFrameId: f.id } as unknown as NonNullable<typeof canvas.components>[0]]
+    try {
+      expect(() =>
+        transaction(() =>
+          store.beginPurge(
+            ctxOf(),
+            f.id,
+            f.deletedAt!,
+            () => false,
+            (e) => sent.push(e),
+          ),
+        ),
+      ).toThrow(/component_main/)
+      expect(store.isPurging(f.id)).toBe(false)
+      expect(sent).toEqual([])
+      expect(JSON.stringify(store.listTrash(canvasId))).toBe(before)
+    } finally {
+      delete canvas.components
+    }
+    lease(f).release() // no fence was left behind, and once the main is gone the purge may open
   })
 })
 
