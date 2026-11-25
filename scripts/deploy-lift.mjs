@@ -22,6 +22,7 @@
 import { appendFileSync, writeFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { kindOf, lift as writeLift, readMarker } from './deploy-marker.mjs'
+import { fetchWithRateLimit } from './gh-rate-limit.mjs'
 
 const ACTION_TYPE = 'doop.deploy_lift'
 const ACTION_VERSION = 1
@@ -205,10 +206,27 @@ export async function lift(o) {
     const whyAgain = judge(again, await standingMarker(o.ghApi, o.repo))
     if (whyAgain) throw refuse(`changed during the lift: ${whyAgain}`)
 
-    // 3. writeMarker reads the marker once more, writes, and reads it back.
+    // 3. writeMarker reads the marker once more, writes, and reads it back. A rate-limited write waits and is sent
+    //    again: after each wait the marker is reread (by writeMarker) and so is the decision, so a revoked, withdrawn
+    //    or expired approval never authorizes the delayed write (CHE-9860).
+    const ghApi = (path, init) =>
+      o.ghApi(
+        path,
+        init?.beforeRetry
+          ? {
+              ...init,
+              beforeRetry: async () => {
+                await init.beforeRetry()
+                const why = judge(await read(), marker)
+                if (why) throw refuse(`changed during a rate-limit wait: ${why}; nothing was written`)
+              },
+            }
+          : init,
+      )
     try {
-      ev.marker_after = await writeLift({ ghApi: o.ghApi, repo: o.repo, runId: ev.lift_run_id, expected: marker })
+      ev.marker_after = await writeLift({ ghApi, repo: o.repo, runId: ev.lift_run_id, expected: marker })
     } catch (err) {
+      if (err instanceof Refusal) throw err
       const msg = String(err?.message ?? err)
       if (/nothing was written/.test(msg)) throw refuse(`the marker changed during the lift: ${msg}`)
       ev.outcome = 'failed'
@@ -254,18 +272,31 @@ function record(ev, env) {
 }
 
 // ---------------------------------------------------------------------------------------------
-const api =
-  (token) =>
+// A rate limit is waited out for at most 3 requests and 5 minutes in total, then the lift fails closed (CHE-9860).
+const LIFT_RATE_LIMIT_CAP_MS = 5 * 60 * 1000
+const LIFT_RATE_LIMIT_ATTEMPTS = 3
+
+export const api =
+  (token, fetchImpl = fetch) =>
   async (path, init = {}) => {
-    const res = await fetch(`${process.env.GITHUB_API_URL || 'https://api.github.com'}/${path}`, {
-      method: init.method ?? 'GET',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/vnd.github+json',
-        'Content-Type': 'application/json',
+    const res = await fetchWithRateLimit(
+      () =>
+        fetchImpl(`${process.env.GITHUB_API_URL || 'https://api.github.com'}/${path}`, {
+          method: init.method ?? 'GET',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/vnd.github+json',
+            'Content-Type': 'application/json',
+          },
+          body: init.body ? JSON.stringify(init.body) : undefined,
+        }),
+      {
+        label: `${init.method ?? 'GET'} ${path}`,
+        beforeRetry: init.beforeRetry,
+        capMs: LIFT_RATE_LIMIT_CAP_MS,
+        maxAttempts: LIFT_RATE_LIMIT_ATTEMPTS,
       },
-      body: init.body ? JSON.stringify(init.body) : undefined,
-    })
+    )
     if (!res.ok)
       throw Object.assign(new Error(`GitHub ${res.status} for ${init.method ?? 'GET'} ${path}`), { status: res.status })
     const text = await res.text()

@@ -6,6 +6,8 @@
 // `retry-after` or until `x-ratelimit-reset`, plus one second. Waits add up to at most RATE_LIMIT_CAP_MS; a wait that
 // would pass the cap is not started, and the response comes back as it is, so the caller fails closed as before.
 // Any other 403 (a missing permission) comes back at once.
+// `maxAttempts`, when given, also caps the number of requests sent (deploy-lift uses 3, CHE-9860); unset, only the
+// wait cap applies.
 // `beforeRetry`, when given, runs after each wait and before the request is sent again. A write uses it to check that
 // the state it checked before the first try still stands; if it throws, the request is not sent again.
 export const RATE_LIMIT_CAP_MS = 20 * 60 * 1000
@@ -41,13 +43,14 @@ export async function fetchWithRateLimit(doFetch, opts = {}) {
     log = (line) => console.error(line),
     label = '',
     beforeRetry,
+    maxAttempts = Infinity,
   } = opts
   let waited = 0
-  for (;;) {
+  for (let attempt = 1; ; attempt++) {
     const res = await doFetch()
     const nowMs = now()
     const wait = rateLimitWaitMs(res, nowMs)
-    if (wait === null || waited + wait > capMs) return res
+    if (wait === null || attempt >= maxAttempts || waited + wait > capMs) return res
     log(
       `GitHub rate limit (${res.status}) on ${label || 'a request'}: waiting ${Math.ceil(wait / 1000)}s until ` +
         `${resetAt(res, nowMs, wait).toISOString()} (${Math.ceil((waited + wait) / 1000)}s of ${capMs / 1000}s used)`,
