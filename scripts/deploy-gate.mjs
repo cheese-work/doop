@@ -35,7 +35,9 @@ const lower = (s) => String(s ?? '').toLowerCase()
 // ---------------------------------------------------------------------------------------------
 // A marker that reads clear: the exact shape, so a prefix or a trailing newline is not enough.
 const isClear = (m) => typeof m === 'string' && /^clear:[0-9a-f]{32}:[A-Za-z0-9_-]+$/.test(m)
-const MERGERS = new Set([OWNER, 'congvc-bot-x99'])
+// An App's merge shows as `<slug>[bot]` in merged_by.login (CHE-9781). Each login is matched exactly; `[bot]` is
+// never stripped, so another App named like a user stays refused.
+const MERGERS = new Set([OWNER, 'congvc-bot-x99', 'congvc-bot-x99[bot]'])
 const BOT_LOGIN = 'github-actions[bot]'
 const MODES = {
   // The switch and the pause each: required value, or null when the mode ignores it.

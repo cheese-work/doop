@@ -240,6 +240,7 @@ the Actions page (`gh run list --workflow cd-freshness-watch.yml --event schedul
 
 Optional on the runner: `C00_COMPOSE_FILE` (default `compose.yaml`), `C00_CONTAINER` (default `doop`).
 The compose service is `app` (container name `doop`); `compose.image.yml` overrides only its image.
+The gate admits mergers `congvc-dev` and the agent-merge App, whose `merged_by.login` is the exact string `congvc-bot-x99[bot]` (GitHub adds `[bot]` for an App). Logins match exactly; `[bot]` is never stripped, so `other-app[bot]` is skipped.
 `C00_DEPLOY_AUTHORIZERS` stays unset until the agent-merge identity is live (CHE-3123); only `congvc-dev` deploys until then.
 
 Rollback-by-digest has not been drilled yet (slice C). Until then the first live deploy needs Cheese's go-ahead.
