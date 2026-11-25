@@ -1,0 +1,7 @@
+# GREEN, same scripts as red.txt, now against the Flutter dev server in form 2. 2026-11-19 03:15:30 ICT+0700
+$ node harness/ready-check.mjs <form 2 url> 60000
+READY after 6631 ms (renderer=canvaskit)
+exit=0
+$ node harness/state-check.mjs <form 2 url> app/lib/main.dart   (tap twice, save a Dart edit, state must survive)
+before taps=2 stamp=run-0; after reload taps=2 stamp=state-check
+exit=0

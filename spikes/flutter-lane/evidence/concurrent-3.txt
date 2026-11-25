@@ -1,0 +1,62 @@
+# 3 concurrent instances, form 2 policy, HTTPS, dev server (instance = DOM position of the iframe)
+simultaneous (stagger 0) x2 and stagger 4000 ms x3; each: ready, tap x2 in instance 0, save 1, remount instance 0, save 2
+2026-11-19 02:42:18 ICT+0700
+--- stagger=0
+ready: 3 of 3 instances [0,1,2] after 14726 ms
+failed script requests (ERR_INSUFFICIENT_RESOURCES): 1598
+webgl-context warnings/errors in console: 19
+  console: warning: [.WebGL-0x151c1ffe4c00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+  console: warning: [.WebGL-0x151c1e95f000]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+  console: warning: [.WebGL-0x151c1fa26e00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+instance 0 taps before save: 2
+save 1 -> hot reload delivered to instances [2] of 0..2
+instance 0 after save 1: stamp=run-0 taps=2
+instance 0 REMOUNT: first frame 5662 ms, taps=0 stamp=multi-1 (state gone; code = current)
+save 2 -> hot reload delivered to instances [0] (after remount of 0)
+--- stagger=0
+ready: 2 of 3 instances [0,1] after 40026 ms
+failed script requests (ERR_INSUFFICIENT_RESOURCES): 308
+webgl-context warnings/errors in console: 2
+  console: warning: [.WebGL-0x2be4207e5800]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+  console: warning: [.WebGL-0x2be41fac8400]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+instance 0 taps before save: 2
+save 1 -> hot reload delivered to instances [1] of 0..2
+instance 0 after save 1: stamp=run-0 taps=2
+instance 0 REMOUNT: first frame 5784 ms, taps=0 stamp=multi-1 (state gone; code = current)
+save 2 -> hot reload delivered to instances [0] (after remount of 0)
+--- stagger=4000
+ready: 3 of 3 instances [0,1,2] after 14217 ms
+failed script requests (ERR_INSUFFICIENT_RESOURCES): 0
+webgl-context warnings/errors in console: 3
+  console: warning: [.WebGL-0x3e741dcee400]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+  console: warning: [.WebGL-0x3e741de7c800]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+  console: warning: [.WebGL-0x3e741dfb1000]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+instance 0 taps before save: 2
+save 1 -> hot reload delivered to instances [2] of 0..2
+instance 0 after save 1: stamp=run-0 taps=2
+instance 0 REMOUNT: first frame 4262 ms, taps=0 stamp=multi-1 (state gone; code = current)
+save 2 -> hot reload delivered to instances [0] (after remount of 0)
+--- stagger=4000
+ready: 3 of 3 instances [0,1,2] after 15365 ms
+failed script requests (ERR_INSUFFICIENT_RESOURCES): 0
+webgl-context warnings/errors in console: 3
+  console: warning: [.WebGL-0x31341d416600]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+  console: warning: [.WebGL-0x31341c9c2800]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+  console: warning: [.WebGL-0x31341d43e800]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+instance 0 taps before save: 2
+save 1 -> hot reload delivered to instances [2] of 0..2
+instance 0 after save 1: stamp=run-0 taps=2
+instance 0 REMOUNT: first frame 7058 ms, taps=0 stamp=multi-1 (state gone; code = current)
+save 2 -> hot reload delivered to instances [0] (after remount of 0)
+--- stagger=4000
+ready: 3 of 3 instances [0,1,2] after 15177 ms
+failed script requests (ERR_INSUFFICIENT_RESOURCES): 0
+webgl-context warnings/errors in console: 3
+  console: warning: [.WebGL-0x29841f299200]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+  console: warning: [.WebGL-0x298401c3fa00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+  console: warning: [.WebGL-0x29841f295600]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+instance 0 taps before save: 2
+save 1 -> hot reload delivered to instances [2] of 0..2
+instance 0 after save 1: stamp=run-0 taps=2
+instance 0 REMOUNT: first frame 5921 ms, taps=0 stamp=multi-1 (state gone; code = current)
+save 2 -> hot reload delivered to instances [0] (after remount of 0)

@@ -128,7 +128,15 @@ const COMPONENT_LAYER_SELECTORS = [
    JavaScript that no type check sees (oxlint's is still a nursery rule).
    No type information is loaded, so this run is cheap. */
 export default tseslint.config(
-  { ignores: ['dist/', 'node_modules/', 'desktop/src-tauri/target/', 'storybook-static/'] },
+  {
+    ignores: [
+      'dist/',
+      'node_modules/',
+      'desktop/src-tauri/target/',
+      'storybook-static/',
+      'spikes/flutter-lane/app/web/flutter_bootstrap.js',
+    ],
+  },
   {
     files: ['**/*.{js,mjs,cjs}'],
     rules: { 'no-undef': 'error' },
@@ -142,6 +150,15 @@ export default tseslint.config(
         'process console Buffer URL fetch setTimeout clearTimeout setInterval clearInterval'
           .split(' ')
           .map((g) => [g, 'readonly']),
+      ),
+    },
+  },
+  {
+    /* evidence-only spikes: node scripts that also pass `window`/`document` callbacks to Playwright's page.evaluate */
+    files: ['spikes/**/*.{js,mjs}'],
+    languageOptions: {
+      globals: Object.fromEntries(
+        'process console URL setTimeout clearTimeout window document'.split(' ').map((g) => [g, 'readonly']),
       ),
     },
   },

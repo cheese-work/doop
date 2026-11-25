@@ -1,0 +1,6 @@
+# RED, 19 Nov 2026 ~02:05 ICT, harness = empty static page (no Flutter app, no dev server)
+$ node harness/ready-check.mjs http://127.0.0.1:18099/empty.html 5000
+NOT READY within 5000 ms [ 'error: Failed to load resource: the server responded with a status of 404 (File not found)' ]
+exit=1
+$ node harness/timing.mjs http://127.0.0.1:18099/empty.html /tmp/nonexistent.dart 3
+TIMING FAILED: page.waitForFunction: Timeout 60000ms exceeded.   (no doop:flutter-ready, 0 of 3 values)

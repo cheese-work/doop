@@ -1,0 +1,24 @@
+# top-level HTTPS (no frame), same server, warm
+2026-11-19 02:18:23 ICT+0700
+ 02:18:23 up 27 days,  7:41,  3 users,  load average: 11.51, 13.42, 18.14
+run 1: 488 ms
+run 2: 401 ms
+run 3: 341 ms
+run 4: 378 ms
+run 5: 348 ms
+run 6: 362 ms
+run 7: 379 ms
+run 8: 310 ms
+run 9: 367 ms
+run 10: 316 ms
+run 11: 352 ms
+run 12: 355 ms
+run 13: 375 ms
+run 14: 375 ms
+run 15: 355 ms
+run 16: 339 ms
+run 17: 306 ms
+run 18: 341 ms
+run 19: 354 ms
+run 20: 310 ms
+n=20 p50=354 max=488

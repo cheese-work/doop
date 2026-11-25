@@ -1,0 +1,5 @@
+# red: devproxy.ts before the fix, 19 Nov 2026 10:54 ICT
+devproxy https://127.0.0.1:18472 -> http://127.0.0.1:18471
+[Bun.serve]: request timed out after 10 seconds. Pass `idleTimeout` to configure.
+upstream delay 12s -> error ECONNRESET after 12.0s
+exit=1
