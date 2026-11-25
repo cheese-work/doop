@@ -210,7 +210,7 @@ jobs:
         with:
           node-version: 22
       # The marker is a repository variable; `github.token` cannot read or write one, so a GitHub App token does.
-      # It is minted in environment ci-app-token (the c00-multica App, cheese/main only), only for variables, and before the first check
+      # It is minted in environment ci-app-token (the c00-multicado App, cheese/main only), only for variables, and before the first check
       # that reads a variable (CHE-9181).
       - name: Mint the marker token
         id: app
@@ -219,7 +219,7 @@ jobs:
           app-id: ${{ secrets.C00_MULTICADO_APP_ID }}
           private-key: ${{ secrets.C00_MULTICADO_CI_PRIVATE_KEY }}
           repositories: doop
-          permission-variables: write
+          permission-actions-variables: write
       # Step 1 (C-5): nothing below runs on a skip, and nothing on C00 has changed yet.
       - name: Pre-arm check
         id: prearm
@@ -316,7 +316,7 @@ jobs:
         with:
           node-version: 22
       # The marker is a repository variable; `github.token` cannot read or write one, so a GitHub App token does.
-      # It is minted in environment ci-app-token (the c00-multica App, cheese/main only), only for variables, and before the first check
+      # It is minted in environment ci-app-token (the c00-multicado App, cheese/main only), only for variables, and before the first check
       # that reads a variable (CHE-9181).
       - name: Mint the marker token
         id: app
@@ -325,7 +325,7 @@ jobs:
           app-id: ${{ secrets.C00_MULTICADO_APP_ID }}
           private-key: ${{ secrets.C00_MULTICADO_CI_PRIVATE_KEY }}
           repositories: doop
-          permission-variables: write
+          permission-actions-variables: write
       # Everything is decided under the flock: quiescence, the confirm check (this run's marker, the candidate's digest
       # and label), the delay, and that the container did not restart since T0 and is healthy. A failure here leaves
       # the marker armed and starts the rollback job. VARS_TOKEN lets the confirm check read the marker.
@@ -383,7 +383,7 @@ jobs:
         with:
           node-version: 22
       # The marker is a repository variable; `github.token` cannot write one, so a GitHub App token does.
-      # It is minted in environment ci-app-token (the c00-multica App, cheese/main only), only for variables, and before the rollback, whose
+      # It is minted in environment ci-app-token (the c00-multicado App, cheese/main only), only for variables, and before the rollback, whose
       # check reads the marker to prove it is still this run's own (CHE-9181). The rollback step runs after a failed
       # mint (!cancelled()): the mint fails the job, it never keeps a broken deploy from rolling back. Without a
       # token the check decides from what C00 runs alone, and the suspend step below then fails loudly.
@@ -395,7 +395,7 @@ jobs:
           app-id: ${{ secrets.C00_MULTICADO_APP_ID }}
           private-key: ${{ secrets.C00_MULTICADO_CI_PRIVATE_KEY }}
           repositories: doop
-          permission-variables: write
+          permission-actions-variables: write
       # One step, all under the C00 flock: migration quiescence, then the rollback check on what C00 runs and what the
       # marker says at that moment. Only a candidate that is still running rolls back; the predecessor already running
       # (`none`) or a newer deploy (`superseded`) changes nothing. A decision made before the lock could replace a

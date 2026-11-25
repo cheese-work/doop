@@ -70,7 +70,7 @@ jobs:
           app-id: ${{ vars.DOOP_MARKER_APP_ID }}
           private-key: ${{ secrets.DOOP_MARKER_APP_KEY }}
           repositories: doop
-          permission-variables: write
+          permission-actions-variables: write
       # C-5: every C00 job removes the compat sandboxes first. A failed sweep fails the run before the lift.
       - name: Sweep the compat sandboxes
         run: bash deploy/cd/c00.sh sweep
