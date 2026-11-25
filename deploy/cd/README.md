@@ -278,3 +278,10 @@ Nothing runs yet: the train switch is off and no workflow calls these. Rules C-8
 - `c00.sh sweep`: removes every `doop.compat.run` container, network and volume, reads back zero, prints `df` before and after. Every C00 compat job runs it first and last; a failed sweep fails the job.
 - To add a production key to the predecessor env you must edit `ALLOWED_KEYS` and `tests/compatSandbox.test.ts`; CI fails if a key from `server/env.ts` outside the seven is added.
 - `tests/compatIsolationDocker.test.ts` runs the same probe script on a real internal network (needs Docker; skips without it).
+
+### GitHub rate limit (CHE-9842)
+
+`deploy-gate.mjs` and `deploy-marker.mjs` wait out a GitHub rate limit (403 or 429 with `retry-after` or
+`x-ratelimit-remaining: 0`) instead of failing: they sleep until the reset, log each wait with the reset time, and
+retry, for at most 20 minutes in total (`scripts/gh-rate-limit.mjs`). Past that, or on any other 403, they fail
+closed as before.
