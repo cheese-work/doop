@@ -50,6 +50,10 @@ async function savePagesAndRecord(canvas: Canvas, next: CanvasPageInfo[], select
   }
 }
 
+/** `samePages` plus the two flags, which it ignores: a flag-only broadcast is a newer list too. */
+const sameState = (a: CanvasPageInfo[], b: CanvasPageInfo[]) =>
+  samePages(a, b) && a.every((p, i) => !!p.ledger === !!b[i]!.ledger && p.finished?.at === b[i]!.finished?.at)
+
 /** How a ledger or Finished change ended, for the panel to word. `lost`: no reply came back and the
  *  re-read shows the page unchanged; `unknown`: no reply and the re-read failed too. */
 export type PageStateOutcome =
@@ -75,7 +79,7 @@ export async function changePageState(
     if (state.canvas?.id !== canvas.id) return { kind: 'done' }
     /* a newer broadcast can arrive before this reply: leave it be */
     const shown = canvasPages(state.canvas)
-    if (samePages(shown, expected) || samePages(shown, saved)) state.setPages(saved, canvas.id)
+    if (sameState(shown, expected) || sameState(shown, saved)) state.setPages(saved, canvas.id)
     return { kind: 'done' }
   } catch (error) {
     if (error instanceof ApiError) {

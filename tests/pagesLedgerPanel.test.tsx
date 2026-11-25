@@ -349,6 +349,24 @@ describe('A5 states', () => {
     expect(useStore.getState().activePageId).toBe('dir')
   })
 
+  it('keeps a newer flag-only broadcast when an older reply lands after it', async () => {
+    let reply!: (value: { pages: typeof PAGES; skipped: string[] }) => void
+    setPageFinished.mockReturnValueOnce(new Promise((resolve) => (reply = resolve)))
+    await openMenu('flows')
+    await click(item('Move to Finished'))
+    /* a teammate marks Direction as the ledger: same ids and names, only a flag differs */
+    const newer = PAGES.map((p) => (p.id === 'dir' ? { ...p, ledger: true as const } : p))
+    act(() => useStore.getState().setPages(newer))
+    /* the reply to our move was made from the list before that broadcast */
+    await act(async () => {
+      reply({ pages: PAGES.map((p) => (p.id === 'flows' ? { ...p, finished: AT } : p)), skipped: [] })
+      await settle()
+    })
+    const shown = useStore.getState().canvas!.pages!
+    expect(shown.find((p) => p.id === 'dir')!.ledger).toBe(true)
+    expect(shown.find((p) => p.id === 'flows')!.finished).toBeUndefined()
+  })
+
   it('after a lost reply re-reads the canvas before it shows a result: the change landed', async () => {
     setPageFinished.mockRejectedValueOnce(new TypeError('fetch failed'))
     const landed = PAGES.map((p) => (p.id === 'flows' ? { ...p, finished: AT } : p))
