@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+// @ts-expect-error plain .mjs script, no type declarations
 import { ghFetch } from '../scripts/gh-fetch.mjs'
 
 const reply =
