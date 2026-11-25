@@ -9,7 +9,7 @@
 import { spawnSync } from 'node:child_process'
 import { appendFileSync, readFileSync } from 'node:fs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { ghFetch } from './gh-fetch.mjs'
+import { fetchWithRateLimit } from './gh-rate-limit.mjs'
 import { inventory } from './migration-inventory.mjs'
 
 const OWNER = 'congvc-dev'
@@ -334,11 +334,16 @@ export async function dockerRunning(container = process.env.C00_CONTAINER || 'do
 // Inputs come from env (never from the command line, never inlined into a workflow script). Results go to
 // $GITHUB_OUTPUT. A skip exits 0 with go=false; a refusal, an unreadable fact or any error exits 1.
 const ghWith = (token) => async (path) => {
-  const res = await ghFetch(`${process.env.GITHUB_API_URL || 'https://api.github.com'}/${path}`, {
-    headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
-  })
+  const res = await fetchWithRateLimit(
+    () =>
+      fetch(`${process.env.GITHUB_API_URL || 'https://api.github.com'}/${path}`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
+      }),
+    { label: path },
+  )
   if (!res.ok) {
-    const why = res.ghMessage ? `: ${res.ghMessage}` : ''
+    const body = await res.json().catch(() => ({}))
+    const why = typeof body?.message === 'string' ? `: ${body.message.slice(0, 200)}` : ''
     throw Object.assign(new Error(`GitHub ${res.status} for ${path}${why}`), { status: res.status })
   }
   return res.json()

@@ -18,7 +18,7 @@
 import { randomBytes } from 'node:crypto'
 import { appendFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
-import { ghFetch } from './gh-fetch.mjs'
+import { fetchWithRateLimit } from './gh-rate-limit.mjs'
 
 const NAME = 'DOOP_DEPLOY_SUSPENDED'
 const NONCE = '[0-9a-f]{32}'
@@ -51,9 +51,24 @@ export async function writeMarker({ ghApi, repo, expected, next }) {
   if (!kindOf(next)) throw new Error('refusing to write a value that is not a marker value')
   const now = await readMarker(ghApi, repo)
   if (now !== expected) throw new Error('the suspension marker changed since it was read; nothing was written')
+  // A rate-limited write waits and is sent again. Another actor may write during that wait, so every retry rereads
+  // the marker first: a write only ever lands over `expected`.
+  const beforeRetry = async () => {
+    if ((await readMarker(ghApi, repo)) !== expected)
+      throw new Error('the suspension marker changed during a rate-limit wait; nothing was written')
+  }
   if (now === null)
-    await ghApi(`repos/${repo}/actions/variables`, { method: 'POST', body: { name: NAME, value: next } })
-  else await ghApi(`repos/${repo}/actions/variables/${NAME}`, { method: 'PATCH', body: { name: NAME, value: next } })
+    await ghApi(`repos/${repo}/actions/variables`, {
+      method: 'POST',
+      body: { name: NAME, value: next },
+      beforeRetry,
+    })
+  else
+    await ghApi(`repos/${repo}/actions/variables/${NAME}`, {
+      method: 'PATCH',
+      body: { name: NAME, value: next },
+      beforeRetry,
+    })
   if ((await readMarker(ghApi, repo)) !== next) throw new Error('the suspension marker write could not be read back')
   return next
 }
@@ -95,24 +110,21 @@ export async function suspend({ ghApi, repo, runId, sha, reason, expected, any =
 const api =
   (token) =>
   async (path, init = {}) => {
-    const res = await ghFetch(`${process.env.GITHUB_API_URL || 'https://api.github.com'}/${path}`, {
-      method: init.method ?? 'GET',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/vnd.github+json',
-        'Content-Type': 'application/json',
-      },
-      body: init.body ? JSON.stringify(init.body) : undefined,
-    })
+    const res = await fetchWithRateLimit(
+      () =>
+        fetch(`${process.env.GITHUB_API_URL || 'https://api.github.com'}/${path}`, {
+          method: init.method ?? 'GET',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/vnd.github+json',
+            'Content-Type': 'application/json',
+          },
+          body: init.body ? JSON.stringify(init.body) : undefined,
+        }),
+      { label: `${init.method ?? 'GET'} ${path}`, beforeRetry: init.beforeRetry },
+    )
     if (!res.ok)
-      throw Object.assign(
-        new Error(
-          `GitHub ${res.status} for ${init.method ?? 'GET'} ${path}${res.ghMessage ? `: ${res.ghMessage}` : ''}`,
-        ),
-        {
-          status: res.status,
-        },
-      )
+      throw Object.assign(new Error(`GitHub ${res.status} for ${init.method ?? 'GET'} ${path}`), { status: res.status })
     const text = await res.text()
     return text ? JSON.parse(text) : {}
   }
