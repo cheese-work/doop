@@ -21,8 +21,8 @@
 //              lock: LIFT_QUIESCENT (true), LIFT_DIGEST, LIFT_REVISION, LIFT_CONTAINER_HEALTH.
 import { appendFileSync, writeFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
-import { ghFetch } from './lib/gh-fetch.mjs'
 import { kindOf, lift as writeLift, readMarker } from './deploy-marker.mjs'
+import { fetchWithRateLimit } from './gh-rate-limit.mjs'
 
 const ACTION_TYPE = 'doop.deploy_lift'
 const ACTION_VERSION = 1
@@ -255,18 +255,22 @@ function record(ev, env) {
 }
 
 // ---------------------------------------------------------------------------------------------
-const api =
-  (token) =>
+export const api =
+  (token, fetchImpl = fetch) =>
   async (path, init = {}) => {
-    const res = await ghFetch(`${process.env.GITHUB_API_URL || 'https://api.github.com'}/${path}`, {
-      method: init.method ?? 'GET',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/vnd.github+json',
-        'Content-Type': 'application/json',
-      },
-      body: init.body ? JSON.stringify(init.body) : undefined,
-    })
+    const res = await fetchWithRateLimit(
+      () =>
+        fetchImpl(`${process.env.GITHUB_API_URL || 'https://api.github.com'}/${path}`, {
+          method: init.method ?? 'GET',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/vnd.github+json',
+            'Content-Type': 'application/json',
+          },
+          body: init.body ? JSON.stringify(init.body) : undefined,
+        }),
+      { label: `${init.method ?? 'GET'} ${path}`, beforeRetry: init.beforeRetry },
+    )
     if (!res.ok)
       throw Object.assign(new Error(`GitHub ${res.status} for ${init.method ?? 'GET'} ${path}`), { status: res.status })
     const text = await res.text()
