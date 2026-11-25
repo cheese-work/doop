@@ -21,4 +21,18 @@ describe('deploy-lift api', () => {
     const fetchImpl = async () => new Response('{"message":"Resource not accessible"}', { status: 403 })
     await expect(api('tok', fetchImpl)('repos/o/r/x')).rejects.toMatchObject({ status: 403 })
   })
+
+  it('returns a 404 without retry', async () => {
+    let calls = 0
+    const fetchImpl = async () => (calls++, new Response('{"message":"Not Found"}', { status: 404 }))
+    await expect(api('tok', fetchImpl)('repos/o/r/actions/variables/GONE')).rejects.toMatchObject({ status: 404 })
+    expect(calls).toBe(1)
+  })
+
+  it('stops after 3 requests on a rate limit that never clears, then fails closed', async () => {
+    let calls = 0
+    const fetchImpl = async () => (calls++, limited())
+    await expect(api('tok', fetchImpl)('repos/o/r/x')).rejects.toMatchObject({ status: 403 })
+    expect(calls).toBe(3)
+  }, 10_000)
 })

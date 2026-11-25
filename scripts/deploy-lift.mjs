@@ -255,6 +255,10 @@ function record(ev, env) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// A rate limit is waited out for at most 3 requests and 5 minutes in total, then the lift fails closed (CHE-9860).
+const LIFT_RATE_LIMIT_CAP_MS = 5 * 60 * 1000
+const LIFT_RATE_LIMIT_ATTEMPTS = 3
+
 export const api =
   (token, fetchImpl = fetch) =>
   async (path, init = {}) => {
@@ -269,7 +273,12 @@ export const api =
           },
           body: init.body ? JSON.stringify(init.body) : undefined,
         }),
-      { label: `${init.method ?? 'GET'} ${path}`, beforeRetry: init.beforeRetry },
+      {
+        label: `${init.method ?? 'GET'} ${path}`,
+        beforeRetry: init.beforeRetry,
+        capMs: LIFT_RATE_LIMIT_CAP_MS,
+        maxAttempts: LIFT_RATE_LIMIT_ATTEMPTS,
+      },
     )
     if (!res.ok)
       throw Object.assign(new Error(`GitHub ${res.status} for ${init.method ?? 'GET'} ${path}`), { status: res.status })
