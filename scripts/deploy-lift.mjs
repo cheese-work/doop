@@ -206,10 +206,27 @@ export async function lift(o) {
     const whyAgain = judge(again, await standingMarker(o.ghApi, o.repo))
     if (whyAgain) throw refuse(`changed during the lift: ${whyAgain}`)
 
-    // 3. writeMarker reads the marker once more, writes, and reads it back.
+    // 3. writeMarker reads the marker once more, writes, and reads it back. A rate-limited write waits and is sent
+    //    again: after each wait the marker is reread (by writeMarker) and so is the decision, so a revoked, withdrawn
+    //    or expired approval never authorizes the delayed write (CHE-9860).
+    const ghApi = (path, init) =>
+      o.ghApi(
+        path,
+        init?.beforeRetry
+          ? {
+              ...init,
+              beforeRetry: async () => {
+                await init.beforeRetry()
+                const why = judge(await read(), marker)
+                if (why) throw refuse(`changed during a rate-limit wait: ${why}; nothing was written`)
+              },
+            }
+          : init,
+      )
     try {
-      ev.marker_after = await writeLift({ ghApi: o.ghApi, repo: o.repo, runId: ev.lift_run_id, expected: marker })
+      ev.marker_after = await writeLift({ ghApi, repo: o.repo, runId: ev.lift_run_id, expected: marker })
     } catch (err) {
+      if (err instanceof Refusal) throw err
       const msg = String(err?.message ?? err)
       if (/nothing was written/.test(msg)) throw refuse(`the marker changed during the lift: ${msg}`)
       ev.outcome = 'failed'
