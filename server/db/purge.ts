@@ -115,9 +115,9 @@ export async function purgeTrashedFrame(args: PurgeArgs): Promise<PurgeResult> {
 export type ProbeOptions = {
   /** how long one attempt waits on the frame row before it tries again (default 5000) */
   lockTimeoutMs?: number
-  /** pauses before the next attempts after a failed one (default 100, 250, 500, 1000) */
+  /** pauses before the next attempts after a failed one (default 1, 2, 4, 8, 16 s) */
   delaysMs?: number[]
-  /** the pause after those are used up (default 2000) */
+  /** the pause after those are used up (default 30 s) */
   repeatMs?: number
 }
 
@@ -132,8 +132,8 @@ export async function resolvePurgeOutcome(
   opts: ProbeOptions = {},
 ): Promise<'committed' | 'rolled_back'> {
   const lockTimeoutMs = Math.max(1, Math.trunc(opts.lockTimeoutMs ?? 5000))
-  const delays = opts.delaysMs ?? [100, 250, 500, 1000]
-  const repeatMs = opts.repeatMs ?? 2000
+  const delays = opts.delaysMs ?? [1000, 2000, 4000, 8000, 16000]
+  const repeatMs = opts.repeatMs ?? 30_000
   for (let attempt = 0; ; attempt++) {
     try {
       return await db.transaction(async (tx) => {

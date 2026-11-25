@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import { spawn } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
 import pg from 'pg'
@@ -348,6 +349,83 @@ describe.skipIf(!PG_URL)('frame purge transaction on PostgreSQL', () => {
       holder.release()
       expect(await probing).toBe('committed')
     })
+  })
+
+  it('T12e the probe waits 1, 2, 4, 8, 16 s after failed tries, then 30 s each time', async () => {
+    await seedFrame(pool, F)
+    const holder = await pool.connect()
+    await holder.query('begin')
+    await holder.query('select id from frames where id = $1 for update', [F])
+    // take the probe's own pauses (timers set from purge.ts) off the clock and write them down; every other timer,
+    // such as the pool's idle timer, stays real
+    const pauses: number[] = []
+    const realSetTimeout = globalThis.setTimeout
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number, ...rest: unknown[]) => {
+      if (
+        typeof ms === 'number' &&
+        new Error().stack
+          ?.split('\n')
+          .slice(1, 5)
+          .some((l) => l.includes('server/db/purge.ts') && !l.includes('node_modules'))
+      ) {
+        pauses.push(ms)
+        return realSetTimeout(fn, 0, ...rest)
+      }
+      return realSetTimeout(fn, ms, ...rest)
+    }) as typeof setTimeout)
+    const probing = purge.resolvePurgeOutcome(F, { lockTimeoutMs: 50 })
+    for (let i = 0; i < 200 && pauses.length < 8; i++) await new Promise((r) => realSetTimeout(r, 25))
+    vi.restoreAllMocks()
+    await holder.query('rollback')
+    holder.release()
+    expect(await probing).toBe('rolled_back')
+    expect(pauses.slice(0, 8)).toEqual([1000, 2000, 4000, 8000, 16000, 30_000, 30_000, 30_000])
+  })
+
+  describe('T12d a backend killed before COMMIT does not take the server down (production pool, no test listener)', () => {
+    it('the process survives, answers unknown, and the probe says rolled_back with every row kept', async () => {
+      await seedFrame(pool, F)
+      await seedKept(pool)
+      const before = await counts(pool, ALL)
+      // hold the comments table so the purge stops at its SHARE lock, mid-transaction and before COMMIT
+      const blocker = await pool.connect()
+      await blocker.query('begin')
+      await blocker.query('lock table comments in access exclusive mode')
+      const child = spawn(
+        process.execPath,
+        ['--import', 'tsx', 'tests/fixtures/purgeDisconnectChild.ts', F, CANVAS, String(DELETED_AT)],
+        {
+          env: { ...process.env, DATABASE_URL: PG_URL, DOOP_SKIP_MIGRATIONS: 'true' },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      )
+      let out = ''
+      let err = ''
+      child.stdout.on('data', (d) => (out += d))
+      child.stderr.on('data', (d) => (err += d))
+      const exited = new Promise<number | null>((resolve) => child.on('exit', (code) => resolve(code)))
+      try {
+        // wait until the purge sits on the lock, then kill its backend
+        let pid: number | undefined
+        for (let i = 0; i < 100 && !pid; i++) {
+          await new Promise((r) => setTimeout(r, 100))
+          const r = await pool.query(
+            `select pid from pg_stat_activity where wait_event_type = 'Lock' and query ilike 'lock table comments in share mode%'`,
+          )
+          pid = r.rows[0]?.pid
+        }
+        expect(pid).toBeTruthy()
+        await pool.query('select pg_terminate_backend($1)', [pid])
+        const code = await exited
+        expect(code, err).toBe(0)
+        expect(out).toContain('RESULT {"outcome":"unknown","probe":"rolled_back"}')
+      } finally {
+        child.kill()
+        await blocker.query('rollback')
+        blocker.release()
+      }
+      expect(await counts(pool, ALL)).toEqual(before)
+    }, 30_000)
   })
 })
 
