@@ -80,6 +80,7 @@ import {
   GuideLimitError,
   NoOpenPageError,
   PageLimitError,
+  PurgeInProgressError,
   store,
 } from './store.ts'
 import { parseGuide } from '../shared/guides.ts'
@@ -2512,6 +2513,11 @@ function frameWriteFailed(res: express.Response, e: unknown) {
 
 /** 423 for a locked frame, 412 for a conditional write that lost the race, 422 for work over budget; anything else is a real failure. */
 function frameWriteRefused(res: express.Response, e: unknown): boolean {
+  /* a frame being deleted forever stays in the Trash: not a lock (423) and not a policy refusal, nothing changed */
+  if (e instanceof PurgeInProgressError) {
+    res.status(409).json({ error: e.message, code: e.code })
+    return true
+  }
   /* too costly to parse: the atomic write that threw has undone itself, so nothing was stored */
   if (e instanceof WorkBudgetError) {
     res.status(422).json({ error: e.message, code: 'work_budget_exceeded' })
@@ -3182,6 +3188,7 @@ app.post('/api/canvases/:id/pages/:pageId/restore', async (req, res) => {
     res.json(restored)
   } catch (e) {
     if (e instanceof PageLimitError) return res.status(400).json({ error: e.message })
+    if (e instanceof PurgeInProgressError) return res.status(409).json({ error: e.message, code: e.code })
     throw e
   }
 })
