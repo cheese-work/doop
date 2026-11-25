@@ -42,8 +42,8 @@ export function refuseFinishedFrame(canvas: Canvas, frame: Frame, op = 'update_f
   throw new PageFinishedError(op, finishedPageName(canvas, frame))
 }
 
-/** Ops the freeze covers: frame writes. `lock_frame` and `unlock_frame` stay open. */
-const FROZEN_OPS: ReadonlySet<string> = new Set(['create_frame', 'update_frame', 'delete_frame'])
+/** Ops the freeze covers: frame writes, and a landing (its `pageIds` is the destination). `lock_frame` and `unlock_frame` stay open. */
+const FROZEN_OPS: ReadonlySet<string> = new Set(['create_frame', 'update_frame', 'delete_frame', 'land_proposal'])
 
 /**
  * The page rule of `assertWritable`, run right after the lock rules and for every context. `lockOnly`

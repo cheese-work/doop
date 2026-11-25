@@ -1,5 +1,6 @@
 import { canvasPages, framePageId } from '../shared/pages.ts'
 import { checkReconGate, isReconHtml, reconRefusal } from './reconGuard.ts'
+import { isLandingProof, type LandingProof } from './landingProof.ts'
 import { assertPageRules } from './pageState.ts'
 import { FrameLockedError, PolicyRefused } from './policyRefused.ts'
 import type { Actor, Canvas, CanvasPageInfo, Frame } from '../shared/types.ts'
@@ -25,6 +26,8 @@ export type WriteContext = {
   origin?: 'mcp' | 'sync'
   /** account erasure only (`erasureContext`): may delete a canvas that still holds a locked frame */
   erasure?: boolean
+  /** `land_proposal` only: the proof `verifyLanding` made. A server-side value, never parsed from input. */
+  landing?: LandingProof
 }
 
 export type WriteOp =
@@ -38,12 +41,15 @@ export type WriteOp =
   | 'lock_frame'
   | 'unlock_frame'
   | 'set_page_state'
+  | 'land_proposal'
 
 export type WriteTarget = {
   canvas: Canvas
   frame?: Frame
   /** the page the write lands on (frame page, destination page, source page) */
   pageIds?: string[]
+  /** land_proposal: the page the proposal comes from (its Finished state is not checked; `pageIds` is the destination) */
+  sourcePageId?: string
   /** set_pages: the list being saved */
   nextPages?: CanvasPageInfo[]
   /** create_frame: the HTML the new frame starts with (the recon frame itself is exempt from G2) */
@@ -127,6 +133,7 @@ const OPS: ReadonlySet<string> = new Set<WriteOp>([
   'lock_frame',
   'unlock_frame',
   'set_page_state',
+  'land_proposal',
 ])
 
 function assertLockRules(ctx: WriteContext, op: WriteOp, target: WriteTarget): void {
@@ -168,9 +175,35 @@ export function assertWritable(ctx: WriteContext, op: WriteOp, target: WriteTarg
   if (!OPS.has(op)) throw new PolicyRefused(op, 'unknown operation')
   assertLockRules(ctx, op, target)
   assertPageRules(op, target)
+  if (op === 'land_proposal') return assertLanding(ctx, target)
   if (ctx.kind !== 'agent') return
   assertBinding(ctx, op, target)
   if (op === 'create_frame') assertRecon(ctx, target)
+}
+
+/**
+ * A landing (CHE-9672): the one write a taskless agent may make on a bound canvas, and only with a
+ * `LandingProof` from `verifyLanding`. The proof, not the actor, is the authority, so every kind of context
+ * needs it and `assertBinding` is not asked. It must be for this canvas and project, the source page must be
+ * the proof's topic (bound to its issue when bound at all), and the destination is the ledger page alone.
+ */
+function assertLanding(ctx: WriteContext, target: WriteTarget): void {
+  const op = 'land_proposal'
+  const proof = ctx.landing
+  if (!isLandingProof(proof)) throw new PolicyRefused(op, 'a landing needs a proof from verifyLanding')
+  const { canvas } = target
+  if (!canvas.projectId || canvas.projectId !== proof.projectId)
+    throw new PolicyRefused(op, 'canvas is not bound to the proof project')
+  if (canvas.id !== proof.canvasId) throw new PolicyRefused(op, 'the proof is for another canvas')
+  const pages = canvasPages(canvas)
+  const source = pages.find((page) => page.id === target.sourcePageId)
+  if (!source || source.id !== proof.sourcePageId || source.name !== proof.sourcePageName)
+    throw new PolicyRefused(op, 'source page is not the proof topic')
+  if (source.issueId && source.issueId !== proof.issueId)
+    throw new PolicyRefused(op, 'source page is bound to another issue')
+  const ledger = pages.find((page) => page.ledger)
+  if (!ledger || target.pageIds?.length !== 1 || target.pageIds[0] !== ledger.id)
+    throw new PolicyRefused(op, 'a landing goes to the ledger page only')
 }
 
 /**
