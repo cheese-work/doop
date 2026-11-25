@@ -10,9 +10,11 @@ import { admit, c00Quiescent, decideRun, pickCandidate, recheckOp } from '../scr
 import { inventory } from '../scripts/migration-inventory.mjs'
 
 /* CHE-5544 (train S2, plan CHE-5474 C-2, C-5, C-6). The decider runs in two places: `decideRun` at the
-   top of a D2 run (entry rules and the cheap gates) and `recheckOp` inside the C00 jobs, once per
+   top of a D2 run (entry rules and the switch and pause) and `recheckOp` inside the C00 jobs, once per
    operation. Every GitHub read goes through an injected `ghApi`, every C00 or git fact through an
-   injected function, so each rule is pinned without a network. */
+   injected function, so each rule is pinned without a network. CHE-9877: the suspension marker is a file on
+   the C00 host, so only `recheckOp` (which runs there) reads it, through an injected `markerStore`; the hosted
+   `decideRun` never sees it. */
 const REPO = 'cheese-work/doop'
 const RUNNING = 'a'.repeat(40)
 const MID = 'b'.repeat(40)
@@ -33,7 +35,6 @@ const val = (v: string | null | Error | undefined, dflt: string | null) => () =>
   if (x === null) throw httpError(404)
   return { value: x }
 }
-/* `marker` is a getter-friendly object so a test can change it between operations. */
 function api(
   vars: Vars,
   mergers: Record<string, string | null> = { [MID]: 'congvc-dev', [CAND]: 'congvc-bot-x99[bot]' },
@@ -41,7 +42,6 @@ function api(
   const routes: Record<string, unknown> = {
     [`repos/${REPO}/actions/variables/DOOP_DEPLOY_TRAIN`]: () => val(vars.sw, 'on')(),
     [`repos/${REPO}/actions/variables/MAIN_RED_PAUSED`]: () => val(vars.paused, null)(),
-    [`repos/${REPO}/actions/variables/DOOP_DEPLOY_SUSPENDED`]: () => val(vars.marker, CLEAR)(),
   }
   let n = 10
   for (const [sha, login] of Object.entries(mergers)) {
@@ -153,15 +153,20 @@ describe('decideRun: train gates skip (Done when 2)', () => {
     ['switch off', { sw: 'off' }],
     ['switch absent', { sw: null }],
     ['pause set', { paused: 'main red' }],
-    ['marker absent', { marker: null }],
-    ['marker armed', { marker: 'armed:n:1:' + CAND }],
-    ['marker suspended', { marker: 'suspended:n:1:' + CAND + ':migrated' }],
-    ['marker garbage', { marker: 'ok' }],
-    ['marker with the clear prefix but no nonce', { marker: 'clear:n0:restore' }],
-    ['marker clear with a short nonce', { marker: 'clear:abc:restore' }],
-    ['marker clear with a trailing line', { marker: CLEAR + '\nx' }],
   ])('%s', async (_n, vars) => {
     expect(await decideRun(entry({ ghApi: api(vars) }))).toMatchObject({ go: false, skip: true })
+  })
+
+  // The hosted `resolve` cannot read a file on C00. It never reads the marker; the pre-arm check on C00 does.
+  it('never reads the marker', async () => {
+    const reads: string[] = []
+    const inner = api({})
+    const ghApi = async (path: string) => {
+      reads.push(path)
+      return inner(path)
+    }
+    expect(await decideRun(entry({ ghApi }))).toMatchObject({ go: true, mode: 'train' })
+    expect(reads.some((p) => p.includes('DOOP_DEPLOY_SUSPENDED'))).toBe(false)
   })
 
   it('recovery ignores the switch, the pause and any marker', async () => {
@@ -184,7 +189,7 @@ describe('decideRun: train gates skip (Done when 2)', () => {
 const forbidden = async () => {
   throw httpError(403)
 }
-const ENV_VARS = { DOOP_DEPLOY_TRAIN: 'on', MAIN_RED_PAUSED: '', DOOP_DEPLOY_SUSPENDED: CLEAR }
+const ENV_VARS = { DOOP_DEPLOY_TRAIN: 'on', MAIN_RED_PAUSED: '' }
 
 describe('decideRun: switches come from env, not the variables API (CHE-9181)', () => {
   it('DOOP_DEPLOY_TRAIN=on in env is a go while the variables API answers 403', async () => {
@@ -206,23 +211,18 @@ describe('decideRun: switches come from env, not the variables API (CHE-9181)', 
     ['unset switch', { ...ENV_VARS, DOOP_DEPLOY_TRAIN: '' }, 'needs'],
     ['switch off', { ...ENV_VARS, DOOP_DEPLOY_TRAIN: 'off' }, 'needs'],
     ['pause set', { ...ENV_VARS, MAIN_RED_PAUSED: 'main red' }, 'MAIN_RED_PAUSED is set'],
-    ['marker unset', { ...ENV_VARS, DOOP_DEPLOY_SUSPENDED: '' }, 'absent'],
-    ['marker armed', { ...ENV_VARS, DOOP_DEPLOY_SUSPENDED: ARMED }, 'not clear'],
   ])('%s in env is still a clean skip', async (_n, vars, words) => {
     const r = await decideRun(entry({ ghApi: forbidden, vars }))
     expect(r).toMatchObject({ go: false, skip: true })
     expect(r.reason).toContain(words)
   })
 
-  it.each([['DOOP_DEPLOY_TRAIN'], ['MAIN_RED_PAUSED'], ['DOOP_DEPLOY_SUSPENDED']])(
-    '%s missing from env fails red, never a skip',
-    async (name) => {
-      const { [name]: _gone, ...vars } = ENV_VARS as Record<string, string>
-      const r = await decideRun(entry({ ghApi: forbidden, vars }))
-      expect(r).toMatchObject({ go: false, skip: false })
-      expect(r.reason).toContain(name)
-    },
-  )
+  it.each([['DOOP_DEPLOY_TRAIN'], ['MAIN_RED_PAUSED']])('%s missing from env fails red, never a skip', async (name) => {
+    const { [name]: _gone, ...vars } = ENV_VARS as Record<string, string>
+    const r = await decideRun(entry({ ghApi: forbidden, vars }))
+    expect(r).toMatchObject({ go: false, skip: false })
+    expect(r.reason).toContain(name)
+  })
 
   it('recovery needs no switch: it is not blocked by a missing one', async () => {
     const r = await decideRun(
@@ -240,7 +240,6 @@ describe('decideRun: switches come from env, not the variables API (CHE-9181)', 
   it.each([
     ['switch', { sw: httpError(403) }, 'DOOP_DEPLOY_TRAIN'],
     ['pause', { paused: httpError(500) }, 'MAIN_RED_PAUSED'],
-    ['marker', { marker: httpError(500) }, 'DOOP_DEPLOY_SUSPENDED'],
   ])('an unreadable %s through the API fails red and names the status', async (_n, vars, name) => {
     const r = await decideRun(entry({ ghApi: api(vars) }))
     expect(r).toMatchObject({ go: false, skip: false })
@@ -249,46 +248,56 @@ describe('decideRun: switches come from env, not the variables API (CHE-9181)', 
   })
 })
 
-describe('recheckOp: an unreadable variable fails red, and the variables token is separate (CHE-9181)', () => {
-  it('pre-arm reads variables with varsApi, pulls with ghApi', async () => {
+describe('recheckOp: the switch and pause come from env, the marker from the host (CHE-9181, CHE-9877)', () => {
+  it('pre-arm reads no repo variable at all: the switch and pause from env, the marker from the host store', async () => {
     const reads: string[] = []
-    const varsApi = async (path: string) => {
+    const inner = api({})
+    const ghApi = async (path: string) => {
       reads.push(path)
-      return api({})(path)
+      return inner(path)
     }
-    const r = await ops({}, { ghApi: api({}), varsApi })('pre-arm')
+    const r = await ops({}, { ghApi })('pre-arm')
     expect(r).toMatchObject({ go: true })
     expect(reads.length).toBeGreaterThan(0)
-    expect(reads.every((p) => p.includes('/actions/variables/'))).toBe(true)
+    expect(reads.some((p) => p.includes('/actions/variables/'))).toBe(false)
   })
 
-  it('pre-arm: variables 403 refuses instead of skipping', async () => {
-    const r = await ops({}, { ghApi: api({}), varsApi: forbidden })('pre-arm')
-    expect(r).toMatchObject({ go: false, skip: false })
-    expect(r.reason).toContain('GitHub 403')
+  it.each([['DOOP_DEPLOY_TRAIN'], ['MAIN_RED_PAUSED']])(
+    'pre-arm: %s missing from env refuses, never skips',
+    async (name) => {
+      const { [name]: _gone, ...vars } = { DOOP_DEPLOY_TRAIN: 'on', MAIN_RED_PAUSED: '' } as Record<string, string>
+      const r = await ops({}, { vars })('pre-arm')
+      expect(r).toMatchObject({ go: false, skip: false })
+      expect(r.reason).toContain(name)
+    },
+  )
+
+  // Unreadable means suspended: the train stops, and the run says why instead of ending green.
+  it.each([['pre-arm'], ['pre-apply'], ['confirm'], ['rollback']])(
+    '%s: an unreadable host marker refuses and names the cause',
+    async (op) => {
+      const r = await ops({ marker: new Error('EACCES: permission denied') }, {})(op, ARMED, {
+        running: async () => ({ digest: D_CAND, label: CAND }),
+      })
+      expect(r).toMatchObject({ go: false, skip: false })
+      expect(r.reason).toContain('EACCES')
+    },
+  )
+
+  it.each([
+    ['absent', null],
+    ['suspended', 'suspended:n2:1:' + CAND + ':x'],
+    ['armed by another run', 'armed:n2:1:' + CAND],
+    ['garbage', 'ok'],
+    ['clear without a nonce', 'clear:n0:restore'],
+    ['clear with a trailing line', CLEAR + '\nx'],
+  ])('pre-arm: a %s host marker is a clean skip, the run does not change C00', async (_n, marker) => {
+    expect(await ops({ marker })('pre-arm')).toMatchObject({ go: false, skip: true })
   })
 
-  it.each([['pre-apply'], ['confirm']])('%s: variables 403 refuses', async (op) => {
-    const r = await ops({}, { ghApi: api({}), varsApi: forbidden })(op, ARMED, {
-      running: async () => ({ digest: D_CAND, label: CAND }),
-    })
-    expect(r).toMatchObject({ go: false, skip: false })
-    expect(r.reason).toContain('GitHub 403')
-  })
-
-  it('rollback with the variables token refuses a marker that changed while the candidate digest still runs', async () => {
-    const run = { running: async () => ({ digest: D_CAND, label: CAND }) }
-    for (const marker of ['armed:n9:2:' + CAND, CLEAR, CLEAR_LIFT, null, httpError(500)]) {
-      const r = await ops({ marker })('rollback', ARMED, run)
-      expect(r, String(marker)).toMatchObject({ go: false, skip: false })
-    }
-  })
-
-  it('rollback without a token (the mint failed) still rolls back from what C00 runs', async () => {
-    const r = await ops({}, { varsApi: null })('rollback', ARMED, {
-      running: async () => ({ digest: D_CAND, label: CAND }),
-    })
-    expect(r).toMatchObject({ go: true, action: 'rollback' })
+  it('pre-arm: a clear host marker (restore or lift) lets the train go', async () => {
+    expect(await ops({ marker: CLEAR })('pre-arm')).toMatchObject({ go: true })
+    expect(await ops({ marker: CLEAR_LIFT })('pre-arm')).toMatchObject({ go: true })
   })
 
   it('rollback still needs this run’s own --expect value', async () => {
@@ -476,7 +485,20 @@ function ops(vars: Vars = {}, over: Record<string, unknown> = {}) {
     trigger: BOT,
     attempt: '1',
     inputs: {},
-    ghApi: api(vars),
+    ghApi: api({}),
+    // `${{ vars.X }}` as the workflow passes them; an Error means the workflow did not pass the name at all.
+    vars: {
+      ...(vars.sw instanceof Error ? {} : { DOOP_DEPLOY_TRAIN: vars.sw === undefined ? 'on' : (vars.sw ?? '') }),
+      ...(vars.paused instanceof Error ? {} : { MAIN_RED_PAUSED: vars.paused ?? '' }),
+    },
+    // The host file, read lazily so a test can change `vars.marker` between operations.
+    markerStore: {
+      read: async () => {
+        const m = vars.marker === undefined ? CLEAR : vars.marker
+        if (m instanceof Error) throw m
+        return m
+      },
+    },
     running: async () => ({ digest: D_PRED, label: RUNNING }),
     isAncestor: async (a: string, b: string) => a === RUNNING && b === CAND,
     firstParent: async () => [MID, CAND],
@@ -653,7 +675,7 @@ describe('recheckOp after the arm write (Done when 3)', () => {
       CLEAR_LIFT,
       ARMED + 'x',
       null,
-      httpError(500),
+      new Error('EIO'),
     ]) {
       const r = await ops({ marker }, run)(op, ARMED)
       expect(r, String(marker)).toMatchObject({ go: false, skip: false })

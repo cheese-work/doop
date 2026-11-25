@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -28,9 +28,6 @@ const HEALTHZ = 'http://127.0.0.1:4400/healthz'
 const DIGEST = 'sha256:' + 'a'.repeat(64)
 const RUN_ID = '4242'
 const NOW = new Date('2026-11-20T03:00:00Z') // 10:00:00 ICT
-const VAR_URL = `repos/${REPO}/actions/variables/DOOP_DEPLOY_SUSPENDED`
-
-const httpError = (status: number) => Object.assign(new Error(`GitHub ${status}`), { status })
 
 type Decision = Record<string, unknown>
 const decisionOf = (over: Decision = {}): Decision => ({
@@ -66,22 +63,20 @@ type World = {
 
 function world(w: World) {
   const calls = { decision: 0, marker: 0, health: 0, headers: [] as Record<string, string>[], writes: [] as string[] }
-  const ghApi = async (path: string, init: { method?: string; body?: { value: string } } = {}) => {
-    const method = init.method ?? 'GET'
-    if (method === 'GET') {
-      if (path !== VAR_URL) throw new Error(`unexpected read ${path}`)
+  // The marker is a file on the C00 host; this store stands in for it.
+  const store = {
+    read: async () => {
       calls.marker++
-      if (w.unreadableMarker) throw httpError(500)
+      if (w.unreadableMarker) throw new Error('EIO: cannot read the marker')
       const n = calls.marker
       const value = w.marker
       w.afterMarkerRead?.(n, w)
-      if (value === null) throw httpError(404)
-      return { value }
-    }
-    if (method !== 'PATCH' || path !== VAR_URL) throw new Error(`unexpected write ${method} ${path}`)
-    calls.writes.push(init.body?.value ?? '')
-    w.marker = init.body?.value ?? ''
-    return {}
+      return value
+    },
+    write: async (next: string) => {
+      calls.writes.push(next)
+      w.marker = next
+    },
   }
   const fetchImpl = async (url: string, init: { headers?: Record<string, string> } = {}) => {
     if (url === HEALTHZ) {
@@ -102,7 +97,7 @@ function world(w: World) {
       text: async () => r.text ?? JSON.stringify(r.body ?? {}),
     }
   }
-  return { w, calls, ghApi, fetchImpl }
+  return { w, calls, store, fetchImpl }
 }
 
 const goodFacts = { quiescent: true, digest: DIGEST, revision: SHA, containerHealth: 'healthy' }
@@ -112,7 +107,7 @@ function run(
   over: { facts?: Record<string, unknown>; approverId?: string; lifter?: string } = {},
 ) {
   return lift({
-    ghApi: env.ghApi,
+    store: env.store,
     fetchImpl: env.fetchImpl,
     repo: REPO,
     runId: RUN_ID,
@@ -184,10 +179,10 @@ describe('the accepted lift (C-10.7)', () => {
       },
       afterMarkerRead: (n) => order.push(`marker${n}`),
     })
-    const base = env.ghApi
-    env.ghApi = async (path: string, init?: { method?: string; body?: { value: string } }) => {
-      if (init?.method === 'PATCH') order.push('write')
-      return base(path, init)
+    const base = env.store.write
+    env.store.write = async (next: string) => {
+      order.push('write')
+      return base(next)
     }
     await run(env)
     // decision 1 and marker 1 decide; decision 2 and marker 2 are the re-read; marker 3 is writeMarker's own check.
@@ -433,13 +428,8 @@ describe('refused: a change during the lift (C-10.7, the re-read under the lock)
 
   it('a write that cannot be read back is a failure, not a refusal, and says so', async () => {
     const env = world({ marker: SUSPENDED })
-    const base = env.ghApi
-    env.ghApi = async (path: string, init?: { method?: string; body?: { value: string } }) => {
-      if (init?.method === 'PATCH') {
-        env.calls.writes.push(init.body?.value ?? '')
-        return {} // lost update: GitHub says ok, a read still returns the old value
-      }
-      return base(path, init)
+    env.store.write = async (next: string) => {
+      env.calls.writes.push(next) // a lost update: the write says ok, a read still returns the old value
     }
     const ev = await run(env)
     expect(ev.outcome).toBe('failed')
@@ -477,10 +467,10 @@ describe('refused: C00 (C-10.7)', () => {
     await refused(world({ marker: SUSPENDED }), { facts: { ...goodFacts, [field]: value } }, new RegExp(field))
   })
 
-  it('a refusal never reaches the marker API at all for a bad run id', async () => {
+  it('a refusal never reaches the marker at all for a bad run id', async () => {
     const env = world({ marker: SUSPENDED })
     const ev = await lift({
-      ghApi: env.ghApi,
+      store: env.store,
       fetchImpl: env.fetchImpl,
       repo: REPO,
       runId: 'x; rm -rf',
@@ -636,10 +626,12 @@ describe('the CLI', () => {
   })
 })
 
-/* The real script, as the workflow runs it, against one local HTTP server standing in for GitHub, Multica and the app. */
+/* The real script, as the workflow runs it, against one local HTTP server standing in for Multica and the app, and a real marker file. */
 describe('the CLI end to end (a real process, real HTTP)', () => {
   async function cli(over: { decision?: Decision; marker?: string; health?: number }) {
-    let marker = over.marker ?? SUSPENDED
+    const markerDir = mkdtempSync(join(tmpdir(), 'lift-marker-'))
+    const markerPath = join(markerDir, 'deploy-marker')
+    writeFileSync(markerPath, `${over.marker ?? SUSPENDED}\n`)
     const seen: string[] = []
     const server = createServer((req, res) => {
       const url = req.url ?? ''
@@ -657,10 +649,6 @@ describe('the CLI end to end (a real process, real HTTP)', () => {
           return send(200, over.decision ?? decisionOf({ expires_at: new Date(Date.now() + 86_400_000).toISOString() }))
         }
         if (url === '/healthz') return send(over.health ?? 200, { ok: true })
-        if (url === `/${VAR_URL}`) {
-          if (req.method === 'PATCH') marker = (JSON.parse(body) as { value: string }).value
-          return send(200, { name: 'DOOP_DEPLOY_SUSPENDED', value: marker })
-        }
         send(404, {})
       })
     })
@@ -673,9 +661,8 @@ describe('the CLI end to end (a real process, real HTTP)', () => {
         cwd: d,
         env: {
           PATH: process.env.PATH ?? '',
-          GITHUB_API_URL: base,
+          C00_MARKER_FILE: markerPath,
           GITHUB_STEP_SUMMARY: join(d, 'summary.md'),
-          GH_TOKEN: 'app-token',
           REPO,
           RUN_ID,
           LIFTER: 'congvc-dev',
@@ -698,7 +685,7 @@ describe('the CLI end to end (a real process, real HTTP)', () => {
       return {
         code,
         out,
-        marker,
+        marker: readFileSync(markerPath, 'utf8').trim(),
         seen,
         evidence: JSON.parse(readFileSync(join(d, 'lift-evidence.json'), 'utf8')),
         summary: readFileSync(join(d, 'summary.md'), 'utf8'),
@@ -706,6 +693,7 @@ describe('the CLI end to end (a real process, real HTTP)', () => {
     } finally {
       server.close()
       rmSync(d, { recursive: true, force: true })
+      rmSync(markerDir, { recursive: true, force: true })
     }
   }
 
@@ -735,9 +723,15 @@ describe('the CLI end to end (a real process, real HTTP)', () => {
     const r = await cli({ decision: decisionOf({ state: 'rejected' }) })
     expect(r.code).toBe(1)
     expect(r.marker).toBe(SUSPENDED)
-    expect(r.seen.filter((s) => s.startsWith('PATCH'))).toEqual([])
+    expect(r.seen.filter((s) => s.includes('actions/variables'))).toEqual([])
     expect(r.evidence).toMatchObject({ outcome: 'refused', marker_before: SUSPENDED, marker_after: null })
     expect(r.evidence.reason).toMatch(/not approved/)
+  })
+
+  it('accepted: no GitHub token, no variable API call, the evidence names the file, not a repo variable', async () => {
+    const r = await cli({})
+    expect(r.code, r.out).toBe(0)
+    expect(r.seen.some((s) => s.includes('actions/variables'))).toBe(false)
   })
 
   it('refused (/healthz 503): exit 1, the marker is untouched', async () => {

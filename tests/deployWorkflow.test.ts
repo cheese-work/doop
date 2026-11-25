@@ -205,31 +205,39 @@ describe('D2 suspension marker wiring (CHE-5545, C-10.1 to C-10.3)', () => {
     ['deploy', deploy],
     ['readback-confirm', confirm],
     ['rollback', rollback],
-  ])('%s writes the marker with a GitHub App token from the ci-app-token environment', (_n, j) => {
-    expect(j).toMatch(/environment: ci-app-token/)
-    // The c00-multicado App already lives there; no new App or environment (CHE-9181).
-    expect(j).toContain('app-id: ${{ secrets.C00_MULTICADO_APP_ID }}')
-    expect(j).toContain('private-key: ${{ secrets.C00_MULTICADO_CI_PRIVATE_KEY }}')
-    expect(j).not.toMatch(/doop-deploy-marker|DOOP_MARKER_APP/)
-    expect(j).toMatch(/uses: actions\/create-github-app-token@[0-9a-f]{40}/)
-    expect(j).toContain('permission-actions-variables: write')
-    expect(j).toContain('repositories: doop')
-    // The token is minted before the first marker write. Deploy and confirm mint before their checks, which read
-    // variables, and `github.token` cannot (CHE-9181): the gate gets it as VARS_TOKEN, the marker writer as
-    // GH_TOKEN. Rollback mints before its check, which runs even if the mint fails (see below). Confirm and rollback
-    // run their check inside c00.sh, under the lock; deploy still runs the pre-arm check in the workflow.
-    const check = _n === 'deploy' ? 'deploy-gate.mjs recheck' : `c00.sh ${_n === 'rollback' ? 'rollback' : 'confirm'}`
-    expect(at(j, 'create-github-app-token')).toBeLessThan(at(j, 'deploy-marker.mjs'))
-    expect(at(j, 'create-github-app-token')).toBeLessThan(at(j, check))
-    expect(j).toMatch(/VARS_TOKEN: \$\{\{ steps\.app\.outputs\.token \}\}/)
-    expect(j).toMatch(/GH_TOKEN: \$\{\{ steps\.app\.outputs\.token \}\}/)
+  ])('%s keeps the marker on the C00 host: no App, no token, no environment, no secret (CHE-9877)', (_n, j) => {
+    expect(j).not.toMatch(
+      /ci-app-token|create-github-app-token|C00_MULTICADO|DOOP_MARKER_APP|permission-actions-variables/,
+    )
+    expect(j).not.toMatch(/VARS_TOKEN|steps\.app\.|secrets\./)
+    expect(j).not.toMatch(/^\s+environment:/m)
+    // GH_TOKEN stays the run's own `github.token` (the gate's other reads); never an App token.
+    expect(j).not.toMatch(/GH_TOKEN: \$\{\{ (?!github\.token)/)
+    expect(j).not.toContain('DOOP_DEPLOY_SUSPENDED')
   })
 
-  it('resolve/decide reads the switches through vars, not the variables API (CHE-9181)', () => {
+  it('the three C00 jobs pass the switch and the pause as env to every step that reads them', () => {
+    const steps = [
+      [deploy, 'Pre-arm check'],
+      [deploy, 'Apply'],
+      [confirm, 'Confirm on C00'],
+      [rollback, 'Roll back by digest'],
+    ] as const
+    for (const [j, name] of steps) {
+      const from = j.indexOf(`- name: ${name}`)
+      expect(from, name).toBeGreaterThan(-1)
+      const step = j.slice(from).split('\n      - ')[0] ?? ''
+      const env = `${j.slice(0, j.indexOf('    steps:'))}\n${step}`
+      expect(env, name).toMatch(/DOOP_DEPLOY_TRAIN: \$\{\{ vars\.DOOP_DEPLOY_TRAIN \}\}/)
+      expect(env, name).toMatch(/MAIN_RED_PAUSED: \$\{\{ vars\.MAIN_RED_PAUSED \}\}/)
+    }
+  })
+
+  it('resolve/decide reads the switches through vars, and no longer the marker, which is on C00 (CHE-9877)', () => {
     const decide = job(d2, 'resolve')
     const step = decide.slice(decide.indexOf('- id: decide'), decide.indexOf('- id: pick'))
-    for (const name of ['DOOP_DEPLOY_TRAIN', 'MAIN_RED_PAUSED', 'DOOP_DEPLOY_SUSPENDED'])
-      expect(step).toContain(`${name}: \${{ vars.${name} }}`)
+    for (const name of ['DOOP_DEPLOY_TRAIN', 'MAIN_RED_PAUSED']) expect(step).toContain(`${name}: \${{ vars.${name} }}`)
+    expect(step).not.toContain('DOOP_DEPLOY_SUSPENDED')
     expect(step).not.toContain('github.token')
   })
 
@@ -284,7 +292,7 @@ describe('D2 suspension marker wiring (CHE-5545, C-10.1 to C-10.3)', () => {
     expect(rollback.match(/c00\.sh rollback/g)).toHaveLength(1)
     const rbStep = rollback.slice(rollback.lastIndexOf('- name:', rollbackAt), rollbackAt)
     expect(rbStep).toContain('id: rollback')
-    expect(rbStep).toMatch(/\n\s+if: \$\{\{ !cancelled\(\) \}\}\n/) // runs after a failed mint; never skipped by a decision made before the lock
+    expect(rbStep).toMatch(/\n\s+if: \$\{\{ !cancelled\(\) \}\}\n/) // never skipped by a decision made before the lock
     expect(rbStep).toMatch(/MARKER_EXPECT: \$\{\{ needs\.deploy\.outputs\.marker \}\}/)
     expect(rollback).toMatch(/action: \$\{\{ steps\.rollback\.outputs\.action \}\}/)
     expect(rollback).not.toContain('steps.check')
@@ -292,14 +300,8 @@ describe('D2 suspension marker wiring (CHE-5545, C-10.1 to C-10.3)', () => {
     expect(step).toMatch(/if: \$\{\{ !cancelled\(\) && steps\.rollback\.outputs\.go == 'true' \}\}/)
     expect(step).toContain('MARKER_EXPECT')
     expect(rollback).not.toMatch(/deploy-marker\.mjs (arm|restore)/)
-    // A failed token mint can never keep a broken deploy from rolling back: it comes before the rollback (whose check
-    // reads the marker, CHE-9181), the rollback step runs after it (!cancelled()), the job still fails, and the check
-    // then decides from C00 alone. The suspend step needs the token and fails loudly without it.
-    const mint = rollback.slice(rollback.lastIndexOf('- name:', at(rollback, 'create-github-app-token')))
-    expect(mint).not.toContain('continue-on-error')
-    expect(mint).toMatch(/if: \$\{\{ !cancelled\(\) \}\}/)
-    expect(at(rollback, 'create-github-app-token')).toBeLessThan(at(rollback, 'c00.sh rollback'))
-    expect(rbStep).toMatch(/VARS_TOKEN: \$\{\{ steps\.app\.outputs\.token \}\}/)
+    // No mint: nothing before the rollback can fail and keep a broken deploy from rolling back.
+    expect(rollback).not.toContain('create-github-app-token')
   })
 
   it('the marker is written by these three C00 jobs only', () => {
@@ -386,9 +388,9 @@ describe('D2 S5: readback delay, confirm, rollback, evidence (CHE-5549, C-9, C-1
     expect(evidence).toMatch(/timeout-minutes: \d+/)
   })
 
-  it('the delay wait is not a C00 job: the lock group and the marker environment stay on the three C00 jobs', () => {
+  it('the delay wait is not a C00 job: the lock group stays on the three C00 jobs, and none holds an environment', () => {
     expect(d2.match(/group: c00-deploy-doop/g)).toHaveLength(3)
-    expect(d2.match(/environment: ci-app-token/g)).toHaveLength(3)
+    expect(d2).not.toMatch(/ci-app-token/)
   })
 })
 

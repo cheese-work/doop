@@ -16,12 +16,12 @@
 //
 // CLI: node scripts/deploy-lift.mjs admit | lift
 // Env (admit): ACTOR, TRIGGER, DISPATCHERS
-// Env (lift):  GH_TOKEN (marker GitHub App token), REPO, RUN_ID, LIFTER, DECISION_ID, APPROVER_ID, MULTICA_SERVER_URL,
+// Env (lift):  C00_MARKER_FILE or C00_STATE_DIR (the host marker file, CHE-9877; no GitHub token), REPO, RUN_ID, LIFTER, DECISION_ID, APPROVER_ID, MULTICA_SERVER_URL,
 //              MULTICA_WORKSPACE_ID, DECISION_READ_TOKEN, HEALTHZ_URL, and the C00 facts c00.sh lift proved under the
 //              lock: LIFT_QUIESCENT (true), LIFT_DIGEST, LIFT_REVISION, LIFT_CONTAINER_HEALTH.
 import { appendFileSync, writeFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
-import { kindOf, lift as writeLift, readMarker } from './deploy-marker.mjs'
+import { fileStore, kindOf, lift as writeLift, markerFile, readMarker } from './deploy-marker.mjs'
 
 const ACTION_TYPE = 'doop.deploy_lift'
 const ACTION_VERSION = 1
@@ -118,10 +118,10 @@ export function refusalFor(d, { marker, repo, approverId, now, id }) {
 }
 
 /** The marker that stands, as something a lift may replace; refuses for absent, unreadable, clear or unknown. */
-async function standingMarker(ghApi, repo) {
+async function standingMarker(store) {
   let marker
   try {
-    marker = await readMarker(ghApi, repo)
+    marker = await readMarker(store)
   } catch (err) {
     throw refuse(`the marker cannot be read (${String(err?.message ?? err).split('\n')[0]})`)
   }
@@ -187,7 +187,7 @@ export async function lift(o) {
     const decision = await read()
     ev.approver_id = str(decision.approver_id) ? decision.approver_id : ''
     ev.decision_answered_at = str(decision.answered_at) ? decision.answered_at : ''
-    const marker = await standingMarker(o.ghApi, o.repo)
+    const marker = await standingMarker(o.store)
     ev.marker_before = marker
     const why = judge(decision, marker)
     if (why) throw refuse(why)
@@ -202,17 +202,17 @@ export async function lift(o) {
 
     // 2. Immediately before the write: the decision again, then the marker again, and still equal.
     const again = await read()
-    const whyAgain = judge(again, await standingMarker(o.ghApi, o.repo))
+    const whyAgain = judge(again, await standingMarker(o.store))
     if (whyAgain) throw refuse(`changed during the lift: ${whyAgain}`)
 
     // 3. writeMarker reads the marker once more, writes, and reads it back.
     try {
-      ev.marker_after = await writeLift({ ghApi: o.ghApi, repo: o.repo, runId: ev.lift_run_id, expected: marker })
+      ev.marker_after = await writeLift({ store: o.store, runId: ev.lift_run_id, expected: marker })
     } catch (err) {
       const msg = String(err?.message ?? err)
       if (/nothing was written/.test(msg)) throw refuse(`the marker changed during the lift: ${msg}`)
       ev.outcome = 'failed'
-      ev.reason = `the marker write failed: ${msg}; check ${o.repo} variable DOOP_DEPLOY_SUSPENDED by hand`
+      ev.reason = `the marker write failed: ${msg}; check the deploy marker file on C00 by hand`
       return finish(ev, clock)
     }
     ev.outcome = 'lifted'
@@ -254,24 +254,6 @@ function record(ev, env) {
 }
 
 // ---------------------------------------------------------------------------------------------
-const api =
-  (token) =>
-  async (path, init = {}) => {
-    const res = await fetch(`${process.env.GITHUB_API_URL || 'https://api.github.com'}/${path}`, {
-      method: init.method ?? 'GET',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/vnd.github+json',
-        'Content-Type': 'application/json',
-      },
-      body: init.body ? JSON.stringify(init.body) : undefined,
-    })
-    if (!res.ok)
-      throw Object.assign(new Error(`GitHub ${res.status} for ${init.method ?? 'GET'} ${path}`), { status: res.status })
-    const text = await res.text()
-    return text ? JSON.parse(text) : {}
-  }
-
 async function cli(argv, env) {
   const [command] = argv
   if (command === 'admit') {
@@ -281,7 +263,7 @@ async function cli(argv, env) {
   }
   if (command !== 'lift') throw new Error(`unknown command '${command}'`)
   const ev = await lift({
-    ghApi: api(env.GH_TOKEN ?? ''),
+    store: fileStore(markerFile(env)),
     fetchImpl: fetch,
     repo: env.REPO ?? '',
     runId: env.RUN_ID,

@@ -23,7 +23,10 @@ a skip too. This slice approves no deploy: nothing sets the switch to `on`, and 
 
 ## The suspension marker (S3a, C-10)
 
-Repo variable `DOOP_DEPLOY_SUSPENDED` is the one thing that lets a train run. Its value is one of:
+One file on the C00 host is the one thing that lets a train run (CHE-9877; it was the repo variable
+`DOOP_DEPLOY_SUSPENDED`, written through a GitHub App token, until then). It is `$C00_MARKER_FILE`, default
+`$C00_STATE_DIR/deploy-marker` with `C00_STATE_DIR` defaulting to `/var/lib/doop-deploy`, mode 0600, one line. Its
+value is one of:
 
 | Value                                       | Meaning                                                     |
 | ------------------------------------------- | ----------------------------------------------------------- |
@@ -32,8 +35,12 @@ Repo variable `DOOP_DEPLOY_SUSPENDED` is the one thing that lets a train run. It
 | `suspended:<nonce>:<run id>:<sha>:<reason>` | stopped until the audited lift (`cd-lift.yml`) writes clear |
 
 The nonce is 128 random bits. Absent, unreadable or any other shape reads as suspended; a prefix match is not
-enough. `scripts/deploy-marker.mjs` is the only writer. Every write reads the variable, checks it is the
-value the writer expects, writes, and reads it back; a write it cannot prove fails the job.
+enough. `scripts/deploy-marker.mjs` is the only writer, and only the C00 jobs run it. Every write reads the
+file, checks it is the value the writer expects, writes a temp file and renames it over the marker, and reads it
+back; a write it cannot prove fails the job. No GitHub App, PAT, environment secret or repo variable takes part.
+A missing file reads as suspended, so a host starts stopped: the first value is a recovery run's `suspended:*`
+(`suspend --any`), and an approved lift clears it. The directory and its owner (the runner's user) are set by hand
+on C00, once; no job creates it.
 
 - **Arm before change.** A train run writes `armed:*` over `clear:*` right after the `pre-arm` check and before
   `docker login`, any pull or any start. If that write fails, nothing on C00 has changed and the marker still
@@ -44,15 +51,17 @@ value the writer expects, writes, and reads it back; a write it cannot prove fai
 - **Recovery and drill never write clear.** They write `suspended:*` over whatever stands, before any change,
   and never touch `DOOP_DEPLOY_TRAIN`. A bot dispatch is refused at entry. A rollback also writes `suspended:*`,
   over its own `armed:*`, whatever the rollback itself did.
-- **Reading is read only.** `decide` and every check read the marker and never write it.
-- **Where the reads come from (CHE-9181).** `github.token` cannot be granted the Variables permission, so the REST
-  read of a variable fails with 403. `resolve/decide` therefore takes `DOOP_DEPLOY_TRAIN`, `MAIN_RED_PAUSED` and
-  `DOOP_DEPLOY_SUSPENDED` from env (`${{ vars.X }}`; unset reads as empty, i.e. absent). The C00 checks
-  (`pre-arm`, `pre-apply`, `confirm`) read them through the API with the marker App token (`VARS_TOKEN`), minted
-  before the check. The `rollback` job mints it too, but a failed mint does not stop the rollback: the rollback step
-  runs after it, and without a token its check decides from what C00 runs alone. A variable that cannot be read
-  **fails the run red**
-  with its HTTP status and message; it is never a skip.
+- **Reading is read only.** Every check reads the marker and never writes it. The hosted `resolve/decide` cannot
+  see the host file, so it no longer reads the marker: the train's marker-clear check is the `pre-arm` check on
+  C00, which skips the run when the marker is not `clear:*`. Before this change `decide` skipped it earlier, on
+  the hosted runner.
+- **Where the reads come from.** `github.token` cannot be granted the Variables permission, so the REST read of a
+  variable fails with 403 (CHE-9181). Every job therefore takes `DOOP_DEPLOY_TRAIN` and `MAIN_RED_PAUSED` from
+  env (`${{ vars.X }}`; unset reads as empty, i.e. absent). On C00 the value is fixed when the job starts, so a
+  switch or pause changed while a deploy runs is seen by the next run, not the running one. The marker is read
+  from the host file, every time, under the same checks. A marker that cannot be read **fails the check closed**
+  (a refusal naming the cause, never a skip), in `rollback` too: there is no token path left that could decide
+  without it.
 
 Every failure leaves the marker `armed` or `suspended`, so the train stops until a lift. Lifting is `cd-lift.yml` (below).
 
@@ -63,7 +72,8 @@ a Multica decision. No step is a human-typed command.
 
 1. The dispatcher and the triggering login must both be in repo variable `DOOP_LIFT_DISPATCHERS` (checked first,
    before any secret is read). The job runs only on `cheese/main`, in environment `doop-lift`, on the C00 runner,
-   in concurrency group `c00-deploy-doop`, and `c00.sh lift` takes the host lock.
+   in concurrency group `c00-deploy-doop`, and `c00.sh lift` takes the host lock. It holds no GitHub App or token:
+   the lift writes the host marker file directly.
 2. Under the lock it refuses unless **all** hold, and a refusal leaves the marker as it was:
    - the decision is action `doop.deploy_lift` v1, `approved`, by `vars.DOOP_LIFT_APPROVER_ID` (Cheese), not
      withdrawn, rejected, revoked or expired; unreadable or unknown is a refusal;
@@ -73,31 +83,29 @@ a Multica decision. No step is a human-typed command.
      changed, or a decision revoked, during the lift refuses).
 3. It writes `clear:<nonce>:<lift run id>`, reads it back, and records lifter, decision id, approver, health, digest,
    revision and ICT times in the run summary and the `lift-evidence` artifact (`lift-evidence.json`, outcome
-   `lifted`, `refused` or `failed`; `failed` means the write could not be read back, so check the marker by hand).
+   `lifted`, `refused` or `failed`; `failed` means the write could not be read back, so check the marker file on C00 by hand).
    Two lifts at once serialize on the lock; the second finds the marker changed and is refused.
 
 The lift never reads or writes `DOOP_DEPLOY_TRAIN`: the train stays off until Cheese turns it on.
 
-| Where          | Name                                               | Value                                                                                    |
-| -------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| Environment    | `doop-lift`                                        | holds the secrets below; restrict deployment branches to `cheese/main`                   |
-| Env secret     | `DOOP_LIFT_DECISION_READ_TOKEN`                    | read-only token for `GET /api/decisions/{id}/state`                                      |
-| Env secret     | `DOOP_LIFT_MULTICA_SERVER_URL`, `..._WORKSPACE_ID` | the Multica server (tailnet only, so the C00 runner must reach it) and its workspace     |
-| Env var/secret | `DOOP_MARKER_APP_ID`, `DOOP_MARKER_APP_KEY`        | the same marker App as D2: copy both into `doop-lift`, since a job takes one environment |
-| Repo variable  | `DOOP_LIFT_DISPATCHERS`                            | logins that may dispatch a lift                                                          |
-| Repo variable  | `DOOP_LIFT_APPROVER_ID`                            | Cheese's Multica member id; the decision's approver must equal it                        |
-| Repo variable  | `C00_DOOP_HEALTHZ_URL`                             | optional; default `http://127.0.0.1:4400/healthz` (what the app answers on C00 itself)   |
+| Where         | Name                                               | Value                                                                                  |
+| ------------- | -------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Environment   | `doop-lift`                                        | holds the secrets below; restrict deployment branches to `cheese/main`                 |
+| Env secret    | `DOOP_LIFT_DECISION_READ_TOKEN`                    | read-only token for `GET /api/decisions/{id}/state`                                    |
+| Env secret    | `DOOP_LIFT_MULTICA_SERVER_URL`, `..._WORKSPACE_ID` | the Multica server (tailnet only, so the C00 runner must reach it) and its workspace   |
+| Repo variable | `DOOP_LIFT_DISPATCHERS`                            | logins that may dispatch a lift                                                        |
+| Repo variable | `DOOP_LIFT_APPROVER_ID`                            | Cheese's Multica member id; the decision's approver must equal it                      |
+| Repo variable | `C00_DOOP_HEALTHZ_URL`                             | optional; default `http://127.0.0.1:4400/healthz` (what the app answers on C00 itself) |
 
-### Adoption of the 11 Nov failure (one write, by an admin)
+### First value on a host with no marker file
 
-The variable starts absent, which reads as suspended. Before this slice's PR merges, write the marker once so
-the failed deploy of 11 Nov is recorded as the reason. The App token and the admin both can:
+The file starts absent, which reads as suspended, and nothing creates its directory. Once the directory exists
+(owner action, once, on C00), the first value comes from a recovery run: `suspend --any` writes `suspended:*` over
+the absent marker, and `cd-lift.yml` clears it. For a by-hand write on C00 as the runner's user:
 
 ```bash
-node scripts/deploy-marker.mjs suspend --any --reason migrated   # env: GH_TOKEN (App or admin), REPO=cheese-work/doop, RUN_ID=42955625332, SHA=612f86854a6020f45b90321302a79dae1214d13a
+C00_STATE_DIR=/var/lib/doop-deploy RUN_ID=<run id> SHA=<40 hex> node scripts/deploy-marker.mjs suspend --any --reason migrated
 ```
-
-The agent that wrote S3a holds no token that can write repo variables, so this write is an owner action.
 
 ## Entry rules (`deploy-gate.mjs decide`)
 
@@ -227,16 +235,15 @@ the Actions page (`gh run list --workflow cd-freshness-watch.yml --event schedul
 
 ## Prerequisites (set once; not in this repo)
 
-| Where          | Name                      | Value                                                                                                                                                                                                                                                                    |
-| -------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Runner         | label `cheese-c00-deploy` | self-hosted runner on C00 with Docker and `docker compose` (node 22 comes from `actions/setup-node`; the runner needs egress to download it), in runner group `c00-deploy` (D1), limited to `cheese-work/doop` and `cheese-work/multica`                                 |
-| Repo variable  | `C00_DOOP_COMPOSE_DIR`    | optional; default `/home/congvc/.local/share/doop` (`compose.yaml`, service `app`, its `.env`)                                                                                                                                                                           |
-| Repo variable  | `C00_DEPLOY_AUTHORIZERS`  | extra logins, e.g. the agent-merge identity                                                                                                                                                                                                                              |
-| Repo variable  | `DOOP_C00_HOST`           | optional override; default in `scripts/cd-watch.mjs` `c00Host`; read by `cd-live-revision.yml`                                                                                                                                                                           |
-| Repo variable  | `MAIN_RED_PAUSED`         | empty, or a reason to pause                                                                                                                                                                                                                                              |
-| Environment    | `c00-readback-delay`      | on `cheese-work/doop`, with a **15 minute wait timer** and no secret. Created by hand before the C-11 drill: GitHub creates a missing environment with no timer, and `c00.sh confirm` then refuses (delay not honoured)                                                  |
-| Environment    | `ci-app-token`            | on `cheese-work/doop`, deploys from `cheese/main` only. Holds the `c00-multicado` App's `C00_MULTICADO_APP_ID` and `C00_MULTICADO_CI_PRIVATE_KEY`. The three C00 jobs run in it and mint the marker token with `permission-actions-variables: write`; no hosted job does |
-| App permission | Variables: read and write | on the `c00-multicado` App, accepted on the `doop` installation. If the first mint fails on permission, tick it on the App                                                                                                                                               |
+| Where         | Name                      | Value                                                                                                                                                                                                                                    |
+| ------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Runner        | label `cheese-c00-deploy` | self-hosted runner on C00 with Docker and `docker compose` (node 22 comes from `actions/setup-node`; the runner needs egress to download it), in runner group `c00-deploy` (D1), limited to `cheese-work/doop` and `cheese-work/multica` |
+| Repo variable | `C00_DOOP_COMPOSE_DIR`    | optional; default `/home/congvc/.local/share/doop` (`compose.yaml`, service `app`, its `.env`)                                                                                                                                           |
+| Repo variable | `C00_DEPLOY_AUTHORIZERS`  | extra logins, e.g. the agent-merge identity                                                                                                                                                                                              |
+| Repo variable | `DOOP_C00_HOST`           | optional override; default in `scripts/cd-watch.mjs` `c00Host`; read by `cd-live-revision.yml`                                                                                                                                           |
+| Repo variable | `MAIN_RED_PAUSED`         | empty, or a reason to pause                                                                                                                                                                                                              |
+| Environment   | `c00-readback-delay`      | on `cheese-work/doop`, with a **15 minute wait timer** and no secret. Created by hand before the C-11 drill: GitHub creates a missing environment with no timer, and `c00.sh confirm` then refuses (delay not honoured)                  |
+| Marker dir    | `/var/lib/doop-deploy`    | on C00, owned by the runner's user, mode 0700 (set by hand, once); holds `deploy-marker` and the compat guard. Override with `C00_MARKER_FILE` or `C00_STATE_DIR` in the runner's env                                                    |
 
 Optional on the runner: `C00_COMPOSE_FILE` (default `compose.yaml`), `C00_CONTAINER` (default `doop`).
 The compose service is `app` (container name `doop`); `compose.image.yml` overrides only its image.
