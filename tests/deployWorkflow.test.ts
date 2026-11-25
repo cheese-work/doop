@@ -207,12 +207,12 @@ describe('D2 suspension marker wiring (CHE-5545, C-10.1 to C-10.3)', () => {
     ['rollback', rollback],
   ])('%s writes the marker with a GitHub App token from the ci-app-token environment', (_n, j) => {
     expect(j).toMatch(/environment: ci-app-token/)
-    // The c00-multica App already lives there; no new App or environment (CHE-9181).
+    // The c00-multicado App already lives there; no new App or environment (CHE-9181).
     expect(j).toContain('app-id: ${{ secrets.C00_MULTICADO_APP_ID }}')
     expect(j).toContain('private-key: ${{ secrets.C00_MULTICADO_CI_PRIVATE_KEY }}')
     expect(j).not.toMatch(/doop-deploy-marker|DOOP_MARKER_APP/)
     expect(j).toMatch(/uses: actions\/create-github-app-token@[0-9a-f]{40}/)
-    expect(j).toContain('permission-variables: write')
+    expect(j).toContain('permission-actions-variables: write')
     expect(j).toContain('repositories: doop')
     // The token is minted before the first marker write. Deploy and confirm mint before their checks, which read
     // variables, and `github.token` cannot (CHE-9181): the gate gets it as VARS_TOKEN, the marker writer as

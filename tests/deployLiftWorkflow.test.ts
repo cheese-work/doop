@@ -111,7 +111,7 @@ describe('cd-lift.yml: step order', () => {
   it('mints the marker token for variables only, pinned like D2', () => {
     const s = step('Mint the marker token')
     expect(s).toContain('actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0')
-    expect(s).toContain('permission-variables: write')
+    expect(s).toContain('permission-actions-variables: write')
     expect(s).toContain('repositories: doop')
     expect(s).toContain('DOOP_MARKER_APP_KEY')
   })
