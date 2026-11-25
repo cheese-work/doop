@@ -51,9 +51,24 @@ export async function writeMarker({ ghApi, repo, expected, next }) {
   if (!kindOf(next)) throw new Error('refusing to write a value that is not a marker value')
   const now = await readMarker(ghApi, repo)
   if (now !== expected) throw new Error('the suspension marker changed since it was read; nothing was written')
+  // A rate-limited write waits and is sent again. Another actor may write during that wait, so every retry rereads
+  // the marker first: a write only ever lands over `expected`.
+  const beforeRetry = async () => {
+    if ((await readMarker(ghApi, repo)) !== expected)
+      throw new Error('the suspension marker changed during a rate-limit wait; nothing was written')
+  }
   if (now === null)
-    await ghApi(`repos/${repo}/actions/variables`, { method: 'POST', body: { name: NAME, value: next } })
-  else await ghApi(`repos/${repo}/actions/variables/${NAME}`, { method: 'PATCH', body: { name: NAME, value: next } })
+    await ghApi(`repos/${repo}/actions/variables`, {
+      method: 'POST',
+      body: { name: NAME, value: next },
+      beforeRetry,
+    })
+  else
+    await ghApi(`repos/${repo}/actions/variables/${NAME}`, {
+      method: 'PATCH',
+      body: { name: NAME, value: next },
+      beforeRetry,
+    })
   if ((await readMarker(ghApi, repo)) !== next) throw new Error('the suspension marker write could not be read back')
   return next
 }
@@ -106,7 +121,7 @@ const api =
           },
           body: init.body ? JSON.stringify(init.body) : undefined,
         }),
-      { label: `${init.method ?? 'GET'} ${path}` },
+      { label: `${init.method ?? 'GET'} ${path}`, beforeRetry: init.beforeRetry },
     )
     if (!res.ok)
       throw Object.assign(new Error(`GitHub ${res.status} for ${init.method ?? 'GET'} ${path}`), { status: res.status })

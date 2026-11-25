@@ -6,6 +6,8 @@
 // `retry-after` or until `x-ratelimit-reset`, plus one second. Waits add up to at most RATE_LIMIT_CAP_MS; a wait that
 // would pass the cap is not started, and the response comes back as it is, so the caller fails closed as before.
 // Any other 403 (a missing permission) comes back at once.
+// `beforeRetry`, when given, runs after each wait and before the request is sent again. A write uses it to check that
+// the state it checked before the first try still stands; if it throws, the request is not sent again.
 export const RATE_LIMIT_CAP_MS = 20 * 60 * 1000
 const NO_HINT_MS = 60_000
 const BUFFER_MS = 1_000
@@ -38,6 +40,7 @@ export async function fetchWithRateLimit(doFetch, opts = {}) {
     now = Date.now,
     log = (line) => console.error(line),
     label = '',
+    beforeRetry,
   } = opts
   let waited = 0
   for (;;) {
@@ -52,5 +55,6 @@ export async function fetchWithRateLimit(doFetch, opts = {}) {
     await res.arrayBuffer().catch(() => {})
     await sleep(wait)
     waited += wait
+    if (beforeRetry) await beforeRetry()
   }
 }

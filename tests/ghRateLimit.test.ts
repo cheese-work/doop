@@ -105,6 +105,36 @@ describe('fetchWithRateLimit', () => {
     expect(h.sleeps.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(RATE_LIMIT_CAP_MS)
   })
 
+  it('beforeRetry runs after each wait and before the request is sent again', async () => {
+    const order: string[] = []
+    const res = await fetchWithRateLimit(
+      async () => (order.push('fetch'), order.length === 1 ? limited({ 'retry-after': '1' }) : ok()),
+      {
+        sleep: async () => void order.push('sleep'),
+        now: () => NOW,
+        log: () => {},
+        beforeRetry: async () => void order.push('beforeRetry'),
+      },
+    )
+    expect(res.status).toBe(200)
+    expect(order).toEqual(['fetch', 'sleep', 'beforeRetry', 'fetch'])
+  })
+
+  it('a beforeRetry that throws stops the retry: the request is not sent again', async () => {
+    let fetches = 0
+    await expect(
+      fetchWithRateLimit(async () => (fetches++, limited({ 'retry-after': '1' })), {
+        sleep: async () => {},
+        now: () => NOW,
+        log: () => {},
+        beforeRetry: async () => {
+          throw new Error('state changed')
+        },
+      }),
+    ).rejects.toThrow('state changed')
+    expect(fetches).toBe(1)
+  })
+
   it('the cap is 20 minutes', () => {
     expect(RATE_LIMIT_CAP_MS).toBe(20 * 60 * 1000)
   })
@@ -186,6 +216,34 @@ describe('the CLIs wait out a rate limit (CHE-9842)', () => {
     )
     expect(r.out).toContain('rate limit')
     expect(r.seen.filter((s) => s.startsWith('PATCH'))).toHaveLength(1)
+  }, 30_000)
+
+  /* Review of PR #149 (mbp-codex-sol): the marker was checked once, before the PATCH. A rate-limited PATCH waits;
+     if another actor suspends during the wait, the retry must not overwrite that newer value. */
+  const ARMED = `armed:${'1'.repeat(32)}:123:${SHA}`
+  const NEWER = `suspended:${'2'.repeat(32)}:456:${SHA}:operator`
+  const limitedPatch = { status: 403, headers: { 'retry-after': '1' }, body: { message: 'API rate limit exceeded' } }
+
+  it('deploy-marker restore: a suspension that lands during the rate-limit wait is not overwritten', async () => {
+    const r = await runCli('scripts/deploy-marker.mjs', ['restore'], { MARKER_EXPECT: ARMED }, [
+      { status: 200, body: { value: ARMED } }, // writeMarker's read
+      limitedPatch, // PATCH, rate limited; another actor then suspends
+      { status: 200, body: { value: NEWER } }, // the recheck before the retry
+    ])
+    expect(r.code).not.toBe(0)
+    expect(r.out).toContain('changed during a rate-limit wait')
+    expect(r.seen.filter((s) => s.startsWith('PATCH'))).toHaveLength(1) // never retried
+  }, 30_000)
+
+  it('deploy-marker restore: an unchanged marker is rechecked, then the PATCH is retried', async () => {
+    const r = await runCli('scripts/deploy-marker.mjs', ['restore'], { MARKER_EXPECT: ARMED }, [
+      { status: 200, body: { value: ARMED } },
+      limitedPatch,
+      { status: 200, body: { value: ARMED } }, // the recheck: still ours
+      { status: 200, body: {} }, // the retried PATCH
+      { status: 200, body: { value: 'x' } }, // read back (will not match, so it fails closed after the write)
+    ])
+    expect(r.seen.map((s) => s.split(' ')[0])).toEqual(['GET', 'PATCH', 'GET', 'PATCH', 'GET'])
   }, 30_000)
 
   it('deploy-marker with a plain 403 fails closed at once', async () => {
