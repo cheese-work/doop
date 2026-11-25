@@ -317,7 +317,7 @@ minutes in total (`scripts/gh-rate-limit.mjs`). Past that, or on any other 403, 
 holds a failing fixture for each rule and runs every rule except actionlint over this checkout.
 
 - actionlint over `cd-*.yml`, with `.github/actionlint.yaml` naming the custom runner labels
-- no `create-github-app-token` in `cd-deploy.yml` or `cd-lift.yml`; no `permission-variables` input anywhere (the input is `permission-actions-variables`)
+- no `create-github-app-token` in any `cd-*.yml` workflow; no `permission-variables` input anywhere (the input is `permission-actions-variables`)
 - every `environment:` is an `Environment` row above; every `vars.X` is a `Repo variable` row, marked optional when the workflow gives it a fallback
 - `MERGERS` in `scripts/deploy-gate.mjs` holds the exact merge-bot login `congvc-bot-x99[bot]`
 - C00 jobs run on exactly `[self-hosted, cheese-c00-deploy]`

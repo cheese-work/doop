@@ -38,14 +38,6 @@ jobs:
     steps:
       - run: echo apply
 `
-const LIFT = `name: CD lift
-jobs:
-  lift:
-    runs-on: [self-hosted, cheese-c00-deploy]
-    environment: doop-lift
-    steps:
-      - run: echo lift
-`
 const GATE = `const OWNER = 'congvc-dev'
 const MERGERS = new Set([OWNER, 'congvc-bot-x99', 'congvc-bot-x99[bot]'])
 `
@@ -59,7 +51,7 @@ const PATHS = [
 ].join('\n')
 const C00SH = 'exec 9>"${C00_LOCK_FILE:-/var/lock/doop-deploy.lock}"\nstate=${C00_STATE_DIR:-/var/lib/doop-deploy}\n'
 
-const WF = { '.github/workflows/cd-deploy.yml': DEPLOY, '.github/workflows/cd-lift.yml': LIFT }
+const WF = { '.github/workflows/cd-deploy.yml': DEPLOY }
 const GOOD = {
   ...WF,
   'deploy/cd/README.md': README,
@@ -81,13 +73,16 @@ describe('rule app-token (plan row 3, failure class 5)', () => {
     `      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0\n        with:\n${inputs}`
   const withStep = (wf: string, inputs: string) => `${wf.trimEnd()}\n${step(inputs)}`
 
-  it.each(['cd-deploy.yml', 'cd-lift.yml'])('fails create-github-app-token in %s', (name) => {
-    const path = `.github/workflows/${name}`
-    const text = withStep(GOOD[path as keyof typeof GOOD], '          app-id: 1\n')
-    const f = pf.checkNoAppToken(withFile(path, text)) as Finding[]
-    expect(f).toHaveLength(1)
-    expect(f[0]).toMatchObject({ rule: 'app-token', file: path })
-  })
+  it.each(['cd-deploy.yml', 'cd-freshness-watch.yml', 'cd-live-revision.yml'])(
+    'fails create-github-app-token in %s',
+    (name) => {
+      const path = `.github/workflows/${name}`
+      const text = withStep((GOOD as Record<string, string>)[path] ?? 'name: x\njobs: {}\n', '          app-id: 1\n')
+      const f = pf.checkNoAppToken(withFile(path, text)) as Finding[]
+      expect(f).toHaveLength(1)
+      expect(f[0]).toMatchObject({ rule: 'app-token', file: path })
+    },
+  )
 
   it('does not flag the name inside a comment', () => {
     const text = `# the App token step (create-github-app-token) is gone\n${DEPLOY}`
@@ -192,13 +187,13 @@ describe('rule runner-labels', () => {
   })
 
   it('fails a C00 job that drops self-hosted', () => {
-    const text = LIFT.replace('[self-hosted, cheese-c00-deploy]', 'cheese-c00-deploy')
-    expect(rules(pf.checkRunnerLabels(withFile('.github/workflows/cd-lift.yml', text)))).toEqual(['runner-labels'])
+    const text = DEPLOY.replace('[self-hosted, cheese-c00-deploy]', 'cheese-c00-deploy')
+    expect(rules(pf.checkRunnerLabels(withFile('.github/workflows/cd-deploy.yml', text)))).toEqual(['runner-labels'])
   })
 
   it('fails a C00 job with an extra label: it could land on another runner', () => {
-    const text = LIFT.replace('[self-hosted, cheese-c00-deploy]', '[self-hosted, Linux, cheese-c00-deploy]')
-    expect(rules(pf.checkRunnerLabels(withFile('.github/workflows/cd-lift.yml', text)))).toEqual(['runner-labels'])
+    const text = DEPLOY.replace('[self-hosted, cheese-c00-deploy]', '[self-hosted, Linux, cheese-c00-deploy]')
+    expect(rules(pf.checkRunnerLabels(withFile('.github/workflows/cd-deploy.yml', text)))).toEqual(['runner-labels'])
   })
 
   it('fails a self-hosted job with an unknown label in any CD workflow', () => {
@@ -215,11 +210,11 @@ describe('rule runner-labels', () => {
   })
 
   it('fails a runs-on it cannot read (block form): no silent pass', () => {
-    const text = LIFT.replace(
+    const text = DEPLOY.replace(
       'runs-on: [self-hosted, cheese-c00-deploy]',
       'runs-on:\n      - self-hosted\n      - cheese-c00-deploy',
     )
-    expect(rules(pf.checkRunnerLabels(withFile('.github/workflows/cd-lift.yml', text)))).toEqual(['runner-labels'])
+    expect(rules(pf.checkRunnerLabels(withFile('.github/workflows/cd-deploy.yml', text)))).toEqual(['runner-labels'])
   })
 
   it('passes the good fixture', () => {

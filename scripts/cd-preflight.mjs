@@ -12,7 +12,6 @@ import { fileURLToPath } from 'node:url'
 
 export const WORKFLOW_DIR = '.github/workflows'
 const DEPLOY_YML = `${WORKFLOW_DIR}/cd-deploy.yml`
-const LIFT_YML = `${WORKFLOW_DIR}/cd-lift.yml`
 const README = 'deploy/cd/README.md'
 const PATHS_LIST = 'deploy/cd/c00-paths.list'
 const GATE = 'scripts/deploy-gate.mjs'
@@ -53,7 +52,7 @@ const lineOf = (text, index) => text.slice(0, index).split('\n').length
 
 export function checkNoAppToken(files) {
   const out = []
-  for (const p of [DEPLOY_YML, LIFT_YML]) {
+  for (const p of workflows(files)) {
     const text = stripComments(files[p])
     const m = /create-github-app-token/.exec(text)
     if (m)
@@ -196,7 +195,7 @@ export function checkRunnerLabels(files) {
   const out = []
   for (const p of workflows(files)) {
     const text = stripComments(files[p])
-    const c00Only = p === DEPLOY_YML || p === LIFT_YML
+    const c00Only = p === DEPLOY_YML
     for (const m of text.matchAll(/^[ \t]*runs-on:[ \t]*(.*)$/gm)) {
       const line = lineOf(text, m.index)
       const labels = parseRunsOn(m[1] ?? '')
