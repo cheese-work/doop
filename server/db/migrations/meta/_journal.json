@@ -498,6 +498,13 @@
       "when": 1795477087147,
       "tag": "0071_frame_pins",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1795541750754,
+      "tag": "0072_ledger_landings",
+      "breakpoints": true
     }
   ]
 }

@@ -756,6 +756,33 @@ export const framePinFrames = pgTable('frame_pin_frames', {
     .references(() => framePins.cardRequestId),
 })
 
+/** Landing receipts (CHE-9448 A5, S1): one row per merged design lock landed on a ledger page. The key is the
+ *  retry key: a repeat of (canvas, merge sha, lock path) is the same landing. `frames` pairs each source frame with
+ *  the locked copy that was inserted and the hash of the bytes sent. Written in the same transaction as the copies
+ *  (persist.saveLanding); never updated except `label` (relabel). */
+export const ledgerLandings = pgTable(
+  'ledger_landings',
+  {
+    id: text('id').notNull(),
+    canvasId: text('canvas_id').notNull(),
+    mergeSha: text('merge_sha').notNull(),
+    lockPath: text('lock_path').notNull(),
+    repo: text('repo').notNull(),
+    pr: integer('pr').notNull(),
+    sourcePageId: text('source_page_id').notNull(),
+    ledgerPageId: text('ledger_page_id').notNull(),
+    label: text('label').notNull(),
+    topicIssueId: text('topic_issue_id').notNull(),
+    closeDecisionId: text('close_decision_id').notNull(),
+    manifestSha256: text('manifest_sha256').notNull(),
+    frames: jsonb('frames').$type<{ sourceFrameId: string; copyFrameId: string; contentSha256: string }[]>().notNull(),
+    payloadHash: text('payload_hash').notNull(),
+    createdBy: text('created_by').notNull(),
+    createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.canvasId, t.mergeSha, t.lockPath] })],
+)
+
 /** Named design docs per canvas (brand rules, style recipes) — markdown
  *  written mostly for agents. Small and cold-path; hydrated with the canvas. */
 export const guidelines = pgTable(
