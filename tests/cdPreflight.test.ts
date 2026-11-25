@@ -115,7 +115,7 @@ describe('rule environment', () => {
     const f = pf.checkEnvironments(withFile('.github/workflows/cd-deploy.yml', text)) as Finding[]
     expect(f).toHaveLength(1)
     expect(f[0]).toMatchObject({ rule: 'environment', file: '.github/workflows/cd-deploy.yml' })
-    expect(f[0].message).toContain('ci-app-token')
+    expect(f[0]?.message).toContain('ci-app-token')
   })
 
   it('reads the block form `environment:\\n  name: x`', () => {
@@ -141,14 +141,14 @@ describe('rule vars', () => {
     const text = DEPLOY.replace('vars.DOOP_DEPLOY_TRAIN', 'vars.DOOP_NEW_SWITCH')
     const f = pf.checkVars(withFile('.github/workflows/cd-deploy.yml', text)) as Finding[]
     expect(f).toHaveLength(1)
-    expect(f[0].message).toContain('DOOP_NEW_SWITCH')
+    expect(f[0]?.message).toContain('DOOP_NEW_SWITCH')
   })
 
   it('fails a vars.X with a fallback that the README does not mark optional', () => {
     const readme = README.replace('optional; default', 'default')
     const f = pf.checkVars(withFile('deploy/cd/README.md', readme)) as Finding[]
     expect(f).toHaveLength(1)
-    expect(f[0].message).toMatch(/C00_DOOP_COMPOSE_DIR.*optional/)
+    expect(f[0]?.message).toMatch(/C00_DOOP_COMPOSE_DIR.*optional/)
   })
 
   it('ignores a name inside a comment', () => {
@@ -342,13 +342,13 @@ describe('rule actionlint', () => {
   it('fails when the binary is missing: no silent pass', () => {
     const f = pf.runActionlint(paths, () => ({ error: { code: 'ENOENT' } })) as Finding[]
     expect(rules(f)).toEqual(['actionlint'])
-    expect(f[0].message).toMatch(/not found|install/i)
+    expect(f[0]?.message).toMatch(/not found|install/i)
   })
 
   it('fails a non-zero exit with no readable line (crash, bad config)', () => {
     const f = pf.runActionlint(paths, () => ({ status: 3, stdout: '', stderr: 'config error' })) as Finding[]
     expect(rules(f)).toEqual(['actionlint'])
-    expect(f[0].message).toContain('config error')
+    expect(f[0]?.message).toContain('config error')
   })
 
   it('runs with the repo config file so the C00 runner label is known', () => {

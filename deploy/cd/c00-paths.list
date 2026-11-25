@@ -1,0 +1,8 @@
+# Every absolute path on C00 that the CD scripts and workflows use (CHE-9963).
+# `node scripts/cd-preflight.mjs` fails when a script or workflow names a C00 path that is not here or below one
+# of these, and when an entry is outside the allowed prefixes: /var/lib/doop-deploy, /var/lib/docker,
+# /var/lock/, /home/congvc/.local/share/doop. One path per line; a directory covers what is below it.
+/home/congvc/.local/share/doop
+/var/lib/doop-deploy
+/var/lib/docker
+/var/lock/doop-deploy.lock

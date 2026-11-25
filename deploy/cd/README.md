@@ -254,6 +254,8 @@ the Actions page (`gh run list --workflow cd-freshness-watch.yml --event schedul
 | ------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Runner        | label `cheese-c00-deploy` | self-hosted runner on C00 with Docker and `docker compose` (node 22 comes from `actions/setup-node`; the runner needs egress to download it), in runner group `c00-deploy` (D1), limited to `cheese-work/doop` and `cheese-work/multica` |
 | Repo variable | `C00_DOOP_COMPOSE_DIR`    | optional; default `/home/congvc/.local/share/doop` (`compose.yaml`, service `app`, its `.env`)                                                                                                                                           |
+| Repo variable | `DOOP_DEPLOY_TRAIN`       | required; `on` runs the train, absent or anything else skips every scheduled run (`image.yml` passes it too)                                                                                                                             |
+| Repo variable | `C00_DOOP_PG_CONTAINER`   | optional; empty, `c00.sh` finds the compose project's `db` service                                                                                                                                                                       |
 | Repo variable | `C00_DEPLOY_AUTHORIZERS`  | extra logins, e.g. the agent-merge identity                                                                                                                                                                                              |
 | Repo variable | `DOOP_C00_HOST`           | optional override; default in `scripts/cd-watch.mjs` `c00Host`; read by `cd-live-revision.yml`                                                                                                                                           |
 | Repo variable | `MAIN_RED_PAUSED`         | empty, or a reason to pause                                                                                                                                                                                                              |
@@ -307,3 +309,17 @@ Nothing runs yet: the train switch is off and no workflow calls these. Rules C-8
 instead of failing: it sleeps until the reset, logs each wait with the reset time, and retries, for at most 20
 minutes in total (`scripts/gh-rate-limit.mjs`). Past that, or on any other 403, it fails closed as before.
 `deploy-marker.mjs` makes no GitHub call (the marker is a host file, CHE-9877), so it has no rate limit to wait out.
+
+## Static preflight
+
+`node scripts/cd-preflight.mjs` reads the CD files and exits 1 on any finding; it changes nothing and calls no API. It needs
+`actionlint` on the PATH (or `ACTIONLINT=<path>`); a missing binary is a finding, not a pass. `tests/cdPreflight.test.ts`
+holds a failing fixture for each rule and runs every rule except actionlint over this checkout.
+
+- actionlint over `cd-*.yml`, with `.github/actionlint.yaml` naming the custom runner labels
+- no `create-github-app-token` in `cd-deploy.yml` or `cd-lift.yml`; no `permission-variables` input anywhere (the input is `permission-actions-variables`)
+- every `environment:` is an `Environment` row above; every `vars.X` is a `Repo variable` row, marked optional when the workflow gives it a fallback
+- `MERGERS` in `scripts/deploy-gate.mjs` holds the exact merge-bot login `congvc-bot-x99[bot]`
+- C00 jobs run on exactly `[self-hosted, cheese-c00-deploy]`
+- every absolute C00 path the scripts use is in `deploy/cd/c00-paths.list`, which holds only paths under `/var/lib/doop-deploy`, `/var/lib/docker`, `/var/lock/` or `/home/congvc/.local/share/doop`
+- the `cd-deploy.yml` cron equals `SLOT_MINUTES` in `scripts/cd-watch.mjs`; change both together
