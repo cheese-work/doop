@@ -191,6 +191,49 @@ describe('D2 C00 jobs: deploy, readback-confirm, rollback', () => {
   })
 })
 
+describe('D2 C00 jobs run trusted control scripts, not the candidate (CHE-9877 review P1-1)', () => {
+  const c00jobs = ['deploy', 'readback-confirm', 'rollback']
+  const steps = (j: string) => j.slice(j.indexOf('    steps:')).split(/\n {6}- /)
+  // The scripts a C00 job executes: node <script> or bash <script>, on the step's own run line.
+  const invoked = (j: string) => [...j.matchAll(/\b(?:node|bash)\s+(\S+\.(?:mjs|sh))/g)].map((m) => m[1] ?? '')
+
+  it.each(c00jobs)('%s checks out github.sha as control/ and the candidate separately as candidate/', (name) => {
+    const j = job(d2, name)
+    expect(j).toMatch(/ref: \$\{\{ github\.sha \}\}\s*\n\s*path: control/)
+    expect(j).toMatch(
+      /ref: \$\{\{ needs\.admit\.outputs\.candidate \}\}\s*\n\s*path: candidate\s*\n[\s\S]*fetch-depth: 0/,
+    )
+  })
+
+  it.each(c00jobs)('%s runs every script from control/, never from the candidate checkout', (name) => {
+    const scripts = invoked(job(d2, name))
+    expect(scripts.length).toBeGreaterThan(0)
+    for (const s of scripts) expect(s, s).toMatch(/^(\.\.\/control\/|scripts\/deploy-marker\.mjs$)/)
+    // Marker steps run inside control/; git-history steps run inside candidate/ so ancestry sees the candidate's commits.
+    for (const step of steps(job(d2, name))) {
+      if (/deploy-marker\.mjs/.test(step)) expect(step).toContain('working-directory: control')
+      if (/\.\.\/control\//.test(step)) expect(step).toContain('working-directory: candidate')
+    }
+  })
+
+  it('a candidate that predates this change cannot supply the gate or the marker script', () => {
+    // The only checkout of the candidate is under candidate/; nothing resolves a script path in it.
+    for (const name of c00jobs) {
+      const j = job(d2, name)
+      expect(j).not.toMatch(/(?:node|bash)\s+(?:\.\/)?(?:candidate\/|scripts\/deploy-gate|deploy\/cd\/)/)
+      expect(j.match(/uses: actions\/checkout@v4/g)).toHaveLength(2)
+    }
+  })
+
+  it('the deploy job stamps the vars snapshot time first, before any checkout', () => {
+    const j = job(d2, 'deploy')
+    const stamp = j.indexOf('VARS_READ_EPOCH=$(date +%s)')
+    expect(stamp).toBeGreaterThan(-1)
+    expect(stamp).toBeLessThan(j.indexOf('actions/checkout@v4'))
+    expect(j.indexOf('--op pre-arm')).toBeGreaterThan(stamp)
+  })
+})
+
 describe('D2 suspension marker wiring (CHE-5545, C-10.1 to C-10.3)', () => {
   const deploy = job(d2, 'deploy')
   const confirm = job(d2, 'readback-confirm')

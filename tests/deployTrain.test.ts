@@ -486,6 +486,8 @@ function ops(vars: Vars = {}, over: Record<string, unknown> = {}) {
     attempt: '1',
     inputs: {},
     ghApi: api({}),
+    // Seconds since the job took its `vars` snapshot (the first step stamps VARS_READ_EPOCH).
+    varsAgeSeconds: 5,
     // `${{ vars.X }}` as the workflow passes them; an Error means the workflow did not pass the name at all.
     vars: {
       ...(vars.sw instanceof Error ? {} : { DOOP_DEPLOY_TRAIN: vars.sw === undefined ? 'on' : (vars.sw ?? '') }),
@@ -601,6 +603,49 @@ describe('recheckOp revalidates the entry on this attempt (Done when 1, rerun of
   })
   it('confirm and rollback do not need the entry (they must still run on a rerun)', async () => {
     expect(await ops({ marker: ARMED })('rollback', ARMED, { attempt: '2' })).toMatchObject({ go: true })
+  })
+})
+
+describe('recheckOp: the switch and pause snapshot is bounded in age (CHE-9877 review P1-2)', () => {
+  // `vars.*` is taken when the job starts. A job that waited for the host lock past the bound must not act on it.
+  it('pre-apply refuses a snapshot older than the bound, so a switch-off or pause set after job start stops it', async () => {
+    const r = await ops({ marker: ARMED })('pre-apply', ARMED, { varsAgeSeconds: 600 })
+    expect(r).toMatchObject({ go: false, skip: false })
+    expect(r.reason).toMatch(/snapshot/)
+  })
+  it('pre-arm: a stale snapshot is a clean skip (nothing was changed yet)', async () => {
+    expect(await ops()('pre-arm', undefined, { varsAgeSeconds: 600 })).toMatchObject({ go: false, skip: true })
+  })
+  it('the bound is configurable and inclusive', async () => {
+    const at = { varsAgeSeconds: 60, varsMaxAgeSeconds: 60 }
+    expect(await ops({ marker: ARMED })('pre-apply', ARMED, at)).toMatchObject({ go: true })
+    expect(await ops({ marker: ARMED })('pre-apply', ARMED, { ...at, varsAgeSeconds: 61 })).toMatchObject({ go: false })
+  })
+  it.each([[undefined], [NaN], [-1], ['soon']])('an unknown or invalid age (%s) fails closed', async (age) => {
+    const r = await ops({ marker: ARMED })('pre-apply', ARMED, { varsAgeSeconds: age })
+    expect(r).toMatchObject({ go: false, skip: false })
+    expect(r.reason).toMatch(/snapshot/)
+    expect(await ops()('pre-arm', undefined, { varsAgeSeconds: age })).toMatchObject({ go: false, skip: true })
+  })
+  it('recovery does not read the switch or pause, so its snapshot age is ignored', async () => {
+    const own = 'suspended:n5:7:' + CAND + ':recovery'
+    const rec = { mode: 'recovery', ...dispatched('recovery'), varsAgeSeconds: undefined }
+    expect(await ops({ marker: own }, rec)('pre-apply', own)).toMatchObject({ go: true })
+  })
+  it('confirm and rollback ignore the snapshot age (they must still run after a long wait)', async () => {
+    const run = { running: async () => ({ digest: D_CAND, label: CAND }), varsAgeSeconds: 99999 }
+    expect(await ops({ marker: ARMED })('confirm', ARMED, run)).toMatchObject({ go: true })
+    expect(await ops({ marker: ARMED })('rollback', ARMED, run)).toMatchObject({ go: true })
+  })
+  it('a switch turned off or a pause set while the job waited stops pre-apply (fresh snapshot after a rerun)', async () => {
+    expect(await ops({ marker: ARMED, sw: 'off' })('pre-apply', ARMED, { varsAgeSeconds: 1 })).toMatchObject({
+      go: false,
+      skip: false,
+    })
+    expect(await ops({ marker: ARMED, paused: 'red' })('pre-apply', ARMED, { varsAgeSeconds: 1 })).toMatchObject({
+      go: false,
+      skip: false,
+    })
   })
 })
 

@@ -199,6 +199,9 @@ export function pickCandidate(runs) {
   return hit ? { sha: hit.head_sha, runId: hit.id } : null
 }
 
+// How old the job-start `vars` snapshot may be before a pre-arm or pre-apply stops on it.
+const VARS_SNAPSHOT_BOUND_SECONDS = 180
+
 // One operation of the C-5 table. `expect` is this run's own marker value. Before the arm write
 // (`pre-arm`) a "no" is a skip; after it every "no" is a refusal, because the marker already reads
 // as suspended and the run must fail loudly.
@@ -210,6 +213,8 @@ export async function recheckOp({
   extra,
   ghApi,
   vars,
+  varsAgeSeconds,
+  varsMaxAgeSeconds = VARS_SNAPSHOT_BOUND_SECONDS,
   markerStore,
   candidate,
   predecessorDigest,
@@ -258,6 +263,16 @@ export async function recheckOp({
       return refuse(`the marker is not this run's own value (${state.marker === null ? 'absent' : 'changed'})`)
   } else if (mode === 'train' && !isClear(state.marker)) {
     return skip(markerWords(state.marker))
+  }
+
+  // `vars` is a snapshot taken when the job started; a repo variable cannot be read live without a token that can read
+  // Actions variables (CHE-9181, CHE-9877). Before a change, a snapshot older than the bound (or of unknown age) is
+  // not evidence of the switch or the pause: a job that waited for the host lock refuses, and a rerun takes a fresh one.
+  if (before && (want.sw !== null || want.pause !== null)) {
+    const age = typeof varsAgeSeconds === 'number' && Number.isFinite(varsAgeSeconds) ? varsAgeSeconds : NaN
+    if (!(age >= 0)) return no('the age of the switch and pause snapshot is unknown')
+    if (age > varsMaxAgeSeconds)
+      return no(`the switch and pause snapshot is ${Math.round(age)}s old (bound ${varsMaxAgeSeconds}s); rerun the job`)
   }
 
   if (op === 'pre-arm' || op === 'pre-apply') {
@@ -452,6 +467,11 @@ async function cli(argv, env) {
       ghApi: gh,
       // The switch and the pause as the workflow passed them; the marker is the file on this C00 host.
       vars: env,
+      // Seconds since the job's first step stamped VARS_READ_EPOCH (unset or garbage reads as unknown).
+      varsAgeSeconds: /^\d+$/.test(env.VARS_READ_EPOCH ?? '') ? Date.now() / 1000 - Number(env.VARS_READ_EPOCH) : NaN,
+      varsMaxAgeSeconds: /^\d+$/.test(env.C00_VARS_SNAPSHOT_BOUND_SECONDS ?? '')
+        ? Number(env.C00_VARS_SNAPSHOT_BOUND_SECONDS)
+        : undefined,
       markerStore: fileStore(markerFile(env)),
       event: env.EVENT,
       actor: env.ACTOR,

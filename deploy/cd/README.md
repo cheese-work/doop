@@ -57,9 +57,17 @@ on C00, once; no job creates it.
   the hosted runner.
 - **Where the reads come from.** `github.token` cannot be granted the Variables permission, so the REST read of a
   variable fails with 403 (CHE-9181). Every job therefore takes `DOOP_DEPLOY_TRAIN` and `MAIN_RED_PAUSED` from
-  env (`${{ vars.X }}`; unset reads as empty, i.e. absent). On C00 the value is fixed when the job starts, so a
-  switch or pause changed while a deploy runs is seen by the next run, not the running one. The marker is read
-  from the host file, every time, under the same checks. A marker that cannot be read **fails the check closed**
+  env (`${{ vars.X }}`; unset reads as empty, i.e. absent). A job's `vars` are a snapshot from job start and no
+  token may read them live, so the deploy job stamps `VARS_READ_EPOCH` as its first step and `pre-arm` and
+  `pre-apply` (train and drill) refuse when the snapshot is older than `C00_VARS_SNAPSHOT_BOUND_SECONDS` (default 180)
+  or of unknown age. A job that waited for the host lock past the bound stops (a skip at `pre-arm`, a refusal at
+  `pre-apply`, which leaves the marker armed for the rollback job), and a rerun takes a fresh snapshot. Recovery reads
+  neither the switch nor the pause, so it is exempt; `confirm` and `rollback` ignore the age. The marker is read
+  from the host file, every time, under the same checks.
+- **Control scripts are trusted, the candidate is data.** The three C00 jobs check out this workflow's own revision
+  (`github.sha`) into `control/` and run the gate, the marker script and `c00.sh` from there. The candidate is checked
+  out into `candidate/` (full history) for inventory and ancestry only, and the steps that need history run with
+  `working-directory: candidate`. A recovery to a pre-change SHA therefore still runs today's gate and host marker. A marker that cannot be read **fails the check closed**
   (a refusal naming the cause, never a skip), in `rollback` too: there is no token path left that could decide
   without it.
 
