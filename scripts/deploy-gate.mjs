@@ -10,6 +10,7 @@ import { spawnSync } from 'node:child_process'
 import { appendFileSync, readFileSync } from 'node:fs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { inventory } from './migration-inventory.mjs'
+import { fetchRead } from './lib/gh-fetch.mjs'
 
 const OWNER = 'congvc-dev'
 const BRANCH = 'cheese/main'
@@ -333,7 +334,7 @@ export async function dockerRunning(container = process.env.C00_CONTAINER || 'do
 // Inputs come from env (never from the command line, never inlined into a workflow script). Results go to
 // $GITHUB_OUTPUT. A skip exits 0 with go=false; a refusal, an unreadable fact or any error exits 1.
 const ghWith = (token) => async (path) => {
-  const res = await fetch(`${process.env.GITHUB_API_URL || 'https://api.github.com'}/${path}`, {
+  const res = await fetchRead(`${process.env.GITHUB_API_URL || 'https://api.github.com'}/${path}`, {
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
   })
   if (!res.ok) {
