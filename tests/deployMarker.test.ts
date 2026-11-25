@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 // @ts-expect-error plain .mjs script, no type declarations
-import { arm, kindOf, lift, readMarker, restore, suspend, writeMarker } from '../scripts/deploy-marker.mjs'
+import { api, arm, kindOf, lift, readMarker, restore, suspend, writeMarker } from '../scripts/deploy-marker.mjs'
 
 /* CHE-5545 (train S3a, plan CHE-5474 C-10.1 to C-10.5). One repo variable, DOOP_DEPLOY_SUSPENDED, is the only
    thing that lets the train run. Every write is read, check, write, read back; a write that cannot be proven
@@ -314,5 +314,24 @@ describe('lift (CHE-5551, C-10.7)', () => {
     expect(await readMarker(fake(SUSPENDED).ghApi, REPO)).toBe(SUSPENDED)
     expect(await readMarker(fake(null).ghApi, REPO)).toBeNull()
     await expect(readMarker(fake(SUSPENDED, { unreadable: true }).ghApi, REPO)).rejects.toThrow()
+  })
+})
+
+describe('marker API errors (CHE-9889)', () => {
+  afterEach(() => vi.unstubAllGlobals())
+  it('puts GitHub’s reason in the error, so a rate limit reads differently from a missing permission', async () => {
+    vi.stubGlobal(
+      'fetch',
+      async () =>
+        new Response(JSON.stringify({ message: 'API rate limit exceeded for installation ID 1.' }), { status: 403 }),
+    )
+    await expect(api('t')(URL)).rejects.toMatchObject({
+      status: 403,
+      message: `GitHub 403 for GET ${URL}: API rate limit exceeded for installation ID 1.`,
+    })
+  })
+  it('keeps the plain message when the body is not JSON', async () => {
+    vi.stubGlobal('fetch', async () => new Response('nope', { status: 500 }))
+    await expect(api('t')(URL)).rejects.toMatchObject({ status: 500, message: `GitHub 500 for GET ${URL}` })
   })
 })
