@@ -29,6 +29,6 @@ it('the candidate keeps every migration the C00 ledger has applied (C-8.3)', asy
     candidateMigrations: (await inventory(dir)).migrations,
   })
   expect(r).toMatchObject({ ok: true })
-  /* 0046-0054 came in with the 0.14 merge, 0055-0065 (upstream 0049-0059, renumbered) with 0.15.0, 0066 is the G3 attestation + Multica task id, 0067 is canvases.project_id (CHE-6624), 0068 is the lifecycle UI schema (CHE-9389), 0069 is comment_events.actor_kind (CHE-9326), 0070 is the frame lock columns (CHE-8992), 0071 is the frame_pins tables (CHE-7062) */
-  expect(r.newMigrations).toHaveLength(26)
+  /* 0046-0054 came in with the 0.14 merge, 0055-0065 (upstream 0049-0059, renumbered) with 0.15.0, 0066 is the G3 attestation + Multica task id, 0067 is canvases.project_id (CHE-6624), 0068 is the lifecycle UI schema (CHE-9389), 0069 is comment_events.actor_kind (CHE-9326), 0070 is the frame lock columns (CHE-8992), 0071 is the frame_pins tables (CHE-7062), 0072 is the ledger_landings receipt table (CHE-9675) */
+  expect(r.newMigrations).toHaveLength(27)
 })
