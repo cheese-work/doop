@@ -117,6 +117,7 @@ store.init(data.canvases)
 configurePins({ secret: env.DOOP_PIN_SECRET })
 await loadPins()
 startPinReconcile()
+await store.backfillPageAuthors() // CHE-7082: every page with frames and no ledger row gets one legacy `unknown` row, once
 await workspaces.hydrateWorkspaces() // before the first request: canvasRole reads membership
 await webhooks.hydrateWebhooks()
 billing.reportBillingConfig()

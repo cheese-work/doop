@@ -4,6 +4,7 @@ import { defaultSpot } from './frameLayout.ts'
 import * as persist from './db/persist.ts'
 import { exclusive, isPinned, pinHooks } from './pinState.ts'
 import { assertWritable, PolicyRefused, VersionChanged, type WriteContext } from './writePolicy.ts'
+import type { PageAuthorInput } from './db/persist.ts'
 import type { LinkAccess } from '../shared/canvasRole.ts'
 import { MAX_GUIDES } from '../shared/guides.ts'
 import { deriveDesignLinks, isUuid, type DesignIssue } from '../shared/pageIssue.ts'
@@ -39,6 +40,30 @@ type PageCopy = {
   guides: CanvasGuide[]
 }
 
+/**
+ * The ledger identity of a writer (CHE-7064 D1.5). The kind comes from the write context, never from
+ * client text: an agent is an `agent` only when Multica vouched for its task (`verified` with an
+ * agent and a task id); any other agent is `unknown`, and nothing it claimed is recorded.
+ */
+function pageAuthorOf(
+  ctx: WriteContext,
+): Pick<PageAuthorInput, 'kind' | 'agentId' | 'taskId' | 'provider' | 'model' | 'userId'> {
+  if (ctx.kind === 'system') return { kind: 'system' }
+  if (ctx.kind === 'user') return { kind: 'user', userId: ctx.userId }
+  if (ctx.verified && ctx.agentId && ctx.taskId) {
+    return { kind: 'agent', agentId: ctx.agentId, taskId: ctx.taskId, provider: ctx.provider, model: ctx.model }
+  }
+  return { kind: 'unknown' }
+}
+
+/** Append the writer to each page's ledger, in the same tick as the write and before the frame save is queued. */
+function recordWriter(ctx: WriteContext, canvasId: string, frameId: string, pageIds: string[]) {
+  const who = pageAuthorOf(ctx)
+  for (const pageId of new Set(pageIds)) {
+    persist.appendPageAuthor({ ...who, canvasId, pageId, frameId, source: 'write' })
+  }
+}
+
 const names = (pages: CanvasPageInfo[]) => pages.map((page) => page.name)
 
 /**
@@ -70,6 +95,12 @@ class Store {
         this.frameIndex.set(f.id, c.id)
       }
     }
+  }
+
+  /** Boot, once, after init: every page that holds frames and has no ledger row gets one `legacy`
+   *  `unknown` row (CHE-7064 D1.5). Idempotent. Returns how many rows it wrote. */
+  backfillPageAuthors(): Promise<number> {
+    return persist.backfillPageAuthors([...this.canvases.values()])
   }
 
   /** The dashboard row for one canvas. `viewerId` decides only whether the
@@ -698,6 +729,8 @@ class Store {
     const pageId = input.pageId ?? canvasPages(c)[0]!.id
     if (!canvasPages(c).some((page) => page.id === pageId)) return undefined
     assertWritable(ctx, 'create_frame', { canvas: c, pageIds: [pageId], html: input.html })
+    const frameId = nanoid(10)
+    recordWriter(ctx, canvasId, frameId, [pageId])
     const frames = pageFrames(c, pageId)
     const now = Date.now()
     // auto-place: to the right of the right-most frame
@@ -705,7 +738,7 @@ class Store {
     const x = input.x ?? at.x
     const y = input.y ?? at.y
     const frame: Frame = {
-      id: nanoid(10),
+      id: frameId,
       canvasId,
       pageId,
       name: input.name,
@@ -763,6 +796,14 @@ class Store {
       throw new PolicyRefused('unlock_frame', 'pinned: a decision card holds this frame')
     if (expectedUpdatedAt !== undefined && frame.updatedAt !== expectedUpdatedAt)
       throw new VersionChanged(frameId, frame.updatedAt)
+    recordWriter(
+      ctx,
+      frame.canvasId,
+      frame.id,
+      patch.pageId !== undefined
+        ? [framePageId(this.canvases.get(frame.canvasId)!, frame), patch.pageId]
+        : [framePageId(this.canvases.get(frame.canvasId)!, frame)],
+    )
     if (unlocking) {
       /* the epoch only goes up, so a lock decision made before this unlock can never be replayed after it */
       frame.lockEpoch = (frame.lockEpoch ?? 0) + 1
@@ -917,6 +958,7 @@ class Store {
     const idx = c.frames.findIndex((f) => f.id === frameId)
     if (idx === -1) return undefined
     assertWritable(ctx, 'delete_frame', { canvas: c, frame: c.frames[idx]!, pageIds: [framePageId(c, c.frames[idx]!)] })
+    recordWriter(ctx, canvasId, frameId, [framePageId(c, c.frames[idx]!)])
     const [frame] = c.frames.splice(idx, 1)
     c.updatedAt = Date.now()
     this.frameIndex.delete(frameId)

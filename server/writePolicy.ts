@@ -16,6 +16,9 @@ export type WriteContext = {
   agentId?: string
   issueId?: string
   projectId?: string
+  /** the runtime provider and model of the verified task, for the author ledger (set once a signed task assertion is verified) */
+  provider?: string
+  model?: string
   sessionId?: string
   /** Multica confirmed `taskId` is a live task, and the three ids above are its */
   verified?: boolean
