@@ -174,6 +174,10 @@ const schema = {
      (server/workBudget.ts); 0 lifts a limit */
   DOOP_WORK_BUDGET_PARSE_MB: nonNegativeInt({ default: 96 }),
   DOOP_WORK_BUDGET_MS: nonNegativeInt({ default: 2000 }),
+  /* the commit and its commit time the image was built from (image.yml build args), shown by /api/version; empty
+     outside an image */
+  DOOP_REVISION: str({ default: '' }),
+  DOOP_COMMIT_TIME: str({ default: '' }),
   /* what a store write outside any write boundary does (server/journal.ts): nothing, a
      logged line per kind of write, or a thrown error. Unset: 'warn' in development, 'off'
      in production and under test (the integration harness sets 'throw'). */

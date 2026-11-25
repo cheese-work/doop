@@ -603,6 +603,18 @@
       ]
     },
     {
+      "group": "/api/version",
+      "calls": [
+        {
+          "kind": "read",
+          "method": "GET",
+          "path": "/api/version",
+          "auth": false
+        }
+      ],
+      "noWrite": "read-only build stamp; there is nothing to write"
+    },
+    {
       "group": "/api/locale-config",
       "calls": [
         {
