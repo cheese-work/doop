@@ -310,6 +310,43 @@ function logActivity(canvasId: string, actor: Actor, message: string, frameId?: 
   broadcast(canvasId, { type: 'activity', item })
 }
 
+const refusalsNoted = new WeakSet<object>()
+
+/** One "edit refused" line for a write a lock turned away (S1, CHE-9308). Logged here, outside the write's own
+ *  savepoint: the throw undoes everything the write queued, so a line logged inside it would never be kept. */
+function noteRefusal(err: unknown, actor: Actor): void {
+  if (!(err instanceof FrameLockedError) || !err.canvasId || refusalsNoted.has(err)) return
+  refusalsNoted.add(err)
+  logActivity(
+    err.canvasId,
+    actor,
+    `edit refused on “${err.frameName}”: locked by ${err.lockedBy ?? 'unknown'}`,
+    err.frameId,
+  )
+}
+
+/** `write`, with a lock refusal noted in the activity feed and rethrown as it was (an async write too). */
+function logsRefusal<A extends unknown[], R>(
+  write: (...args: A) => R,
+  actorAt: number | ((args: A) => Actor),
+): (...args: A) => R {
+  return (...args) => {
+    const actor = typeof actorAt === 'number' ? (args[actorAt] as Actor) : actorAt(args)
+    try {
+      const out = write(...args)
+      if (out instanceof Promise)
+        return out.catch((err: unknown) => {
+          noteRefusal(err, actor)
+          throw err
+        }) as R
+      return out
+    } catch (err) {
+      noteRefusal(err, actor)
+      throw err
+    }
+  }
+}
+
 export function resolveActor(
   raw:
     | {
@@ -1940,7 +1977,7 @@ export type RestoredFrame = {
 /** Put a frame back to one of its recorded versions (HTML and size; the name
  *  and position stay). null = no such version on this frame. The state being
  *  replaced is filed as a version first, so a restore is itself reversible. */
-export const restoreFrameVersion = atomic(async function restoreFrameVersion(
+const restoreFrameVersionWrite = atomic(async function restoreFrameVersion(
   frameId: string,
   versionId: string,
   actor: Actor,
@@ -1971,6 +2008,7 @@ export const restoreFrameVersion = atomic(async function restoreFrameVersion(
   touch(frame.canvasId, actor, frame.id)
   return { frame, replaced }
 })
+export const restoreFrameVersion = logsRefusal(restoreFrameVersionWrite, 2)
 
 /* ------------------------------------------------------------------ */
 /* Live rendering of agent writes.                                     */
@@ -2553,7 +2591,7 @@ function healFromMain(canvas: Canvas, frame: Frame, ids: ReadonlySet<string>) {
   if (next) broadcast(canvas.id, { type: 'frame:updated', frame: next, actor })
 }
 
-export const appendFrameHtml = atomic(function appendFrameHtml(
+const appendFrameHtmlWrite = atomic(function appendFrameHtml(
   frameId: string,
   chunk: string,
   actor: Actor,
@@ -2628,6 +2666,7 @@ export const appendFrameHtml = atomic(function appendFrameHtml(
   touch(frame.canvasId, actor, frameId)
   return frame
 })
+export const appendFrameHtml = logsRefusal(appendFrameHtmlWrite, 2)
 
 /* ------------------------------------------------------------------ */
 /* Idempotent frame HTML writes: at most once per (frame, idempotency key),
@@ -3008,6 +3047,8 @@ export const createFrame = atomic(function createFrame(
     demo?: boolean
     hidden?: boolean
     locked?: boolean
+    /** why it is locked (S1); kept only when `locked` is true */
+    lockReason?: string
     z?: number
     rotation?: number
   },
@@ -3044,10 +3085,24 @@ export const createFrame = atomic(function createFrame(
  *  always opens a history burst, even when the new document keeps most of
  *  the old one's wrapper — only the reveal-or-morph choice stays similarity
  *  based. Without it a write is judged by how much it changed. */
-export const updateFrame = atomic(function updateFrame(
+const updateFrameWrite = atomic(function updateFrame(
   frameId: string,
   patch: Partial<
-    Pick<Frame, 'name' | 'pageId' | 'x' | 'y' | 'width' | 'height' | 'html' | 'hidden' | 'locked' | 'z' | 'rotation'>
+    Pick<
+      Frame,
+      | 'name'
+      | 'pageId'
+      | 'x'
+      | 'y'
+      | 'width'
+      | 'height'
+      | 'html'
+      | 'hidden'
+      | 'locked'
+      | 'lockReason'
+      | 'z'
+      | 'rotation'
+    >
   >,
   actor: Actor,
   opts: {
@@ -3124,12 +3179,13 @@ export const updateFrame = atomic(function updateFrame(
   touch(frame.canvasId, actor, frame.id)
   return frame
 })
+export const updateFrame = logsRefusal(updateFrameWrite, 2)
 
 /** Several frames' places in the stack at once (the Layers panel renumbering
  *  a page, or undoing that): every frame is checked before any is written,
  *  so the order changes whole or not at all. Undefined when a frame is
  *  gone or on another canvas. Not a design edit: no activity line. */
-export const restackFrames = atomic(function restackFrames(
+const restackFramesWrite = atomic(function restackFrames(
   canvasId: string,
   writes: StackWrite[],
   actor: Actor,
@@ -3140,11 +3196,12 @@ export const restackFrames = atomic(function restackFrames(
   touch(canvasId, actor, frames[0]?.id)
   return frames
 })
+export const restackFrames = logsRefusal(restackFramesWrite, 2)
 
 /** Sign-off is a human action, separate from ordinary frame editing. An agent may set it
  *  for the person it works for: the approval stays theirs (`approvedBy`), with the agent
  *  recorded as `approvedVia` and as the actor of the broadcast and activity line. */
-export const setFrameApproval = atomic(function setFrameApproval(
+const setFrameApprovalWrite = atomic(function setFrameApproval(
   frameId: string,
   ready: boolean,
   user: { id: string; name: string },
@@ -3176,6 +3233,10 @@ export const setFrameApproval = atomic(function setFrameApproval(
   )
   return frame
 })
+export const setFrameApproval = logsRefusal(
+  setFrameApprovalWrite,
+  ([, , user, agent]) => agent ?? resolveActor({ name: user.name, kind: 'user' }),
+)
 
 /** An agent's approval request, shared by the MCP tool and the resident agent. */
 export function agentSetFrameApproval(
@@ -3223,7 +3284,13 @@ export async function lockFrameIfVersionDurable(
   const { frameId, attestedUpdatedAt, attestationId } = entry
   let res: Awaited<ReturnType<typeof store.lockIfVersionDurable>>
   try {
-    res = await store.lockIfVersionDurable(writeContextFor(actor), frameId, attestedUpdatedAt, attestationId)
+    res = await store.lockIfVersionDurable(
+      writeContextFor(actor),
+      frameId,
+      attestedUpdatedAt,
+      attestationId,
+      actor.name,
+    )
   } catch (err) {
     if (err instanceof PolicyRefused) return { frameId, ok: false, error: 'policy_refused' }
     throw err
@@ -3277,7 +3344,7 @@ export function isCanvasStreaming(canvasId: string): boolean {
   return false
 }
 
-export const deleteFrame = atomic(function deleteFrame(frameId: string, actor: Actor): Frame | undefined {
+const deleteFrameWrite = atomic(function deleteFrame(frameId: string, actor: Actor): Frame | undefined {
   /* close any live stream or playback while the frame still exists,
      so their auto “Designing…” tasks end with it */
   finishStream(frameId, false)
@@ -3293,6 +3360,7 @@ export const deleteFrame = atomic(function deleteFrame(frameId: string, actor: A
   touch(frame.canvasId, actor, null)
   return frame
 })
+export const deleteFrame = logsRefusal(deleteFrameWrite, 1)
 
 /** Bring a deleted frame back with its version history; peers get the frame. Its canvas is
  *  loaded first: a trashed frame's html is read from the database like a live one's. */
@@ -3328,7 +3396,7 @@ const restoreLoadedPage = atomic(function restoreLoadedPage(canvasId: string, pa
 })
 
 /** Move frames to the Archive page and hide them in one step. */
-export function archiveFrames(canvasId: string, frameIds: string[], actor: Actor) {
+function archiveFramesWrite(canvasId: string, frameIds: string[], actor: Actor) {
   const archived = store.archiveFrames(writeContextFor(actor), canvasId, frameIds, actor.name)
   if (!archived) return undefined
   broadcast(canvasId, { type: 'canvas:pages', pages: archived.pages, actor })
@@ -3337,6 +3405,7 @@ export function archiveFrames(canvasId: string, frameIds: string[], actor: Actor
   touch(canvasId, actor, null)
   return { moved: archived.frames.map((f) => f.id), pages: archived.pages }
 }
+export const archiveFrames = logsRefusal(archiveFramesWrite, 2)
 
 /** Remove a canvas with everything attached to it; viewers are told to leave. */
 export const deleteCanvas = atomic(function deleteCanvas(canvasId: string, actor: Actor): boolean {

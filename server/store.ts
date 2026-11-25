@@ -14,7 +14,7 @@ import {
 import { defaultSpot } from './frameLayout.ts'
 import * as persist from './db/persist.ts'
 import { exclusive, isPinned, pinHooks } from './pinState.ts'
-import { assertWritable, PolicyRefused, type WriteContext } from './writePolicy.ts'
+import { assertWritable, FrameLockedError, PolicyRefused, type WriteContext } from './writePolicy.ts'
 import { assertPagesOpen, restoring } from './pageState.ts'
 import type { LinkAccess } from '../shared/canvasRole.ts'
 import { MAX_GUIDES } from '../shared/guides.ts'
@@ -36,6 +36,8 @@ import type {
   MemoryReference,
 } from '../shared/types.ts'
 
+export { FrameLockedError }
+
 export const MAX_PAGES = 100
 
 export class PageLimitError extends Error {
@@ -52,15 +54,6 @@ export class GuideLimitError extends Error {
 
 /** Frame columns a lock protects. `store.updateFrame` and `persist.writeFrame` share this list. */
 export const DESIGN_KEYS = ['html', 'width', 'height'] as const
-
-/** A write to a locked frame (CHE-6626): every op from every actor is refused until an owner unlocks it.
- *  A `PolicyRefused`, so the REST (423) and MCP paths that already handle one handle this too. */
-export class FrameLockedError extends PolicyRefused {
-  override readonly name = 'FrameLockedError'
-  constructor(frame: Pick<Frame, 'id' | 'name'>) {
-    super('update_frame', `frame "${frame.name}" (${frame.id}) is locked; only a lock owner can unlock it`)
-  }
-}
 
 /** A new frame, or a restored one whose page is gone, has no page to go to: every page is the ledger, Finished or
  *  Archive (CHE-9398 L1). Nothing is written. REST answers 409 `no_open_page`, MCP an error. */
@@ -137,8 +130,31 @@ function restoreFrame(frame: Frame, state: ReturnType<typeof frameState>) {
  * store synchronously as before. `evictIdle` drops the HTML of a canvas
  * nobody has used for a while, never one that is held or in use.
  */
-/** A copy is a new draft: it carries no lock, no epoch and no attestation of the frame it came from. */
-const UNLOCKED = { locked: undefined, lockEpoch: undefined, lockAttestationId: undefined } as const
+/** A copy is a new draft: it carries no lock, no epoch, no attestation and no who, when or why of the frame it came from. */
+const UNLOCKED = {
+  locked: undefined,
+  lockEpoch: undefined,
+  lockAttestationId: undefined,
+  lockedBy: undefined,
+  lockedAt: undefined,
+  lockReason: undefined,
+} as const
+
+/** `lockedBy` of a lock whose caller named nobody (a test calling the store directly) */
+const UNKNOWN_LOCKER = 'unknown'
+
+/** The lock's own record (S1): who, when and why. One place sets it and one clears it, so no writer half-does either. */
+function stampLock(frame: Frame, by: string, at: number, reason?: string): void {
+  frame.lockedBy = by
+  frame.lockedAt = at
+  if (reason === undefined) delete frame.lockReason
+  else frame.lockReason = reason
+}
+function clearLockStamp(frame: Frame): void {
+  delete frame.lockedBy
+  delete frame.lockedAt
+  delete frame.lockReason
+}
 
 class Store {
   canvases = new Map<string, Canvas>()
@@ -1434,6 +1450,8 @@ class Store {
       demo?: boolean
       hidden?: boolean
       locked?: boolean
+      /** why it is locked (only read with `locked`) */
+      lockReason?: string
       /** where it stacks (undo brings a deleted frame back to its place);
        *  in front of everything on the page when unset */
       z?: number
@@ -1470,7 +1488,10 @@ class Store {
     }
     if (input.demo) frame.demo = true
     if (input.hidden) frame.hidden = true
-    if (input.locked) frame.locked = true
+    if (input.locked) {
+      frame.locked = true
+      stampLock(frame, by, now, input.lockReason)
+    }
     if (input.rotation) frame.rotation = input.rotation
     requireBoundary('store.createFrame')
     c.frames.push(frame)
@@ -1502,6 +1523,7 @@ class Store {
         | 'html'
         | 'hidden'
         | 'locked'
+        | 'lockReason'
         | 'z'
         | 'rotation'
         | 'approval'
@@ -1529,6 +1551,20 @@ class Store {
       Object.keys(patch).some((key) => key !== 'locked' && patch[key as keyof typeof patch] !== undefined)
     )
       throw new PolicyRefused('unlock_frame', 'unlock changes nothing else; edit after it')
+    /* the reason rides with a lock and is no part of any other write: it is read here and kept off the frame */
+    const { lockReason, ...unreasoned } = patch
+    patch = unreasoned
+    const c = this.canvases.get(frame.canvasId)!
+    /* a lock on a frame that is already locked changes nothing (S1): a retry keeps the first who, when and why.
+       The policy still decides whether this actor may lock; any other key on the patch is a write, refused below. */
+    if (
+      frame.locked &&
+      patch.locked === true &&
+      Object.keys(patch).every((key) => key === 'locked' || patch[key as keyof typeof patch] === undefined)
+    ) {
+      assertWritable(ctx, 'lock_frame', { canvas: c, frame, pageIds: [framePageId(c, frame)] })
+      return frame
+    }
     if (frame.locked && !unlocking) throw new FrameLockedError(frame)
     if (opts.expectedUpdatedAt !== undefined && opts.expectedUpdatedAt !== frame.updatedAt)
       throw new FrameStaleError(frame)
@@ -1537,7 +1573,6 @@ class Store {
       !canvasPages(this.canvases.get(frame.canvasId)!).some((p) => p.id === patch.pageId)
     )
       return undefined
-    const c = this.canvases.get(frame.canvasId)!
     /* the one write a Finished page lets through: the lifecycle locking a frame, with nothing else in the patch */
     const lockOnly =
       !frame.locked &&
@@ -1560,10 +1595,12 @@ class Store {
     if (patch.pageId !== undefined && patch.pageId !== frame.pageId && patch.z === undefined)
       patch = { ...patch, z: frontOf(pageFrames(c, patch.pageId)) ?? frame.z }
     Object.assign(frame, patch)
+    if (patch.locked === true) stampLock(frame, by, Date.now(), lockReason)
     if (unlocking) {
       /* the epoch only goes up, so a lock decision made before this unlock can never be replayed after it */
       frame.lockEpoch = (frame.lockEpoch ?? 0) + 1
       delete frame.lockAttestationId
+      clearLockStamp(frame)
     }
     if (patch.z !== undefined) c.frames.sort(byStack)
     // All writers (including streams, sync and restores) invalidate sign-off.
@@ -1606,17 +1643,19 @@ class Store {
     frameId: string,
     attestedUpdatedAt: number,
     attestationId: string,
+    /** who locks (the actor's name), recorded as `lockedBy` */
+    by: string = UNKNOWN_LOCKER,
   ):
     | { ok: true; frame: Frame; already?: true }
     | { ok: false; error: 'version_changed'; currentUpdatedAt: number }
     | undefined {
-    const out = this.applyLock(ctx, frameId, attestedUpdatedAt, attestationId)
+    const out = this.applyLock(ctx, frameId, attestedUpdatedAt, attestationId, by)
     if (out?.ok && !out.already) this.saveFrameLater(out.frame, true)
     return out
   }
 
   /** The in-memory half of a lock; the callers decide how it becomes durable. */
-  private applyLock(ctx: WriteContext, frameId: string, attestedUpdatedAt: number, attestationId: string) {
+  private applyLock(ctx: WriteContext, frameId: string, attestedUpdatedAt: number, attestationId: string, by: string) {
     const frame = this.writableFrame(frameId)
     if (!frame) return undefined
     const c = this.canvases.get(frame.canvasId)!
@@ -1631,6 +1670,7 @@ class Store {
     const before = inTransaction() ? frameState(frame) : undefined
     frame.locked = true
     frame.lockAttestationId = attestationId
+    stampLock(frame, by, Date.now())
     if (before)
       recordUndo(() => {
         if (this.getFrame(frame.id) === frame && frame.lockAttestationId === attestationId) restoreFrame(frame, before)
@@ -1645,6 +1685,7 @@ class Store {
     frameId: string,
     attestedUpdatedAt: number,
     attestationId: string,
+    by: string = UNKNOWN_LOCKER,
   ): Promise<
     | { ok: true; frame: Frame; epoch: number; already?: true }
     | { ok: false; error: 'version_changed' | 'persist_failed'; currentUpdatedAt?: number }
@@ -1652,8 +1693,14 @@ class Store {
   > {
     return exclusive(async () => {
       const before = this.getFrame(frameId)
-      const was = { locked: before?.locked, attestationId: before?.lockAttestationId }
-      const out = this.applyLock(ctx, frameId, attestedUpdatedAt, attestationId)
+      const was = {
+        locked: before?.locked,
+        attestationId: before?.lockAttestationId,
+        lockedBy: before?.lockedBy,
+        lockedAt: before?.lockedAt,
+        lockReason: before?.lockReason,
+      }
+      const out = this.applyLock(ctx, frameId, attestedUpdatedAt, attestationId, by)
       if (!out || !out.ok) return out
       const { frame } = out
       if (out.already) return { ...out, epoch: frame.lockEpoch ?? 0 }
@@ -1664,6 +1711,8 @@ class Store {
         frame.locked = was.locked
         if (was.attestationId === undefined) delete frame.lockAttestationId
         else frame.lockAttestationId = was.attestationId
+        clearLockStamp(frame)
+        if (was.lockedBy !== undefined) stampLock(frame, was.lockedBy, was.lockedAt!, was.lockReason)
         return { ok: false, error: 'persist_failed' }
       }
       return { ...out, epoch: frame.lockEpoch ?? 0 }
@@ -1699,6 +1748,7 @@ class Store {
         updatedBy: by,
       }
       delete next.lockAttestationId
+      clearLockStamp(next)
       try {
         await pinHooks.beforeWrite?.('unlock')
         await persist.saveFrameNow(next)
@@ -1708,6 +1758,7 @@ class Store {
       frame.locked = false
       frame.lockEpoch = next.lockEpoch
       delete frame.lockAttestationId
+      clearLockStamp(frame)
       frame.updatedAt = next.updatedAt
       frame.updatedBy = by
       c.updatedAt = frame.updatedAt

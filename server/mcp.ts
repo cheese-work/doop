@@ -2972,7 +2972,7 @@ export function buildMcpServer(
       title: 'Rename, move or resize a frame',
       _meta: previewToolMeta('Updating the frame…', 'Frame updated'),
       description:
-        "Update frame metadata in one call: rename it (name), move it on its page (x, y), resize it (width, height), turn it (rotation: degrees clockwise about its centre; 0 straightens it), or move it to another page (pageId from get_canvas; it keeps its x/y unless you pass new ones and lands in front of that page's frames). Set locked to true to lock the frame: a locked frame refuses every edit, move, rename and delete, from everyone, until its owner unlocks it (an agent can never unlock; locked=false is refused). Prefer lock_frame_if_version, which locks only if the frame is still the version you checked. A move or resize that would overlap another frame on the page (or leave less than 40px clear) is refused with the free spot to use.",
+        "Update frame metadata in one call: rename it (name), move it on its page (x, y), resize it (width, height), turn it (rotation: degrees clockwise about its centre; 0 straightens it), or move it to another page (pageId from get_canvas; it keeps its x/y unless you pass new ones and lands in front of that page's frames). Set locked to true to lock the frame: a locked frame refuses every edit, move, rename and delete, from everyone, until its owner unlocks it (an agent can never unlock; locked=false is refused); add reason (up to 500 characters) to say why, read back with who locked it and when. Prefer lock_frame_if_version, which locks only if the frame is still the version you checked. A move or resize that would overlap another frame on the page (or leave less than 40px clear) is refused with the free spot to use.",
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: {
         frame_id: z.string(),
@@ -2983,6 +2983,11 @@ export function buildMcpServer(
         width: z.number().optional(),
         height: z.number().optional(),
         locked: z.boolean().optional(),
+        reason: z
+          .string()
+          .max(500)
+          .optional()
+          .describe('Why the frame is locked; read only together with locked: true.'),
         rotation: z.number().optional(),
         expected_updated_at: z
           .string()
@@ -2993,10 +2998,13 @@ export function buildMcpServer(
         agent_name: agentName,
       },
     },
-    async ({ frame_id, agent_name, expected_updated_at, ...patch }) => {
+    async ({ frame_id, agent_name, expected_updated_at, reason, ...fields }) => {
       const found = frameFor(frame_id, 'edit')
       const canvas = found && store.getCanvas(found.canvasId)
       if (!canvas) return noFrame(frame_id)
+      /* the reason belongs to a lock; on any other write it adds no key */
+      const lockReason = fields.locked === true ? reason?.trim() || undefined : undefined
+      const patch = lockReason === undefined ? fields : { ...fields, lockReason }
       /* checked and written in one tick, like set_frame_html's fence; optional here, never required */
       const stale = expected_updated_at === undefined ? undefined : fenceError(found, expected_updated_at)
       if (stale) return stale

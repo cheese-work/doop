@@ -1,7 +1,7 @@
 import { canvasPages, framePageId } from '../shared/pages.ts'
 import { checkReconGate, isReconHtml, reconRefusal } from './reconGuard.ts'
 import { assertPageRules } from './pageState.ts'
-import { PolicyRefused } from './policyRefused.ts'
+import { FrameLockedError, PolicyRefused } from './policyRefused.ts'
 import type { Actor, Canvas, CanvasPageInfo, Frame } from '../shared/types.ts'
 
 /**
@@ -52,7 +52,7 @@ export type WriteTarget = {
   lockOnly?: boolean
 }
 
-export { PolicyRefused }
+export { FrameLockedError, PolicyRefused }
 
 let lockOwners: ReadonlySet<string> = new Set()
 /** Who may unlock a frame (Cheese). Empty or unset = nobody: unlock fails closed. */
@@ -137,7 +137,7 @@ function assertLockRules(ctx: WriteContext, op: WriteOp, target: WriteTarget): v
     return
   }
   if (op === 'lock_frame') return /* narrows access: any writer allowed past here may lock */
-  if (frame?.locked) throw new PolicyRefused(op, `frame ${frame.id} is locked`)
+  if (frame?.locked) throw new FrameLockedError(frame, op, `frame ${frame.id} is locked`)
   if (op === 'delete_canvas' && !ctx.erasure && canvas.frames.some((f) => f.locked))
     throw new PolicyRefused(op, 'canvas holds a locked frame')
   if (op === 'set_pages' && target.nextPages) {

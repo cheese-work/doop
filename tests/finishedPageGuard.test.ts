@@ -227,10 +227,18 @@ describe('a Finished page refuses frame writes over MCP and in the store', () =>
   it('a locked frame on a Finished page still answers the lock refusal first', async () => {
     expect(() => store.updateFrame(sys, 'f3', { name: 'x' }, 'T')).toThrow(FrameLockedError)
     const before = state()
+    const logged = actions.getActivity('c1').length
     const out = await call(await connect(), 'update_frame', { frame_id: 'f3', name: 'x' })
     expect(out.isError).toBe(true)
     expect(out.text).toContain('is locked')
-    expect(state()).toBe(before)
+    /* the frame and page stay as they were; the one change is the "edit refused" line (S1, CHE-9308) */
+    expect(actions.getActivity('c1')).toHaveLength(logged + 1)
+    expect(actions.getActivity('c1')[0]?.message).toMatch(/^edit refused on /)
+    expect(JSON.parse(state())).toMatchObject({
+      ...JSON.parse(before),
+      activity: logged + 1,
+      broadcasts: expect.any(Number),
+    })
   })
 })
 
@@ -313,9 +321,17 @@ describe('lock-only: the lifecycle call locks a frame on a Finished page', () =>
     expect(state('c2')).toBe(before)
   })
 
-  it('an already locked frame is not lock-only: the lock refusal answers', async () => {
+  it('an already locked frame is not lock-only: a repeat lock answers ok and changes nothing (S1, CHE-9308)', async () => {
     store.updateFrame(sys, 'l1', { locked: true }, 'T')
+    const first = { ...store.getFrame('l1')! }
     const out = await call(await connect('task-1'), 'update_frame', { frame_id: 'l1', locked: true })
+    expect(out.isError, out.text).toBeFalsy()
+    expect(store.getFrame('l1')).toEqual(first)
+  })
+
+  it('an already locked frame still refuses a lock that carries another change', async () => {
+    store.updateFrame(sys, 'l1', { locked: true }, 'T')
+    const out = await call(await connect('task-1'), 'update_frame', { frame_id: 'l1', locked: true, name: 'x' })
     expect(out.isError).toBe(true)
     expect(out.text).toContain('is locked')
   })
@@ -528,7 +544,7 @@ describe('REST and design sync on a Finished page', () => {
   it('a locked frame on a Finished page answers 423 first', async () => {
     const res = await owner.patch(`/api/frames/${ids.held}`, { name: 'x' })
     expect(res.status).toBe(423)
-    expect(((await res.json()) as { code: string }).code).toBe('policy_refused')
+    expect(((await res.json()) as { code: string }).code).toBe('frame_locked')
   })
 
   it('design sync skips a screen on a Finished page, as it skips a locked one', async () => {
