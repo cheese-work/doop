@@ -330,6 +330,13 @@ describe('marker API errors (CHE-9889)', () => {
       message: `GitHub 403 for GET ${URL}: API rate limit exceeded for installation ID 1.`,
     })
   })
+  it('caps GitHub’s reason at 200 characters and keeps the HTTP status', async () => {
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ message: 'x'.repeat(500) }), { status: 422 }))
+    await expect(api('t')(URL)).rejects.toMatchObject({
+      status: 422,
+      message: `GitHub 422 for GET ${URL}: ${'x'.repeat(200)}`,
+    })
+  })
   it('keeps the plain message when the body is not JSON', async () => {
     vi.stubGlobal('fetch', async () => new Response('nope', { status: 500 }))
     await expect(api('t')(URL)).rejects.toMatchObject({ status: 500, message: `GitHub 500 for GET ${URL}` })
