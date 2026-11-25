@@ -1,5 +1,7 @@
 import { env } from './env.ts'
 import { readRevision } from './revision.ts'
+import packageJson from '../package.json' with { type: 'json' }
+import { buildInfo } from '../shared/buildInfo.ts'
 import {
   changeInstances,
   componentDetail,
@@ -856,6 +858,15 @@ app.get('/api/oidc-config', (req, res) => {
   const providers = loginProvidersConfig()
   res.json({ ...providers, ...loginPolicy(providers.enabled) })
 })
+
+/* Public: which build is running, for the Settings footer (CHE-9772). Stamped at image build time (image.yml
+   build args, Dockerfile ENV); read once because it cannot change under a running process. */
+const build = buildInfo({
+  version: packageJson.version,
+  revision: env.DOOP_REVISION,
+  commitTime: env.DOOP_COMMIT_TIME,
+})
+app.get('/api/version', (_req, res) => res.json(build))
 
 /* Public: the interface language for visitors who have not picked one. The
    client asks before its first render, so sign-in already speaks it. */

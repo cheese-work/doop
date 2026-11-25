@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { navigate } from '../App'
 import { useT, type PlainMessageKey } from '../lib/i18n'
 import { ModelAccountPanel } from '../components/ModelAccount'
@@ -66,6 +66,20 @@ function initialPane(): Pane {
   return isPane(pane) ? pane : 'agent'
 }
 
+/** The build label from /api/version (CHE-9772); empty until it loads or when the fetch fails, never an error. */
+function useBuildLabel(): string {
+  const [label, setLabel] = useState('')
+  useEffect(() => {
+    const ctl = new AbortController()
+    fetch('/api/version', { signal: ctl.signal })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((info: { label?: unknown } | null) => typeof info?.label === 'string' && setLabel(info.label))
+      .catch(() => {})
+    return () => ctl.abort()
+  }, [])
+  return label
+}
+
 /**
  * Account settings. Today it holds one thing — which model account the Doop
  * Agent runs on once the free tasks are spent — but it is the account-level
@@ -80,6 +94,7 @@ export function Settings() {
      this short an anchor jump looks like nothing happened */
   const [pane, setPane] = useState<Pane>(initialPane)
   const t = useT()
+  const buildLabel = useBuildLabel()
   const { allowance, refresh } = useAllowance()
   const left = allowance ? Math.max(0, allowance.limit - allowance.used) : null
   /* arriving from a canvas (the free-tier wall) should not cost you your
@@ -268,6 +283,7 @@ export function Settings() {
           ) : (
             <AppearanceSettings />
           )}
+          {buildLabel && <p className="mt-8 font-mono text-caption text-ink-faint">{buildLabel}</p>}
         </DashContent>
       </DashMain>
     </DashLayout>

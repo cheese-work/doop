@@ -47,6 +47,9 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # The commit time (not the run time) is the build stamp shown in Settings (CHE-9772); %cI is ISO 8601.
+      - id: stamp
+        run: echo "commit_time=$(git show -s --format=%cI "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
       - id: build
         uses: docker/build-push-action@v6
         with:
@@ -59,6 +62,7 @@ jobs:
           # /healthz reports it, and the live-revision watcher compares it with the last successful D2 (CHE-5550).
           build-args: |
             DOOP_REVISION=${{ github.sha }}
+            DOOP_COMMIT_TIME=${{ steps.stamp.outputs.commit_time }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
       # The migration inventory D2's `admit` recomputes from the checked-out candidate (C-6).

@@ -63,6 +63,10 @@ COPY deploy/cd/smoke-routes.json ./deploy/cd/smoke-routes.json
 # layer; image.yml passes it, and a local build without it reads `unknown`.
 ARG DOOP_REVISION=unknown
 RUN printf '%s\n' "$DOOP_REVISION" > /app/REVISION
+# The same commit and its commit time (`git show -s --format=%cI`) as env, for /api/version: the label in Settings
+# (CHE-9772). Empty when built locally without them, which the server shows as `dev`.
+ARG DOOP_COMMIT_TIME=
+ENV DOOP_REVISION=$DOOP_REVISION DOOP_COMMIT_TIME=$DOOP_COMMIT_TIME
 
 EXPOSE 4400
 HEALTHCHECK --interval=30s --timeout=5s CMD node -e "fetch('http://localhost:'+process.env.PORT+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
