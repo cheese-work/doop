@@ -280,11 +280,20 @@ export async function recheckOp({
   // `vars` is a snapshot taken when the job started; a repo variable cannot be read live without a token that can read
   // Actions variables (CHE-9181, CHE-9877). Before a change, a snapshot older than the bound (or of unknown age) is
   // not evidence of the switch or the pause: a job that waited for the host lock refuses, and a rerun takes a fresh one.
-  if (before && (want.sw !== null || want.pause !== null)) {
-    const age = typeof varsAgeSeconds === 'number' && Number.isFinite(varsAgeSeconds) ? varsAgeSeconds : NaN
+  // `varsAgeSeconds` is a number, or a function read at each check: the age keeps growing while this function waits on
+  // quiescence, git and the GitHub API, so it is read again right before the go (CHE-9877).
+  const needsSnapshot = before && (want.sw !== null || want.pause !== null)
+  const staleSnapshot = () => {
+    const raw = typeof varsAgeSeconds === 'function' ? varsAgeSeconds() : varsAgeSeconds
+    const age = typeof raw === 'number' && Number.isFinite(raw) ? raw : NaN
     if (!(age >= 0)) return no('the age of the switch and pause snapshot is unknown')
     if (age > varsMaxAgeSeconds)
       return no(`the switch and pause snapshot is ${Math.round(age)}s old (bound ${varsMaxAgeSeconds}s); rerun the job`)
+    return null
+  }
+  if (needsSnapshot) {
+    const stale = staleSnapshot()
+    if (stale) return stale
   }
 
   if (op === 'pre-arm' || op === 'pre-apply') {
@@ -318,6 +327,11 @@ export async function recheckOp({
         return skip(`${sha.slice(0, 7)} was merged by ${merger.login}, who is not on the deploy allowlist`)
       }
     }
+  }
+  // The reads above (quiescence, git, GitHub) took time: the snapshot must still be inside the bound as the gate opens.
+  if (needsSnapshot) {
+    const stale = staleSnapshot()
+    if (stale) return stale
   }
   return go({ predecessorDigest: now.digest, predecessorSha: now.label })
 }
@@ -489,7 +503,9 @@ async function cli(argv, env) {
       // The switch and the pause as the workflow passed them; the marker is the file on this C00 host.
       vars: env,
       // Seconds since the job record was created (`snapshot-epoch` sets VARS_READ_EPOCH; unset or garbage is unknown).
-      varsAgeSeconds: /^\d+$/.test(env.VARS_READ_EPOCH ?? '') ? Date.now() / 1000 - Number(env.VARS_READ_EPOCH) : NaN,
+      // A function, so `recheckOp` re-reads the clock after its blocking reads.
+      varsAgeSeconds: () =>
+        /^\d+$/.test(env.VARS_READ_EPOCH ?? '') ? Date.now() / 1000 - Number(env.VARS_READ_EPOCH) : NaN,
       // The bound may be tightened by env, never widened past the accepted 180 s.
       varsMaxAgeSeconds: /^\d+$/.test(env.C00_VARS_SNAPSHOT_BOUND_SECONDS ?? '')
         ? Math.min(VARS_SNAPSHOT_BOUND_SECONDS, Number(env.C00_VARS_SNAPSHOT_BOUND_SECONDS))

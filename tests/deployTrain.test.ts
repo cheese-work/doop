@@ -627,6 +627,62 @@ describe('recheckOp: the switch and pause snapshot is bounded in age (CHE-9877 r
     expect(r.reason).toMatch(/snapshot/)
     expect(await ops()('pre-arm', undefined, { varsAgeSeconds: age })).toMatchObject({ go: false, skip: true })
   })
+  describe('the age is read again after the blocking reads (sol re-review P1)', () => {
+    // A fake clock: the snapshot is 179 s old when the check starts, and each blocking read below spends time.
+    const clocked = (spend: 'quiescent' | 'running' | 'firstParent' | 'isAncestor', by: number, start = 179) => {
+      let age = start
+      const tick =
+        <T>(v: T) =>
+        async () => {
+          age += by
+          return v
+        }
+      const over: Record<string, unknown> = { varsAgeSeconds: () => age }
+      if (spend === 'quiescent') over.quiescent = tick({ ok: true })
+      if (spend === 'running') over.running = tick({ digest: D_PRED, label: RUNNING })
+      if (spend === 'firstParent') over.firstParent = tick([MID, CAND])
+      if (spend === 'isAncestor')
+        over.isAncestor = async (a: string, b: string) => ((age += by), a === RUNNING && b === CAND)
+      return { over, now: () => age }
+    }
+    it.each(['quiescent', 'running', 'isAncestor'] as const)(
+      'pre-apply refuses when %s pushes a 179 s snapshot past 180 s',
+      async (spend) => {
+        const { over } = clocked(spend, 2)
+        const r = await ops({ marker: ARMED })('pre-apply', ARMED, over)
+        expect(r).toMatchObject({ go: false, skip: false })
+        expect(r.reason).toMatch(/snapshot is 181s old/)
+      },
+    )
+    it.each(['quiescent', 'running', 'firstParent', 'isAncestor'] as const)(
+      'pre-arm skips when %s pushes a 179 s snapshot past 180 s (nothing was armed)',
+      async (spend) => {
+        const { over } = clocked(spend, 2)
+        expect(await ops()('pre-arm', undefined, over)).toMatchObject({ go: false, skip: true })
+      },
+    )
+    it('a 120 s quiescence on a 179 s snapshot refuses (the quiescence timeout is longer than the headroom)', async () => {
+      const { over } = clocked('quiescent', 120)
+      expect(await ops({ marker: ARMED })('pre-apply', ARMED, over)).toMatchObject({ go: false, skip: false })
+    })
+    it('still passes when the reads stay inside the bound (the age at the go is 180 s, inclusive)', async () => {
+      const { over, now } = clocked('quiescent', 1)
+      expect(await ops({ marker: ARMED })('pre-apply', ARMED, over)).toMatchObject({ go: true })
+      expect(now()).toBe(180)
+    })
+    it('the age is read after the last blocking read, not before', async () => {
+      const seen: string[] = []
+      const over = {
+        varsAgeSeconds: () => (seen.push('age'), 1),
+        quiescent: async () => (seen.push('quiescent'), { ok: true }),
+        running: async () => (seen.push('running'), { digest: D_PRED, label: RUNNING }),
+        isAncestor: async () => (seen.push('isAncestor'), true),
+      }
+      await ops({ marker: ARMED })('pre-apply', ARMED, over)
+      expect(seen[seen.length - 1]).toBe('age')
+      expect(seen.lastIndexOf('age')).toBeGreaterThan(seen.indexOf('isAncestor'))
+    })
+  })
   it('recovery does not read the switch or pause, so its snapshot age is ignored', async () => {
     const own = 'suspended:n5:7:' + CAND + ':recovery'
     const rec = { mode: 'recovery', ...dispatched('recovery'), varsAgeSeconds: undefined }

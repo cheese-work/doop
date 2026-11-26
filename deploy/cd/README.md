@@ -64,7 +64,7 @@ on C00, once; no job creates it.
   jobs (25 Nov 2026): job created to the first step 8 to 10 s. `pre-arm` and `pre-apply` (train and drill) refuse when
   the age is above 180 s (`C00_VARS_SNAPSHOT_BOUND_SECONDS` may only tighten it) or unknown (the read failed). A job
   that waited past the bound stops (a skip at `pre-arm`, a refusal at `pre-apply`, which leaves the marker armed for
-  the rollback job), and a rerun is a new job record with a fresh snapshot. Recovery reads
+  the rollback job), and a rerun is a new job record with a fresh snapshot. The age is read again after the gate's blocking reads (quiescence, which may take up to 120 s, the running image, git, the GitHub merger lookups), right before it opens, so time spent inside the check counts toward the 180 s. Recovery reads
   neither the switch nor the pause, so it is exempt; `confirm` and `rollback` ignore the age. The marker is read
   from the host file, every time, under the same checks.
 - **Control scripts are trusted, the candidate is data.** The three C00 jobs check out this workflow's own revision
