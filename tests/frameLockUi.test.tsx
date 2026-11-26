@@ -23,7 +23,10 @@ vi.mock('../src/lib/api', async (importOriginal) => {
   }
 })
 vi.mock('../src/lib/posthog', () => ({ posthog: { capture: vi.fn() } }))
-vi.mock('../src/lib/frameBridge', () => ({ requestFrame: vi.fn(async () => null) }))
+vi.mock('../src/lib/frameBridge', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/lib/frameBridge')>()),
+  requestFrame: vi.fn(async () => null),
+}))
 
 const { ApiError } = await import('../src/lib/api')
 const { useStore } = await import('../src/lib/store')
@@ -36,6 +39,7 @@ const { ContextMenu, ContextMenuTrigger } = await import('../src/components/ui/c
 const { TooltipProvider } = await import('../src/components/ui/tooltip')
 const { ACTIONS } = await import('../src/lib/actions/registry')
 const { saveFrameHtml } = await import('../src/lib/layerEdits')
+const { FrameView } = await import('../src/components/FrameView')
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -235,6 +239,46 @@ describe('a refused edit', () => {
   })
 })
 
+describe('a refused stage edit', () => {
+  it('rolls the edit back and toasts who locked it, when and why', async () => {
+    mount(locked)
+    const edited = '<!doctype html><html><head></head><body><p>typed</p></body></html>'
+    act(() =>
+      root.render(
+        <TooltipProvider>
+          <FrameView frame={locked} layoutZoom={1} />
+        </TooltipProvider>,
+      ),
+    )
+    const iframe = container.querySelector('iframe')!
+    updateFrame.mockRejectedValueOnce(
+      new ApiError(
+        423,
+        JSON.stringify({
+          error: 'policy_refused: update_frame: frame is locked',
+          code: 'frame_locked',
+          lockedBy: 'Cheese',
+          lockedAt: LOCKED_AT,
+          reason: 'Direction B not chosen',
+        }),
+      ),
+    )
+    await act(async () => {
+      window.dispatchEvent(
+        new MessageEvent('message', { data: { type: 'doop:edited', html: edited }, source: iframe.contentWindow }),
+      )
+    })
+    await flush()
+    expect(updateFrame).toHaveBeenCalledTimes(1)
+    expect(current().html).toBe(PAGE)
+    const text = useStore.getState().notice?.text ?? ''
+    expect(text).toContain('Cart · phone is locked')
+    expect(text).toContain('Cheese')
+    expect(text).toContain('13 Nov 2026 16:20 ICT')
+    expect(text).toContain('Direction B not chosen')
+  })
+})
+
 describe('an unlock the server refuses', () => {
   const shapes: Array<[string, number, Record<string, unknown>]> = [
     ['403', 403, { error: 'forbidden' }],
@@ -278,6 +322,36 @@ describe('a lost reply', () => {
     expect(current().locked).toBe(true)
     expect(container.querySelector('[data-row-key^="f1"]')!.textContent).toContain('Locked · Cheese · 16:20 ICT')
   })
+
+  it.each([
+    ['lock', base, false],
+    ['unlock', locked, true],
+  ])(
+    'keeps the last known state and shows the A1 error state when the re-read after a lost %s reply fails',
+    async (_name, frame, wasLocked) => {
+      mount(frame)
+      if (wasLocked) click(layersRowLock('f1'))
+      getCanvas.mockRejectedValueOnce(new TypeError('network lost'))
+      updateFrame.mockRejectedValueOnce(new TypeError('network lost'))
+      if (wasLocked) click(button('Unlock'))
+      else click(layersRowLock('f1'))
+      await flush()
+      await flush()
+      /* no guessed state: the frame is as it was before the click */
+      expect(Boolean(current().locked)).toBe(wasLocked)
+      const alert = container.querySelector('[data-testid="panel-state-error"]')
+      expect(alert?.textContent).toContain('Could not confirm the lock state of Cart · phone')
+      expect(alert?.textContent).toContain('Try again')
+      expect(container.textContent).not.toContain('Reading lock state…')
+      /* Try again reads the server again and shows what it says */
+      getCanvas.mockResolvedValueOnce({ id: 'c1', name: 'Canvas', frames: [locked] })
+      click([...container.querySelectorAll('button')].find((b) => b.textContent === 'Try again'))
+      await flush()
+      await flush()
+      expect(current().locked).toBe(true)
+      expect(container.querySelector('[data-testid="panel-state-error"]')).toBeNull()
+    },
+  )
 
   it('shows the unlocked server state after a lost unlock reply that did land', async () => {
     mount(locked)

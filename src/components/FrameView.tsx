@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import type { ElementComment, Frame } from '../../shared/types'
 import { canEditOpenCanvas, pickedSelectors, useStore } from '../lib/store'
 import { isCanvasElement } from '../lib/drawing'
-import { isLayerLocked, standaloneSelector } from '../lib/layerEdits'
+import { isLayerLocked, rollBackRefusedHtml, standaloneSelector } from '../lib/layerEdits'
 import { documentRect } from '../lib/frameBleed'
 import { drawingDropFrame, moveDrawing, type DrawingHit } from '../lib/drawingMove'
 import { useElementMove } from './ElementMove'
@@ -1609,8 +1609,17 @@ export const FrameView = memo(function FrameView({
       const html = withWebFontLinks(withFontFaces(withTokens, library), library)
       const before = useStore.getState().canvas?.frames.find((f) => f.id === frame.id)?.html
       useStore.getState().patchFrameLocal(frame.id, { html })
-      trackSave(api.updateFrame(frame.id, { html }).catch(console.error))
-      if (before !== undefined) recordUpdate(frame.id, { html: before }, { html }, discrete)
+      /* recorded first: a refusal drops this very step */
+      const entry = before !== undefined ? recordUpdate(frame.id, { html: before }, { html }, discrete) : undefined
+      trackSave(
+        api.updateFrame(frame.id, { html }).catch((err: unknown) => {
+          const named = useStore.getState().canvas?.frames.find((f) => f.id === frame.id)
+          if (!named || before === undefined || !rollBackRefusedHtml(err, named, html, before, entry))
+            return console.error(err)
+          /* the runtime still shows the refused edit: let the post effect send the restored document back in */
+          localHtml.current = null
+        }),
+      )
     }
     saveEditedRef.current = saveEdited
     function onMsg(ev: MessageEvent) {

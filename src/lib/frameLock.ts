@@ -86,7 +86,9 @@ export function lockFields(f: Frame): Partial<Frame> {
    unlock entry point raises, the refusal the A1 error state shows, and the
    frames whose lock state is being re-read after a lost reply. */
 export type UnlockRequest = { frameIds: string[] }
-export type LockError = { frameIds: string[]; name: string; status: number }
+/** `status` is the refusing server's code, or null when the lock state itself
+ *  could not be read back after a lost reply. */
+export type LockError = { frameIds: string[]; name: string; status: number | null }
 
 export const useLockUi = create<{
   confirm: UnlockRequest | null

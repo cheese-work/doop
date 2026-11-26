@@ -137,17 +137,28 @@ export function saveFrameHtml(frame: Frame, html: string) {
   useStore.getState().patchFrameLocal(frame.id, { html })
   trackSave(
     api.updateFrame(frame.id, { html }).catch((err: unknown) => {
-      /* a locked frame refuses the edit (423): put its html back and say who
-         locked it, when and why */
-      const refusal = lockedRefusal(err, frame)
-      if (!refusal) return console.error(err)
-      if (entry) dropEntry(entry)
-      const s = useStore.getState()
-      if (s.canvas?.frames.find((f) => f.id === frame.id)?.html === html)
-        s.patchFrameLocal(frame.id, { html: frame.html })
-      s.pushNotice(refusal)
+      if (!rollBackRefusedHtml(err, frame, html, frame.html, entry)) console.error(err)
     }),
   )
+}
+
+/** A locked frame refuses an edit (423): drop its undo step, put the html
+ *  back (unless a newer edit already replaced it) and say who locked it, when
+ *  and why. False when the error is not that refusal. */
+export function rollBackRefusedHtml(
+  err: unknown,
+  frame: Frame,
+  html: string,
+  before: string,
+  entry: ReturnType<typeof recordUpdate>,
+): boolean {
+  const refusal = lockedRefusal(err, frame)
+  if (!refusal) return false
+  if (entry) dropEntry(entry)
+  const s = useStore.getState()
+  if (s.canvas?.frames.find((f) => f.id === frame.id)?.html === html) s.patchFrameLocal(frame.id, { html: before })
+  s.pushNotice(refusal)
+  return true
 }
 
 /* ---- locks ---- */
@@ -214,18 +225,34 @@ async function failedLock(f: Frame, locked: boolean, err: unknown) {
     return
   }
   /* the reply was lost: the write may have landed, so no marker is drawn from
-     a guess. Read the frame again and show what the server holds. */
+     a guess. Read the frame again and show what the server holds; when that
+     read fails too, keep the state from before the click and say it is unknown. */
+  if (await rereadLock(f)) return
+  rollBack()
+  useLockUi.setState({ error: { frameIds: [f.id], name: f.name, status: null } })
+}
+
+/** Read one frame's lock back from the server; false when the read failed. */
+async function rereadLock(f: Frame): Promise<boolean> {
   setReading(f.id, true)
   try {
     const canvas = await api.getCanvas(f.canvasId)
     const fresh = canvas.frames.find((x) => x.id === f.id)
-    if (!fresh) return
-    useStore.getState().patchFrameLocal(f.id, lockFields(fresh))
+    if (fresh) useStore.getState().patchFrameLocal(f.id, lockFields(fresh))
+    return true
   } catch {
-    rollBack()
-    useStore.getState().pushNotice(`Couldn’t ${locked ? 'lock' : 'unlock'} “${f.name}”`)
+    return false
   } finally {
     setReading(f.id, false)
+  }
+}
+
+/** The unknown-state error's Try again: read the locks back again. */
+export async function rereadLocks(frameIds: string[]) {
+  useLockUi.setState({ error: null })
+  const frames = (useStore.getState().canvas?.frames ?? []).filter((f) => frameIds.includes(f.id))
+  for (const f of frames) {
+    if (!(await rereadLock(f))) useLockUi.setState({ error: { frameIds: [f.id], name: f.name, status: null } })
   }
 }
 

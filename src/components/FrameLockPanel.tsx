@@ -2,7 +2,7 @@ import { canEditOpenCanvas, useStore } from '@/lib/store'
 import { useT } from '@/lib/i18n'
 import type { Frame } from '../../shared/types'
 import { ictDateTime, useLockUi } from '@/lib/frameLock'
-import { setFramesLocked, unlockConfirmed } from '@/lib/layerEdits'
+import { rereadLocks, setFramesLocked, unlockConfirmed } from '@/lib/layerEdits'
 import { PanelState, type PanelStatus } from './PanelState'
 import { LockIcon } from './ui/icons'
 
@@ -43,8 +43,18 @@ export function FrameLockPanel() {
                 },
               }
         }
-        error={error ? t('panels.lockPanelError', { name: error.name, status: error.status }) : undefined}
-        onRetry={error ? () => unlockConfirmed(error.frameIds) : undefined}
+        error={
+          error
+            ? error.status === null
+              ? t('panels.lockPanelUnknown', { name: error.name })
+              : t('panels.lockPanelError', { name: error.name, status: error.status })
+            : undefined
+        }
+        onRetry={
+          error
+            ? () => (error.status === null ? void rereadLocks(error.frameIds) : unlockConfirmed(error.frameIds))
+            : undefined
+        }
         offline={t('panels.lockPanelOffline')}
       />
     </div>

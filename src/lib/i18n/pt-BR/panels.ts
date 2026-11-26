@@ -372,5 +372,6 @@ export const panels: Catalog['panels'] = {
   lockPanelEmptyAction: 'Bloquear frame',
   lockPanelPickFirst: 'Selecione um frame para bloqueá-lo',
   lockPanelOffline: 'Offline. Bloquear e desbloquear estão em pausa. Os frames bloqueados continuam bloqueados.',
+  lockPanelUnknown: 'Não foi possível confirmar o estado do bloqueio de {name}. Mostrando o último estado conhecido.',
   lockPanelError: 'Não foi possível desbloquear {name} ({status}). Continua bloqueado.',
 }
