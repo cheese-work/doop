@@ -50,6 +50,17 @@ export interface Frame {
   /** set when the frame was deleted: it is kept (with its versions) in the
    *  canvas trash and absent from `Canvas.frames` until restored */
   deletedAt?: number
+  /** Where an archived frame came from, so unarchive can put it back. Set by every archive, cleared by
+   *  unarchive; a frame that is not archived has none. */
+  archiveOrigin?: ArchiveOrigin
+}
+
+/** `pageId` and `hidden` are what the frame had before it was archived (null on a row saved without them). */
+export interface ArchiveOrigin {
+  pageId: string | null
+  hidden: boolean | null
+  archivedAt: number
+  by: string
 }
 
 export interface FrameApproval {

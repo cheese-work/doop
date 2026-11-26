@@ -563,6 +563,7 @@ class Store {
       html: remapFrameTargets(frame.html, frameIds),
       approval: null,
       ...UNLOCKED,
+      archiveOrigin: undefined,
       z: stackOf(frame),
       canvasId,
       createdAt: now,
@@ -665,6 +666,7 @@ class Store {
       pageId: page.id,
       approval: null,
       ...UNLOCKED,
+      archiveOrigin: undefined,
       z: stackOf(frame),
       createdAt: now,
       updatedAt: now,
@@ -1671,6 +1673,7 @@ class Store {
         | 'z'
         | 'rotation'
         | 'approval'
+        | 'archiveOrigin'
       >
     >,
     by: string,
@@ -1738,6 +1741,14 @@ class Store {
     /* a frame moved to another page lands in front there, as Figma does */
     if (patch.pageId !== undefined && patch.pageId !== frame.pageId && patch.z === undefined)
       patch = { ...patch, z: frontOf(pageFrames(c, patch.pageId)) ?? frame.z }
+    /* a frame moved out of the Archive by any writer is no longer archived: its origin goes with it */
+    if (
+      patch.pageId !== undefined &&
+      patch.pageId !== ARCHIVE_PAGE_ID &&
+      frame.archiveOrigin &&
+      !('archiveOrigin' in patch)
+    )
+      patch = { ...patch, archiveOrigin: undefined }
     Object.assign(frame, patch)
     if (patch.locked === true) stampLock(frame, by, Date.now(), lockReason)
     if (unlocking) {
@@ -2050,34 +2061,74 @@ class Store {
     return { pages: c.pages, page: restoredPage, frames }
   }
 
-  /** Move frames to the Archive page (made last on first use) and hide them. */
+  /** Move frames to the Archive page (made last on first use) and hide them, recording where each came from
+   *  in the same write. A frame already on the Archive page is left as it is and keeps its first origin, so a
+   *  retried request changes nothing (FP-01). `changed` is the frames this call moved. */
   archiveFrames(
     ctx: WriteContext,
     canvasId: string,
     frameIds: string[],
     by: string,
-  ): { pages: CanvasPageInfo[]; frames: Frame[] } | undefined {
+  ): { pages: CanvasPageInfo[]; frames: Frame[]; changed: Frame[] } | undefined {
     const c = this.canvases.get(canvasId)
     if (!c) return undefined
     const frames = frameIds.map((id) => this.getFrame(id)).filter((f): f is Frame => !!f && f.canvasId === canvasId)
     if (!frames.length) return undefined
+    const changed = frames.filter((f) => framePageId(c, f) !== ARCHIVE_PAGE_ID)
     /* before the Archive page is made or any frame moves, so a refusal leaves nothing half done; a locked
        frame is left to updateFrame, whose lock refusal answers first */
     assertPagesOpen(
       c,
-      frames.filter((f) => !f.locked).map((f) => framePageId(c, f)),
+      changed.filter((f) => !f.locked).map((f) => framePageId(c, f)),
       'archive_frames',
     )
     const pages = canvasPages(c)
-    if (!pages.some((p) => p.id === ARCHIVE_PAGE_ID)) {
+    if (changed.length && !pages.some((p) => p.id === ARCHIVE_PAGE_ID)) {
       if (pages.length >= MAX_PAGES) throw new PageLimitError()
       c.pages = pageOrder([...pages, { id: ARCHIVE_PAGE_ID, name: ARCHIVE_PAGE_NAME }])
       this.saveCanvasLater(c)
     }
-    for (const frame of frames) this.updateFrame(ctx, frame.id, { pageId: ARCHIVE_PAGE_ID, hidden: true }, by)
-    return { pages: c.pages!, frames }
+    const archivedAt = Date.now()
+    for (const frame of changed) {
+      const archiveOrigin = { pageId: framePageId(c, frame), hidden: frame.hidden === true, archivedAt, by }
+      this.updateFrame(ctx, frame.id, { pageId: ARCHIVE_PAGE_ID, hidden: true, archiveOrigin }, by)
+    }
+    return { pages: canvasPages(c), frames, changed }
+  }
+
+  /** Take a frame out of the Archive: to `pageId`, else to the page it came from, with the `hidden` it had.
+   *  A frame that is not on the Archive page is left as it is (`changed: false`), so a retry is harmless.
+   *  Refused with `origin_missing` (no `pageId`, and no origin page left) before anything moves.
+   *  Undefined = no such frame. */
+  unarchiveFrame(
+    ctx: WriteContext,
+    frameId: string,
+    pageId: string | undefined,
+    by: string,
+  ): UnarchiveResult | undefined {
+    const frame = this.getFrame(frameId)
+    const c = frame && this.canvases.get(frame.canvasId)
+    if (!frame || !c) return undefined
+    if (framePageId(c, frame) !== ARCHIVE_PAGE_ID) return { ok: true, frame, changed: false }
+    const pages = canvasPages(c)
+    const origin = frame.archiveOrigin
+    const target = pageId ?? origin?.pageId ?? undefined
+    if (pageId === ARCHIVE_PAGE_ID) return { ok: false, code: 'archive_page' }
+    if (!target || !pages.some((p) => p.id === target))
+      return { ok: false, code: pageId === undefined ? 'origin_missing' : 'page_not_found' }
+    const moved = this.updateFrame(
+      ctx,
+      frame.id,
+      { pageId: target, hidden: origin?.hidden === true, archiveOrigin: undefined },
+      by,
+    )
+    return moved ? { ok: true, frame: moved, changed: true } : undefined
   }
 }
+
+export type UnarchiveResult =
+  | { ok: true; frame: Frame; changed: boolean }
+  | { ok: false; code: 'origin_missing' | 'page_not_found' | 'archive_page' }
 
 export type LedgerResult =
   | { ok: true; pages: CanvasPageInfo[]; changed: boolean }

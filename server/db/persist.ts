@@ -912,6 +912,7 @@ async function writeFrameRow(f: Frame, exec: Exec) {
     rotation: f.rotation ?? null,
     approval: f.approval ?? null,
     deletedAt: f.deletedAt ?? null,
+    archiveOrigin: f.archiveOrigin ?? null,
   }
   const { id, createdAt, ...set } = row
   /* Second line of the frame lock (the first is `store.updateFrame`): when the
@@ -1015,6 +1016,7 @@ const frameMetaColumns = {
   rotation: t.frames.rotation,
   approval: t.frames.approval,
   deletedAt: t.frames.deletedAt,
+  archiveOrigin: t.frames.archiveOrigin,
 }
 
 /* Frame design history: one row per burst boundary (see actions.ts), newest
@@ -1942,9 +1944,10 @@ export async function hydrate(): Promise<Hydrated> {
     return entry
   }
   for (const c of canvasRows) if (c.deletedPages?.length) trashOf(c.id).pages = c.deletedPages
-  for (const { deletedAt, ...f } of frameRows) {
+  for (const { deletedAt, archiveOrigin, ...f } of frameRows) {
     const frame = {
       ...f,
+      ...(archiveOrigin ? { archiveOrigin } : {}),
       pageId: f.pageId ?? undefined,
       demo: f.demo ?? undefined,
       hidden: f.hidden ?? undefined,
