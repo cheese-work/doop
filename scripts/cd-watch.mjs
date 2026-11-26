@@ -271,14 +271,17 @@ const deployedSha = (repo) =>
     deploySkipped: async (id) => deployJobSkipped(repo, id),
   })
 
-// `gh api -X POST` arguments: a string field goes with -f, a boolean with -F so that GitHub gets a JSON boolean.
+// `gh api -X POST` arguments: a string field goes with -f, a boolean with -F so that GitHub gets a JSON boolean,
+// and an empty array is `-F key[]` (gh sends `[]` for a key without a value).
 export function ghPostArgs(repo, route, fields) {
   return [
     'api',
     '-X',
     'POST',
     `repos/${repo}/${route}`,
-    ...Object.entries(fields).flatMap(([k, v]) => [typeof v === 'string' ? '-f' : '-F', `${k}=${v}`]),
+    ...Object.entries(fields).flatMap(([k, v]) =>
+      Array.isArray(v) && v.length === 0 ? ['-F', `${k}[]`] : [typeof v === 'string' ? '-f' : '-F', `${k}=${v}`],
+    ),
   ]
 }
 
@@ -296,6 +299,8 @@ export function recordDeployment({ repo, evidence, runId, gh, recordedSha }) {
     description: `doop deploy train: confirmed on C00 (D2 run ${runId}, confirmed ${payload.confirmedAt})`,
     auto_merge: false,
     production_environment: true,
+    // CHE-10162: without this GitHub refuses with 409 "Commit status checks failed" when the commit has no legacy statuses.
+    required_contexts: [],
   })
   post(`deployments/${created.id}/statuses`, { state: 'success', environment: payload.environment })
   if (recordedSha()?.sha !== payload.ref) {
