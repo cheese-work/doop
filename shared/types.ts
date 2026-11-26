@@ -50,6 +50,17 @@ export interface Frame {
   /** set when the frame was deleted: it is kept (with its versions) in the
    *  canvas trash and absent from `Canvas.frames` until restored */
   deletedAt?: number
+  /** Where an archived frame came from, so unarchive can put it back. Set by every archive, cleared by
+   *  unarchive; a frame that is not archived has none. */
+  archiveOrigin?: ArchiveOrigin
+}
+
+/** `pageId` and `hidden` are what the frame had before it was archived (null on a row saved without them). */
+export interface ArchiveOrigin {
+  pageId: string | null
+  hidden: boolean | null
+  archivedAt: number
+  by: string
 }
 
 export interface FrameApproval {
@@ -711,6 +722,10 @@ export type ServerMessage =
   | { type: 'frame:created'; frame: Frame; actor: Actor }
   | { type: 'frame:updated'; frame: Frame; actor: Actor }
   | { type: 'frame:deleted'; frameId: string; actor: Actor }
+  /** a Trash frame is being deleted forever (`purging` true) or the purge was called off (false) */
+  | { type: 'trash:purge_state'; frameId: string; canvasId: string; purging: boolean }
+  /** a Trash frame was deleted forever: every row is gone, nothing can restore it */
+  | { type: 'frame:purged'; frameId: string; canvasId: string }
   | { type: 'frame:streaming'; frameId: string; active: boolean; actor: Actor }
   | { type: 'canvas:renamed'; name: string; actor: Actor }
   | { type: 'canvas:pages'; pages: CanvasPageInfo[]; actor: Actor }

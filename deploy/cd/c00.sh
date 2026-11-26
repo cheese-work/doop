@@ -22,7 +22,7 @@
 #   c00.sh guard      refuse (exit 1) while an earlier compat migration's quiescence is unproven; re-proves the three
 #                     facts and clears the guard when they hold. apply, rollback and sweep run it first; the lift
 #                     job calls it. `guard-set run mig db user dbname app` writes it (compat-sandbox.mjs does).
-#   c00.sh lift       the C00 half of cd-lift.yml (CHE-5551, C-10.7): refuse while a compat guard holds, take the host
+#   c00.sh lift       the C00 half of the lift job of cd-deploy.yml (CHE-5551, C-10.7): refuse while a compat guard holds, take the host
 #                     lock, prove migration quiescence, read the running digest, revision label and container
 #                     health, and run scripts/deploy-lift.mjs lift under the same lock with those facts. That script
 #                     decides, re-reads the decision and the marker right before the write, and writes `clear:*`.
@@ -32,8 +32,10 @@
 #
 # Env: DEPLOY_REF (image@sha256:...), DEPLOY_SHA, C00_COMPOSE_DIR (compose project on C00),
 #      apply, confirm and rollback also need DEPLOY_MODE (train|recovery|drill) and MARKER_EXPECT (this run's own
-#      DOOP_DEPLOY_SUSPENDED value), plus the GH_TOKEN/VARS_TOKEN/REPO/EXTRA/PREDECESSOR_DIGEST env that deploy-gate.mjs reads
-#      (VARS_TOKEN: the marker App token that can read variables),
+#      marker value), plus the GH_TOKEN/REPO/EXTRA/PREDECESSOR_DIGEST env that deploy-gate.mjs reads, and the switch
+#      and the pause it checks (DOOP_DEPLOY_TRAIN, MAIN_RED_PAUSED, passed as env from the workflow's `vars`).
+#      The suspension marker is one file on this host (C00_MARKER_FILE, default $C00_STATE_DIR/deploy-marker; no GitHub
+#      token takes part, CHE-9877); a missing or unreadable file reads as suspended and refuses every check,
 #      C00_PG_CONTAINER (the live Postgres container; read through `docker exec`, read-only; default: the
 #      compose project's `db` service, C00_PG_SERVICE),
 #      DEPLOY_RUN_ID (apply with DOOP_DEPLOY_TRAIN=on only: [a-z0-9-], names the one-shot container and its DB sessions).

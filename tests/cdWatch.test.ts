@@ -36,7 +36,7 @@ const {
     repo: string
     evidence: Record<string, unknown>
     runId: string
-    gh: (args: string[]) => string
+    gh: (args: string[], input?: string) => string
     recordedSha: () => { sha: string; runId: number | null; confirmedAt?: number } | null
   }) => string
 }
@@ -672,21 +672,23 @@ describe('the deployment record request (typed fields, read back)', () => {
   const evidence = { outcome: 'confirmed', candidate_sha: A, times: { confirmed: { utc: CONFIRMED } } }
   const fake = (recorded: { sha: string; runId: number | null } | null) => {
     const calls: string[][] = []
-    const gh = (args: string[]) => (calls.push(args), JSON.stringify({ id: 7 }))
-    return { calls, gh, recordedSha: () => recorded }
+    const inputs: (string | undefined)[] = []
+    const gh = (args: string[], input?: string) => (calls.push(args), inputs.push(input), JSON.stringify({ id: 7 }))
+    return { calls, inputs, gh, recordedSha: () => recorded }
   }
 
-  it('posts the deployment with typed booleans, then the success status, then reads it back', () => {
+  it('posts the deployment as a JSON body with typed booleans and an empty required_contexts, then the success status, then reads it back', () => {
     const f = fake({ sha: A, runId: 123 })
     const out = recordDeployment({ repo: 'o/r', evidence, runId: '123', gh: f.gh, recordedSha: f.recordedSha })
     expect(out).toContain('recorded')
     expect(f.calls).toHaveLength(2)
     const [deployment, status] = f.calls as [string[], string[]]
-    expect(deployment).toContain('repos/o/r/deployments')
-    expect(deployment.join(' ')).toContain('-F auto_merge=false')
-    expect(deployment.join(' ')).toContain('-F production_environment=true')
-    expect(deployment.join(' ')).not.toMatch(/-f (auto_merge|production_environment)=/)
-    expect(deployment.join(' ')).toContain(`D2 run 123, confirmed ${CONFIRMED}`)
+    expect(deployment).toEqual(['api', '-X', 'POST', 'repos/o/r/deployments', '--input', '-'])
+    const body = JSON.parse(f.inputs[0] ?? '')
+    // CHE-10262: without required_contexts GitHub answers 409 when any check-run of the commit failed.
+    expect(body.required_contexts).toEqual([])
+    expect(body).toMatchObject({ ref: A, environment: 'c00-doop', auto_merge: false, production_environment: true })
+    expect(body.description).toContain(`D2 run 123, confirmed ${CONFIRMED}`)
     expect(status).toContain('repos/o/r/deployments/7/statuses')
     expect(status.join(' ')).toContain('state=success')
   })

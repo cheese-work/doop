@@ -140,10 +140,8 @@ describe('fetchWithRateLimit', () => {
   })
 })
 
-/* The two CLIs end to end against a local server: one 403 with retry-after: 1, then the real answer. */
+/* The deploy gate CLI end to end against a local server: one 403 with retry-after: 1, then the real answer. */
 const REPO = 'cheese-work/doop'
-const SHA = 'a'.repeat(40)
-const CLEAR = `clear:${'0'.repeat(32)}:restore`
 
 type Script = { status: number; headers?: Record<string, string>; body: unknown }
 async function runCli(script: string, args: string[], env: Record<string, string>, replies: Script[]) {
@@ -199,62 +197,5 @@ describe('the CLIs wait out a rate limit (CHE-9842)', () => {
     expect(r.out).toContain('403')
     expect(r.out).not.toContain('rate limit')
     expect(r.seen).toHaveLength(1)
-  })
-
-  it('deploy-marker suspend --any retries a rate-limited read and then writes', async () => {
-    const r = await runCli(
-      'scripts/deploy-marker.mjs',
-      ['suspend', '--reason', 'rollback', '--any'],
-      { RUN_ID: '45564279031', SHA },
-      [
-        { status: 403, headers: { 'retry-after': '1' }, body: { message: 'API rate limit exceeded' } },
-        { status: 200, body: { value: CLEAR } }, // the --any read
-        { status: 200, body: { value: CLEAR } }, // writeMarker's read
-        { status: 200, body: {} }, // PATCH
-        { status: 200, body: { value: 'x' } }, // read back (will not match, so it fails closed after the write)
-      ],
-    )
-    expect(r.out).toContain('rate limit')
-    expect(r.seen.filter((s) => s.startsWith('PATCH'))).toHaveLength(1)
-  }, 30_000)
-
-  /* Review of PR #149 (mbp-codex-sol): the marker was checked once, before the PATCH. A rate-limited PATCH waits;
-     if another actor suspends during the wait, the retry must not overwrite that newer value. */
-  const ARMED = `armed:${'1'.repeat(32)}:123:${SHA}`
-  const NEWER = `suspended:${'2'.repeat(32)}:456:${SHA}:operator`
-  const limitedPatch = { status: 403, headers: { 'retry-after': '1' }, body: { message: 'API rate limit exceeded' } }
-
-  it('deploy-marker restore: a suspension that lands during the rate-limit wait is not overwritten', async () => {
-    const r = await runCli('scripts/deploy-marker.mjs', ['restore'], { MARKER_EXPECT: ARMED }, [
-      { status: 200, body: { value: ARMED } }, // writeMarker's read
-      limitedPatch, // PATCH, rate limited; another actor then suspends
-      { status: 200, body: { value: NEWER } }, // the recheck before the retry
-    ])
-    expect(r.code).not.toBe(0)
-    expect(r.out).toContain('changed during a rate-limit wait')
-    expect(r.seen.filter((s) => s.startsWith('PATCH'))).toHaveLength(1) // never retried
-  }, 30_000)
-
-  it('deploy-marker restore: an unchanged marker is rechecked, then the PATCH is retried', async () => {
-    const r = await runCli('scripts/deploy-marker.mjs', ['restore'], { MARKER_EXPECT: ARMED }, [
-      { status: 200, body: { value: ARMED } },
-      limitedPatch,
-      { status: 200, body: { value: ARMED } }, // the recheck: still ours
-      { status: 200, body: {} }, // the retried PATCH
-      { status: 200, body: { value: 'x' } }, // read back (will not match, so it fails closed after the write)
-    ])
-    expect(r.seen.map((s) => s.split(' ')[0])).toEqual(['GET', 'PATCH', 'GET', 'PATCH', 'GET'])
-  }, 30_000)
-
-  it('deploy-marker with a plain 403 fails closed at once', async () => {
-    const r = await runCli(
-      'scripts/deploy-marker.mjs',
-      ['suspend', '--reason', 'rollback', '--any'],
-      { RUN_ID: '45564279031', SHA },
-      [{ status: 403, body: { message: 'Resource not accessible' } }],
-    )
-    expect(r.code).not.toBe(0)
-    expect(r.seen).toHaveLength(1)
-    expect(r.out).toContain('failed closed')
   })
 })

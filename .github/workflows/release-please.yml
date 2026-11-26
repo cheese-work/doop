@@ -25,9 +25,12 @@
 # requests read/write on this repo) to get CI on the release PR.
 name: Release Please
 
+# DISABLED (CHE-9811, Cheese 25 Nov 2026): the push trigger is removed because GitHub refuses
+# the release PR (org setting "Allow GitHub Actions to create and approve pull requests" is off
+# and no RELEASE_PLEASE_TOKEN secret exists). Runs failed on every push to main since 18 Nov.
+# To re-enable: fix one of those two, then restore `push: branches: [main]` under `on:`.
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: write

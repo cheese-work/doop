@@ -1,10 +1,19 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
-/* Text assertions on `cd-lift.yml` (CHE-5551, train S3b, plan CHE-5474 C-10.7): dispatch only, an allowlisted
-   dispatcher, one C00 job under the deploy lock, no human-typed command, no value inlined into a script. */
-const lift = readFileSync('.github/workflows/cd-lift.yml', 'utf8')
+/* Text assertions on the `lift` job of `cd-deploy.yml` (CHE-5551, train S3b, plan CHE-5474 C-10.7; folded into the one
+   workflow the C00 runner group allows, CHE-10091): dispatch only, an allowlisted dispatcher, one C00 job under the
+   deploy lock, no human-typed command, no value inlined into a script. */
 const deploy = readFileSync('.github/workflows/cd-deploy.yml', 'utf8')
+
+/* The text of one top-level job, up to the next job or end of file. */
+function job(wf: string, name: string): string {
+  const m = new RegExp(`^  ${name}:\\n([\\s\\S]*?)(?=^  [a-z][a-z0-9-]*:\\n|(?![\\s\\S]))`, 'm').exec(wf)
+  if (!m?.[1]) throw new Error(`no job ${name}`)
+  return m[1]
+}
+const lift = job(deploy, 'lift')
+const on = /^on:\n([\s\S]*?)(?=^\S)/m.exec(deploy)?.[1] ?? ''
 
 /* The text of one step, by its `name:`, up to the next step. */
 function step(name: string): string {
@@ -15,37 +24,39 @@ function step(name: string): string {
 }
 const stepNames = [...lift.matchAll(/^ {6}- name: (.+)$/gm)].map((m) => m[1] ?? '')
 
-describe('cd-lift.yml: triggers', () => {
-  it('is classed deploy, and runs on manual dispatch only', () => {
-    expect(lift).toMatch(/^# ci-policy: class=deploy$/m)
-    const on = /^on:\n([\s\S]*?)(?=^\S)/m.exec(lift)?.[1] ?? ''
-    expect(on).toMatch(/^ {2}workflow_dispatch:/m)
-    expect(on).not.toMatch(/schedule|push|pull_request|workflow_call|workflow_run|repository_dispatch/)
+describe('cd-deploy.yml lift mode: triggers', () => {
+  it('is reached by manual dispatch with mode lift, never by the schedule', () => {
+    expect(deploy).toMatch(/^# ci-policy: class=deploy$/m)
+    expect(on).toMatch(/^ {6}mode:[\s\S]*?^ {10}- lift$/m)
+    expect(lift).toMatch(/^ {4}if: .*github\.event_name == 'workflow_dispatch'.*inputs\.mode == 'lift'/m)
   })
 
-  it('takes one required input, decision_id, and nothing else', () => {
-    const on = /^on:\n([\s\S]*?)(?=^\S)/m.exec(lift)?.[1] ?? ''
-    const inputs = [...on.matchAll(/^ {6}([a-z_]+):\n/gm)].map((m) => m[1])
-    expect(inputs).toEqual(['decision_id'])
-    expect(on).toMatch(/decision_id:[\s\S]*?required: true/)
-    expect(on).toMatch(/decision_id:[\s\S]*?type: string/)
+  it('takes one lift input, decision_id: a string that the lift job passes on', () => {
+    expect(on).toMatch(/^ {6}decision_id:\n(?: {8}.*\n)*? {8}type: string/m)
+    // Only the lift reads it; the train modes ignore it, so it cannot be required of a scheduled or train dispatch.
+    expect(on).not.toMatch(/decision_id:\n(?: {8}.*\n)*? {8}required: true/)
   })
 
   it('reads contents only at workflow level', () => {
-    expect(lift).toMatch(/^permissions:\n {2}contents: read\n/m)
+    expect(deploy).toMatch(/^permissions:\n {2}contents: read\n/m)
+  })
+
+  it('no other job runs in lift mode: the train jobs are skipped, so one dispatch is one lift', () => {
+    for (const name of ['resolve', 'evidence']) expect(job(deploy, name)).toMatch(/^ {4}if: .*inputs\.mode != 'lift'/m)
+    // admit, deploy, readback-delay, readback-confirm and rollback follow resolve through `needs`.
+    expect(job(deploy, 'resolve')).toContain("github.repository == 'cheese-work/doop'")
   })
 })
 
-describe('cd-lift.yml: the one job', () => {
+describe('cd-deploy.yml lift job', () => {
   it('runs on the C00 deploy runner, in the deploy lock group that is never cancelled', () => {
     expect(lift).toContain('runs-on: [self-hosted, cheese-c00-deploy]')
     expect(lift).toMatch(/concurrency:\n {6}group: c00-deploy-doop\n {6}cancel-in-progress: false/)
-    expect(lift).toContain(deploy.match(/group: c00-deploy-doop/)?.[0] ?? 'missing')
   })
 
-  it('has exactly one job, and it runs only in this repository, from the default branch', () => {
-    const jobs = [...lift.matchAll(/^ {2}([a-z][a-z0-9-]*):\n/gm)].map((m) => m[1])
-    expect(jobs).toEqual(['lift'])
+  it('is one job, and it runs only in this repository, from the default branch', () => {
+    const jobs = [...deploy.matchAll(/^ {2}([a-z][a-z0-9-]*):\n/gm)].map((m) => m[1])
+    expect(jobs.filter((j) => j === 'lift')).toEqual(['lift'])
     expect(lift).toContain("github.repository == 'cheese-work/doop'")
     // A dispatch from a branch would run that branch's lift script: only the default branch lifts.
     expect(lift).toContain("github.ref == 'refs/heads/cheese/main'")
@@ -83,12 +94,11 @@ describe('cd-lift.yml: the one job', () => {
   })
 })
 
-describe('cd-lift.yml: step order', () => {
-  it('admits the dispatcher first; the marker token is minted only after, and the lift runs last of the C00 steps', () => {
+describe('cd-deploy.yml lift job: step order', () => {
+  it('admits the dispatcher first, and the lift runs last of the C00 steps', () => {
     const at = (n: string) => stepNames.indexOf(n)
     expect(at('Admit the dispatcher')).toBeGreaterThanOrEqual(0)
-    expect(at('Admit the dispatcher')).toBeLessThan(at('Mint the marker token'))
-    expect(at('Mint the marker token')).toBeLessThan(at('Sweep the compat sandboxes'))
+    expect(at('Admit the dispatcher')).toBeLessThan(at('Sweep the compat sandboxes'))
     expect(at('Sweep the compat sandboxes')).toBeLessThan(at('Lift on C00'))
     expect(at('Lift on C00')).toBeLessThan(at('Upload the lift evidence'))
   })
@@ -108,12 +118,10 @@ describe('cd-lift.yml: step order', () => {
     expect(s).not.toContain('secrets.')
   })
 
-  it('mints the marker token for variables only, pinned like D2', () => {
-    const s = step('Mint the marker token')
-    expect(s).toContain('actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0')
-    expect(s).toContain('permission-actions-variables: write')
-    expect(s).toContain('repositories: doop')
-    expect(s).toContain('DOOP_MARKER_APP_KEY')
+  it('mints no token and holds no App: the marker is a file on the C00 host (CHE-9877)', () => {
+    expect(stepNames).not.toContain('Mint the marker token')
+    expect(lift).not.toMatch(/create-github-app-token|DOOP_MARKER_APP|permission-actions-variables|steps\.app\./)
+    expect(lift).not.toMatch(/GH_TOKEN|VARS_TOKEN|ci-app-token/)
   })
 
   it('sweeps first (C-5, C-8.5d), then lifts under the host lock with c00.sh', () => {
@@ -121,10 +129,9 @@ describe('cd-lift.yml: step order', () => {
     expect(step('Lift on C00')).toContain('run: bash deploy/cd/c00.sh lift')
   })
 
-  it('gives the lift the marker token, the read token and every id it checks, and nothing broader', () => {
+  it('gives the lift the read token and every id it checks, and nothing broader', () => {
     const s = step('Lift on C00')
     for (const v of [
-      'GH_TOKEN: ${{ steps.app.outputs.token }}',
       'REPO: ${{ github.repository }}',
       'RUN_ID: ${{ github.run_id }}',
       'LIFTER: ${{ github.triggering_actor }}',
@@ -148,7 +155,7 @@ describe('cd-lift.yml: step order', () => {
   })
 })
 
-describe('cd-lift.yml: the train switch stays off', () => {
+describe('cd-deploy.yml lift job: the train switch stays off', () => {
   it('does not read or write DOOP_DEPLOY_TRAIN, and writes no marker but the lift’s own', () => {
     const code = lift
       .split('\n')

@@ -1238,9 +1238,9 @@ data-doop-webfonts>` for the roster families the frame names and does not load i
     on a GitHub runner, pushes to GHCR and uploads the candidate manifest (digest, source SHA, migration
     inventory sha, run id) as `candidate-manifest`. No deploy power.
   - `.github/workflows/cd-deploy.yml` - D2, the only workflow that deploys to C00: schedule (3 a day) and
-    dispatch, off unless repo variable `DOOP_DEPLOY_TRAIN` is `on`; the `DOOP_DEPLOY_SUSPENDED` marker is written
+    dispatch, off unless repo variable `DOOP_DEPLOY_TRAIN` is `on`; the suspension marker (a file on the C00 host) is written
     only by `scripts/deploy-marker.mjs`. See `deploy/cd/README.md`.
-  - `.github/workflows/cd-lift.yml` - S3b, the audited lift: dispatch only (`decision_id`), allowlisted dispatcher,
+  - `.github/workflows/cd-deploy.yml` mode `lift` (the `lift` job) - S3b, the audited lift: dispatch only (`mode=lift`, `decision_id`), allowlisted dispatcher,
     C00 runner under the deploy lock. Writes `clear:*` only for an approved `doop.deploy_lift` Multica decision whose
     `marker_value` equals the standing marker, with quiescence and `/healthz` proven and the decision and marker
     re-read before the write; evidence in `lift-evidence.json`. Logic in `scripts/deploy-lift.mjs`

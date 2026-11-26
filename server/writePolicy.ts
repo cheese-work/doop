@@ -42,6 +42,7 @@ export type WriteOp =
   | 'unlock_frame'
   | 'set_page_state'
   | 'land_proposal'
+  | 'purge_frame'
 
 export type WriteTarget = {
   canvas: Canvas
@@ -134,6 +135,7 @@ const OPS: ReadonlySet<string> = new Set<WriteOp>([
   'unlock_frame',
   'set_page_state',
   'land_proposal',
+  'purge_frame',
 ])
 
 function assertLockRules(ctx: WriteContext, op: WriteOp, target: WriteTarget): void {
@@ -173,6 +175,9 @@ function assertLockRules(ctx: WriteContext, op: WriteOp, target: WriteTarget): v
  */
 export function assertWritable(ctx: WriteContext, op: WriteOp, target: WriteTarget): void {
   if (!OPS.has(op)) throw new PolicyRefused(op, 'unknown operation')
+  /* deleting a frame forever is a person's act: no agent, sync key or system job holds it (CHE-9399) */
+  if (op === 'purge_frame' && ctx.kind !== 'user')
+    throw new PolicyRefused(op, 'only a signed-in person may delete a frame forever')
   assertLockRules(ctx, op, target)
   assertPageRules(op, target)
   if (op === 'land_proposal') return assertLanding(ctx, target)

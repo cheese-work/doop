@@ -17,7 +17,9 @@ import {
 import { dedupeIssues, prepareChunk, prepareFrameHtml, referencesComponent, rederiveFromMains } from './components.ts'
 import { COMPONENT_ATTR, isDeleted, isHollow, type ComponentDef, type ComponentIssue } from '../shared/components.ts'
 import { MAX_DECISION_CHARS } from '../shared/designDecisions.ts'
-import { FrameLockedError, MAX_PAGES, PageLimitError, store } from './store.ts'
+import { FrameLockedError, MAX_PAGES, PageLimitError, PurgeInProgressError, store } from './store.ts'
+import type { PurgeLease } from './store.ts'
+import type { PurgeReceipt } from './db/purge.ts'
 import * as persist from './db/persist.ts'
 import * as thumbs from './thumbs.ts'
 import { colorFor } from '../shared/types.ts'
@@ -763,6 +765,11 @@ const commentLog = new Map<string, ElementComment[]>() // canvasId -> entries (n
 
 export function getComments(canvasId: string): ElementComment[] {
   return commentLog.get(canvasId) ?? []
+}
+
+/** Does any comment, root or reply, still point at this frame? "Delete forever" refuses while one does (CHE-9399). */
+export function commentsOnFrame(canvasId: string, frameId: string): boolean {
+  return (commentLog.get(canvasId) ?? []).some((c) => c.frameId === frameId)
 }
 
 function findInMemory(commentId: string): ElementComment | undefined {
@@ -3362,6 +3369,32 @@ const deleteFrameWrite = atomic(function deleteFrame(frameId: string, actor: Act
 })
 export const deleteFrame = logsRefusal(deleteFrameWrite, 1)
 
+/**
+ * The one finalizer of a "delete forever" (CHE-9399): the database has committed the purge, so take the frame out of
+ * memory, settle the fence as `purged` and tell the room. Idempotent: a second call changes nothing, logs nothing and
+ * returns the first receipt. A throwing broadcast or activity line is logged and never changes the outcome.
+ */
+export function finishCommitted(
+  lease: PurgeLease,
+  receipt: PurgeReceipt,
+  actor: Actor = resolveActor({ name: 'Doop', kind: 'user' }),
+): PurgeReceipt {
+  /* a transaction of its own: the database has committed, so an outer operation that is undone later must not take
+   * the finalizer's activity line with it */
+  return detached(() =>
+    transaction(() => {
+      if (store.purgeFinalized(lease)) return lease.receipt ?? receipt
+      const done = store.commitPurge(lease, receipt)
+      try {
+        logActivity(lease.canvasId, actor, `deleted frame “${lease.frameName}” forever`, lease.frameId)
+      } catch (error) {
+        console.error('[purge] activity failed', lease.frameId, error)
+      }
+      return done
+    }),
+  )
+}
+
 /** Bring a deleted frame back with its version history; peers get the frame. Its canvas is
  *  loaded first: a trashed frame's html is read from the database like a live one's. */
 export async function restoreFrame(frameId: string, actor: Actor): Promise<Frame | undefined> {
@@ -3395,15 +3428,28 @@ const restoreLoadedPage = atomic(function restoreLoadedPage(canvasId: string, pa
   return { page: restored.page, frames: restored.frames }
 })
 
-/** Move frames to the Archive page and hide them in one step. */
+/** Move frames to the Archive page and hide them in one step, recording where each came from. A frame
+ *  already archived is left as it is, so a repeated request changes and announces nothing more. */
 function archiveFramesWrite(canvasId: string, frameIds: string[], actor: Actor) {
   const archived = store.archiveFrames(writeContextFor(actor), canvasId, frameIds, actor.name)
   if (!archived) return undefined
-  broadcast(canvasId, { type: 'canvas:pages', pages: archived.pages, actor })
-  for (const frame of archived.frames) broadcast(canvasId, { type: 'frame:updated', frame, actor })
-  logActivity(canvasId, actor, `archived ${archived.frames.length} frame(s)`)
-  touch(canvasId, actor, null)
-  return { moved: archived.frames.map((f) => f.id), pages: archived.pages }
+  if (archived.changed.length) {
+    broadcast(canvasId, { type: 'canvas:pages', pages: archived.pages, actor })
+    for (const frame of archived.changed) broadcast(canvasId, { type: 'frame:updated', frame, actor })
+    logActivity(canvasId, actor, `archived ${archived.changed.length} frame(s)`)
+    touch(canvasId, actor, null)
+  }
+  return { moved: archived.frames.map((f) => f.id), pages: archived.pages, frames: archived.frames }
+}
+
+/** Take a frame out of the Archive: to `pageId`, else to the page it came from. */
+export function unarchiveFrame(frameId: string, pageId: string | undefined, actor: Actor) {
+  const out = store.unarchiveFrame(writeContextFor(actor), frameId, pageId, actor.name)
+  if (!out?.ok || !out.changed) return out
+  broadcast(out.frame.canvasId, { type: 'frame:updated', frame: out.frame, actor })
+  logActivity(out.frame.canvasId, actor, `unarchived frame “${out.frame.name}”`, out.frame.id)
+  touch(out.frame.canvasId, actor, out.frame.id)
+  return out
 }
 export const archiveFrames = logsRefusal(archiveFramesWrite, 2)
 
@@ -4251,6 +4297,9 @@ async function applyPageSnapshot(canvasId: string, snapshotId: string, target: P
   const html = await persist.getSnapshotHtml(canvasId, [...new Set(target.frames.map((f) => f.hash))])
   const missing = target.frames.find((f) => !html.has(f.hash))
   if (missing) throw new SnapshotError(`Snapshot ${snapshotId} has lost the html of “${missing.name}”`)
+  /* a frame being deleted forever is not ours to bring back: refused before anything is filed */
+  const purgingFrame = target.frames.find((f) => store.isPurging(f.frameId))
+  if (purgingFrame) throw new PurgeInProgressError(purgingFrame.frameId)
 
   /* File the current state, then apply in a tick that starts only after a
      re-capture matches what was filed. A writer that slipped in during the
@@ -4271,7 +4320,7 @@ async function applyPageSnapshot(canvasId: string, snapshotId: string, target: P
   if (targetPage.finished) throw new PageFinishedError('restore_page_snapshot', targetPage.name)
   const pages = canvasPages(now)
   const restored: Array<{ frameId: string; name: string }> = []
-  const skipped: Array<{ frameId: string; name: string; reason: 'locked' | 'page_finished' }> = []
+  const skipped: Array<{ frameId: string; name: string; reason: 'locked' | 'page_finished' | 'purging' }> = []
   for (const want of target.frames) {
     const live = store.getFrame(want.frameId)
     const cur = live ?? store.getDeletedFrame(want.frameId)
@@ -4279,6 +4328,11 @@ async function applyPageSnapshot(canvasId: string, snapshotId: string, target: P
     const has = stateOf(cur, !live)
     const curPageId = framePageId(now, cur)
     if (sameState(want, has) && curPageId === target.pageId) continue
+    /* a delete forever opened while the safety snapshot was filed: the frame stays in the Trash, before any write */
+    if (store.isPurging(want.frameId)) {
+      skipped.push({ frameId: want.frameId, name: cur.name, reason: 'purging' })
+      continue
+    }
     /* a frame sitting on another Finished page stays there: skipped like a locked one, before any write */
     if (curPageId !== target.pageId && pages.find((p) => p.id === curPageId)?.finished) {
       skipped.push({ frameId: want.frameId, name: cur.name, reason: 'page_finished' })

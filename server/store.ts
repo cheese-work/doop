@@ -34,7 +34,9 @@ import type {
   Frame,
   GuidelineDoc,
   MemoryReference,
+  ServerMessage,
 } from '../shared/types.ts'
+import type { PurgeReceipt } from './db/purge.ts'
 
 export { FrameLockedError }
 
@@ -83,6 +85,52 @@ export class FrameDeletedError extends Error {
     super(`Frame “${frame.name}” (${frame.id}) is deleted; restore it before changing it.`)
   }
 }
+
+/** A restore reached a frame that is being deleted forever (CHE-9399). Nothing changed. This is not a policy refusal:
+ *  the same person may try again once the purge ends, so REST answers 409 and not 423. */
+export class PurgeInProgressError extends Error {
+  override readonly name = 'PurgeInProgressError'
+  readonly code = 'purge_in_progress'
+  constructor(readonly frameId: string) {
+    super(`purge_in_progress: frame ${frameId} is being deleted forever; nothing changed`)
+  }
+}
+
+/** `beginPurge` turned the purge away before it changed anything. */
+export type PurgeRefusalCode = 'not_in_trash' | 'stale_confirmation' | 'has_comments' | 'component_main'
+export class PurgeRefusedError extends Error {
+  override readonly name = 'PurgeRefusedError'
+  constructor(
+    readonly code: PurgeRefusalCode,
+    readonly frameId: string,
+  ) {
+    super(`purge_refused: ${code} (frame ${frameId}); nothing changed`)
+  }
+}
+
+/** What the lease tells the room: a Trash frame's purge state, and its end. */
+export type PurgeEvent = Extract<ServerMessage, { type: 'trash:purge_state' | 'frame:purged' }>
+
+/** One open "delete forever" on a Trash frame. `release()` calls it off; the finalizer (`actions.finishCommitted`)
+ *  ends it for good. The persist fence under it holds back the frame's writers until one of them happens. */
+export interface PurgeLease {
+  readonly frameId: string
+  readonly canvasId: string
+  readonly frameName: string
+  /** `kept` once released, `purged` once finished */
+  readonly outcome: Promise<'kept' | 'purged'>
+  /** set by the finalizer: what the purge removed */
+  receipt?: PurgeReceipt
+  release(): void
+}
+
+type PurgeState = {
+  lease: PurgeLease
+  frame: Frame
+  status: 'open' | 'released' | 'purged'
+  send: (event: PurgeEvent) => void
+}
+const leases = new WeakMap<PurgeLease, PurgeState>()
 
 type PageCopy = {
   source: CanvasPageInfo
@@ -233,6 +281,8 @@ class Store {
    *  JSON every route returns never carries the trash. */
   private trash = new Map<string, { frames: Frame[]; pages: DeletedPage[] }>()
   private deletedIndex = new Map<string, string>() // deleted frameId -> canvasId
+  /** Trash frames with an open "delete forever": the mark restores and snapshot restores check (CHE-9399) */
+  private purging = new Map<string, PurgeState>()
 
   init(canvases: Canvas[], trash?: Map<string, { frames: Frame[]; pages: DeletedPage[] }>) {
     for (const [canvasId, entry] of trash ?? []) {
@@ -513,6 +563,7 @@ class Store {
       html: remapFrameTargets(frame.html, frameIds),
       approval: null,
       ...UNLOCKED,
+      archiveOrigin: undefined,
       z: stackOf(frame),
       canvasId,
       createdAt: now,
@@ -615,6 +666,7 @@ class Store {
       pageId: page.id,
       approval: null,
       ...UNLOCKED,
+      archiveOrigin: undefined,
       z: stackOf(frame),
       createdAt: now,
       updatedAt: now,
@@ -1424,10 +1476,104 @@ class Store {
     return this.trash.get(canvasId)?.pages.find((d) => d.page.id === pageId)?.page
   }
 
-  /** What a canvas's trash holds: deleted frames and deleted pages. */
-  listTrash(canvasId: string): { frames: Frame[]; pages: DeletedPage[] } {
+  /** What a canvas's trash holds: deleted frames and deleted pages. A frame being deleted forever is listed as a
+   *  copy marked `purging: true`; the stored frame is never marked. */
+  listTrash(canvasId: string): { frames: Array<Frame & { purging?: true }>; pages: DeletedPage[] } {
     const entry = this.trash.get(canvasId)
-    return { frames: [...(entry?.frames ?? [])], pages: [...(entry?.pages ?? [])] }
+    const frames = (entry?.frames ?? []).map((f) => (this.purging.has(f.id) ? { ...f, purging: true as const } : f))
+    return { frames, pages: [...(entry?.pages ?? [])] }
+  }
+
+  /** Is a "delete forever" open on this frame? Restores and snapshot restores leave such a frame alone. */
+  isPurging(frameId: string): boolean {
+    return this.purging.has(frameId)
+  }
+
+  /**
+   * Open a "delete forever" on a Trash frame (CHE-9399 step 2): raise the persist fence, mark the frame purging
+   * and tell the room. Every check runs before the first change, so a refusal leaves nothing behind: no mark, no
+   * fence, nothing sent. Writes nothing and removes nothing; the caller ends the lease with `release()` (purge
+   * called off) or `actions.finishCommitted` (purge committed), and an undone transaction releases it too.
+   *  - `PolicyRefused` / `FrameLockedError`: `purge_frame` is a person's act and the lock rule holds;
+   *  - `PurgeRefusedError`: `not_in_trash`, `stale_confirmation` (the caller's `deletedAt` is not the frame's),
+   *    `has_comments` (`hasComments()` says so, or a comment write for it is still on its way to the database);
+   *  - `PurgeInProgressError`: another lease is open on the frame.
+   * `notify` is called in its own try/catch each time: a throw there is logged and changes nothing.
+   */
+  beginPurge(
+    ctx: WriteContext,
+    frameId: string,
+    deletedAt: number,
+    hasComments: () => boolean,
+    notify: (event: PurgeEvent) => void,
+  ): PurgeLease {
+    const canvasId = this.deletedIndex.get(frameId)
+    const canvas = canvasId ? this.canvases.get(canvasId) : undefined
+    const frame = canvasId ? this.trash.get(canvasId)?.frames.find((f) => f.id === frameId) : undefined
+    if (!canvasId || !canvas || !frame) throw new PurgeRefusedError('not_in_trash', frameId)
+    requireBoundary('store.beginPurge')
+    assertWritable(ctx, 'purge_frame', { canvas, frame, pageIds: frame.pageId ? [frame.pageId] : [] })
+    if (this.purging.has(frameId)) throw new PurgeInProgressError(frameId)
+    if (frame.deletedAt !== deletedAt) throw new PurgeRefusedError('stale_confirmation', frameId)
+    if (canvas.components?.some((def) => def.mainFrameId === frameId))
+      throw new PurgeRefusedError('component_main', frameId)
+    if (hasComments() || persist.commentWritesPending(frameId) > 0) throw new PurgeRefusedError('has_comments', frameId)
+
+    const fence = persist.fenceFrame(frameId)
+    const send = (event: PurgeEvent) => {
+      try {
+        notify(event)
+      } catch (error) {
+        console.error('[purge] notify failed', event.type, frameId, error)
+      }
+    }
+    const lease: PurgeLease = {
+      frameId,
+      canvasId,
+      frameName: frame.name,
+      outcome: fence.outcome,
+      release: () => {
+        const state = leases.get(lease)
+        if (!state || state.status !== 'open') return
+        state.status = 'released'
+        if (this.purging.get(frameId) === state) this.purging.delete(frameId)
+        fence.release()
+        send({ type: 'trash:purge_state', frameId, canvasId, purging: false })
+      },
+    }
+    const state: PurgeState = { lease, frame, status: 'open', send }
+    leases.set(lease, state)
+    this.purging.set(frameId, state)
+    recordUndo(() => lease.release())
+    send({ type: 'trash:purge_state', frameId, canvasId, purging: true })
+    return lease
+  }
+
+  /**
+   * The purge's rows are gone (the database committed): take the frame out of memory and settle the fence as
+   * `purged`, so held writers drop. Idempotent: a second call changes nothing and returns the first receipt.
+   * Only the same frame object leaves the Trash. Not undoable: the rows cannot come back.
+   */
+  /** Has `commitPurge` run for this lease? (`lease.receipt` is not the answer: the commit path sets it before COMMIT.) */
+  purgeFinalized(lease: PurgeLease): boolean {
+    return leases.get(lease)?.status === 'purged'
+  }
+
+  commitPurge(lease: PurgeLease, receipt: PurgeReceipt): PurgeReceipt {
+    const state = leases.get(lease)
+    if (!state) throw new Error(`commitPurge: no lease for frame ${lease.frameId}`)
+    if (state.status === 'purged') return lease.receipt ?? receipt
+    state.status = 'purged'
+    lease.receipt = receipt
+    if (this.purging.get(lease.frameId) === state) this.purging.delete(lease.frameId)
+    const entry = this.trash.get(lease.canvasId)
+    if (entry?.frames.includes(state.frame)) {
+      entry.frames = entry.frames.filter((f) => f !== state.frame)
+      this.deletedIndex.delete(lease.frameId)
+    }
+    persist.forgetFrame(lease.frameId)
+    state.send({ type: 'frame:purged', frameId: lease.frameId, canvasId: lease.canvasId })
+    return receipt
   }
 
   private trashOf(canvasId: string) {
@@ -1527,6 +1673,7 @@ class Store {
         | 'z'
         | 'rotation'
         | 'approval'
+        | 'archiveOrigin'
       >
     >,
     by: string,
@@ -1594,6 +1741,14 @@ class Store {
     /* a frame moved to another page lands in front there, as Figma does */
     if (patch.pageId !== undefined && patch.pageId !== frame.pageId && patch.z === undefined)
       patch = { ...patch, z: frontOf(pageFrames(c, patch.pageId)) ?? frame.z }
+    /* a frame moved out of the Archive by any writer is no longer archived: its origin goes with it */
+    if (
+      patch.pageId !== undefined &&
+      patch.pageId !== ARCHIVE_PAGE_ID &&
+      frame.archiveOrigin &&
+      !('archiveOrigin' in patch)
+    )
+      patch = { ...patch, archiveOrigin: undefined }
     Object.assign(frame, patch)
     if (patch.locked === true) stampLock(frame, by, Date.now(), lockReason)
     if (unlocking) {
@@ -1843,6 +1998,8 @@ class Store {
     const entry = canvasId ? this.trash.get(canvasId) : undefined
     const frame = entry?.frames.find((f) => f.id === frameId)
     if (!canvasId || !c || !entry || !frame) return undefined
+    /* before anything moves: a frame being deleted forever stays in the trash */
+    if (this.purging.has(frameId)) throw new PurgeInProgressError(frameId)
     const pages = canvasPages(c)
     const pageId = frame.pageId && pages.some((page) => page.id === frame.pageId) ? frame.pageId : recoveryPageId(c)
     /* before anything moves: the frame stays in the trash */
@@ -1882,6 +2039,9 @@ class Store {
     const entry = this.trash.get(canvasId)
     const deleted = entry?.pages.find((d) => d.page.id === pageId)
     if (!c || !entry || !deleted) return undefined
+    /* before the page or any frame moves: one frame being deleted forever refuses the whole restore */
+    const purgingHere = entry.frames.find((f) => f.pageId === pageId && this.purging.has(f.id))
+    if (purgingHere) throw new PurgeInProgressError(purgingHere.id)
     const pages = canvasPages(c)
     if (pages.length >= MAX_PAGES) throw new PageLimitError()
     const page = pages.some((p) => p.name === deleted.page.name)
@@ -1901,34 +2061,74 @@ class Store {
     return { pages: c.pages, page: restoredPage, frames }
   }
 
-  /** Move frames to the Archive page (made last on first use) and hide them. */
+  /** Move frames to the Archive page (made last on first use) and hide them, recording where each came from
+   *  in the same write. A frame already on the Archive page is left as it is and keeps its first origin, so a
+   *  retried request changes nothing (FP-01). `changed` is the frames this call moved. */
   archiveFrames(
     ctx: WriteContext,
     canvasId: string,
     frameIds: string[],
     by: string,
-  ): { pages: CanvasPageInfo[]; frames: Frame[] } | undefined {
+  ): { pages: CanvasPageInfo[]; frames: Frame[]; changed: Frame[] } | undefined {
     const c = this.canvases.get(canvasId)
     if (!c) return undefined
     const frames = frameIds.map((id) => this.getFrame(id)).filter((f): f is Frame => !!f && f.canvasId === canvasId)
     if (!frames.length) return undefined
+    const changed = frames.filter((f) => framePageId(c, f) !== ARCHIVE_PAGE_ID)
     /* before the Archive page is made or any frame moves, so a refusal leaves nothing half done; a locked
        frame is left to updateFrame, whose lock refusal answers first */
     assertPagesOpen(
       c,
-      frames.filter((f) => !f.locked).map((f) => framePageId(c, f)),
+      changed.filter((f) => !f.locked).map((f) => framePageId(c, f)),
       'archive_frames',
     )
     const pages = canvasPages(c)
-    if (!pages.some((p) => p.id === ARCHIVE_PAGE_ID)) {
+    if (changed.length && !pages.some((p) => p.id === ARCHIVE_PAGE_ID)) {
       if (pages.length >= MAX_PAGES) throw new PageLimitError()
       c.pages = pageOrder([...pages, { id: ARCHIVE_PAGE_ID, name: ARCHIVE_PAGE_NAME }])
       this.saveCanvasLater(c)
     }
-    for (const frame of frames) this.updateFrame(ctx, frame.id, { pageId: ARCHIVE_PAGE_ID, hidden: true }, by)
-    return { pages: c.pages!, frames }
+    const archivedAt = Date.now()
+    for (const frame of changed) {
+      const archiveOrigin = { pageId: framePageId(c, frame), hidden: frame.hidden === true, archivedAt, by }
+      this.updateFrame(ctx, frame.id, { pageId: ARCHIVE_PAGE_ID, hidden: true, archiveOrigin }, by)
+    }
+    return { pages: canvasPages(c), frames, changed }
+  }
+
+  /** Take a frame out of the Archive: to `pageId`, else to the page it came from, with the `hidden` it had.
+   *  A frame that is not on the Archive page is left as it is (`changed: false`), so a retry is harmless.
+   *  Refused with `origin_missing` (no `pageId`, and no origin page left) before anything moves.
+   *  Undefined = no such frame. */
+  unarchiveFrame(
+    ctx: WriteContext,
+    frameId: string,
+    pageId: string | undefined,
+    by: string,
+  ): UnarchiveResult | undefined {
+    const frame = this.getFrame(frameId)
+    const c = frame && this.canvases.get(frame.canvasId)
+    if (!frame || !c) return undefined
+    if (framePageId(c, frame) !== ARCHIVE_PAGE_ID) return { ok: true, frame, changed: false }
+    const pages = canvasPages(c)
+    const origin = frame.archiveOrigin
+    const target = pageId ?? origin?.pageId ?? undefined
+    if (pageId === ARCHIVE_PAGE_ID) return { ok: false, code: 'archive_page' }
+    if (!target || !pages.some((p) => p.id === target))
+      return { ok: false, code: pageId === undefined ? 'origin_missing' : 'page_not_found' }
+    const moved = this.updateFrame(
+      ctx,
+      frame.id,
+      { pageId: target, hidden: origin?.hidden === true, archiveOrigin: undefined },
+      by,
+    )
+    return moved ? { ok: true, frame: moved, changed: true } : undefined
   }
 }
+
+export type UnarchiveResult =
+  | { ok: true; frame: Frame; changed: boolean }
+  | { ok: false; code: 'origin_missing' | 'page_not_found' | 'archive_page' }
 
 export type LedgerResult =
   | { ok: true; pages: CanvasPageInfo[]; changed: boolean }
