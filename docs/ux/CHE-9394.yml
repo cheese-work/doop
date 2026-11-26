@@ -1,0 +1,27 @@
+issue: CHE-9394
+design: design/lifecycle-ui/approved/A2-archive-and-trash.html @ 572cc77
+# U2 mounts the A2 screen and the phone sheet: the Archive page last with its count, Archive rows, the
+# archive toast with Undo, and the Trash section in Layers. U0's PanelState carries the four states.
+pages:
+  - id: a2-archive-and-trash
+    design: design/lifecycle-ui/approved/A2-archive-and-trash.html @ 572cc77
+    url: canvas Layers tab, Pages list and the Archive and Trash sections under the layer tree (1440 px)
+    keep:
+      - pages-list: 'the Pages list, its rows, rename, drag order and the move-selection picker'
+      - layer-tree: 'the Layers tree and the search field under it'
+    change:
+      - archive-page-row: 'the Archive page is the last row, with the archive icon and a count of its frames'
+      - archive-row: 'one row per archived frame: name, "Archived by <name>", Restore to <origin page>, Restore to page…, Move to Trash'
+      - archive-page-picker: 'Restore to page… lists the open pages; it opens by itself when the origin page is gone (409 origin_missing)'
+      - archive-toast: '"Archived N frames" with Undo, which restores each frame to its origin'
+      - trash-row: 'one row per deleted frame: name, "Deleted by <name> · <date and time>", Restore'
+      - panel-state: 'PanelState copy for Archive and Trash: loading, empty with Archive selected, error with Try again, offline'
+    remove: []
+  - id: a-phone-390-archive-and-trash
+    design: design/lifecycle-ui/approved/A-phone-390-all-five.html @ 572cc77
+    url: canvas Layers sheet on a 390 px phone, the same sections
+    keep:
+      - pages-list: 'the Pages list in the Layers sheet'
+    change:
+      - archive-trash-sections: 'the Archive and Trash sections stack under the layer tree at full width; the toast sits above the toolbar'
+    remove: []

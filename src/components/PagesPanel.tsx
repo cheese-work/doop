@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { nanoid } from 'nanoid'
-import { canvasPages } from '../../shared/pages'
+import { ARCHIVE_PAGE_ID, archiveLast, canvasPages } from '../../shared/pages'
 import type { CanvasPageInfo } from '../../shared/types'
 import { canEditOpenCanvas, useStore } from '../lib/store'
 import { savePages, duplicatePage, moveFramesToPage } from '../lib/pageEdits'
 import { copyPageLink } from '../lib/pageUrl'
 import { ApiError } from '../lib/api'
 import { Button } from './ui/button'
-import { PageIcon, PlusIcon } from './ui/icons'
+import { ArchiveIcon, PageIcon, PlusIcon } from './ui/icons'
 import { cn } from '../lib/utils'
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem } from './ui/context-menu'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
@@ -39,7 +39,9 @@ export function PagesPanel({ fill = false }: { fill?: boolean }) {
   useEffect(() => () => stopDrag.current?.(), [])
   const t = useT()
   if (!canvas) return null
-  const pages = canvasPages(canvas)
+  /* the Archive page always comes last, with how many frames it holds */
+  const pages = archiveLast(canvasPages(canvas))
+  const archivedCount = canvas.frames.filter((f) => f.pageId === ARCHIVE_PAGE_ID).length
   const movableIds = canvas.frames.filter((f) => selectedIds.includes(f.id) && !f.locked).map((f) => f.id)
 
   async function moveSelection(pageId: string) {
@@ -223,7 +225,7 @@ export function PagesPanel({ fill = false }: { fill?: boolean }) {
                   page.id === activePageId && 'text-ink',
                 )}
               >
-                <PageIcon className="size-3.5" />
+                {page.id === ARCHIVE_PAGE_ID ? <ArchiveIcon className="size-3.5" /> : <PageIcon className="size-3.5" />}
               </span>
               {renaming === page.id ? (
                 <form
@@ -272,6 +274,15 @@ export function PagesPanel({ fill = false }: { fill?: boolean }) {
                 >
                   {page.name}
                 </button>
+              )}
+              {page.id === ARCHIVE_PAGE_ID && (
+                <span
+                  data-testid="archive-count"
+                  aria-label={t('panels.archiveTrashCount', { count: archivedCount })}
+                  className="flex-none font-mono text-micro text-ink-faint"
+                >
+                  {archivedCount}
+                </span>
               )}
             </div>
           </ContextMenuTrigger>

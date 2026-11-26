@@ -33,6 +33,7 @@ import {
   AlignJustify,
   AlignLeft,
   AlignRight,
+  Archive,
   ArrowLeft,
   ArrowDown,
   ArrowRight,
@@ -205,6 +206,7 @@ export const ShareIcon = icon(Share2)
 export const CopyIcon = icon(Copy)
 export const ClipboardIcon = icon(Clipboard)
 export const TrashIcon = icon(Trash2)
+export const ArchiveIcon = icon(Archive)
 export const CheckIcon = icon(Check)
 export const ChevronRightIcon = icon(ChevronRight)
 export const ChevronDownIcon = icon(ChevronDown)
