@@ -32,8 +32,10 @@
 #
 # Env: DEPLOY_REF (image@sha256:...), DEPLOY_SHA, C00_COMPOSE_DIR (compose project on C00),
 #      apply, confirm and rollback also need DEPLOY_MODE (train|recovery|drill) and MARKER_EXPECT (this run's own
-#      DOOP_DEPLOY_SUSPENDED value), plus the GH_TOKEN/VARS_TOKEN/REPO/EXTRA/PREDECESSOR_DIGEST env that deploy-gate.mjs reads
-#      (VARS_TOKEN: the marker App token that can read variables),
+#      marker value), plus the GH_TOKEN/REPO/EXTRA/PREDECESSOR_DIGEST env that deploy-gate.mjs reads, and the switch
+#      and the pause it checks (DOOP_DEPLOY_TRAIN, MAIN_RED_PAUSED, passed as env from the workflow's `vars`).
+#      The suspension marker is one file on this host (C00_MARKER_FILE, default $C00_STATE_DIR/deploy-marker; no GitHub
+#      token takes part, CHE-9877); a missing or unreadable file reads as suspended and refuses every check,
 #      C00_PG_CONTAINER (the live Postgres container; read through `docker exec`, read-only; default: the
 #      compose project's `db` service, C00_PG_SERVICE),
 #      DEPLOY_RUN_ID (apply with DOOP_DEPLOY_TRAIN=on only: [a-z0-9-], names the one-shot container and its DB sessions).

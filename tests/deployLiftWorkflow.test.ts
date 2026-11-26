@@ -95,11 +95,10 @@ describe('cd-deploy.yml lift job', () => {
 })
 
 describe('cd-deploy.yml lift job: step order', () => {
-  it('admits the dispatcher first; the marker token is minted only after, and the lift runs last of the C00 steps', () => {
+  it('admits the dispatcher first, and the lift runs last of the C00 steps', () => {
     const at = (n: string) => stepNames.indexOf(n)
     expect(at('Admit the dispatcher')).toBeGreaterThanOrEqual(0)
-    expect(at('Admit the dispatcher')).toBeLessThan(at('Mint the marker token'))
-    expect(at('Mint the marker token')).toBeLessThan(at('Sweep the compat sandboxes'))
+    expect(at('Admit the dispatcher')).toBeLessThan(at('Sweep the compat sandboxes'))
     expect(at('Sweep the compat sandboxes')).toBeLessThan(at('Lift on C00'))
     expect(at('Lift on C00')).toBeLessThan(at('Upload the lift evidence'))
   })
@@ -119,12 +118,10 @@ describe('cd-deploy.yml lift job: step order', () => {
     expect(s).not.toContain('secrets.')
   })
 
-  it('mints the marker token for variables only, pinned like D2', () => {
-    const s = step('Mint the marker token')
-    expect(s).toContain('actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0')
-    expect(s).toContain('permission-actions-variables: write')
-    expect(s).toContain('repositories: doop')
-    expect(s).toContain('DOOP_MARKER_APP_KEY')
+  it('mints no token and holds no App: the marker is a file on the C00 host (CHE-9877)', () => {
+    expect(stepNames).not.toContain('Mint the marker token')
+    expect(lift).not.toMatch(/create-github-app-token|DOOP_MARKER_APP|permission-actions-variables|steps\.app\./)
+    expect(lift).not.toMatch(/GH_TOKEN|VARS_TOKEN|ci-app-token/)
   })
 
   it('sweeps first (C-5, C-8.5d), then lifts under the host lock with c00.sh', () => {
@@ -132,10 +129,9 @@ describe('cd-deploy.yml lift job: step order', () => {
     expect(step('Lift on C00')).toContain('run: bash deploy/cd/c00.sh lift')
   })
 
-  it('gives the lift the marker token, the read token and every id it checks, and nothing broader', () => {
+  it('gives the lift the read token and every id it checks, and nothing broader', () => {
     const s = step('Lift on C00')
     for (const v of [
-      'GH_TOKEN: ${{ steps.app.outputs.token }}',
       'REPO: ${{ github.repository }}',
       'RUN_ID: ${{ github.run_id }}',
       'LIFTER: ${{ github.triggering_actor }}',
