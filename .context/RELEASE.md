@@ -2,8 +2,10 @@
 
 ## Versioning (release-please)
 
-`.github/workflows/release-please.yml` runs on every push to `main` and keeps a release PR open
-per package, driven by conventional commits (`release-please-config.json`,
+`.github/workflows/release-please.yml` is DISABLED (CHE-9811): it only runs by manual dispatch
+because GitHub refuses its release PR (org Actions PR-creation setting off, no
+`RELEASE_PLEASE_TOKEN`). Re-enable by fixing one of those and restoring the `push` trigger. When
+enabled it runs on every push to `main` and keeps a release PR open per package, driven by conventional commits (`release-please-config.json`,
 `.release-please-manifest.json`):
 
 - `.` (the web app) -> "chore(main): release x.y.z" bumps `package.json` + `CHANGELOG.md`;
