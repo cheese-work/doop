@@ -368,6 +368,6 @@ export const panels = {
   lockPanelEmptyAction: 'Lock frame',
   lockPanelPickFirst: 'Select a frame to lock it',
   lockPanelOffline: 'Offline. Lock and unlock are paused. Locked frames stay locked.',
-  lockPanelUnknown: 'Could not confirm the lock state of {name}. Showing the last known state.',
+  lockPanelUnknown: 'Could not confirm the lock state of {name}. Edits stay off until it is read again.',
   lockPanelError: 'Could not unlock {name} ({status}). It is still locked.',
 } as const

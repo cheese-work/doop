@@ -1,10 +1,21 @@
 import { canEditOpenCanvas, useStore } from '@/lib/store'
 import { useT } from '@/lib/i18n'
 import type { Frame } from '../../shared/types'
-import { ictDateTime, useLockUi } from '@/lib/frameLock'
+import { ictDateTime, useLockUi, type LockError } from '@/lib/frameLock'
 import { rereadLocks, setFramesLocked, unlockConfirmed } from '@/lib/layerEdits'
 import { PanelState, type PanelStatus } from './PanelState'
-import { LockIcon } from './ui/icons'
+import { AlertIcon, LockIcon } from './ui/icons'
+import { Button } from './ui/button'
+import { Callout } from './ui/callout'
+
+type Translate = ReturnType<typeof useT>
+const lockErrorText = (error: LockError, t: Translate) =>
+  error.status === null
+    ? t('panels.lockPanelUnknown', { name: error.name })
+    : t('panels.lockPanelError', { name: error.name, status: error.status })
+/* Try again: read the lock back when its state is unknown, else send the unlock again. */
+const retryLock = (error: LockError) =>
+  error.status === null ? void rereadLocks(error.frameIds) : unlockConfirmed(error.frameIds)
 
 /* The lock's states in the Layers panel (A1): reading, nothing locked, a
    refused unlock with its retry, and the offline banner. Locked frames
@@ -43,18 +54,8 @@ export function FrameLockPanel() {
                 },
               }
         }
-        error={
-          error
-            ? error.status === null
-              ? t('panels.lockPanelUnknown', { name: error.name })
-              : t('panels.lockPanelError', { name: error.name, status: error.status })
-            : undefined
-        }
-        onRetry={
-          error
-            ? () => (error.status === null ? void rereadLocks(error.frameIds) : unlockConfirmed(error.frameIds))
-            : undefined
-        }
+        error={error ? lockErrorText(error, t) : undefined}
+        onRetry={error ? () => retryLock(error) : undefined}
         offline={t('panels.lockPanelOffline')}
       />
     </div>
@@ -80,5 +81,25 @@ export function LockDetails({ frame }: { frame: Pick<Frame, 'lockedBy' | 'locked
         </div>
       ))}
     </dl>
+  )
+}
+
+/* The same error and Try again inside the phone's Inspector sheet (A1 at 390),
+   where there is no Layers panel to draw them. Only for this frame's error. */
+export function LockErrorNote({ frameId }: { frameId: string }) {
+  const t = useT()
+  const error = useLockUi((s) => (s.error?.frameIds.includes(frameId) ? s.error : null))
+  const connected = useStore((s) => s.connected)
+  if (!error) return null
+  return (
+    <div data-testid="inspector-lock-error" className="flex flex-col gap-2">
+      <Callout role="alert" tone="error" className="flex items-start gap-2">
+        <AlertIcon aria-hidden className="mt-0.5 shrink-0" />
+        <span>{lockErrorText(error, t)}</span>
+      </Callout>
+      <Button className="self-start" disabled={!connected} onClick={() => retryLock(error)}>
+        {t('panels.panelStateRetry')}
+      </Button>
+    </div>
   )
 }

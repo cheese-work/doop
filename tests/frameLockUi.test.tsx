@@ -39,6 +39,7 @@ const { ContextMenu, ContextMenuTrigger } = await import('../src/components/ui/c
 const { TooltipProvider } = await import('../src/components/ui/tooltip')
 const { ACTIONS } = await import('../src/lib/actions/registry')
 const { saveFrameHtml } = await import('../src/lib/layerEdits')
+const { roundFramesToPixel } = await import('../src/lib/actions/edits')
 const { FrameView } = await import('../src/components/FrameView')
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -324,21 +325,22 @@ describe('a lost reply', () => {
   })
 
   it.each([
-    ['lock', base, false],
-    ['unlock', locked, true],
+    ['lock', base],
+    ['unlock', locked],
   ])(
-    'keeps the last known state and shows the A1 error state when the re-read after a lost %s reply fails',
-    async (_name, frame, wasLocked) => {
+    'keeps the frame locked and shows the A1 error state when the re-read after a lost %s reply fails',
+    async (name, frame) => {
       mount(frame)
-      if (wasLocked) click(layersRowLock('f1'))
+      if (name === 'unlock') click(layersRowLock('f1'))
       getCanvas.mockRejectedValueOnce(new TypeError('network lost'))
       updateFrame.mockRejectedValueOnce(new TypeError('network lost'))
-      if (wasLocked) click(button('Unlock'))
+      if (name === 'unlock') click(button('Unlock'))
       else click(layersRowLock('f1'))
       await flush()
       await flush()
-      /* no guessed state: the frame is as it was before the click */
-      expect(Boolean(current().locked)).toBe(wasLocked)
+      /* the write may have landed, so the frame fails closed: locked here, no marker from a guess */
+      expect(current().locked).toBe(true)
+      expect(current().lockedBy).toBe(name === 'unlock' ? 'Cheese' : undefined)
       const alert = container.querySelector('[data-testid="panel-state-error"]')
       expect(alert?.textContent).toContain('Could not confirm the lock state of Cart · phone')
       expect(alert?.textContent).toContain('Try again')
@@ -349,9 +351,34 @@ describe('a lost reply', () => {
       await flush()
       await flush()
       expect(current().locked).toBe(true)
+      expect(current().lockedBy).toBe('Cheese')
       expect(container.querySelector('[data-testid="panel-state-error"]')).toBeNull()
     },
   )
+
+  it('blocks an edit while a landed lock cannot be read, and edits again once the read says it is unlocked', async () => {
+    /* the lock landed on the server, its reply was lost and the re-read failed */
+    mount({ ...base, x: 0.4 })
+    getCanvas.mockRejectedValueOnce(new TypeError('network lost'))
+    updateFrame.mockRejectedValueOnce(new TypeError('network lost'))
+    click(layersRowLock('f1'))
+    await flush()
+    await flush()
+    updateFrame.mockClear()
+    /* an edit now would be refused by the server, and lost: it is refused here instead */
+    expect(roundFramesToPixel()).toBe(false)
+    expect(current().x).toBe(0.4)
+    expect(updateFrame).not.toHaveBeenCalled()
+    /* the server says it is unlocked after all */
+    getCanvas.mockResolvedValueOnce({ id: 'c1', name: 'Canvas', frames: [{ ...base, x: 0.4 }] })
+    click([...container.querySelectorAll('button')].find((b) => b.textContent === 'Try again'))
+    await flush()
+    await flush()
+    expect(current().locked).toBeFalsy()
+    expect(roundFramesToPixel()).toBe(true)
+    expect(current().x).toBe(0)
+    expect(updateFrame).toHaveBeenCalledWith('f1', expect.objectContaining({ x: 0 }))
+  })
 
   it('shows the unlocked server state after a lost unlock reply that did land', async () => {
     mount(locked)
@@ -363,6 +390,65 @@ describe('a lost reply', () => {
     await flush()
     expect(current().locked).toBeFalsy()
     expect(container.querySelector('[data-row-key^="f1"]')!.textContent).not.toContain('Locked ·')
+  })
+})
+
+describe('the phone Inspector, which has no Layers panel', () => {
+  function Bound() {
+    const f = useStore((st) => st.canvas!.frames[0]!)
+    return <Inspector frame={f} surface="inline" />
+  }
+  function mountPhone(frame: Frame) {
+    useStore.getState().setCanvas({ id: 'c1', name: 'Canvas', frames: [frame] } as Canvas)
+    useStore.setState({
+      selectedId: frame.id,
+      selectedIds: [frame.id],
+      selectedElement: null,
+      connected: true,
+      notice: null,
+    })
+    act(() =>
+      root.render(
+        <TooltipProvider>
+          <Bound />
+          <UnlockFrameDialog />
+        </TooltipProvider>,
+      ),
+    )
+  }
+  const alert = () => container.querySelector('[data-testid="inspector-lock-error"]')
+  const retry = () => [...(alert()?.querySelectorAll('button') ?? [])].find((b) => b.textContent === 'Try again')
+
+  it('shows a refused unlock and a Try again that sends the unlock again', async () => {
+    mountPhone(locked)
+    expect(container.querySelector('[data-slot="frame-lock-panel"]')).toBeNull()
+    click(inspectorUnlock())
+    updateFrame.mockRejectedValueOnce(new ApiError(403, JSON.stringify({ error: 'forbidden' })))
+    click(button('Unlock'))
+    await flush()
+    expect(current().locked).toBe(true)
+    expect(alert()?.textContent).toContain('Could not unlock Cart · phone (403). It is still locked.')
+    updateFrame.mockClear()
+    click(retry())
+    await flush()
+    expect(updateFrame).toHaveBeenCalledWith('f1', { locked: false })
+  })
+
+  it('shows an unreadable lock state and a Try again that reads it again', async () => {
+    mountPhone(base)
+    getCanvas.mockRejectedValueOnce(new TypeError('network lost'))
+    updateFrame.mockRejectedValueOnce(new TypeError('network lost'))
+    act(() => ACTIONS.find((a) => a.id === 'toggle-locked')!.run())
+    await flush()
+    await flush()
+    expect(current().locked).toBe(true)
+    expect(alert()?.textContent).toContain('Could not confirm the lock state of Cart · phone')
+    getCanvas.mockResolvedValueOnce({ id: 'c1', name: 'Canvas', frames: [{ ...base }] })
+    click(retry())
+    await flush()
+    await flush()
+    expect(current().locked).toBeFalsy()
+    expect(alert()).toBeNull()
   })
 })
 

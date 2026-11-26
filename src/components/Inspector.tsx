@@ -10,7 +10,7 @@ import { ExportOptions } from './ExportOptions'
 import { deleteFrameTracked, recordUpdate, trackSave } from '../lib/history'
 import { setFramesLocked } from '../lib/layerEdits'
 import { lockMarker, useLockUi } from '../lib/frameLock'
-import { LockDetails } from './FrameLockPanel'
+import { LockDetails, LockErrorNote } from './FrameLockPanel'
 import { FrameHistoryModal } from './FrameHistoryModal'
 import { FrameApprovalControl } from './FrameApproval'
 import { cn } from '@/lib/utils'
@@ -235,6 +235,7 @@ export function Inspector({
             </Button>
           </div>
           {reading ? null : <LockDetails frame={frame} />}
+          {surface === 'inline' && <LockErrorNote frameId={frame.id} />}
         </div>
       )}
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">

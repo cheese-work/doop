@@ -225,10 +225,14 @@ async function failedLock(f: Frame, locked: boolean, err: unknown) {
     return
   }
   /* the reply was lost: the write may have landed, so no marker is drawn from
-     a guess. Read the frame again and show what the server holds; when that
-     read fails too, keep the state from before the click and say it is unknown. */
+     a guess. Read the frame again and show what the server holds. When that
+     read fails too the state is unknown, and an unknown state fails closed: the
+     frame stays locked here (a lock that landed would refuse, and lose, every
+     edit made now) until a read succeeds. A lock this client only guessed at
+     has no actor or time to show. */
   if (await rereadLock(f)) return
-  rollBack()
+  if (locked) s.patchFrameLocal(f.id, { locked: true, lockedBy: undefined, lockedAt: undefined, lockReason: undefined })
+  else rollBack()
   useLockUi.setState({ error: { frameIds: [f.id], name: f.name, status: null } })
 }
 
