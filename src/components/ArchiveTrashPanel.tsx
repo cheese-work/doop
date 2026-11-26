@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { ARCHIVE_PAGE_ID, canvasPages } from '../../shared/pages'
 import type { Canvas, Frame } from '../../shared/types'
 import { ApiError, api } from '@/lib/api'
@@ -354,14 +355,17 @@ export function ArchiveTrashPanel() {
           ))}
         </section>
       </PanelState>
-      {toast && (
-        <Toast>
-          {t('panels.archiveToast', { count: toast.length })}
-          <ToastAction disabled={!connected} onClick={() => void undoArchive(toast)}>
-            {t('panels.archiveUndo')}
-          </ToastAction>
-        </Toast>
-      )}
+      {/* on the page, not in the panel: a panel's own stacking context would sit under the Agents panel, and an open sheet makes the body inert, hence pointer-events-auto */}
+      {toast &&
+        createPortal(
+          <Toast className="pointer-events-auto">
+            {t('panels.archiveToast', { count: toast.length })}
+            <ToastAction disabled={!connected} onClick={() => void undoArchive(toast)}>
+              {t('panels.archiveUndo')}
+            </ToastAction>
+          </Toast>,
+          document.body,
+        )}
     </div>
   )
 }

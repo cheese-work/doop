@@ -97,7 +97,7 @@ async function mount(node: React.ReactNode) {
   await flush()
 }
 function button(label: string | RegExp): HTMLElement {
-  const el = [...container.querySelectorAll<HTMLElement>('button, [role="option"]')].find((b) => {
+  const el = [...document.body.querySelectorAll<HTMLElement>('button, [role="option"]')].find((b) => {
     const name = b.getAttribute('aria-label') ?? b.textContent ?? ''
     return typeof label === 'string' ? name.trim() === label : label.test(name)
   })
@@ -143,6 +143,19 @@ describe('Archive and Trash (U2)', () => {
     expect(mocks.archiveFrames).toHaveBeenCalledWith('c1', ['f1'])
     await click(button('Undo'))
     expect(mocks.unarchiveFrame).toHaveBeenCalledWith('f1', undefined)
+  })
+
+  it('the archive toast renders on the page, outside the Layers panel, so no panel can cover it', async () => {
+    useStore.getState().setCanvas(canvasWith([live]))
+    useStore.setState({ selectedIds: ['f1'] })
+    mocks.archiveFrames.mockResolvedValue({ pages, frames: [archived] })
+    await mount(<ArchiveTrashPanel />)
+    await click(button('Archive selected'))
+    const toast = document.body.querySelector('[data-slot="toast"]')
+    expect(toast).not.toBeNull()
+    expect(container.contains(toast)).toBe(false)
+    // an open phone sheet makes the body inert; the toast must still take taps
+    expect(toast?.className).toMatch(/pointer-events-auto/)
   })
 
   it('Undo on the archive toast is disabled while offline and sends no write', async () => {
