@@ -31,7 +31,7 @@ const {
   deploymentRecord: (
     evidence: Record<string, unknown>,
   ) => { ref: string; environment: string; confirmedAt: string | null } | null
-  ghPostArgs: (repo: string, route: string, fields: Record<string, string | boolean>) => string[]
+  ghPostArgs: (repo: string, route: string, fields: Record<string, string | boolean | never[]>) => string[]
   recordDeployment: (h: {
     repo: string
     evidence: Record<string, unknown>
