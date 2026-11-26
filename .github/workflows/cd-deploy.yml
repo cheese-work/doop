@@ -17,10 +17,11 @@ name: CD deploy
 #                      job fails
 #   evidence           every run: deploy-evidence.json (artifact) and the run summary (CHE-5549, C-12)
 #
-# The suspension marker (repo variable DOOP_DEPLOY_SUSPENDED, CHE-5545, plan C-10) is written only by the three
-# C00 jobs, with scripts/deploy-marker.mjs: a train run arms it before its first change and only a passing
-# confirm of that same run restores it; recovery and drill runs, and a rollback, write `suspended:*` and never
-# `clear:*`. Every failure leaves it armed or suspended, which stops the train. Lifting is cd-lift.yml.
+# The suspension marker (CHE-5545, plan C-10) is one file on the C00 host, written only by the three C00 jobs,
+# with scripts/deploy-marker.mjs: a train run arms it before its first change and only a passing confirm of that
+# same run restores it; recovery and drill runs, and a rollback, write `suspended:*` and never `clear:*`. Every
+# failure leaves it armed or suspended, which stops the train. Lifting is cd-lift.yml. No GitHub App, token,
+# environment or repository variable takes part in it (CHE-9877); a missing or unreadable file reads as suspended.
 # The train ships OFF: the repository variable DOOP_DEPLOY_TRAIN is absent or not 'on', so a scheduled run
 # ends at `resolve` as a clean skip.
 # Schedule: 23:17, 07:17 and 15:17 UTC = 06:17, 14:17 and 22:17 ICT.
@@ -75,14 +76,14 @@ jobs:
         with:
           persist-credentials: false
       # Via env, never inlined into a script. A refusal fails the job; a skip ends the run green.
-      # The switch, the pause and the marker come from `vars`: `github.token` cannot be given the Variables
-      # permission, so reading them through the REST API failed and every run skipped green (CHE-9181). A
-      # variable that is not set reads as an empty string, which the gate treats as absent.
+      # The switch and the pause come from `vars`: `github.token` cannot be given the Variables permission, so
+      # reading them through the REST API failed and every run skipped green (CHE-9181). A variable that is not
+      # set reads as an empty string, which the gate treats as absent. The marker is on C00 and is checked there,
+      # by the pre-arm check (CHE-9877).
       - id: decide
         env:
           DOOP_DEPLOY_TRAIN: ${{ vars.DOOP_DEPLOY_TRAIN }}
           MAIN_RED_PAUSED: ${{ vars.MAIN_RED_PAUSED }}
-          DOOP_DEPLOY_SUSPENDED: ${{ vars.DOOP_DEPLOY_SUSPENDED }}
           REPO: ${{ github.repository }}
           EVENT: ${{ github.event_name }}
           ACTOR: ${{ github.actor }}
@@ -158,9 +159,9 @@ jobs:
     if: ${{ needs.admit.outputs.go == 'true' && github.repository == 'cheese-work/doop' }}
     runs-on: [self-hosted, cheese-c00-deploy]
     timeout-minutes: 30
-    environment: ci-app-token
     permissions:
       contents: read
+      actions: read
       packages: read
     # One C00 job at a time; a started deploy is never cancelled midway.
     concurrency:
@@ -186,6 +187,7 @@ jobs:
       DEPLOY_RUN_ID: ${{ format('{0}-{1}', github.run_id, github.run_attempt) }}
       # The supervised migration path runs only when the deploy train is switched on; absent or off, c00.sh deploys as before the train (CHE-6526).
       DOOP_DEPLOY_TRAIN: ${{ vars.DOOP_DEPLOY_TRAIN }}
+      MAIN_RED_PAUSED: ${{ vars.MAIN_RED_PAUSED }}
       # Empty: c00.sh finds the compose project's `db` service. Set it to name the live Postgres container.
       C00_PG_CONTAINER: ${{ vars.C00_DOOP_PG_CONTAINER }}
       GH_TOKEN: ${{ github.token }}
@@ -200,32 +202,42 @@ jobs:
       INPUT_MODE: ${{ inputs.mode }}
       INPUT_SCHEDULE_BACKUP: ${{ inputs.schedule_backup }}
     steps:
-      - uses: actions/checkout@v4
+      # The control scripts (gate, marker, c00.sh and what it sources) come from this workflow's own revision, never from the
+      # candidate: a recovery to a pre-change SHA must still run today's gate and the host marker. The candidate is
+      # checked out beside it, for inventory and history only.
+      - name: Check out the trusted control scripts
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+      - name: Check out the candidate (history only)
+        uses: actions/checkout@v4
         with:
           ref: ${{ needs.admit.outputs.candidate }}
+          path: candidate
           # Full history: the ancestry and range checks need the running revision, which a depth-1 clone lacks.
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # The marker is a repository variable; `github.token` cannot read or write one, so a GitHub App token does.
-      # It is minted in environment ci-app-token (the c00-multicado App, cheese/main only), only for variables, and before the first check
-      # that reads a variable (CHE-9181).
-      - name: Mint the marker token
-        id: app
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: ${{ secrets.C00_MULTICADO_APP_ID }}
-          private-key: ${{ secrets.C00_MULTICADO_CI_PRIVATE_KEY }}
-          repositories: doop
-          permission-actions-variables: write
+      # The job's `vars.*` (the switch and the pause) are a snapshot GitHub takes at an unpublished moment. The age is
+      # counted from the original run's created_at, which precedes every job of the run, so it covers resolve, admit, the
+      # queue wait, the runner start and the lock wait. A rerun keeps the original created_at. The gate refuses a pre-arm
+      # or pre-apply past 180 s or when this step fails (CHE-9877).
+      # If the read fails the epoch stays unset, which train and drill refuse as an unknown age, and
+      # recovery (which never reads the switch or the pause) is not blocked by it.
+      - name: Read when the run was created
+        continue-on-error: true
+        env:
+          RUN_ID: ${{ github.run_id }}
+        run: node control/scripts/deploy-gate.mjs snapshot-epoch
       # Step 1 (C-5): nothing below runs on a skip, and nothing on C00 has changed yet.
       - name: Pre-arm check
         id: prearm
-        env:
-          VARS_TOKEN: ${{ steps.app.outputs.token }}
-        run: node scripts/deploy-gate.mjs recheck "$DEPLOY_MODE" --op pre-arm
+        working-directory: candidate
+        run: node ../control/scripts/deploy-gate.mjs recheck "$DEPLOY_MODE" --op pre-arm
       # Step 2 (C-10.2): before any login, pull or start. A train run arms from clear; recovery and drill write
       # suspended over whatever stands. A failed write fails the job here, so nothing below runs and nothing
       # on C00 has changed.
@@ -233,9 +245,9 @@ jobs:
         id: arm
         if: ${{ steps.prearm.outputs.go == 'true' }}
         env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
           RUN_ID: ${{ github.run_id }}
           SHA: ${{ needs.admit.outputs.candidate }}
+        working-directory: control
         run: |
           if [ "$DEPLOY_MODE" = train ]; then
             node scripts/deploy-marker.mjs arm
@@ -253,12 +265,13 @@ jobs:
         if: ${{ steps.prearm.outputs.go == 'true' }}
         env:
           MARKER_EXPECT: ${{ steps.arm.outputs.marker }}
-          VARS_TOKEN: ${{ steps.app.outputs.token }}
-        run: bash deploy/cd/c00.sh apply
+        working-directory: candidate
+        run: bash ../control/deploy/cd/c00.sh apply
       - name: Read back (digest, SHA, health)
         id: readback
         if: ${{ steps.prearm.outputs.go == 'true' }}
-        run: bash deploy/cd/c00.sh readback
+        working-directory: candidate
+        run: bash ../control/deploy/cd/c00.sh readback
       - name: Log out of GHCR
         if: always()
         run: docker logout ghcr.io
@@ -281,7 +294,6 @@ jobs:
     if: ${{ needs.readback-delay.result == 'success' && needs.deploy.result == 'success' && needs.deploy.outputs.attempted == 'true' && github.repository == 'cheese-work/doop' }}
     runs-on: [self-hosted, cheese-c00-deploy]
     timeout-minutes: 20
-    environment: ci-app-token
     permissions:
       contents: read
     concurrency:
@@ -304,44 +316,45 @@ jobs:
       # project and, when set, the Postgres container (empty: c00.sh finds the project's `db` service).
       C00_COMPOSE_DIR: ${{ vars.C00_DOOP_COMPOSE_DIR || '/home/congvc/.local/share/doop' }}
       DOOP_DEPLOY_TRAIN: ${{ vars.DOOP_DEPLOY_TRAIN }}
+      MAIN_RED_PAUSED: ${{ vars.MAIN_RED_PAUSED }}
       C00_PG_CONTAINER: ${{ vars.C00_DOOP_PG_CONTAINER }}
     steps:
-      - uses: actions/checkout@v4
+      # The control scripts (gate, marker, c00.sh and what it sources) come from this workflow's own revision, never from the
+      # candidate: a recovery to a pre-change SHA must still run today's gate and the host marker. The candidate is
+      # checked out beside it, for inventory and history only.
+      - name: Check out the trusted control scripts
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+      - name: Check out the candidate (history only)
+        uses: actions/checkout@v4
         with:
           ref: ${{ needs.admit.outputs.candidate }}
+          path: candidate
           # Full history: the ancestry and range checks need the running revision, which a depth-1 clone lacks.
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # The marker is a repository variable; `github.token` cannot read or write one, so a GitHub App token does.
-      # It is minted in environment ci-app-token (the c00-multicado App, cheese/main only), only for variables, and before the first check
-      # that reads a variable (CHE-9181).
-      - name: Mint the marker token
-        id: app
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: ${{ secrets.C00_MULTICADO_APP_ID }}
-          private-key: ${{ secrets.C00_MULTICADO_CI_PRIVATE_KEY }}
-          repositories: doop
-          permission-actions-variables: write
       # Everything is decided under the flock: quiescence, the confirm check (this run's marker, the candidate's digest
       # and label), the delay, and that the container did not restart since T0 and is healthy. A failure here leaves
-      # the marker armed and starts the rollback job. VARS_TOKEN lets the confirm check read the marker.
+      # the marker armed and starts the rollback job. The marker is read from the C00 file.
       - name: Confirm on C00 (quiescence, marker, restarts, health, digest)
         id: confirm
         env:
           MARKER_EXPECT: ${{ needs.deploy.outputs.marker }}
-          VARS_TOKEN: ${{ steps.app.outputs.token }}
-        run: bash deploy/cd/c00.sh confirm
+        working-directory: candidate
+        run: bash ../control/deploy/cd/c00.sh confirm
       # Last step, and only after the confirm passed: this run's own armed value becomes a new clear (C-10.2).
       # Recovery and drill never restore; a failed or refused restore leaves the marker armed, which is suspended.
       - name: Restore the marker
         if: ${{ env.DEPLOY_MODE == 'train' }}
         env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
           MARKER_EXPECT: ${{ needs.deploy.outputs.marker }}
+        working-directory: control
         run: node scripts/deploy-marker.mjs restore
 
   rollback:
@@ -349,7 +362,6 @@ jobs:
     if: ${{ always() && needs.deploy.outputs.attempted == 'true' && (needs.deploy.result == 'failure' || needs.readback-delay.result == 'failure' || needs.readback-confirm.result == 'failure') && github.repository == 'cheese-work/doop' }}
     runs-on: [self-hosted, cheese-c00-deploy]
     timeout-minutes: 20
-    environment: ci-app-token
     permissions:
       contents: read
     concurrency:
@@ -370,32 +382,30 @@ jobs:
       C00_COMPOSE_DIR: ${{ vars.C00_DOOP_COMPOSE_DIR || '/home/congvc/.local/share/doop' }}
       # The supervised migration path runs only when the deploy train is switched on; absent or off, c00.sh deploys as before the train (CHE-6526).
       DOOP_DEPLOY_TRAIN: ${{ vars.DOOP_DEPLOY_TRAIN }}
+      MAIN_RED_PAUSED: ${{ vars.MAIN_RED_PAUSED }}
       # Empty: c00.sh finds the compose project's `db` service. Set it to name the live Postgres container.
       C00_PG_CONTAINER: ${{ vars.C00_DOOP_PG_CONTAINER }}
     steps:
-      - uses: actions/checkout@v4
+      # The control scripts (gate, marker, c00.sh and what it sources) come from this workflow's own revision, never from the
+      # candidate: a recovery to a pre-change SHA must still run today's gate and the host marker. The candidate is
+      # checked out beside it, for inventory and history only.
+      - name: Check out the trusted control scripts
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+      - name: Check out the candidate (history only)
+        uses: actions/checkout@v4
         with:
           ref: ${{ needs.admit.outputs.candidate }}
+          path: candidate
           # Full history: the ancestry and range checks need the running revision, which a depth-1 clone lacks.
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # The marker is a repository variable; `github.token` cannot write one, so a GitHub App token does.
-      # It is minted in environment ci-app-token (the c00-multicado App, cheese/main only), only for variables, and before the rollback, whose
-      # check reads the marker to prove it is still this run's own (CHE-9181). The rollback step runs after a failed
-      # mint (!cancelled()): the mint fails the job, it never keeps a broken deploy from rolling back. Without a
-      # token the check decides from what C00 runs alone, and the suspend step below then fails loudly.
-      - name: Mint the marker token
-        id: app
-        if: ${{ !cancelled() }}
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: ${{ secrets.C00_MULTICADO_APP_ID }}
-          private-key: ${{ secrets.C00_MULTICADO_CI_PRIVATE_KEY }}
-          repositories: doop
-          permission-actions-variables: write
       # One step, all under the C00 flock: migration quiescence, then the rollback check on what C00 runs and what the
       # marker says at that moment. Only a candidate that is still running rolls back; the predecessor already running
       # (`none`) or a newer deploy (`superseded`) changes nothing. A decision made before the lock could replace a
@@ -405,18 +415,18 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           MARKER_EXPECT: ${{ needs.deploy.outputs.marker }}
-          VARS_TOKEN: ${{ steps.app.outputs.token }}
-        run: bash deploy/cd/c00.sh rollback
+        working-directory: candidate
+        run: bash ../control/deploy/cd/c00.sh rollback
       # Whatever the rollback did, even if it failed: this run's armed value becomes suspended (C-10.3). Only a
       # lift (cd-lift.yml) clears it. Not after a refused check, where the marker is no longer this run's own.
       - name: Suspend the marker
         if: ${{ !cancelled() && steps.rollback.outputs.go == 'true' }}
         env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
           MARKER_EXPECT: ${{ needs.deploy.outputs.marker }}
           RUN_ID: ${{ github.run_id }}
           SHA: ${{ needs.admit.outputs.candidate }}
           ACTION: ${{ steps.rollback.outputs.action }}
+        working-directory: control
         run: node scripts/deploy-marker.mjs suspend --reason "rollback-$ACTION"
       # The run ends red whatever the rollback did: a readback or confirm failure is a failed deploy (C-9).
       - name: Fail the run

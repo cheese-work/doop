@@ -1,46 +1,50 @@
 import { spawnSync } from 'node:child_process'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-// @ts-expect-error plain .mjs script, no type declarations
-import { arm, kindOf, lift, readMarker, restore, suspend, writeMarker } from '../scripts/deploy-marker.mjs'
+import {
+  arm,
+  fileStore,
+  kindOf,
+  lift,
+  markerFile,
+  readMarker,
+  restore,
+  suspend,
+  writeMarker,
+  // @ts-expect-error plain .mjs script, no type declarations
+} from '../scripts/deploy-marker.mjs'
 
-/* CHE-5545 (train S3a, plan CHE-5474 C-10.1 to C-10.5). One repo variable, DOOP_DEPLOY_SUSPENDED, is the only
-   thing that lets the train run. Every write is read, check, write, read back; a write that cannot be proven
-   fails. A train run arms before its first change, only the same run restores, recovery and drill only ever
-   write `suspended:*`. A fake GitHub holds the variable and records every call. */
-const REPO = 'cheese-work/doop'
+/* CHE-5545 (train S3a, plan CHE-5474 C-10.1 to C-10.5), moved to the C00 host by CHE-9877. One value on the C00
+   host, the deploy marker, is the only thing that lets the train run. Every write is read, check, write, read
+   back; a write that cannot be proven fails. A train run arms before its first change, only the same run restores,
+   recovery and drill only ever write `suspended:*`. A fake store holds the value and records every write; the
+   last block runs the same code on a real file. No GitHub variable and no token take part. */
 const SHA = 'c'.repeat(40)
 const CLEAR = 'clear:' + '0'.repeat(32) + ':restore'
 const OTHER_ARMED = 'armed:' + '1'.repeat(32) + ':8:' + SHA
 const SUSPENDED = 'suspended:' + '2'.repeat(32) + ':9:' + SHA + ':migrated'
-const URL = `repos/${REPO}/actions/variables/DOOP_DEPLOY_SUSPENDED`
 
-type Init = { method?: string; body?: { name: string; value: string } }
-const httpError = (status: number) => Object.assign(new Error(`GitHub ${status}`), { status })
-
-/* `value` null = the variable does not exist. `failWrite` rejects every write; `stale` makes a write succeed
-   on GitHub's side without changing what a read returns (a lost update). */
+/* `value` null = no marker. `failWrite` rejects every write; `stale` makes a write succeed without changing what a
+   read returns (a lost update); `unreadable` makes every read fail. */
 function fake(value: string | null, opts: { failWrite?: boolean; stale?: boolean; unreadable?: boolean } = {}) {
-  const state = { value, writes: [] as { method: string; path: string; value: string }[] }
-  const ghApi = async (path: string, init: Init = {}) => {
-    const method = init.method ?? 'GET'
-    if (method === 'GET') {
-      if (opts.unreadable) throw httpError(500)
-      if (path !== URL) throw new Error(`unexpected read ${path}`)
-      if (state.value === null) throw httpError(404)
-      return { value: state.value }
-    }
-    if (opts.failWrite) throw httpError(500)
-    const expectCreate = method === 'POST' && path === `repos/${REPO}/actions/variables`
-    const expectUpdate = method === 'PATCH' && path === URL
-    if (!expectCreate && !expectUpdate) throw new Error(`unexpected write ${method} ${path}`)
-    // The variable exists exactly when it is updated, and does not when it is created.
-    if (expectCreate === (state.value !== null)) throw httpError(expectCreate ? 422 : 404)
-    state.writes.push({ method, path, value: init.body?.value ?? '' })
-    if (!opts.stale) state.value = init.body?.value ?? ''
-    return {}
+  const state = { value, writes: [] as string[] }
+  const store = {
+    read: async () => {
+      if (opts.unreadable) throw new Error('EIO: cannot read the marker')
+      return state.value
+    },
+    write: async (next: string) => {
+      if (opts.failWrite) throw new Error('EIO: cannot write the marker')
+      state.writes.push(next)
+      if (!opts.stale) state.value = next
+    },
   }
-  return { state, ghApi }
+  return { state, store }
 }
+
+const statMode = (path: string) => statSync(path).mode & 0o777
 
 describe('marker values (C-10 table)', () => {
   it('classifies each value by its shape, and everything else as nothing', () => {
@@ -66,41 +70,37 @@ describe('marker values (C-10 table)', () => {
 describe('writeMarker: read, check, write, read back', () => {
   it('writes when the current value is the expected one, and reads it back', async () => {
     const f = fake(CLEAR)
-    await writeMarker({ ghApi: f.ghApi, repo: REPO, expected: CLEAR, next: OTHER_ARMED })
+    await writeMarker({ store: f.store, expected: CLEAR, next: OTHER_ARMED })
     expect(f.state.value).toBe(OTHER_ARMED)
-    expect(f.state.writes).toEqual([{ method: 'PATCH', path: URL, value: OTHER_ARMED }])
+    expect(f.state.writes).toEqual([OTHER_ARMED])
   })
-  it('creates the variable when it is absent and absent was expected', async () => {
+  it('creates the marker when it is absent and absent was expected', async () => {
     const f = fake(null)
-    await writeMarker({ ghApi: f.ghApi, repo: REPO, expected: null, next: SUSPENDED })
-    expect(f.state.writes).toEqual([{ method: 'POST', path: `repos/${REPO}/actions/variables`, value: SUSPENDED }])
+    await writeMarker({ store: f.store, expected: null, next: SUSPENDED })
+    expect(f.state.writes).toEqual([SUSPENDED])
   })
   it('a marker that is not the expected one fails the job before any write', async () => {
     const f = fake(OTHER_ARMED)
-    await expect(writeMarker({ ghApi: f.ghApi, repo: REPO, expected: CLEAR, next: SUSPENDED })).rejects.toThrow(
-      /changed/,
-    )
+    await expect(writeMarker({ store: f.store, expected: CLEAR, next: SUSPENDED })).rejects.toThrow(/changed/)
     expect(f.state.writes).toEqual([])
   })
   it('an unreadable marker fails the job before any write', async () => {
     const f = fake(CLEAR, { unreadable: true })
-    await expect(writeMarker({ ghApi: f.ghApi, repo: REPO, expected: CLEAR, next: OTHER_ARMED })).rejects.toThrow()
+    await expect(writeMarker({ store: f.store, expected: CLEAR, next: OTHER_ARMED })).rejects.toThrow()
     expect(f.state.writes).toEqual([])
   })
   it('a failed write fails the job and leaves the marker as it was', async () => {
     const f = fake(CLEAR, { failWrite: true })
-    await expect(writeMarker({ ghApi: f.ghApi, repo: REPO, expected: CLEAR, next: OTHER_ARMED })).rejects.toThrow()
+    await expect(writeMarker({ store: f.store, expected: CLEAR, next: OTHER_ARMED })).rejects.toThrow()
     expect(f.state.value).toBe(CLEAR)
   })
   it('a write that the read back does not show fails the job', async () => {
     const f = fake(CLEAR, { stale: true })
-    await expect(writeMarker({ ghApi: f.ghApi, repo: REPO, expected: CLEAR, next: OTHER_ARMED })).rejects.toThrow(
-      /read back/,
-    )
+    await expect(writeMarker({ store: f.store, expected: CLEAR, next: OTHER_ARMED })).rejects.toThrow(/read back/)
   })
   it('never writes a value that is not a marker value', async () => {
     const f = fake(CLEAR)
-    await expect(writeMarker({ ghApi: f.ghApi, repo: REPO, expected: CLEAR, next: 'clear:oops' })).rejects.toThrow()
+    await expect(writeMarker({ store: f.store, expected: CLEAR, next: 'clear:oops' })).rejects.toThrow()
     expect(f.state.writes).toEqual([])
   })
 })
@@ -108,12 +108,12 @@ describe('writeMarker: read, check, write, read back', () => {
 describe('train: arm before change (C-10.2)', () => {
   it('arms from the exact clear value it read, with a fresh nonce, and reports the value', async () => {
     const f = fake(CLEAR)
-    const value = await arm({ ghApi: f.ghApi, repo: REPO, runId: '77', sha: SHA })
+    const value = await arm({ store: f.store, runId: '77', sha: SHA })
     expect(kindOf(value)).toBe('armed')
     expect(value).toMatch(new RegExp(`^armed:[0-9a-f]{32}:77:${SHA}$`))
     expect(f.state.value).toBe(value)
     const again = fake(CLEAR)
-    expect(await arm({ ghApi: again.ghApi, repo: REPO, runId: '77', sha: SHA })).not.toBe(value)
+    expect(await arm({ store: again.store, runId: '77', sha: SHA })).not.toBe(value)
   })
   it.each([
     ['absent', null],
@@ -122,12 +122,12 @@ describe('train: arm before change (C-10.2)', () => {
     ['unreadable shape', 'clear:n0:restore'],
   ])('a failed arm means no change: marker %s refuses and writes nothing', async (_n, marker) => {
     const f = fake(marker)
-    await expect(arm({ ghApi: f.ghApi, repo: REPO, runId: '77', sha: SHA })).rejects.toThrow()
+    await expect(arm({ store: f.store, runId: '77', sha: SHA })).rejects.toThrow()
     expect(f.state.writes).toEqual([])
   })
   it('a failed arm write throws, so no step after it runs', async () => {
     const f = fake(CLEAR, { failWrite: true })
-    await expect(arm({ ghApi: f.ghApi, repo: REPO, runId: '77', sha: SHA })).rejects.toThrow()
+    await expect(arm({ store: f.store, runId: '77', sha: SHA })).rejects.toThrow()
     expect(f.state.value).toBe(CLEAR)
   })
 })
@@ -136,7 +136,7 @@ describe('train: only the arming run restores (C-10.2)', () => {
   const own = 'armed:' + '3'.repeat(32) + ':77:' + SHA
   it('restores its own arm to a new clear value', async () => {
     const f = fake(own)
-    const value = await restore({ ghApi: f.ghApi, repo: REPO, expected: own })
+    const value = await restore({ store: f.store, expected: own })
     expect(value).toMatch(/^clear:[0-9a-f]{32}:restore$/)
     expect(f.state.value).toBe(value)
   })
@@ -147,19 +147,19 @@ describe('train: only the arming run restores (C-10.2)', () => {
     ['it vanished', null],
   ])('refuses when %s', async (_n, marker) => {
     const f = fake(marker)
-    await expect(restore({ ghApi: f.ghApi, repo: REPO, expected: own })).rejects.toThrow()
+    await expect(restore({ store: f.store, expected: own })).rejects.toThrow()
     expect(f.state.writes).toEqual([])
   })
   it('refuses to restore anything that is not an armed value', async () => {
     for (const expected of [CLEAR, SUSPENDED, '', undefined]) {
       const f = fake(expected ?? null)
-      await expect(restore({ ghApi: f.ghApi, repo: REPO, expected })).rejects.toThrow()
+      await expect(restore({ store: f.store, expected })).rejects.toThrow()
       expect(f.state.writes).toEqual([])
     }
   })
   it('a failed restore write leaves the arm in place, which reads as suspended', async () => {
     const f = fake(own, { failWrite: true })
-    await expect(restore({ ghApi: f.ghApi, repo: REPO, expected: own })).rejects.toThrow()
+    await expect(restore({ store: f.store, expected: own })).rejects.toThrow()
     expect(f.state.value).toBe(own)
     expect(kindOf(f.state.value)).toBe('armed')
   })
@@ -174,17 +174,16 @@ describe('suspend: recovery, drill, rollback, adoption (C-10.3, C-10.5)', () => 
     ['absent', null],
   ])('recovery or drill writes suspended over %s, before change, and never clear', async (_n, marker) => {
     const f = fake(marker)
-    const value = await suspend({ ghApi: f.ghApi, repo: REPO, runId: '5', sha: SHA, reason: 'recovery', any: true })
+    const value = await suspend({ store: f.store, runId: '5', sha: SHA, reason: 'recovery', any: true })
     expect(value).toMatch(new RegExp(`^suspended:[0-9a-f]{32}:5:${SHA}:recovery$`))
     expect(f.state.value).toBe(value)
-    expect(f.state.writes.every((w) => kindOf(w.value) === 'suspended')).toBe(true)
+    expect(f.state.writes.every((w: string) => kindOf(w) === 'suspended')).toBe(true)
   })
   it('a rollback suspends only over this run’s own arm', async () => {
     const own = 'armed:' + '3'.repeat(32) + ':77:' + SHA
     const f = fake(own)
     const value = await suspend({
-      ghApi: f.ghApi,
-      repo: REPO,
+      store: f.store,
       runId: '77',
       sha: SHA,
       reason: 'rollback-rollback',
@@ -194,7 +193,7 @@ describe('suspend: recovery, drill, rollback, adoption (C-10.3, C-10.5)', () => 
     for (const other of [OTHER_ARMED, SUSPENDED, CLEAR, null]) {
       const g = fake(other)
       await expect(
-        suspend({ ghApi: g.ghApi, repo: REPO, runId: '77', sha: SHA, reason: 'rollback-none', expected: own }),
+        suspend({ store: g.store, runId: '77', sha: SHA, reason: 'rollback-none', expected: own }),
       ).rejects.toThrow()
       expect(g.state.writes).toEqual([])
     }
@@ -203,8 +202,7 @@ describe('suspend: recovery, drill, rollback, adoption (C-10.3, C-10.5)', () => 
     const own = 'suspended:' + '4'.repeat(32) + ':78:' + SHA + ':recovery'
     const f = fake(own)
     const value = await suspend({
-      ghApi: f.ghApi,
-      repo: REPO,
+      store: f.store,
       runId: '78',
       sha: SHA,
       reason: 'rollback-rollback',
@@ -216,28 +214,27 @@ describe('suspend: recovery, drill, rollback, adoption (C-10.3, C-10.5)', () => 
     for (const other of [OTHER_ARMED, elsewhere, CLEAR, null]) {
       const g = fake(other)
       await expect(
-        suspend({ ghApi: g.ghApi, repo: REPO, runId: '78', sha: SHA, reason: 'rollback-none', expected: own }),
+        suspend({ store: g.store, runId: '78', sha: SHA, reason: 'rollback-none', expected: own }),
       ).rejects.toThrow()
       expect(g.state.writes).toEqual([])
     }
   })
   it('needs either an expected value or an explicit "any"', async () => {
     const f = fake(CLEAR)
-    await expect(suspend({ ghApi: f.ghApi, repo: REPO, runId: '5', sha: SHA, reason: 'x' })).rejects.toThrow()
+    await expect(suspend({ store: f.store, runId: '5', sha: SHA, reason: 'x' })).rejects.toThrow()
     expect(f.state.writes).toEqual([])
   })
   it('refuses a reason that could break the value apart', async () => {
     const f = fake(CLEAR)
     for (const reason of ['', 'a:b', 'two words', 'x\ny']) {
-      await expect(suspend({ ghApi: f.ghApi, repo: REPO, runId: '5', sha: SHA, reason, any: true })).rejects.toThrow()
+      await expect(suspend({ store: f.store, runId: '5', sha: SHA, reason, any: true })).rejects.toThrow()
     }
     expect(f.state.writes).toEqual([])
   })
   it('adoption of the 11 Nov failure writes suspended with reason migrated', async () => {
     const f = fake(null)
     const value = await suspend({
-      ghApi: f.ghApi,
-      repo: REPO,
+      store: f.store,
       runId: '42955625332',
       sha: '612f86854a6020f45b90321302a79dae1214d13a',
       reason: 'migrated',
@@ -247,13 +244,81 @@ describe('suspend: recovery, drill, rollback, adoption (C-10.3, C-10.5)', () => 
   })
   it('a later recovery or drill after a passing train run does not restore clear', async () => {
     const f = fake(CLEAR)
-    const armed = await arm({ ghApi: f.ghApi, repo: REPO, runId: '1', sha: SHA })
-    await restore({ ghApi: f.ghApi, repo: REPO, expected: armed })
-    await suspend({ ghApi: f.ghApi, repo: REPO, runId: '2', sha: SHA, reason: 'recovery', any: true })
+    const armed = await arm({ store: f.store, runId: '1', sha: SHA })
+    await restore({ store: f.store, expected: armed })
+    await suspend({ store: f.store, runId: '2', sha: SHA, reason: 'recovery', any: true })
     expect(kindOf(f.state.value)).toBe('suspended')
     // nothing short of a lift (S3b) writes clear again
-    expect(f.state.writes.filter((w) => kindOf(w.value) === 'clear')).toHaveLength(1)
+    expect(f.state.writes.filter((w: string) => kindOf(w) === 'clear')).toHaveLength(1)
   })
+})
+
+describe('the marker file on the C00 host', () => {
+  const tmp = () => mkdtempSync(join(tmpdir(), 'marker-'))
+  const withDir = async (fn: (dir: string, file: string) => Promise<void> | void) => {
+    const dir = tmp()
+    try {
+      await fn(dir, join(dir, 'deploy-marker'))
+    } finally {
+      chmodSync(dir, 0o700)
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  it('defaults to a file in the host state dir, and C00_MARKER_FILE overrides it', () => {
+    expect(markerFile({})).toBe('/var/lib/doop-deploy/deploy-marker')
+    expect(markerFile({ C00_STATE_DIR: '/srv/state' })).toBe('/srv/state/deploy-marker')
+    expect(markerFile({ C00_STATE_DIR: '/srv/state', C00_MARKER_FILE: '/x/m' })).toBe('/x/m')
+  })
+
+  it('reads null when the file does not exist, and the value without its newline when it does', () =>
+    withDir(async (_d, file) => {
+      expect(await fileStore(file).read()).toBeNull()
+      writeFileSync(file, CLEAR + '\n')
+      expect(await fileStore(file).read()).toBe(CLEAR)
+    }))
+
+  it('an unreadable marker is an error, never "clear" and never "absent"', () =>
+    withDir(async (dir, file) => {
+      mkdirSync(file) // a directory where the file should be
+      await expect(fileStore(file).read()).rejects.toThrow()
+      rmSync(file, { recursive: true })
+      writeFileSync(file, CLEAR)
+      chmodSync(file, 0o000)
+      if (process.getuid?.() !== 0) await expect(fileStore(file).read()).rejects.toThrow()
+      chmodSync(dir, 0o700)
+    }))
+
+  it('arm, restore and a recovery suspend run end to end on a real file, with no temp file left behind', () =>
+    withDir(async (dir, file) => {
+      const store = fileStore(file)
+      await expect(arm({ store, runId: '1', sha: SHA })).rejects.toThrow(/absent/) // no file reads as suspended
+      await suspend({ store, runId: '1', sha: SHA, reason: 'adopt', any: true })
+      const suspended = readFileSync(file, 'utf8').trim()
+      expect(kindOf(suspended)).toBe('suspended')
+      await lift({ store, runId: '2', expected: suspended })
+      const armed = await arm({ store, runId: '3', sha: SHA })
+      expect(readFileSync(file, 'utf8')).toBe(armed + '\n')
+      await restore({ store, expected: armed })
+      expect(kindOf(readFileSync(file, 'utf8').trim())).toBe('clear')
+      expect(readdirSync(dir)).toEqual(['deploy-marker'])
+    }))
+
+  it('the file is private to its owner (0600)', () =>
+    withDir(async (_d, file) => {
+      await suspend({ store: fileStore(file), runId: '1', sha: SHA, reason: 'x', any: true })
+      expect(statMode(file)).toBe(0o600)
+    }))
+
+  it('a write that cannot be made leaves the old marker in place', () =>
+    withDir(async (dir, file) => {
+      writeFileSync(file, SUSPENDED + '\n')
+      chmodSync(dir, 0o500) // no new files in the directory
+      if (process.getuid?.() !== 0) {
+        await expect(lift({ store: fileStore(file), runId: '2', expected: SUSPENDED })).rejects.toThrow()
+        expect(readFileSync(file, 'utf8')).toBe(SUSPENDED + '\n')
+      }
+    }))
 })
 
 describe('deploy-marker CLI', () => {
@@ -265,15 +330,33 @@ describe('deploy-marker CLI', () => {
   it('exits non-zero on an unknown command', () => {
     expect(run(['explode']).status).not.toBe(0)
   })
-  it('exits non-zero without a token or a repo, before any network call', () => {
-    expect(run(['arm'], { RUN_ID: '1', SHA }).status).not.toBe(0)
+  it('needs no token and no repo: it works on the host file alone, and an absent file refuses an arm', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'marker-cli-'))
+    try {
+      const file = join(dir, 'm')
+      const out = join(dir, 'out')
+      const env = { C00_MARKER_FILE: file, RUN_ID: '5', SHA, GITHUB_OUTPUT: out }
+      const arming = run(['arm'], env)
+      expect(arming.status).not.toBe(0)
+      expect(arming.stderr).toMatch(/absent/)
+      const suspended = run(['suspend', '--reason', 'recovery', '--any'], env)
+      expect(suspended.status, suspended.stderr).toBe(0)
+      expect(readFileSync(file, 'utf8').trim()).toMatch(new RegExp(`^suspended:[0-9a-f]{32}:5:${SHA}:recovery$`))
+      expect(readFileSync(out, 'utf8')).toMatch(/^marker=suspended:/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+  it('never reads GH_TOKEN, REPO or the network', () => {
+    const src = readFileSync('scripts/deploy-marker.mjs', 'utf8')
+    expect(src).not.toMatch(/GH_TOKEN|fetch\(|api\.github|actions\/variables|create-github-app-token/)
   })
 })
 
 describe('lift (CHE-5551, C-10.7)', () => {
   it('writes clear:<nonce>:<lift run id> over exactly the expected suspended value, and reads it back', async () => {
-    const { state, ghApi } = fake(SUSPENDED)
-    const value = await lift({ ghApi, repo: REPO, runId: '777', expected: SUSPENDED })
+    const { state, store } = fake(SUSPENDED)
+    const value = await lift({ store, runId: '777', expected: SUSPENDED })
     expect(value).toMatch(/^clear:[0-9a-f]{32}:777$/)
     expect(kindOf(value)).toBe('clear')
     expect(state.value).toBe(value)
@@ -281,38 +364,38 @@ describe('lift (CHE-5551, C-10.7)', () => {
   })
 
   it('lifts an armed value (a train run that died leaves one)', async () => {
-    const { state, ghApi } = fake(OTHER_ARMED)
-    await lift({ ghApi, repo: REPO, runId: '777', expected: OTHER_ARMED })
+    const { state, store } = fake(OTHER_ARMED)
+    await lift({ store, runId: '777', expected: OTHER_ARMED })
     expect(kindOf(state.value)).toBe('clear')
   })
 
   it('refuses when the marker is not the expected value: nothing is written', async () => {
-    const { state, ghApi } = fake(OTHER_ARMED)
-    await expect(lift({ ghApi, repo: REPO, runId: '777', expected: SUSPENDED })).rejects.toThrow(/changed/)
+    const { state, store } = fake(OTHER_ARMED)
+    await expect(lift({ store, runId: '777', expected: SUSPENDED })).rejects.toThrow(/changed/)
     expect(state.writes).toEqual([])
     expect(state.value).toBe(OTHER_ARMED)
   })
 
   it.each([CLEAR, null, 'junk'])('refuses to lift %j (nothing to lift)', async (expected) => {
-    const { state, ghApi } = fake(expected)
-    await expect(lift({ ghApi, repo: REPO, runId: '777', expected })).rejects.toThrow(/lift needs/)
+    const { state, store } = fake(expected)
+    await expect(lift({ store, runId: '777', expected })).rejects.toThrow(/lift needs/)
     expect(state.writes).toEqual([])
   })
 
   it.each(['', 'x y', '1;2', undefined])('refuses a lift run id of %j', async (runId) => {
-    const { state, ghApi } = fake(SUSPENDED)
-    await expect(lift({ ghApi, repo: REPO, runId, expected: SUSPENDED })).rejects.toThrow(/run id/)
+    const { state, store } = fake(SUSPENDED)
+    await expect(lift({ store, runId, expected: SUSPENDED })).rejects.toThrow(/run id/)
     expect(state.writes).toEqual([])
   })
 
   it('fails when the write cannot be read back', async () => {
-    const { ghApi } = fake(SUSPENDED, { stale: true })
-    await expect(lift({ ghApi, repo: REPO, runId: '777', expected: SUSPENDED })).rejects.toThrow(/read back/)
+    const { store } = fake(SUSPENDED, { stale: true })
+    await expect(lift({ store, runId: '777', expected: SUSPENDED })).rejects.toThrow(/read back/)
   })
 
   it('readMarker returns the value, null when absent, and throws on anything else', async () => {
-    expect(await readMarker(fake(SUSPENDED).ghApi, REPO)).toBe(SUSPENDED)
-    expect(await readMarker(fake(null).ghApi, REPO)).toBeNull()
-    await expect(readMarker(fake(SUSPENDED, { unreadable: true }).ghApi, REPO)).rejects.toThrow()
+    expect(await readMarker(fake(SUSPENDED).store)).toBe(SUSPENDED)
+    expect(await readMarker(fake(null).store)).toBeNull()
+    await expect(readMarker(fake(SUSPENDED, { unreadable: true }).store)).rejects.toThrow()
   })
 })

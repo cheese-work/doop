@@ -17,8 +17,8 @@ name: CD lift
 # fails the run. No step is a human-typed command.
 #
 # The decision is read from the Multica server over the tailnet with a scoped read-only token (environment
-# doop-lift), so the C00 runner must reach that server. The marker is a repository variable that only the GitHub
-# App can write, so environment doop-lift also holds the App's id and key (DOOP_MARKER_APP_ID, DOOP_MARKER_APP_KEY).
+# doop-lift), so the C00 runner must reach that server. The marker is a file on the C00 host (CHE-9877), so the lift
+# holds no GitHub App, token or repository-variable write; environment doop-lift keeps only the decision read secrets.
 # A dispatch from any branch but the default one is skipped: a branch must not run its own lift script.
 # The train ships OFF and this workflow does not touch the switch (DOOP_DEPLOY_TRAIN).
 on:
@@ -55,22 +55,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # First, before any secret is read or minted: a login outside the allowlist ends the run here.
+      # First, before any secret is read: a login outside the allowlist ends the run here.
       - name: Admit the dispatcher
         env:
           ACTOR: ${{ github.actor }}
           TRIGGER: ${{ github.triggering_actor }}
           DISPATCHERS: ${{ vars.DOOP_LIFT_DISPATCHERS }}
         run: node scripts/deploy-lift.mjs admit
-      # The marker is a repository variable; `github.token` cannot write one, so a GitHub App token does.
-      - name: Mint the marker token
-        id: app
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: ${{ vars.DOOP_MARKER_APP_ID }}
-          private-key: ${{ secrets.DOOP_MARKER_APP_KEY }}
-          repositories: doop
-          permission-actions-variables: write
       # C-5: every C00 job removes the compat sandboxes first. A failed sweep fails the run before the lift.
       - name: Sweep the compat sandboxes
         run: bash deploy/cd/c00.sh sweep
@@ -78,7 +69,6 @@ jobs:
       # the marker read, decided, read again, and written. Anything missing refuses and leaves the marker as it was.
       - name: Lift on C00
         env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
           LIFTER: ${{ github.triggering_actor }}

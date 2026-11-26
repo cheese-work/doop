@@ -1,14 +1,16 @@
 // The deploy gate of the doop train (CHE-5544, CHE-5545; plan CHE-5474 C-2, C-4, C-5, C-6, C-10). Called by D2
-// (cd-deploy.yml). Every error path fails closed. Results are { go, skip, reason }: a `skip` is a clean "not now"
+// (cd-deploy.yml). The switch and the pause are repo variables, passed in env as `${{ vars.X }}`; the suspension
+// marker is a file on the C00 host (CHE-9877), so only the C00 jobs read it. Every error path fails closed. Results are { go, skip, reason }: a `skip` is a clean "not now"
 // and the run ends green; a result with go=false and skip=false is a refusal, and the CLI exits non-zero so the
 // job fails. The CLI at the bottom reads its inputs from env and writes the result to $GITHUB_OUTPUT.
-//   decideRun   top of a run: entry rules, the switch, the pause, the marker (read only)
+//   decideRun   top of a run, hosted: entry rules, the switch, the pause (it cannot see the host marker)
 //   admit       pins the candidate: manifest, D1 run, image label and migration inventory
-//   recheckOp   once per C00 operation, inside the lock, re-reads every fact that can change
+//   recheckOp   once per C00 operation, on the C00 runner: reads the host marker, checks every fact that can change
 // The marker itself is written only by deploy-marker.mjs.
 import { spawnSync } from 'node:child_process'
 import { appendFileSync, readFileSync } from 'node:fs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileStore, markerFile } from './deploy-marker.mjs'
 import { fetchWithRateLimit } from './gh-rate-limit.mjs'
 import { inventory } from './migration-inventory.mjs'
 
@@ -66,17 +68,17 @@ async function readVar(ghApi, repo, name, errors) {
   }
 }
 
-// Through the API: only a token with the Variables permission can do this (the marker App token). The
-// workflow's `github.token` cannot, so the first read of a run (`decideRun`) takes `vars` from env instead.
+// The switch and the pause through the API: only a token with the Variables permission can do this, and
+// `github.token` cannot (CHE-9181). Kept for a caller that has such a token; the workflow passes `vars` in env.
 async function readState(ghApi, repo) {
   const errors = {}
-  const [sw, paused, marker] = await Promise.all(
-    ['DOOP_DEPLOY_TRAIN', 'MAIN_RED_PAUSED', 'DOOP_DEPLOY_SUSPENDED'].map((n) => readVar(ghApi, repo, n, errors)),
+  const [sw, paused] = await Promise.all(
+    ['DOOP_DEPLOY_TRAIN', 'MAIN_RED_PAUSED'].map((n) => readVar(ghApi, repo, n, errors)),
   )
-  return { sw, paused, marker, errors }
+  return { sw, paused, errors }
 }
 
-// The same three facts from env, where the workflow put `${{ vars.X }}`. An unset repo variable reads as an
+// The same two facts from env, where the workflow put `${{ vars.X }}`. An unset repo variable reads as an
 // empty string, which is "absent" (unset = off). A name the workflow did not pass at all is unreadable.
 function stateFromEnv(env) {
   const errors = {}
@@ -88,12 +90,23 @@ function stateFromEnv(env) {
     }
     return v === '' ? null : String(v)
   }
-  return { sw: one('DOOP_DEPLOY_TRAIN'), paused: one('MAIN_RED_PAUSED'), marker: one('DOOP_DEPLOY_SUSPENDED'), errors }
+  return { sw: one('DOOP_DEPLOY_TRAIN'), paused: one('MAIN_RED_PAUSED'), errors }
+}
+
+// The host marker: its value, null when there is no file, undefined when it cannot be read (the cause goes to
+// `errors`). Unreadable is never "clear" and never "absent": the caller refuses.
+async function readHostMarker(store, errors) {
+  try {
+    return await store.read()
+  } catch (err) {
+    errors[NAMES.marker] = err?.message ?? String(err)
+    return undefined
+  }
 }
 
 // A fact this decision needs that could not be read is a refusal, never a skip: a skip ends the run green and
-// hid a broken read for four days (CHE-9181). `need` names the facts: 'sw', 'paused', 'marker'.
-const NAMES = { sw: 'DOOP_DEPLOY_TRAIN', paused: 'MAIN_RED_PAUSED', marker: 'DOOP_DEPLOY_SUSPENDED' }
+// hid a broken read for four days (CHE-9181). `need` names the facts: 'sw', 'paused' and, on C00 only, 'marker'.
+const NAMES = { sw: 'DOOP_DEPLOY_TRAIN', paused: 'MAIN_RED_PAUSED', marker: 'the deploy marker on the C00 host' }
 function unreadable(state, need) {
   const bad = need.filter((k) => state[k] === undefined).map((k) => NAMES[k])
   if (!bad.length) return null
@@ -137,7 +150,8 @@ function entryOf({ event, actor, trigger, attempt, inputs = {}, extra }) {
 }
 
 // `vars` (the switches as the workflow passed them in env) is the normal source at the top of a run;
-// `ghApi` is the fallback for a caller that has a token able to read variables.
+// `ghApi` is the fallback for a caller that has a token able to read variables. The marker is not read here: this
+// runs hosted, and the marker is a file on C00. A train run that finds it not clear skips at `pre-arm` instead.
 export async function decideRun({ event, actor, trigger, attempt, inputs = {}, extra, repo, ghApi, vars }) {
   const entered = entryOf({ event, actor, trigger, attempt, inputs, extra })
   if (!entered.go) return entered
@@ -145,15 +159,10 @@ export async function decideRun({ event, actor, trigger, attempt, inputs = {}, e
 
   const state = vars ? stateFromEnv(vars) : await readState(ghApi, repo)
   const want = MODES[mode]
-  const blind = unreadable(state, [
-    ...(want.sw !== null ? ['sw'] : []),
-    ...(want.pause !== null ? ['paused'] : []),
-    ...(mode === 'train' ? ['marker'] : []),
-  ])
+  const blind = unreadable(state, [...(want.sw !== null ? ['sw'] : []), ...(want.pause !== null ? ['paused'] : [])])
   if (blind) return blind
   const problem = switchProblem(mode, state)
   if (problem) return skip(problem)
-  if (mode === 'train' && !isClear(state.marker)) return skip(markerWords(state.marker))
   return go({ mode })
 }
 
@@ -190,6 +199,24 @@ export function pickCandidate(runs) {
   return hit ? { sha: hit.head_sha, runId: hit.id } : null
 }
 
+// How old the job-start `vars` snapshot may be before a pre-arm or pre-apply stops on it.
+const VARS_SNAPSHOT_BOUND_SECONDS = 180
+
+// When this job's `vars` snapshot cannot be older than: the original workflow run's `created_at` (epoch seconds, from
+// `GET repos/{repo}/actions/runs/{run_id}`). The run exists before any of its jobs, so this precedes the snapshot whenever
+// GitHub takes it (run creation, job dispatch or job start), and it counts the resolve and admit jobs as well as the
+// queue wait. A rerun keeps the original run record's `created_at` (only `run_started_at` moves), so a rerun is as old
+// as the run and refuses; a fresh dispatch is the way to take a new snapshot (CHE-9877). A record of another run, or a
+// missing or unparseable time, throws: the caller fails closed.
+export function runCreatedEpoch(run, runId) {
+  if (runId !== undefined && String(run?.id) !== String(runId)) {
+    throw new Error(`the run record is for run ${run?.id}, not ${runId}`)
+  }
+  const ms = typeof run?.created_at === 'string' ? Date.parse(run.created_at) : NaN
+  if (!Number.isFinite(ms)) throw new Error('the workflow run has no readable created_at')
+  return Math.floor(ms / 1000)
+}
+
 // One operation of the C-5 table. `expect` is this run's own marker value. Before the arm write
 // (`pre-arm`) a "no" is a skip; after it every "no" is a refusal, because the marker already reads
 // as suspended and the run must fail loudly.
@@ -200,7 +227,10 @@ export async function recheckOp({
   repo,
   extra,
   ghApi,
-  varsApi = ghApi,
+  vars,
+  varsAgeSeconds,
+  varsMaxAgeSeconds = VARS_SNAPSHOT_BOUND_SECONDS,
+  markerStore,
   candidate,
   predecessorDigest,
   running,
@@ -229,30 +259,44 @@ export async function recheckOp({
   const q = await quiescent()
   if (!q.ok) return refuse(`migration quiescence not proven: ${q.reason ?? 'unknown'}`)
 
-  // Variables are read with `varsApi`: a token that has the Variables permission. `ghApi` reads pulls.
-  // The rollback op is the one that must still work when the token mint failed (a broken deploy must roll back),
-  // so the workflow mints it with continue-on-error and passes `varsApi: null` when there is no token. With a
-  // token the rollback check keeps the ownership rule of every post-arm op: the marker must be this run's own
-  // value, so a run that a later run has superseded (even on the same digest) does not roll back. Without one,
-  // it decides from what C00 runs alone.
-  const reads = varsApi !== null
-  const state = reads ? await readState(varsApi, repo) : { errors: {} }
+  // The switch and the pause come from `vars` (env, as the workflow passed `${{ vars.X }}` to this job); the marker
+  // is the file on this host. An unreadable marker refuses on every op, rollback included: the run cannot prove
+  // it still owns the marker, and the marker it armed is the one thing that keeps the train stopped.
+  const state = { ...stateFromEnv(vars ?? {}), marker: undefined }
+  state.marker = await readHostMarker(markerStore, state.errors)
   const want = MODES[mode]
   const before = op === 'pre-arm' || op === 'pre-apply'
   const blind = unreadable(state, [
     ...(before && want.sw !== null ? ['sw'] : []),
     ...(before && want.pause !== null ? ['paused'] : []),
-    ...(reads && (armed || mode === 'train') ? ['marker'] : []),
+    ...(armed || mode === 'train' ? ['marker'] : []),
   ])
   if (blind) return blind
   if (armed) {
     if (!expect) return refuse('no --expect marker value for a post-arm operation')
-    if (reads && state.marker !== expect)
-      return refuse(
-        `the marker is not this run's own value (${state.marker === undefined ? 'unreadable' : state.marker === null ? 'absent' : 'changed'})`,
-      )
+    if (state.marker !== expect)
+      return refuse(`the marker is not this run's own value (${state.marker === null ? 'absent' : 'changed'})`)
   } else if (mode === 'train' && !isClear(state.marker)) {
     return skip(markerWords(state.marker))
+  }
+
+  // `vars` is a snapshot taken when the job started; a repo variable cannot be read live without a token that can read
+  // Actions variables (CHE-9181, CHE-9877). Before a change, a snapshot older than the bound (or of unknown age) is
+  // not evidence of the switch or the pause: a job that waited for the host lock refuses, and a rerun takes a fresh one.
+  // `varsAgeSeconds` is a number, or a function read at each check: the age keeps growing while this function waits on
+  // quiescence, git and the GitHub API, so it is read again right before the go (CHE-9877).
+  const needsSnapshot = before && (want.sw !== null || want.pause !== null)
+  const staleSnapshot = () => {
+    const raw = typeof varsAgeSeconds === 'function' ? varsAgeSeconds() : varsAgeSeconds
+    const age = typeof raw === 'number' && Number.isFinite(raw) ? raw : NaN
+    if (!(age >= 0)) return no('the age of the switch and pause snapshot is unknown')
+    if (age > varsMaxAgeSeconds)
+      return no(`the switch and pause snapshot is ${Math.round(age)}s old (bound ${varsMaxAgeSeconds}s); rerun the job`)
+    return null
+  }
+  if (needsSnapshot) {
+    const stale = staleSnapshot()
+    if (stale) return stale
   }
 
   if (op === 'pre-arm' || op === 'pre-apply') {
@@ -286,6 +330,11 @@ export async function recheckOp({
         return skip(`${sha.slice(0, 7)} was merged by ${merger.login}, who is not on the deploy allowlist`)
       }
     }
+  }
+  // The reads above (quiescence, git, GitHub) took time: the snapshot must still be inside the bound as the gate opens.
+  if (needsSnapshot) {
+    const stale = staleSnapshot()
+    if (stale) return stale
   }
   return go({ predecessorDigest: now.digest, predecessorSha: now.label })
 }
@@ -435,6 +484,15 @@ async function cli(argv, env) {
       },
     )
   }
+  if (command === 'snapshot-epoch') {
+    // `actions: read` on the run's own `github.token`; no Variables permission is involved.
+    const run = await gh(`repos/${repo}/actions/runs/${env.RUN_ID}`)
+    const epoch = runCreatedEpoch(run, env.RUN_ID)
+    console.log(`deploy gate: run ${env.RUN_ID} created at epoch ${epoch}; vars snapshot age counts from there`)
+    if (!env.GITHUB_ENV) throw new Error('GITHUB_ENV is not set')
+    appendFileSync(env.GITHUB_ENV, `VARS_READ_EPOCH=${epoch}\n`)
+    return
+  }
   if (command === 'recheck') {
     const [mode] = rest
     const op = flag(rest, '--op')
@@ -445,9 +503,17 @@ async function cli(argv, env) {
       repo,
       extra: env.EXTRA,
       ghApi: gh,
-      // The marker App token (Variables permission); `github.token` cannot read variables.
-      // Rollback runs without a token when the mint failed; every other op then fails red on its 403.
-      varsApi: env.VARS_TOKEN ? ghWith(env.VARS_TOKEN) : op === 'rollback' ? null : gh,
+      // The switch and the pause as the workflow passed them; the marker is the file on this C00 host.
+      vars: env,
+      // Seconds since the workflow run was created (`snapshot-epoch` sets VARS_READ_EPOCH; unset or garbage is unknown).
+      // A function, so `recheckOp` re-reads the clock after its blocking reads.
+      varsAgeSeconds: () =>
+        /^\d+$/.test(env.VARS_READ_EPOCH ?? '') ? Date.now() / 1000 - Number(env.VARS_READ_EPOCH) : NaN,
+      // The bound may be tightened by env, never widened past the accepted 180 s.
+      varsMaxAgeSeconds: /^\d+$/.test(env.C00_VARS_SNAPSHOT_BOUND_SECONDS ?? '')
+        ? Math.min(VARS_SNAPSHOT_BOUND_SECONDS, Number(env.C00_VARS_SNAPSHOT_BOUND_SECONDS))
+        : undefined,
+      markerStore: fileStore(markerFile(env)),
       event: env.EVENT,
       actor: env.ACTOR,
       trigger: env.TRIGGER,
