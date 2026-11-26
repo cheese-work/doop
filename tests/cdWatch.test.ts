@@ -31,7 +31,7 @@ const {
   deploymentRecord: (
     evidence: Record<string, unknown>,
   ) => { ref: string; environment: string; confirmedAt: string | null } | null
-  ghPostArgs: (repo: string, route: string, fields: Record<string, string | boolean>) => string[]
+  ghPostArgs: (repo: string, route: string, fields: Record<string, string | boolean | never[]>) => string[]
   recordDeployment: (h: {
     repo: string
     evidence: Record<string, unknown>
@@ -669,6 +669,10 @@ describe('the deployment record request (typed fields, read back)', () => {
     ])
   })
 
+  it('sends an empty array as -F key[] (gh sends [] for a key without a value)', () => {
+    expect(ghPostArgs('o/r', 'deployments', { required_contexts: [] }).slice(-2)).toEqual(['-F', 'required_contexts[]'])
+  })
+
   const evidence = { outcome: 'confirmed', candidate_sha: A, times: { confirmed: { utc: CONFIRMED } } }
   const fake = (recorded: { sha: string; runId: number | null } | null) => {
     const calls: string[][] = []
@@ -686,6 +690,9 @@ describe('the deployment record request (typed fields, read back)', () => {
     expect(deployment.join(' ')).toContain('-F auto_merge=false')
     expect(deployment.join(' ')).toContain('-F production_environment=true')
     expect(deployment.join(' ')).not.toMatch(/-f (auto_merge|production_environment)=/)
+    // CHE-10162: an empty required_contexts keeps GitHub from 409-ing on a commit with no legacy statuses.
+    expect(deployment).toContain('required_contexts[]')
+    expect(deployment[deployment.indexOf('required_contexts[]') - 1]).toBe('-F')
     expect(deployment.join(' ')).toContain(`D2 run 123, confirmed ${CONFIRMED}`)
     expect(status).toContain('repos/o/r/deployments/7/statuses')
     expect(status.join(' ')).toContain('state=success')
