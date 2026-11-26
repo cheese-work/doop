@@ -207,8 +207,8 @@ export function deploymentRecord(evidence) {
 
 // ---------------------------------------------------------------------------------------------
 // CLI: node scripts/cd-watch.mjs freshness | live | record <deploy-evidence.json>. Inputs come from env. Any error fails the run.
-const gh = (args) => {
-  const r = spawnSync('gh', args, { encoding: 'utf8', env: process.env })
+const gh = (args, input) => {
+  const r = spawnSync('gh', args, { encoding: 'utf8', env: process.env, input })
   if (r.status !== 0) throw Object.assign(new Error(`gh ${args.join(' ')} failed: ${r.stderr.trim()}`), { r })
   return r.stdout
 }
@@ -282,6 +282,9 @@ export function ghPostArgs(repo, route, fields) {
   ]
 }
 
+// `gh api -X POST` with a JSON body on stdin: -f/-F cannot send an empty array.
+export const ghPostJsonArgs = (repo, route) => ['api', '-X', 'POST', `repos/${repo}/${route}`, '--input', '-']
+
 // D2's evidence job: record a confirmed deploy as a successful deployment of the candidate SHA, then read it back.
 // Throws when GitHub refuses a write or the record is not what was written, which turns the D2 run red.
 export function recordDeployment({ repo, evidence, runId, gh, recordedSha }) {
@@ -290,13 +293,17 @@ export function recordDeployment({ repo, evidence, runId, gh, recordedSha }) {
   // The watchers order deploys by confirmation time: a record without it would be unusable, so the run goes red.
   if (!payload.confirmedAt) throw new Error('the confirmed evidence has no confirmation time; cannot record the deploy')
   const post = (route, fields) => JSON.parse(gh(ghPostArgs(repo, route, fields)))
-  const created = post('deployments', {
+  // required_contexts: [] (CHE-10262): a confirmed deploy is a fact. Without it GitHub answers 409 "Commit status
+  // checks failed" when any check-run of the commit is red, and the record is lost.
+  const body = {
     ref: payload.ref,
     environment: payload.environment,
     description: `doop deploy train: confirmed on C00 (D2 run ${runId}, confirmed ${payload.confirmedAt})`,
     auto_merge: false,
     production_environment: true,
-  })
+    required_contexts: [],
+  }
+  const created = JSON.parse(gh(ghPostJsonArgs(repo, 'deployments'), JSON.stringify(body)))
   post(`deployments/${created.id}/statuses`, { state: 'success', environment: payload.environment })
   if (recordedSha()?.sha !== payload.ref) {
     throw new Error(`the deployment record of ${short(payload.ref)} did not read back`)
