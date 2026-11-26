@@ -19,13 +19,25 @@ import type { Frame } from '../shared/types.ts'
  *  - `settleTimeout`  `settleFrameWrites` gives up (`SettleTimeout`) once;
  *  - `ack`            a lost COMMIT acknowledgement: the transaction really commits (or never starts) and the caller
  *                     is told `unknown`; `probe` holds the outcome probe;
- *  - `commentGate`    holds a comment upsert before its SQL starts.
+ *  - `holds`          a real database write (a comment upsert, the Trash marker) held at the start of its SQL. The
+ *                     write is already in persist's registry and fence, so the purge sees it exactly as in production.
+ *                     `commentGate` holds every comment upsert the same way.
  * Everything else in persist and in purge.ts is the real module. PGlite has one connection, so a comment upsert
  * that stays open while the purge takes its SHARE lock (T14 e2 to e4) needs real PostgreSQL: set DOOP_TEST_PG_URL to
  * an empty database and the whole file runs there (those cases are skipped otherwise).
- * "A restart agrees" is asserted on the rows a restart would read: the same Postgres tables (the child-process
- * reboot of T1 and T6 is in tests/framePurgeReboot.test.ts).
+ * "A restart agrees" is asserted on the rows a restart would read: the same Postgres tables. A real reboot (a child
+ * server process stopped and started on the same data) is in tests/framePurgeReboot.test.ts.
  */
+
+type Hold = {
+  table: string
+  kind: 'insert' | 'update'
+  match?: (op: { set?: Record<string, unknown>; row?: Record<string, unknown> }) => boolean
+  taken: boolean
+  entered: () => void
+  release: () => void
+  gate: Promise<void>
+}
 
 const rig = await vi.hoisted(async () => {
   const { createServer } = await import('node:net')
@@ -64,8 +76,10 @@ const rig = await vi.hoisted(async () => {
     probe: null as null | Promise<void>,
     /** how often the probe was asked */
     probeCalls: 0,
-    /** holds each comment upsert (its call into persist) until it resolves */
+    /** holds every comment upsert at the start of its SQL until it resolves */
     commentGate: null as null | Promise<void>,
+    /** one-shot holds of a database write (see `holdWrite`) */
+    holds: [] as Hold[],
     /** how often the purge transaction ran */
     purgeCalls: 0,
   }
@@ -83,12 +97,66 @@ vi.mock('../server/db/persist.ts', async (importOriginal) => {
       }
       return actual.settleFrameWrites(...args)
     },
-    saveComment: (...args: Parameters<typeof actual.saveComment>) => {
-      const gate = rig.commentGate
-      if (!gate) return actual.saveComment(...args)
-      void gate.then(() => actual.saveComment(...args))
-    },
   }
+})
+/* the app's `db`, one step in front: an insert or update that a test holds waits at the end of its query chain,
+   after persist has counted it, and then runs the real statement */
+vi.mock('../server/db/index.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../server/db/index.ts')>()
+  const { getTableName } = await import('drizzle-orm')
+  type Op = { table: string; kind: 'insert' | 'update'; set?: Record<string, unknown>; row?: Record<string, unknown> }
+  const hold = async (op: Op) => {
+    if (op.table === 'comments' && op.kind === 'insert') await rig.commentGate
+    const h = rig.holds.find((x) => !x.taken && x.table === op.table && x.kind === op.kind && (!x.match || x.match(op)))
+    if (!h) return
+    h.taken = true
+    h.entered()
+    await h.gate
+  }
+  const held = (inner: object, op: Op): unknown =>
+    new Proxy(inner, {
+      get(target, prop) {
+        if (prop === 'then')
+          return (ok?: (v: unknown) => unknown, no?: (e: unknown) => unknown) =>
+            hold(op)
+              .then(() => target)
+              .then(ok, no)
+        const value = Reflect.get(target, prop, target)
+        if (typeof value !== 'function') return value
+        return (...args: unknown[]) => {
+          if (prop === 'set') op.set = args[0] as Record<string, unknown>
+          if (prop === 'values') op.row = args[0] as Record<string, unknown>
+          const next = value.apply(target, args)
+          return next && typeof next === 'object' ? held(next, op) : next
+        }
+      },
+    })
+  const wrapDb = (real: typeof actual.db) =>
+    new Proxy(real, {
+      get(target, prop) {
+        const value = Reflect.get(target, prop, target)
+        if (typeof value !== 'function') return value
+        if (prop === 'insert' || prop === 'update')
+          return (table: Parameters<typeof getTableName>[0]) =>
+            held(value.call(target, table), { table: getTableName(table), kind: prop })
+        return value.bind(target)
+      },
+    })
+  /* one wrapper per real db: persist compares `exec === db` to know a write ran outside a transaction */
+  let real: typeof actual.db | undefined
+  let wrapped: typeof actual.db | undefined
+  const mod = { ...actual }
+  Object.defineProperty(mod, 'db', {
+    enumerable: true,
+    get: () => {
+      if (actual.db !== real) {
+        real = actual.db
+        wrapped = wrapDb(real)
+      }
+      return wrapped
+    },
+  })
+  return mod
 })
 vi.mock('../server/db/purge.ts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../server/db/purge.ts')>()
@@ -124,6 +192,7 @@ const persist = await import('../server/db/persist.ts')
 const schema = await import('../server/db/schema.ts')
 const { canvasPages } = await import('../shared/pages.ts')
 const { buildMcpServer } = await import('../server/mcp.ts')
+const { htmlLoaded } = await import('../server/frameHtml.ts')
 /* the route's timing knobs; absent until the route exists, so a red run fails on the missing route, not here */
 const timing = await import('../server/framePurge.ts').then(
   (m) => m.purgeTiming as { settleTimeoutMs: number; outcomeWaitMs: number; probe: { delaysMs?: number[] } },
@@ -177,6 +246,8 @@ afterEach(() => {
   rig.ack = null
   rig.probe = null
   rig.commentGate = null
+  for (const h of rig.holds) h.release() // a failed test must not leave a write held for the next one
+  rig.holds.length = 0
   vi.restoreAllMocks()
 })
 afterAll(() => {
@@ -200,8 +271,8 @@ async function call(name: string, args: Record<string, unknown>) {
 
 const db = async () => (await import('../server/db/index.ts')).db
 
-async function makeFrame(name: string, html = `<p>${name}</p>`, onPage = pageId): Promise<Frame> {
-  const res = await owner.post(`/api/canvases/${canvasId}/frames`, { name, html, pageId: onPage })
+async function makeFrame(name: string, html = `<p>${name}</p>`, onPage = pageId, onCanvas = canvasId): Promise<Frame> {
+  const res = await owner.post(`/api/canvases/${onCanvas}/frames`, { name, html, pageId: onPage })
   expect(res.status).toBe(200)
   return res.json()
 }
@@ -338,6 +409,16 @@ function openPeer(client: Client = owner) {
     of: (type: string, frameId: string) => messages.filter((m) => m.type === type && m.frameId === frameId),
     close: () => ws.close(),
   }
+}
+
+/** hold the next database write that matches, at the start of its SQL; `entered` settles once it is held */
+function holdWrite(table: string, kind: Hold['kind'], match?: Hold['match']) {
+  let entered!: () => void
+  let release!: () => void
+  const enteredP = new Promise<void>((r) => (entered = r))
+  const gate = new Promise<void>((r) => (release = r))
+  rig.holds.push({ table, kind, match, taken: false, entered, release, gate })
+  return { entered: enteredP, release }
 }
 
 const flush = () => persist.flush((id) => store.getFrame(id) ?? store.getDeletedFrame(id))
@@ -851,12 +932,50 @@ describe('T9 lifecycle', () => {
 })
 
 describe('T11 a Trash frame whose canvas html is not loaded', () => {
-  it('purges without a false stale_confirmation', async () => {
-    const { frame } = await makeTrashed('t11')
-    store.evictIdle(0, Date.now() + 3_600_000)
-    const res = await purge(frame)
+  it('purges without a false stale_confirmation, and waits for the Trash-marker write that is still on its way', async () => {
+    /* a canvas of its own: the shared one is kept in use by the agent presence earlier tests leave behind */
+    const own = await (await owner.post('/api/canvases', { name: 'T11 idle canvas' })).json()
+    const frame = await makeFrame('t11', '<p>t11</p>', own.pages[0].id, own.id)
+    const seeded = await seedRows(frame.id)
+    expect((await owner.delete(`/api/frames/${frame.id}`)).status).toBe(200)
+    const inTrash = { ...store.getDeletedFrame(frame.id)! }
+    expect(inTrash.deletedAt).toBeTypeOf('number')
+    /* its html leaves memory. An idle sweep skips a canvas while any of its frames is unsaved: save, then try until it is out */
+    for (let i = 0; i < 100 && htmlLoaded(store.getDeletedFrame(frame.id)!); i++) {
+      await flush()
+      store.evictIdle(0, Date.now() + 3_600_000)
+      await settle(20)
+    }
+    expect(htmlLoaded(store.getDeletedFrame(frame.id)!)).toBe(false)
+    /* The Trash marker is the write a Trash move issues for a frame in that state (store.saveTrashedFrameLater calls
+       it when the html is not loaded). Put the row back to what it was before the marker, and hold the marker at the
+       start of its SQL: it is in persist's registry, and the row does not yet know the frame is in the Trash. */
+    await (await db()).update(schema.frames).set({ deletedAt: null }).where(eq(schema.frames.id, frame.id))
+    const marker = holdWrite('frames', 'update', (op) => op.set?.deletedAt === inTrash.deletedAt)
+    persist.saveFrameTrash(store.getDeletedFrame(frame.id)!)
+    await marker.entered
+    expect((await rowsOf(frame.id)).frame?.deletedAt).toBeNull()
+    /* the purge starts now and must not answer, nor run its transaction, while the marker is held */
+    const calls = rig.purgeCalls
+    let early = ''
+    const result = purge(inTrash).then(async (r) => {
+      early = `${r.status} ${JSON.stringify(await r.clone().json())}`
+      return r
+    })
+    await settle(400)
+    expect(early).toBe('')
+    expect(rig.purgeCalls).toBe(calls)
+    expect((await rowsOf(frame.id)).frame?.id).toBe(frame.id)
+    /* the marker lands, the purge goes on: 200 (a purge that had not waited would find the row outside the Trash),
+       and the marker did not bring the frame back */
+    marker.release()
+    const res = await result
     expect(res.status).toBe(200)
-    await expectGone(frame)
+    expect(rig.purgeCalls).toBe(calls + 1)
+    await settle(300)
+    await expectGone(inTrash)
+    expect(store.listTrash(own.id).frames.map((f) => f.id)).not.toContain(frame.id)
+    expect(seeded.versionIds).toHaveLength(2)
   }, 30_000)
 })
 
@@ -1003,6 +1122,36 @@ describe('T14 comments refuse', () => {
     return comment
   }
 
+  type CommentRow = NonNullable<Awaited<ReturnType<typeof commentRow>>>
+  type Memory = ReturnType<typeof actions.getComments>[number]
+  const inMemory = (id: string): Memory => ({ ...actions.getComments(canvasId).find((c) => c.id === id)! })
+  /** the columns a move rewrites, as persist writes them from the comment in memory */
+  const anchorOf = (c: Memory) => ({
+    frameId: c.frameId ?? null,
+    elementId: c.elementId ?? null,
+    elementOrigin: c.elementOrigin ?? null,
+    selector: null,
+    snippet: c.snippet,
+    pageId: c.pageId ?? null,
+    x: c.x ?? null,
+    y: c.y ?? null,
+  })
+  /** the row moved to `to`: every anchor column is the new one, every other column is what it was */
+  function expectMoved(before: CommentRow, after: CommentRow | undefined, to: Frame, at: Memory, wanted: object) {
+    expect(after).toEqual({ ...before, ...anchorOf(at) })
+    expect(after).toMatchObject({ frameId: to.id, ...wanted })
+    expect(before.frameId).not.toBe(to.id)
+  }
+  /** the row did not change in any column */
+  const expectUnchanged = (before: CommentRow, after: CommentRow | undefined) => expect(after).toEqual(before)
+  const reply = async (rootId: string) => {
+    const made = (await (await owner.post(`/api/comments/${rootId}/replies`, { text: 'reply' })).json()) as {
+      id: string
+    }
+    for (let i = 0; i < 100 && !(await commentRow(made.id)); i++) await settle(20)
+    return made
+  }
+
   it('(a) a root comment on F made before the delete: 409 has_comments, nothing deleted', async () => {
     const frame = await makeFrame('t14a')
     const seeded = await seedRows(frame.id)
@@ -1049,11 +1198,12 @@ describe('T14 comments refuse', () => {
     expect((await rowsOf(frame.id)).commentIds).toEqual([root.id])
   }, 30_000)
 
-  it('(d) a thread moved onto F just before F was deleted, its upsert held: 409 has_comments (memory); trimmed from memory, still 409 (the row)', async () => {
+  it('(d) a thread moved onto F just before F was deleted, its upsert held: 409 from memory; trimmed from memory, still 409 from the registry with every row intact; landed, 409 from the persisted row', async () => {
     const from = await makeFrame('t14d from')
     const frame = await makeFrame('t14d target')
     const seeded = await seedRows(frame.id)
     const root = await commentOn(from, 'root')
+    const before = (await commentRow(root.id))!
     const gate = deferred()
     rig.commentGate = gate.promise
     const move = await owner.patch(`/api/comments/${root.id}/anchor`, {
@@ -1063,46 +1213,57 @@ describe('T14 comments refuse', () => {
       snippet: 'moved',
     })
     expect(move.status).toBe(200)
+    const moved = inMemory(root.id)
+    expect(persist.commentWritesPending(frame.id)).toBe(1) // the held upsert is counted for F, the frame it moves onto
     expect((await owner.delete(`/api/frames/${frame.id}`)).status).toBe(200)
     const gone = { ...store.getDeletedFrame(frame.id)! }
     await seedAssets(frame.id, seeded)
-    /* memory names F: refused at once */
+    /* memory names F: refused at once, before any wait */
     expect(actions.commentsOnFrame(canvasId, frame.id)).toBe(true)
-    let res = await purge(gone)
-    expect(res.status).toBe(409)
-    expect(await res.json()).toMatchObject({ code: 'has_comments' })
-    /* trimmed from memory: the row (still on `from`) and the registry cannot see F, so the purge commits only if
-       the held upsert has not moved a row to F; this thread's row still names `from` */
+    const first = await purge(gone)
+    expect(first.status).toBe(409)
+    expect(await first.json()).toMatchObject({ code: 'has_comments' })
+    /* trimmed from memory: only the registry and the row can still say the thread is on F. The upsert is still
+       held, its row still on `from`: the purge must refuse from the registry, with nothing deleted */
     const list = actions.getComments(canvasId)
     list.splice(0, list.length, ...list.filter((c) => c.id !== root.id))
-    expect((await commentRow(root.id))?.frameId).toBe(from.id)
+    expect(actions.commentsOnFrame(canvasId, frame.id)).toBe(false)
+    const calls = rig.purgeCalls
+    const second = await purge(gone)
+    expect(second.status).toBe(409)
+    expect(await second.json()).toMatchObject({ code: 'has_comments' })
+    expect(rig.purgeCalls).toBe(calls) // refused before the purge transaction
+    expectUnchanged(before, await commentRow(root.id)) // the held upsert has written nothing
     await expectIntact(gone, seeded)
+    /* the upsert lands: the row names F. Nothing but the row is left to refuse the purge, and it does */
     gate.release()
-    await settle(200)
-    /* the upsert landed: the row now names F, so the purge is refused by the row */
-    expect((await commentRow(root.id))?.frameId).toBe(frame.id)
-    res = await purge(gone)
-    expect(res.status).toBe(409)
-    expect(await res.json()).toMatchObject({ code: 'has_comments' })
+    for (let i = 0; i < 100 && (await commentRow(root.id))?.frameId !== frame.id; i++) await settle(20)
+    expectMoved(before, await commentRow(root.id), frame, moved, { x: 7, y: 8, snippet: '' })
+    expect(persist.commentWritesPending(frame.id)).toBe(0)
+    const third = await purge(gone)
+    expect(third.status).toBe(409)
+    expect(await third.json()).toMatchObject({ code: 'has_comments' })
+    expect(rig.purgeCalls).toBe(calls + 1) // this time the transaction ran, and its row check refused
+    expect((await rowsOf(frame.id)).commentIds).toEqual([root.id])
     await expectIntact(gone, seeded)
   }, 30_000)
 
-  it('(e1) a thread moved from F to G, both upserts held before their SQL starts: 409 has_comments, rows still on F; released and landed, a retry answers 200', async () => {
+  it('(e1) a thread moved from F to G, both upserts held before their SQL starts: 409 has_comments, rows unchanged on F; released and landed, every anchor column moved and a retry answers 200', async () => {
     const f = await makeFrame('t14e1 f')
     const g = await makeFrame('t14e1 g')
     const seeded = await seedRows(f.id)
     const root = await commentOn(f, 'root')
-    const reply = (await (await owner.post(`/api/comments/${root.id}/replies`, { text: 'reply' })).json()) as {
-      id: string
-    }
-    for (let i = 0; i < 100 && !(await commentRow(reply.id)); i++) await settle(20)
-    const beforeRoot = await commentRow(root.id)
-    const beforeReply = await commentRow(reply.id)
+    const rep = await reply(root.id)
+    const beforeRoot = (await commentRow(root.id))!
+    const beforeReply = (await commentRow(rep.id))!
     const gate = deferred()
     rig.commentGate = gate.promise
     expect(
       (await owner.patch(`/api/comments/${root.id}/anchor`, { frameId: g.id, x: 9, y: 9, snippet: 'to g' })).status,
     ).toBe(200)
+    const movedRoot = inMemory(root.id)
+    const movedReply = inMemory(rep.id)
+    expect(persist.commentWritesPending(g.id)).toBe(2) // both held upserts are counted for G, none for F
     expect((await owner.delete(`/api/frames/${f.id}`)).status).toBe(200)
     const gone = { ...store.getDeletedFrame(f.id)! }
     await seedAssets(f.id, seeded)
@@ -1112,22 +1273,22 @@ describe('T14 comments refuse', () => {
     const res = await purge(gone)
     expect(res.status).toBe(409)
     expect(await res.json()).toMatchObject({ code: 'has_comments' })
-    expect(await commentRow(root.id)).toEqual(beforeRoot)
-    expect(await commentRow(reply.id)).toEqual(beforeReply)
+    expectUnchanged(beforeRoot, await commentRow(root.id))
+    expectUnchanged(beforeReply, await commentRow(rep.id))
     await expectIntact(gone, seeded)
     gate.release()
     for (
       let i = 0;
-      i < 100 && ((await commentRow(root.id))?.frameId !== g.id || (await commentRow(reply.id))?.frameId !== g.id);
+      i < 100 && ((await commentRow(root.id))?.frameId !== g.id || (await commentRow(rep.id))?.frameId !== g.id);
       i++
     )
       await settle(20)
-    expect((await commentRow(root.id))?.frameId).toBe(g.id)
-    expect((await commentRow(reply.id))?.frameId).toBe(g.id)
+    expectMoved(beforeRoot, await commentRow(root.id), g, movedRoot, { x: 9, y: 9, snippet: '' })
+    expectMoved(beforeReply, await commentRow(rep.id), g, movedReply, { x: 9, y: 9, snippet: '' })
     const retry = await purge(gone)
     expect(retry.status).toBe(200)
     await expectGone(gone)
-    expect((await rowsOf(g.id)).commentIds).toEqual([root.id, reply.id].sort())
+    expect((await rowsOf(g.id)).commentIds).toEqual([root.id, rep.id].sort())
   }, 30_000)
 
   it('(e5) both upserts landed before the purge: 200, the thread whole on G', async () => {
@@ -1174,11 +1335,25 @@ describe('T14 comments refuse', () => {
       await pool?.end()
     })
 
+    /* the statement an upsert runs for a moved comment: the new anchor, from the comment in memory */
+    const moveSql = `update comments set frame_id = $2, element_id = $3, element_origin = $4, selector = null,
+      snippet = $5, page_id = $6, x = $7, y = $8 where id = $1`
+    const moveArgs = (id: string, at: Memory) => [
+      id,
+      at.frameId ?? null,
+      at.elementId ?? null,
+      at.elementOrigin ? JSON.stringify(at.elementOrigin) : null,
+      at.snippet,
+      at.pageId ?? null,
+      at.x ?? null,
+      at.y ?? null,
+    ]
+
     /** an upsert of `id` that has run its statement and not committed: it holds the row and a ROW EXCLUSIVE table lock */
-    async function openUpsert(id: string, to: string) {
+    async function openUpsert(id: string, at: Memory) {
       const client = await pool.connect()
       await client.query('begin')
-      await client.query('update comments set frame_id = $2 where id = $1', [id, to])
+      await client.query(moveSql, moveArgs(id, at))
       let ended = false
       const end = async (how: 'commit' | 'rollback') => {
         if (ended) return
@@ -1188,30 +1363,37 @@ describe('T14 comments refuse', () => {
       }
       return { commit: () => end('commit'), rollback: () => end('rollback') }
     }
-    const landed = (id: string, to: string) => pool.query('update comments set frame_id = $2 where id = $1', [id, to])
+    const landed = (id: string, at: Memory) => pool.query(moveSql, moveArgs(id, at))
     const frameOfRow = async (id: string) => (await commentRow(id))?.frameId
 
-    /** F (to be purged) and G; a thread R + P on F whose move to G is held in memory */
+    /** F (to be purged) and G; a thread R + P on F whose move to G is held in memory; every row as it was before */
     async function threadMovedInMemory(tag: string) {
       const f = await makeFrame(`${tag} f`)
       const g = await makeFrame(`${tag} g`)
       const seeded = await seedRows(f.id)
       const root = await commentOn(f, 'root')
-      const reply = (await (await owner.post(`/api/comments/${root.id}/replies`, { text: 'reply' })).json()) as {
-        id: string
-      }
-      for (let i = 0; i < 100 && !(await commentRow(reply.id)); i++) await settle(20)
+      const rep = await reply(root.id)
+      const before = { root: (await commentRow(root.id))!, reply: (await commentRow(rep.id))! }
       const gate = deferred()
       rig.commentGate = gate.promise
       expect(
-        (await owner.patch(`/api/comments/${root.id}/anchor`, { frameId: g.id, x: 2, y: 2, snippet: 'g' })).status,
+        (await owner.patch(`/api/comments/${root.id}/anchor`, { frameId: g.id, x: 2, y: 3, snippet: 'to g' })).status,
       ).toBe(200)
+      const moved = { root: inMemory(root.id), reply: inMemory(rep.id) }
       expect((await owner.delete(`/api/frames/${f.id}`)).status).toBe(200)
       const gone = { ...store.getDeletedFrame(f.id)! }
       await seedAssets(f.id, seeded)
       expect(actions.commentsOnFrame(canvasId, f.id)).toBe(false)
-      return { f, g, gone, seeded, root: root.id, reply: reply.id, gate }
+      return { f, g, gone, seeded, root: root.id, reply: rep.id, gate, before, moved }
     }
+    type Thread = Awaited<ReturnType<typeof threadMovedInMemory>>
+    const wanted = { x: 2, y: 3, snippet: '' }
+    const rootMoved = async (t: Thread) =>
+      expectMoved(t.before.root, await commentRow(t.root), t.g, t.moved.root, wanted)
+    const replyMoved = async (t: Thread) =>
+      expectMoved(t.before.reply, await commentRow(t.reply), t.g, t.moved.reply, wanted)
+    const rootUnchanged = async (t: Thread) => expectUnchanged(t.before.root, await commentRow(t.root))
+    const replyUnchanged = async (t: Thread) => expectUnchanged(t.before.reply, await commentRow(t.reply))
 
     /** the purge is waiting on the open upsert: not answered yet */
     async function purgeBehind(frame: Frame) {
@@ -1225,39 +1407,44 @@ describe('T14 comments refuse', () => {
       return { result }
     }
 
-    async function landsAndRetries(t: Awaited<ReturnType<typeof threadMovedInMemory>>) {
+    /** the held upserts run: both rows end on G with every anchor column moved, and a retry answers 200 */
+    async function landsAndRetries(t: Thread) {
       t.gate.release()
       for (let i = 0; i < 100 && ((await frameOfRow(t.root)) !== t.g.id || (await frameOfRow(t.reply)) !== t.g.id); i++)
         await settle(20)
+      await rootMoved(t)
+      await replyMoved(t)
       expect((await purge(t.gone)).status).toBe(200)
       await expectGone(t.gone)
-      expect(await frameOfRow(t.root)).toBe(t.g.id)
-      expect(await frameOfRow(t.reply)).toBe(t.g.id)
+      await rootMoved(t)
+      await replyMoved(t)
     }
 
-    it('(e2) R open at lock time, P not started: waits, then 409 has_comments; R on G, P on F; then P lands and a retry answers 200', async () => {
+    it('(e2) R open at lock time, P not started: waits, then 409 has_comments; R moved, P unchanged on F; then P lands and a retry answers 200', async () => {
       const t = await threadMovedInMemory('t14e2')
-      const open = await openUpsert(t.root, t.g.id)
+      const open = await openUpsert(t.root, t.moved.root)
       const behind = await purgeBehind(t.gone)
       await open.commit()
       const res = await behind.result
       expect(res.status).toBe(409)
       expect(await res.json()).toMatchObject({ code: 'has_comments' })
-      expect(await frameOfRow(t.root)).toBe(t.g.id)
+      await rootMoved(t)
+      await replyUnchanged(t)
       expect(await frameOfRow(t.reply)).toBe(t.f.id)
       await expectIntact(t.gone, t.seeded)
       await landsAndRetries(t)
     }, 30_000)
 
-    it('(e3) P open at lock time, R not started: waits, then 409 has_comments; P on G, R on F; then R lands and a retry answers 200', async () => {
+    it('(e3) P open at lock time, R not started: waits, then 409 has_comments; P moved, R unchanged on F; then R lands and a retry answers 200', async () => {
       const t = await threadMovedInMemory('t14e3')
-      const open = await openUpsert(t.reply, t.g.id)
+      const open = await openUpsert(t.reply, t.moved.reply)
       const behind = await purgeBehind(t.gone)
       await open.commit()
       const res = await behind.result
       expect(res.status).toBe(409)
       expect(await res.json()).toMatchObject({ code: 'has_comments' })
-      expect(await frameOfRow(t.reply)).toBe(t.g.id)
+      await replyMoved(t)
+      await rootUnchanged(t)
       expect(await frameOfRow(t.root)).toBe(t.f.id)
       await expectIntact(t.gone, t.seeded)
       await landsAndRetries(t)
@@ -1265,27 +1452,29 @@ describe('T14 comments refuse', () => {
 
     it('(e4) R landed, P (the last outstanding upsert) open at lock time: the purge waits for P, then answers 200', async () => {
       const t = await threadMovedInMemory('t14e4')
-      await landed(t.root, t.g.id)
-      const open = await openUpsert(t.reply, t.g.id)
+      await landed(t.root, t.moved.root)
+      const open = await openUpsert(t.reply, t.moved.reply)
       const behind = await purgeBehind(t.gone)
       await open.commit()
       expect((await behind.result).status).toBe(200)
       await expectGone(t.gone)
       t.gate.release()
       await settle(300)
-      expect(await frameOfRow(t.root)).toBe(t.g.id)
-      expect(await frameOfRow(t.reply)).toBe(t.g.id)
+      await rootMoved(t)
+      await replyMoved(t)
     }, 30_000)
 
-    it('(e2r) the open upsert rolls back: its row stays on F, so the purge is refused', async () => {
+    it('(e2r) the open upsert rolls back: its row is unchanged on F, so the purge is refused', async () => {
       const t = await threadMovedInMemory('t14e2r')
-      await landed(t.reply, t.g.id)
-      const open = await openUpsert(t.root, t.g.id)
+      await landed(t.reply, t.moved.reply)
+      const open = await openUpsert(t.root, t.moved.root)
       const behind = await purgeBehind(t.gone)
       await open.rollback()
       const res = await behind.result
       expect(res.status).toBe(409)
       expect(await res.json()).toMatchObject({ code: 'has_comments' })
+      await rootUnchanged(t)
+      await replyMoved(t)
       expect(await frameOfRow(t.root)).toBe(t.f.id)
       await expectIntact(t.gone, t.seeded)
       await landsAndRetries(t)
