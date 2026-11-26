@@ -15,6 +15,7 @@ import type {
   CanvasMeta,
   CardScope,
   CommunityCategory,
+  CommentResolution,
   CommunityItem,
   ElementComment,
   Frame,
@@ -930,7 +931,9 @@ export const api = {
     req<BridgeInfo>(`/api/canvases/${canvasId}/bridge`, { method: 'PUT', body: JSON.stringify({ agentRef }) }),
   replyComment: (commentId: string, text: string) =>
     req(`/api/comments/${commentId}/replies`, { method: 'POST', body: JSON.stringify({ text }) }),
-  resolveComment: (commentId: string) => req(`/api/comments/${commentId}/resolve`, { method: 'POST' }),
+  /** without a body the thread resolves with no reason (CHE-9308 S4) */
+  resolveComment: (commentId: string, body?: { reason: CommentResolution; ref?: string; note?: string }) =>
+    req(`/api/comments/${commentId}/resolve`, { method: 'POST', ...(body ? { body: JSON.stringify(body) } : {}) }),
   /** re-pin a thread (its root or any reply names it) where its pin was dropped */
   moveComment: (commentId: string, anchor: CommentAnchorInput) =>
     req<ElementComment>(`/api/comments/${commentId}/anchor`, { method: 'PATCH', body: JSON.stringify(anchor) }),
