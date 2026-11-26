@@ -206,9 +206,25 @@ export async function lift(o) {
     const whyAgain = judge(again, await standingMarker(o.ghApi, o.repo))
     if (whyAgain) throw refuse(`changed during the lift: ${whyAgain}`)
 
-    // 3. writeMarker reads the marker once more, writes, and reads it back.
+    // 3. writeMarker reads the marker once more, writes, and reads it back. A rate-limited write waits and is sent
+    // again; the approval may be withdrawn, revoked or expired in that wait, so each retry judges the decision anew.
+    const recheck = async () => {
+      let why
+      try {
+        why = judge(await read(), marker)
+      } catch (err) {
+        why = String(err?.message ?? err)
+      }
+      if (why) throw new Error(`the decision changed during a rate-limit wait: ${why}; nothing was written`)
+    }
     try {
-      ev.marker_after = await writeLift({ ghApi: o.ghApi, repo: o.repo, runId: ev.lift_run_id, expected: marker })
+      ev.marker_after = await writeLift({
+        ghApi: o.ghApi,
+        repo: o.repo,
+        runId: ev.lift_run_id,
+        expected: marker,
+        recheck,
+      })
     } catch (err) {
       const msg = String(err?.message ?? err)
       if (/nothing was written/.test(msg)) throw refuse(`the marker changed during the lift: ${msg}`)

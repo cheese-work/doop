@@ -47,15 +47,17 @@ export async function readMarker(ghApi, repo) {
 }
 
 /** Read, check, write, read back. `expected` is the exact value that must stand now (null: absent). */
-export async function writeMarker({ ghApi, repo, expected, next }) {
+export async function writeMarker({ ghApi, repo, expected, next, recheck }) {
   if (!kindOf(next)) throw new Error('refusing to write a value that is not a marker value')
   const now = await readMarker(ghApi, repo)
   if (now !== expected) throw new Error('the suspension marker changed since it was read; nothing was written')
   // A rate-limited write waits and is sent again. Another actor may write during that wait, so every retry rereads
-  // the marker first: a write only ever lands over `expected`.
+  // the marker first: a write only ever lands over `expected`. `recheck`, when given, is the caller's own check of
+  // what authorised the write (a lift: its decision); it throws to stop the retry.
   const beforeRetry = async () => {
     if ((await readMarker(ghApi, repo)) !== expected)
       throw new Error('the suspension marker changed during a rate-limit wait; nothing was written')
+    await recheck?.()
   }
   if (now === null)
     await ghApi(`repos/${repo}/actions/variables`, {
@@ -88,11 +90,11 @@ export async function restore({ ghApi, repo, expected }) {
 }
 
 /** An approved lift (CHE-5551, C-10.7): exactly the stated armed or suspended value -> a new clear. Nothing else lifts. */
-export async function lift({ ghApi, repo, runId, expected }) {
+export async function lift({ ghApi, repo, runId, expected, recheck }) {
   if (!/^\d+$/.test(String(runId ?? ''))) throw new Error('lift needs the lift run id')
   if (!['armed', 'suspended'].includes(kindOf(expected) ?? ''))
     throw new Error('lift needs the armed or suspended value it lifts')
-  return writeMarker({ ghApi, repo, expected, next: `clear:${nonce()}:${runId}` })
+  return writeMarker({ ghApi, repo, expected, next: `clear:${nonce()}:${runId}`, recheck })
 }
 
 /** -> suspended, over this run's own armed value (`expected`) or, with `any`, over whatever stands. */

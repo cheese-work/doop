@@ -638,8 +638,16 @@ describe('the CLI', () => {
 
 /* The real script, as the workflow runs it, against one local HTTP server standing in for GitHub, Multica and the app. */
 describe('the CLI end to end (a real process, real HTTP)', () => {
-  async function cli(over: { decision?: Decision; marker?: string; health?: number }) {
+  async function cli(over: {
+    decision?: Decision
+    marker?: string
+    health?: number
+    // The first marker PATCH answers 429 (retry-after: 0, a 1 s wait); `during` runs in that wait.
+    limited?: { during?: (s: { decision: () => Decision; setDecision: (d: Decision) => void }) => void }
+  }) {
     let marker = over.marker ?? SUSPENDED
+    let decision: Decision | undefined = over.decision
+    let limitedOnce = false
     const seen: string[] = []
     const server = createServer((req, res) => {
       const url = req.url ?? ''
@@ -654,10 +662,19 @@ describe('the CLI end to end (a real process, real HTTP)', () => {
         if (url === `/api/decisions/${DECISION_ID}/state`) {
           if (req.headers.authorization !== `Bearer ${TOKEN}` || req.headers['x-workspace-id'] !== WORKSPACE)
             return send(403, {})
-          return send(200, over.decision ?? decisionOf({ expires_at: new Date(Date.now() + 86_400_000).toISOString() }))
+          return send(200, decision ?? decisionOf({ expires_at: new Date(Date.now() + 86_400_000).toISOString() }))
         }
         if (url === '/healthz') return send(over.health ?? 200, { ok: true })
         if (url === `/${VAR_URL}`) {
+          if (req.method === 'PATCH' && over.limited && !limitedOnce) {
+            limitedOnce = true
+            over.limited.during?.({
+              decision: () => decision ?? decisionOf(),
+              setDecision: (d) => (decision = d),
+            })
+            res.writeHead(429, { 'retry-after': '0' })
+            return res.end('{}')
+          }
           if (req.method === 'PATCH') marker = (JSON.parse(body) as { value: string }).value
           return send(200, { name: 'DOOP_DEPLOY_SUSPENDED', value: marker })
         }
@@ -745,5 +762,38 @@ describe('the CLI end to end (a real process, real HTTP)', () => {
     expect(r.code).toBe(1)
     expect(r.marker).toBe(SUSPENDED)
     expect(r.evidence.reason).toMatch(/health/)
+  })
+
+  const patches = (seen: string[]) => seen.filter((x) => x.startsWith('PATCH'))
+  const live = () => decisionOf({ expires_at: new Date(Date.now() + 86_400_000).toISOString() })
+
+  it('rate limited once, nothing changed: waits, retries the write, and lifts', async () => {
+    const r = await cli({ limited: {} })
+    expect(r.code, r.out).toBe(0)
+    expect(patches(r.seen)).toHaveLength(2)
+    expect(r.marker).toMatch(new RegExp(`^clear:[0-9a-f]{32}:${RUN_ID}$`))
+    expect(r.evidence).toMatchObject({ outcome: 'lifted', marker_before: SUSPENDED, marker_after: r.marker })
+    expect(r.out).toMatch(/GitHub rate limit \(429\)/)
+  })
+
+  it('rate limited, then the approval is revoked in the wait: no retry, the suspension stands', async () => {
+    const r = await cli({
+      limited: { during: (s) => s.setDecision({ ...live(), revoked_at: '2026-11-20T03:00:01Z' }) },
+    })
+    expect(r.code).toBe(1)
+    expect(patches(r.seen)).toHaveLength(1)
+    expect(r.marker).toBe(SUSPENDED)
+    expect(r.evidence).toMatchObject({ outcome: 'refused', marker_after: null })
+    expect(r.evidence.reason).toMatch(/revoked/)
+  })
+
+  it('rate limited, then the approval expires in the wait: no retry, the suspension stands', async () => {
+    const r = await cli({
+      limited: { during: (s) => s.setDecision({ ...live(), expires_at: new Date(Date.now() - 1000).toISOString() }) },
+    })
+    expect(r.code).toBe(1)
+    expect(patches(r.seen)).toHaveLength(1)
+    expect(r.marker).toBe(SUSPENDED)
+    expect(r.evidence.reason).toMatch(/expired/)
   })
 })
