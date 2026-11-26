@@ -16,7 +16,7 @@ vi.mock('../src/lib/frameBridge', () => ({
 
 const { useStore } = await import('../src/lib/store')
 const { buildLayerTree, isElementLocked, setElementLocked, LOCK_ATTR } = await import('../src/lib/layers')
-const { deleteLayer, replaceLayerHtml, setLayerLocked, shiftLayer, toggleLockSelection } =
+const { deleteLayer, replaceLayerHtml, setLayerLocked, shiftLayer, toggleLockSelection, unlockConfirmed } =
   await import('../src/lib/layerEdits')
 
 const page = (body: string) => `<!doctype html><html><head></head><body>${body}</body></html>`
@@ -135,7 +135,7 @@ describe('⌘⇧L', () => {
     updateFrame.mockClear()
     const frames = [frame(page('<section><p>A</p></section>')), { ...frame(''), id: 'f2', locked: true }]
     const canvas: Canvas = { id: 'c1', name: 'Canvas', frames } as Canvas
-    useStore.setState({ canvas, selectedId: 'f1', selectedIds: ['f1'], selectedElement: null })
+    useStore.setState({ canvas, selectedId: 'f1', selectedIds: ['f1'], selectedElement: null, connected: true })
   })
 
   it('toggles the picked layer through the frame HTML', () => {
@@ -154,7 +154,10 @@ describe('⌘⇧L', () => {
     expect(updateFrame).toHaveBeenCalledWith('f1', { locked: true })
     expect(useStore.getState().canvas?.frames.every((f) => f.locked)).toBe(true)
 
+    /* unlocking asks first (U1); the confirm's Unlock sends the writes */
     expect(toggleLockSelection()).toBe(true)
+    expect(updateFrame).toHaveBeenCalledTimes(1)
+    unlockConfirmed(['f1', 'f2'])
     expect(updateFrame).toHaveBeenCalledWith('f1', { locked: false })
     expect(updateFrame).toHaveBeenCalledWith('f2', { locked: false })
     expect(useStore.getState().canvas?.frames.some((f) => f.locked)).toBe(false)

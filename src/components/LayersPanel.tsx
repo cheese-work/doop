@@ -15,6 +15,8 @@ import { canEditOpenCanvas, pickedSelectors, useStore } from '../lib/store'
 import { layerPlacement } from '../lib/frameBridge'
 import { currentPageCanvas, usePageCanvas } from '../lib/pages'
 import { PagesPanel, sectionHeading } from './PagesPanel'
+import { FrameLockPanel } from './FrameLockPanel'
+import { lockMarker, useLockUi } from '@/lib/frameLock'
 import { getIdentity } from '../lib/identity'
 import { deleteFramesTracked } from '../lib/history'
 import { renameComponent, rootPartKey } from '../lib/components'
@@ -684,6 +686,7 @@ export function LayersPanel({
               <div aria-hidden className="pointer-events-none mx-1.5 h-0.5 rounded-full bg-brand" />
             )}
           </PanelBody>
+          <FrameLockPanel />
           <PanelSearch value={query} placeholder={t('panels.layersSearch')} onChange={setQuery} />
         </>
       )}
@@ -835,6 +838,7 @@ function FrameRow({
     renameFrame(frame.id, value),
   )
   const stream = useStore((s) => s.streams[frame.id])
+  const reading = useLockUi((s) => s.reading.includes(frame.id))
   const presences = useStore((s) => s.presences)
   const me = getIdentity().clientId
   const editors = Object.values(presences).filter(
@@ -858,6 +862,7 @@ function FrameRow({
             onCaret={onToggle}
             icon={<FrameIcon className="size-3.5" />}
             label={label}
+            marker={frame.locked && !reading ? lockMarker(frame) : undefined}
             className={cn(current && !selected && 'text-ink', dragging && 'opacity-40')}
             selected={selected}
             hidden={!!frame.hidden}
@@ -1056,6 +1061,8 @@ type RowProps = Omit<HTMLAttributes<HTMLDivElement>, 'onClick'> & {
   icon: ReactNode
   label: ReactNode
   detail?: string
+  /** a frame's lock: who locked it and when, always showing */
+  marker?: string
   selected: boolean
   /** where a dragged layer would land on this row; `root` is a line above
    *  it at the root, out of every frame */
@@ -1081,6 +1088,7 @@ function Row({
   icon,
   label,
   detail,
+  marker,
   selected,
   drop,
   className,
@@ -1145,6 +1153,14 @@ function Row({
         {icon}
       </span>
       <span className={cn('min-w-0 flex-1 overflow-hidden text-ellipsis', dimmed && 'opacity-50')}>{label}</span>
+      {marker && (
+        <span
+          data-testid="frame-lock-marker"
+          className="min-w-0 max-w-[60%] flex-none truncate text-caption font-normal text-ink-faint"
+        >
+          {marker}
+        </span>
+      )}
       {/* the class or id that names the element, as a quiet right-hand tag */}
       {detail && (
         <span className="min-w-0 max-w-[45%] flex-none truncate text-[11px] font-normal text-ink-faint group-hover:hidden">

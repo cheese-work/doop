@@ -349,4 +349,28 @@ export const panels: Catalog['panels'] = {
 
   panelStateRetry: 'Tentar de novo',
   panelStateReconnecting: 'Reconectando…',
+
+  /* Bloqueio de frame (U1): a confirmação, as linhas do marcador, o aviso de recusa e os estados do painel */
+  lockedBy: 'Bloqueado por {by}.',
+  lockedByOn: 'Bloqueado por {by} em {when}.',
+  lockConfirmTitle: 'Desbloquear {name}?',
+  lockConfirmTitleMany: 'Desbloquear {count} frames?',
+  lockConfirmBody: 'Qualquer pessoa, inclusive agentes, poderá editá-lo.',
+  lockConfirmBodyMany: 'Qualquer pessoa, inclusive agentes, poderá editá-los.',
+  lockConfirmKeep: 'Manter bloqueado',
+  lockConfirmUnlock: 'Desbloquear',
+  lockInfoBy: 'Por',
+  lockInfoWhen: 'Quando',
+  lockInfoReason: 'Motivo',
+  lockRefusedHead: 'Edição recusada: {name} está bloqueado.',
+  lockRefusedReason: 'Motivo: {reason}.',
+  lockRefusedTail: 'Desbloqueie para mudar o HTML ou o tamanho. Renomear e mover continuam funcionando.',
+  lockPanelLoading: 'Lendo o estado do bloqueio…',
+  lockPanelEmptyTitle: 'Nenhum frame bloqueado',
+  lockPanelEmptyHint:
+    'Bloqueie um frame para protegê-lo de edições. Clique com o botão direito num frame ou use Cmd+Shift+L.',
+  lockPanelEmptyAction: 'Bloquear frame',
+  lockPanelPickFirst: 'Selecione um frame para bloqueá-lo',
+  lockPanelOffline: 'Offline. Bloquear e desbloquear estão em pausa. Os frames bloqueados continuam bloqueados.',
+  lockPanelError: 'Não foi possível desbloquear {name} ({status}). Continua bloqueado.',
 }

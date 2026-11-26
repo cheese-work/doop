@@ -60,7 +60,7 @@ describe('LayersPanel ⌫', () => {
     const canvas: Canvas = { id: 'c1', name: 'Canvas', frames: [frame] } as Canvas
     /* setCanvas also picks the active page; the panel lists that page's frames */
     useStore.getState().setCanvas(canvas)
-    useStore.setState({ selectedId: 'f1', selectedIds: ['f1'], selectedElement: null })
+    useStore.setState({ selectedId: 'f1', selectedIds: ['f1'], selectedElement: null, connected: true })
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)

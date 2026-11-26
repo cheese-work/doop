@@ -6,6 +6,7 @@ import { restack, roomAt, stackOf, type StackWrite } from '../../shared/frameSta
 import { canEditOpenCanvas, pickedSelectors, useStore } from './store'
 import { t } from './i18n'
 import { api, ApiError, errorMessage } from './api'
+import { isUnlockRefusal, lockedRefusal, lockFields, setReading, useLockUi } from './frameLock'
 import { formatElementText, inspectElement, nudgeElements, requestFrame } from './frameBridge'
 import { isCanvasElement } from './drawing'
 import { duplicateFrames } from './frameClipboard'
@@ -132,9 +133,21 @@ export function renameLayer(frameId: string, selector: string, value: string) {
 
 export function saveFrameHtml(frame: Frame, html: string) {
   // Layer commands each need their own undo step, even when invoked rapidly.
-  recordUpdate(frame.id, { html: frame.html }, { html }, true)
+  const entry = recordUpdate(frame.id, { html: frame.html }, { html }, true)
   useStore.getState().patchFrameLocal(frame.id, { html })
-  trackSave(api.updateFrame(frame.id, { html }).catch(console.error))
+  trackSave(
+    api.updateFrame(frame.id, { html }).catch((err: unknown) => {
+      /* a locked frame refuses the edit (423): put its html back and say who
+         locked it, when and why */
+      const refusal = lockedRefusal(err, frame)
+      if (!refusal) return console.error(err)
+      if (entry) dropEntry(entry)
+      const s = useStore.getState()
+      if (s.canvas?.frames.find((f) => f.id === frame.id)?.html === html)
+        s.patchFrameLocal(frame.id, { html: frame.html })
+      s.pushNotice(refusal)
+    }),
+  )
 }
 
 /* ---- locks ---- */
@@ -156,23 +169,63 @@ export function setLayerLocked(frame: Frame, selector: string, locked: boolean):
 }
 
 /** Lock or unlock frames together, as one undo step. Frames already in the
- *  wanted state are left alone. */
+ *  wanted state are left alone. Offline, both pause. Unlocking only asks: the
+ *  one confirm (UnlockFrameDialog) raised here serves every entry point (the
+ *  Layers rows, the Inspector, the frame menu, ⌘⇧L), and its Unlock calls
+ *  `unlockConfirmed`. */
 export function setFramesLocked(frames: Frame[], locked: boolean) {
   const changed = frames.filter((f) => !!f.locked !== locked)
-  if (!changed.length) return
+  if (!changed.length || !useStore.getState().connected) return
+  if (locked) writeFramesLocked(changed, true)
+  else useLockUi.setState({ confirm: { frameIds: changed.map((f) => f.id) }, error: null })
+}
+
+/** The confirm's Unlock, and the error state's Try again. */
+export function unlockConfirmed(frameIds: string[]) {
+  const s = useStore.getState()
+  const frames = (s.canvas?.frames ?? []).filter((f) => frameIds.includes(f.id) && f.locked)
+  if (frames.length && s.connected) writeFramesLocked(frames, false)
+}
+
+function writeFramesLocked(changed: Frame[], locked: boolean) {
   recordUpdates(changed.map((f) => ({ frameId: f.id, before: { locked: !!f.locked }, after: { locked } })))
+  useLockUi.setState({ error: null })
   const store = useStore.getState()
   for (const f of changed) {
     store.patchFrameLocal(f.id, { locked })
     /* as for the eye: undo waits for the save, and a save the server refused
        is rolled back so the lock shows what everyone else sees */
-    trackSave(
-      api.updateFrame(f.id, { locked }).catch((err: unknown) => {
-        const s = useStore.getState()
-        s.patchFrameLocal(f.id, { locked: !locked })
-        s.pushNotice(errorMessage(err, `Couldn’t ${locked ? 'lock' : 'unlock'} “${f.name}”`))
-      }),
-    )
+    trackSave(api.updateFrame(f.id, { locked }).catch((err: unknown) => failedLock(f, locked, err)))
+  }
+}
+
+async function failedLock(f: Frame, locked: boolean, err: unknown) {
+  const s = useStore.getState()
+  const rollBack = () => s.patchFrameLocal(f.id, { locked: !locked })
+  if (!locked && isUnlockRefusal(err)) {
+    /* refused: it is still locked, and the A1 error state says so */
+    rollBack()
+    useLockUi.setState({ error: { frameIds: [f.id], name: f.name, status: err.status } })
+    return
+  }
+  if (err instanceof ApiError) {
+    rollBack()
+    s.pushNotice(lockedRefusal(err, f) ?? errorMessage(err, `Couldn’t ${locked ? 'lock' : 'unlock'} “${f.name}”`))
+    return
+  }
+  /* the reply was lost: the write may have landed, so no marker is drawn from
+     a guess. Read the frame again and show what the server holds. */
+  setReading(f.id, true)
+  try {
+    const canvas = await api.getCanvas(f.canvasId)
+    const fresh = canvas.frames.find((x) => x.id === f.id)
+    if (!fresh) return
+    useStore.getState().patchFrameLocal(f.id, lockFields(fresh))
+  } catch {
+    rollBack()
+    useStore.getState().pushNotice(`Couldn’t ${locked ? 'lock' : 'unlock'} “${f.name}”`)
+  } finally {
+    setReading(f.id, false)
   }
 }
 

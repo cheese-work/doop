@@ -64,6 +64,7 @@ import { withWebFontLinks } from '../../shared/webFonts'
 import { withTokenBlock } from '../../shared/designTokens'
 import { canvasFonts } from '../lib/customFonts'
 import { t as translate, useT } from '../lib/i18n'
+import { lockMarker, useLockUi } from '../lib/frameLock'
 
 /** ?comment=<rootId> — the link in a comment email. The thread opens once
  *  Stage has selected the linked frame (deselection closes popovers, and on
@@ -267,6 +268,7 @@ export const FrameView = memo(function FrameView({
   mounted?: boolean
 }) {
   const t = useT()
+  const lockReading = useLockUi((s) => s.reading.includes(frame.id))
   const [menuTarget, setMenuTarget] = useState<
     'frame' | 'loading' | { selector: string | null; html: string; hit?: LiveHit }
   >('frame')
@@ -1824,6 +1826,14 @@ export const FrameView = memo(function FrameView({
                 </Tooltip>
               )}
               <span className="min-w-0 overflow-hidden text-ellipsis">{frame.name}</span>
+              {frame.locked && !lockReading && (
+                <span
+                  data-testid="frame-lock-marker"
+                  className="inline-flex h-[18px] shrink-0 items-center rounded-tag bg-sub px-1.5 text-caption font-normal text-ink-soft shadow-ring @max-[180px]/title:hidden"
+                >
+                  {lockMarker(frame)}
+                </span>
+              )}
               <FrameApprovalBadge frame={frame} />
               <span className="flex shrink-0 gap-1 @max-[180px]/title:order-first">
                 {stream && (
