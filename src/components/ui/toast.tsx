@@ -28,7 +28,7 @@ function ToastAction({ className, ...props }: React.ComponentProps<'button'>) {
       type="button"
       data-slot="toast-action"
       className={cn(
-        'rounded-[7px] border-0 bg-paper px-2.5 py-1 text-body/4 font-bold text-ink transition-opacity hover:opacity-90',
+        'rounded-[7px] border-0 bg-paper px-2.5 py-1 text-body/4 font-bold text-ink transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:bg-paper/25 disabled:text-paper/60 disabled:hover:opacity-100',
         className,
       )}
       {...props}

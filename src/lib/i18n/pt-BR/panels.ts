@@ -355,6 +355,7 @@ export const panels: Catalog['panels'] = {
   archiveSelected: 'Arquivar seleção',
   archiveToast: { one: '{count} frame arquivado', other: '{count} frames arquivados' },
   archiveUndo: 'Desfazer',
+  archiveUndoPaused: 'Offline. Desfazer em pausa.',
   archiveRestoreTo: 'Restaurar em {page}',
   archiveRestoreToPage: 'Restaurar em outra página…',
   archivePickPage: 'Restaurar em outra página',

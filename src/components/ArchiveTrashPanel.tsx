@@ -360,6 +360,7 @@ export function ArchiveTrashPanel() {
         createPortal(
           <Toast className="pointer-events-auto">
             {t('panels.archiveToast', { count: toast.length })}
+            {!connected && <span className="text-paper/70">{t('panels.archiveUndoPaused')}</span>}
             <ToastAction disabled={!connected} onClick={() => void undoArchive(toast)}>
               {t('panels.archiveUndo')}
             </ToastAction>

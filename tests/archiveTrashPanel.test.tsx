@@ -171,6 +171,20 @@ describe('Archive and Trash (U2)', () => {
     expect(mocks.unarchiveFrame).not.toHaveBeenCalled()
   })
 
+  it('offline Undo looks disabled and the toast says it is paused', async () => {
+    useStore.getState().setCanvas(canvasWith([live]))
+    useStore.setState({ selectedIds: ['f1'] })
+    mocks.archiveFrames.mockResolvedValue({ pages, frames: [archived] })
+    await mount(<ArchiveTrashPanel />)
+    await click(button('Archive selected'))
+    const toast = document.body.querySelector('[data-slot="toast"]') as HTMLElement
+    const undo = button('Undo') as HTMLButtonElement
+    expect(undo.className).toMatch(/disabled:/)
+    expect(toast.textContent).not.toMatch(/Offline/)
+    act(() => useStore.setState({ connected: false }))
+    expect(toast.textContent).toMatch(/Offline.*Undo paused/)
+  })
+
   it('Restore to a chosen page sends that pageId', async () => {
     useStore.getState().setCanvas(canvasWith([archived]))
     mocks.unarchiveFrame.mockResolvedValue({ frame: { ...live, pageId: 'p2' }, changed: true })

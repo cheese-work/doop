@@ -352,6 +352,7 @@ export const panels = {
   archiveSelected: 'Archive selected',
   archiveToast: { one: 'Archived {count} frame', other: 'Archived {count} frames' },
   archiveUndo: 'Undo',
+  archiveUndoPaused: 'Offline. Undo paused.',
   archiveRestoreTo: 'Restore to {page}',
   archiveRestoreToPage: 'Restore to page…',
   archivePickPage: 'Restore to page',
