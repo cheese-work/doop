@@ -20,7 +20,7 @@ import type { Request, Response } from 'express'
 import { fromNodeHeaders } from 'better-auth/node'
 import { z } from 'zod'
 import { SnapshotError } from './pageSnapshots.ts'
-import { FrameStaleError, NO_OPEN_PAGE, NoOpenPageError, PageLimitError, store } from './store.ts'
+import { FrameStaleError, NO_OPEN_PAGE, NoOpenPageError, PageLimitError, PurgeInProgressError, store } from './store.ts'
 import { PageFinishedError } from './pageState.ts'
 import { PolicyRefused } from './writePolicy.ts'
 import { addPage, savePages, updateFrameMeta } from './pageTools.ts'
@@ -246,7 +246,8 @@ function refusalOf(e: unknown) {
     e instanceof FrameStaleError ||
     e instanceof actions.FrameWriteKeyConflictError ||
     e instanceof actions.FrameEditError ||
-    e instanceof NoOpenPageError
+    e instanceof NoOpenPageError ||
+    e instanceof PurgeInProgressError
   )
     return err(e.message)
   throw e
@@ -3200,7 +3201,7 @@ export function buildMcpServer(
         if (!restored) return err(`no deleted page ${page_id} on canvas ${canvas_id}`)
         return text({ ok: true, page: restored.page, frames: restored.frames.map((f) => frameSummary(f)) })
       } catch (e) {
-        if (e instanceof PageLimitError) return err(e.message)
+        if (e instanceof PageLimitError || e instanceof PurgeInProgressError) return err(e.message)
         throw e
       }
     },
@@ -3229,7 +3230,8 @@ export function buildMcpServer(
   )
 
   const snapshotErr = (e: unknown) => {
-    if (e instanceof SnapshotError || e instanceof PageFinishedError) return err(e.message)
+    if (e instanceof SnapshotError || e instanceof PageFinishedError || e instanceof PurgeInProgressError)
+      return err(e.message)
     throw e
   }
 
