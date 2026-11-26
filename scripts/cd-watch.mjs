@@ -207,8 +207,8 @@ export function deploymentRecord(evidence) {
 
 // ---------------------------------------------------------------------------------------------
 // CLI: node scripts/cd-watch.mjs freshness | live | record <deploy-evidence.json>. Inputs come from env. Any error fails the run.
-const gh = (args) => {
-  const r = spawnSync('gh', args, { encoding: 'utf8', env: process.env })
+const gh = (args, input) => {
+  const r = spawnSync('gh', args, { encoding: 'utf8', env: process.env, input })
   if (r.status !== 0) throw Object.assign(new Error(`gh ${args.join(' ')} failed: ${r.stderr.trim()}`), { r })
   return r.stdout
 }
@@ -290,13 +290,21 @@ export function recordDeployment({ repo, evidence, runId, gh, recordedSha }) {
   // The watchers order deploys by confirmation time: a record without it would be unusable, so the run goes red.
   if (!payload.confirmedAt) throw new Error('the confirmed evidence has no confirmation time; cannot record the deploy')
   const post = (route, fields) => JSON.parse(gh(ghPostArgs(repo, route, fields)))
-  const created = post('deployments', {
-    ref: payload.ref,
-    environment: payload.environment,
-    description: `doop deploy train: confirmed on C00 (D2 run ${runId}, confirmed ${payload.confirmedAt})`,
-    auto_merge: false,
-    production_environment: true,
-  })
+  // A JSON body (`--input -`) because `-f`/`-F` cannot send an empty array. `required_contexts: []` is needed: without it
+  // GitHub answers 409 "Commit status checks failed" whenever the candidate commit has a failing or pending status.
+  const created = JSON.parse(
+    gh(
+      ['api', '-X', 'POST', `repos/${repo}/deployments`, '--input', '-'],
+      JSON.stringify({
+        ref: payload.ref,
+        environment: payload.environment,
+        description: `doop deploy train: confirmed on C00 (D2 run ${runId}, confirmed ${payload.confirmedAt})`,
+        auto_merge: false,
+        production_environment: true,
+        required_contexts: [],
+      }),
+    ),
+  )
   post(`deployments/${created.id}/statuses`, { state: 'success', environment: payload.environment })
   if (recordedSha()?.sha !== payload.ref) {
     throw new Error(`the deployment record of ${short(payload.ref)} did not read back`)
