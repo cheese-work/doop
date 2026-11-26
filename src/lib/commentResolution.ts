@@ -25,14 +25,23 @@ export function resolveBody(reason: CommentResolution, typed: string): ResolveBo
   return reason === 'wont_fix' ? { reason, note: text } : { reason, ref: text }
 }
 
-/** The Multica issue a thread waits on: its newest reply keyed `q:<issue>`
- *  (a question put to Multica) with no later `e:` answer. Null otherwise. */
-export function waitsOn(thread: Pick<CommentThreadGroup, 'root' | 'replies'>): string | null {
+/** What a thread waits on: a question put to Multica. The designer's reply
+ *  `q:<event id>` says "Moved to Multica: <issue key>"; the answer comes back as
+ *  a reply `a:<same event id>` and clears the wait. Null when the thread is
+ *  resolved or no question is unanswered. `issueKey` is null when the reply
+ *  names no issue. */
+export function waitsOn(thread: Pick<CommentThreadGroup, 'root' | 'replies'>): { issueKey: string | null } | null {
   if (thread.root.resolvedAt) return null
+  const answered = new Set<string>()
+  for (const reply of thread.replies) {
+    const key = reply.clientRequestId
+    if (key?.startsWith('a:')) answered.add(key.slice(2))
+  }
   for (let i = thread.replies.length - 1; i >= 0; i--) {
-    const key = thread.replies[i]!.clientRequestId
-    if (key?.startsWith('q:')) return key.slice(2) || null
-    if (key?.startsWith('e:')) return null
+    const reply = thread.replies[i]!
+    const key = reply.clientRequestId
+    if (!key?.startsWith('q:') || answered.has(key.slice(2))) continue
+    return { issueKey: /Moved to Multica:\s*([A-Z][A-Z0-9]*-\d+)/.exec(reply.text)?.[1] ?? null }
   }
   return null
 }
@@ -86,8 +95,9 @@ export function writeReviewAnchor(userId: string, canvasId: string, at: number):
   }
 }
 
-/** A link to a Multica issue, when the build knows where Multica's web app
- *  lives (`VITE_MULTICA_WEB_URL`); otherwise null and the key is plain text. */
+/** A link to a Multica issue, when the build knows the workspace's web URL
+ *  (`VITE_MULTICA_WEB_URL`, e.g. `https://multica.example/cheese-work`, the shape
+ *  of the server's `MULTICA_WEB_URL`); otherwise null and the key is plain text. */
 export function multicaIssueUrl(key: string): string | null {
   const base: unknown = import.meta.env.VITE_MULTICA_WEB_URL
   if (typeof base !== 'string' || !/^https?:\/\//.test(base)) return null

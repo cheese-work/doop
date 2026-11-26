@@ -7,6 +7,7 @@ import { posthog } from '../lib/posthog'
 import { timeAgo } from '../lib/time'
 import { isComposingEnter } from '../lib/keys'
 import { isCanvasComment } from '../../shared/comments'
+import { canvasPages } from '../../shared/pages'
 import { pageThreads, threadState, type CommentThreadGroup, type ThreadState } from '../lib/comments'
 import { cn } from '@/lib/utils'
 import {
@@ -62,7 +63,12 @@ export function CommentsPanel() {
 
   /* the anchor is this browser's, per user and canvas: "Mark reviewed" moves it */
   const anchor = canvas && userId ? readReviewAnchor(userId, canvas.id) : 0
-  const summary = reviewSummary(threads, anchor)
+  /* the anchor is canvas-wide, so the summary reads every page, not the one in view */
+  const canvasThreads = useMemo(
+    () => (canvas ? canvasPages(canvas).flatMap((page) => pageThreads(comments, canvas, page.id)) : []),
+    [comments, canvas],
+  )
+  const summary = reviewSummary(canvasThreads, anchor)
   const markReviewed = () => {
     if (!canvas || !userId) return
     writeReviewAnchor(userId, canvas.id, Date.now())
@@ -296,7 +302,12 @@ function ThreadRow({ thread }: { thread: CommentThreadGroup }) {
             {t('stage.waitsOnMultica')}
           </Badge>
           <span className="text-caption text-ink-faint">
-            {t('stage.questionOn')} <IssueLink issueKey={waitingOn} />. {t('stage.staysOpen')}
+            {waitingOn.issueKey && (
+              <>
+                {t('stage.questionOn')} <IssueLink issueKey={waitingOn.issueKey} />.{' '}
+              </>
+            )}
+            {t('stage.staysOpen')}
           </span>
         </div>
       )}

@@ -32,6 +32,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.unstubAllEnvs()
   act(() => root.unmount())
   container.remove()
   vi.restoreAllMocks()
@@ -113,17 +114,42 @@ it("won't fix needs a note: the dialog's Resolve stays off until a one-line reas
   expect(button('Resolve', modal)!.disabled).toBe(false)
 })
 
-it('keeps a q: thread open with the Multica link and offers no Resolve', () => {
-  show([
-    base({ id: 'root', text: 'Which payment methods can we ship by launch?' }),
-    base({ id: 'ask', parentId: 'root', clientRequestId: 'q:CHE-5301', at: 11 }),
-  ])
+const question = (over: Partial<ElementComment> = {}) =>
+  base({ id: 'ask', parentId: 'root', clientRequestId: 'q:57', text: 'Moved to Multica: CHE-5301', at: 11, ...over })
+
+it('keeps a q: thread open with a working Multica link and offers no Resolve', () => {
+  vi.stubEnv('VITE_MULTICA_WEB_URL', 'https://multica.example/cheese-work/')
+  show([base({ id: 'root', text: 'Which payment methods can we ship by launch?' }), question()])
   expect(text()).toContain('Open · waits on Multica')
   expect(text()).toContain('Question on CHE-5301')
   expect(text()).toContain('Thread stays open until it is answered there.')
-  expect([...container.querySelectorAll('a, [data-slot="issue-link"]')].map((a) => a.textContent)).toContain('CHE-5301')
+  const link = container.querySelector<HTMLAnchorElement>('a[data-slot="issue-link"]')
+  expect(link?.textContent).toBe('CHE-5301')
+  expect(link?.getAttribute('href')).toBe('https://multica.example/cheese-work/issues/CHE-5301')
   expect(button('Resolve')).toBeUndefined()
   expect(button(/^Open\s*1/)).toBeDefined()
+})
+
+it('shows the key as plain text when the build has no Multica URL', () => {
+  show([base({ id: 'root' }), question()])
+  expect(container.querySelector('a')).toBeNull()
+  expect(container.querySelector('[data-slot="issue-link"]')?.textContent).toBe('CHE-5301')
+})
+
+it('stays open on a q: reply that names no issue, without a link', () => {
+  show([base({ id: 'root' }), question({ text: 'Asked in Multica' })])
+  expect(text()).toContain('Open · waits on Multica')
+  expect(text()).not.toContain('Question on')
+  expect(button('Resolve')).toBeUndefined()
+})
+
+it('stops waiting when the matching a: answer arrives, and not for another event id', () => {
+  const root = base({ id: 'root' })
+  show([root, question(), base({ id: 'other', parentId: 'root', clientRequestId: 'a:99', text: 'Other', at: 12 })])
+  expect(text()).toContain('Open · waits on Multica')
+  show([root, question(), base({ id: 'ans', parentId: 'root', clientRequestId: 'a:57', text: 'Answered', at: 12 })])
+  expect(text()).not.toContain('waits on Multica')
+  expect(button('Resolve')).toBeDefined()
 })
 
 it('draws the reason chip and its detail on a resolved thread', () => {
@@ -149,7 +175,7 @@ it('counts the summary from the fixture since the stored anchor, and Mark review
     base({ id: 'old', resolvedAt: 500, resolution: 'wont_fix', resolutionNote: 'n' }),
     base({ id: 'open' }),
     base({ id: 'wait' }),
-    base({ id: 'ask', parentId: 'wait', clientRequestId: 'q:CHE-5301', at: 11 }),
+    question({ parentId: 'wait' }),
   ])
   expect(text()).toContain('Since last review')
   expect(text()).toContain('2 resolved · 1 addressed, 1 moved to Multica')
@@ -168,6 +194,44 @@ it('keeps the anchor per user and canvas', () => {
   show([base({ id: 'a', resolvedAt: 2000, resolution: 'addressed', resolutionRef: 'v3' })])
   /* no anchor of this user on this canvas: every resolution counts */
   expect(text()).toContain('1 resolved · 1 addressed')
+})
+
+function showTwoPages(activePageId: string, comments: ElementComment[]) {
+  useStore.setState({
+    connected: true,
+    canvas: {
+      id: 'c',
+      pages: [
+        { id: 'p', name: 'A' },
+        { id: 'p2', name: 'B' },
+      ],
+      frames: [
+        { id: 'f', pageId: 'p', name: 'Cart' },
+        { id: 'f2', pageId: 'p2', name: 'Pay' },
+      ],
+    } as Canvas,
+    activePageId,
+    comments,
+  })
+  act(() => root.render(<CommentsPanel />))
+}
+
+it("summarizes the whole canvas, so Mark reviewed on one page never hides another page's resolutions", () => {
+  localStorage.setItem(ANCHOR_KEY, '1000')
+  const comments = [
+    base({ id: 'a', frameId: 'f', resolvedAt: 2000, resolution: 'addressed', resolutionRef: 'v3' }),
+    base({ id: 'b', frameId: 'f2', resolvedAt: 3000, resolution: 'moved', resolutionRef: 'CHE-9' }),
+    base({ id: 'o', frameId: 'f2' }),
+  ]
+  showTwoPages('p', comments)
+  expect(text()).toContain('2 resolved · 1 addressed, 1 moved to Multica')
+  expect(text()).toContain('1 still open')
+  showTwoPages('p2', comments)
+  expect(text()).toContain('2 resolved · 1 addressed, 1 moved to Multica')
+  click(button('Mark reviewed'))
+  expect(text()).toContain('0 resolved')
+  showTwoPages('p', comments)
+  expect(text()).toContain('0 resolved')
 })
 
 it('renders no "Suggested" hint, even for an e: reply that names a version', () => {
