@@ -97,9 +97,10 @@ async function mount(node: React.ReactNode) {
   await flush()
 }
 function button(label: string | RegExp): HTMLElement {
-  const el = [...container.querySelectorAll<HTMLElement>('button, [role="option"]')].find((b) =>
-    typeof label === 'string' ? b.textContent?.trim() === label : label.test(b.textContent ?? ''),
-  )
+  const el = [...container.querySelectorAll<HTMLElement>('button, [role="option"]')].find((b) => {
+    const name = b.getAttribute('aria-label') ?? b.textContent ?? ''
+    return typeof label === 'string' ? name.trim() === label : label.test(name)
+  })
   if (!el) throw new Error(`no control "${String(label)}" in: ${container.textContent}`)
   return el
 }
@@ -199,17 +200,44 @@ describe('Archive and Trash (U2)', () => {
     expect(container.textContent).toMatch(/Restored “Hero” to Home/)
   })
 
-  it('Trash shows who deleted and when, restores, and never offers Delete forever', async () => {
+  it('Trash shows when, never claims a deleter it does not have, restores, and never offers Delete forever', async () => {
     useStore.getState().setCanvas(canvasWith([archived]))
     mocks.canvasTrash.mockResolvedValue({ frames: [trashed], pages: [] })
     mocks.restoreFrame.mockResolvedValue({ ...trashed, deletedAt: undefined })
     await mount(<ArchiveTrashPanel />)
-    expect(container.textContent).toMatch(/Deleted by Ben/)
-    expect(container.textContent).toMatch(/Nov 27, 2026/)
+    const row = container.querySelector('[data-trash-row="t1"]')
+    expect(row?.textContent).toMatch(/Deleted · Nov 27, 2026/)
+    expect(container.textContent).not.toMatch(/Deleted by/)
     expect(container.textContent).not.toMatch(/delete forever/i)
-    await click(button('Restore'))
+    await click(button('Restore Old card'))
     expect(mocks.restoreFrame).toHaveBeenCalledWith('t1')
     act(() => useStore.setState({ connected: false }))
     expect(container.textContent).not.toMatch(/delete forever/i)
+    const offlineRestore = container.querySelector<HTMLButtonElement>('[aria-label="Restore Old card"]')
+    expect(offlineRestore === null || offlineRestore.disabled).toBe(true)
+  })
+
+  it('Trash names the deleter only when the server sends deletedBy', async () => {
+    useStore.getState().setCanvas(canvasWith([archived]))
+    mocks.canvasTrash.mockResolvedValue({ frames: [{ ...trashed, deletedBy: 'Cara' }], pages: [] })
+    await mount(<ArchiveTrashPanel />)
+    expect(container.textContent).toMatch(/Deleted by Cara · Nov 27, 2026/)
+    expect(container.textContent).not.toMatch(/Ben/)
+  })
+
+  it('Archive row actions are compact icon buttons with names and phone-size targets', async () => {
+    useStore.getState().setCanvas(canvasWith([archived]))
+    await mount(<ArchiveTrashPanel />)
+    const row = container.querySelector('[data-archive-row="f1"]') as HTMLElement
+    const actions = [...row.querySelectorAll<HTMLButtonElement>('button')]
+    expect(actions.map((b) => b.getAttribute('aria-label'))).toEqual([
+      'Restore to Home',
+      'Restore to page…',
+      'Move to Trash',
+    ])
+    for (const b of actions) {
+      expect(b.textContent?.trim()).toBe('')
+      expect(b.className).toMatch(/max-md:size-11/)
+    }
   })
 })

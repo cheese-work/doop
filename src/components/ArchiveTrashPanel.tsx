@@ -7,11 +7,15 @@ import { canEditOpenCanvas, useStore } from '@/lib/store'
 import { PanelState } from './PanelState'
 import { sectionHeading } from './PagesPanel'
 import { Button } from './ui/button'
+import { FolderIcon, HistoryIcon, TrashIcon } from './ui/icons'
 import { Note } from './ui/note'
 import { Toast, ToastAction } from './ui/toast'
 
 type Result = { tone: 'muted' | 'error' | 'success'; text: string }
 type TrashFrame = Frame & { purging?: true }
+
+/* Icon-only row action: 28px on desktop, 44px on a phone. */
+const ROW_ACTION = 'max-md:size-11'
 
 /* How long the archive toast keeps its Undo. */
 const TOAST_MS = 10_000
@@ -98,6 +102,15 @@ export function ArchiveTrashPanel() {
   const livePages = canvasPages(canvas).filter((p) => p.id !== ARCHIVE_PAGE_ID)
   const archivable = selectedIds.filter((id) => canvas.frames.some((f) => f.id === id && f.pageId !== ARCHIVE_PAGE_ID))
   const locked = !connected || busy
+  /* The deleter is named only when the server says so; the last editor is not the deleter (CHE-10382). */
+  const trashMeta = (frame: Frame) => {
+    const when = frame.deletedAt
+      ? new Date(frame.deletedAt).toLocaleString(getLocale(), { dateStyle: 'medium', timeStyle: 'short' })
+      : ''
+    return frame.deletedBy
+      ? t('panels.trashDeletedBy', { name: frame.deletedBy, when })
+      : t('panels.trashDeleted', { when })
+  }
 
   const inStore = (id: string) => useStore.getState().canvas?.frames.find((f) => f.id === id)
   const failure = (text: string): Result => ({ tone: 'error', text })
@@ -236,29 +249,56 @@ export function ArchiveTrashPanel() {
           {archived.map((frame) => {
             const originId = frame.archiveOrigin?.pageId
             const origin = livePages.find((p) => p.id === originId)
+            const originLabel = origin
+              ? t('panels.archiveRestoreTo', { page: origin.name })
+              : t('panels.archiveRestoreToPage')
             return (
               <div
                 key={frame.id}
                 data-archive-row={frame.id}
-                className="flex flex-col gap-1 rounded-row px-2 py-1.5 hover:bg-sub"
+                className="flex flex-col gap-1 rounded-row px-2 py-1 hover:bg-sub"
               >
-                <span className="truncate text-body text-ink">{frame.name}</span>
-                {frame.archiveOrigin && <Note>{t('panels.archiveArchivedBy', { name: frame.archiveOrigin.by })}</Note>}
-                <div className="flex flex-wrap gap-1">
+                <div className="flex items-center gap-1">
+                  <div className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate text-body text-ink">{frame.name}</span>
+                    {frame.archiveOrigin && (
+                      <Note>{t('panels.archiveArchivedBy', { name: frame.archiveOrigin.by })}</Note>
+                    )}
+                  </div>
                   <Button
-                    size="sm"
+                    size="icon-sm"
+                    variant="bare"
+                    className={ROW_ACTION}
                     disabled={locked}
+                    aria-label={originLabel}
+                    title={originLabel}
                     onClick={() => (origin ? void restoreArchived(frame) : setPicker(frame.id))}
                   >
-                    {origin ? t('panels.archiveRestoreTo', { page: origin.name }) : t('panels.archiveRestoreToPage')}
+                    <HistoryIcon />
                   </Button>
                   {origin && (
-                    <Button size="sm" variant="bare" disabled={locked} onClick={() => setPicker(frame.id)}>
-                      {t('panels.archiveRestoreToPage')}
+                    <Button
+                      size="icon-sm"
+                      variant="bare"
+                      className={ROW_ACTION}
+                      disabled={locked}
+                      aria-label={t('panels.archiveRestoreToPage')}
+                      title={t('panels.archiveRestoreToPage')}
+                      onClick={() => setPicker(frame.id)}
+                    >
+                      <FolderIcon />
                     </Button>
                   )}
-                  <Button size="sm" variant="bare" disabled={locked} onClick={() => void moveToTrash(frame)}>
-                    {t('panels.archiveMoveToTrash')}
+                  <Button
+                    size="icon-sm"
+                    variant="bare"
+                    className={ROW_ACTION}
+                    disabled={locked}
+                    aria-label={t('panels.archiveMoveToTrash')}
+                    title={t('panels.archiveMoveToTrash')}
+                    onClick={() => void moveToTrash(frame)}
+                  >
+                    <TrashIcon />
                   </Button>
                 </div>
                 {picker === frame.id && (
@@ -290,23 +330,25 @@ export function ArchiveTrashPanel() {
             </span>
           </div>
           {rows.map((frame) => (
-            <div key={frame.id} data-trash-row={frame.id} className="flex items-center gap-2 rounded-row px-2 py-1.5">
+            <div
+              key={frame.id}
+              data-trash-row={frame.id}
+              className="flex min-h-10 items-center gap-2 rounded-row px-2 py-1"
+            >
               <div className="flex min-w-0 flex-1 flex-col">
                 <span className="truncate text-body text-ink">{frame.name}</span>
-                <Note>
-                  {t('panels.trashDeletedBy', {
-                    name: frame.updatedBy,
-                    when: frame.deletedAt
-                      ? new Date(frame.deletedAt).toLocaleString(getLocale(), {
-                          dateStyle: 'medium',
-                          timeStyle: 'short',
-                        })
-                      : '',
-                  })}
-                </Note>
+                <Note>{trashMeta(frame)}</Note>
               </div>
-              <Button size="sm" disabled={locked || !!frame.purging} onClick={() => void restoreTrashed(frame)}>
-                {t('panels.trashRestore')}
+              <Button
+                size="icon-sm"
+                variant="bare"
+                className={ROW_ACTION}
+                disabled={locked || !!frame.purging}
+                aria-label={t('panels.trashRestoreFrame', { frame: frame.name })}
+                title={t('panels.trashRestoreFrame', { frame: frame.name })}
+                onClick={() => void restoreTrashed(frame)}
+              >
+                <HistoryIcon />
               </Button>
             </div>
           ))}
