@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import type { Frame } from '../../shared/types'
 import { ApiError } from './api'
 import { t } from './i18n'
+import { useStore } from './store'
 
 /* U1 (CHE-9395): what the lock UI shows and says. The wire fields are S1's:
    lockedBy, lockedAt (ms), lockReason on the frame, and a 423 body
@@ -90,11 +91,21 @@ export type UnlockRequest = { frameIds: string[] }
  *  could not be read back after a lost reply. */
 export type LockError = { frameIds: string[]; name: string; status: number | null }
 
+/** A refused edit, kept for the phone Inspector: its sheet covers the toast. */
+export type LockRefusal = { frameId: string; text: string }
+
 export const useLockUi = create<{
   confirm: UnlockRequest | null
   error: LockError | null
+  refusal: LockRefusal | null
   reading: string[]
-}>(() => ({ confirm: null, error: null, reading: [] }))
+}>(() => ({ confirm: null, error: null, refusal: null, reading: [] }))
+
+/** Say a refused edit twice: as the toast, and where an open phone sheet shows it. */
+export function noteRefusal(frameId: string, text: string) {
+  useStore.getState().pushNotice(text)
+  useLockUi.setState({ refusal: { frameId, text } })
+}
 
 export function setReading(frameId: string, on: boolean) {
   useLockUi.setState((s) => ({

@@ -6,7 +6,7 @@ import { restack, roomAt, stackOf, type StackWrite } from '../../shared/frameSta
 import { canEditOpenCanvas, pickedSelectors, useStore } from './store'
 import { t } from './i18n'
 import { api, ApiError, errorMessage } from './api'
-import { isUnlockRefusal, lockedRefusal, lockFields, setReading, useLockUi } from './frameLock'
+import { isUnlockRefusal, lockedRefusal, lockFields, noteRefusal, setReading, useLockUi } from './frameLock'
 import { formatElementText, inspectElement, nudgeElements, requestFrame } from './frameBridge'
 import { isCanvasElement } from './drawing'
 import { duplicateFrames } from './frameClipboard'
@@ -157,7 +157,7 @@ export function rollBackRefusedHtml(
   if (entry) dropEntry(entry)
   const s = useStore.getState()
   if (s.canvas?.frames.find((f) => f.id === frame.id)?.html === html) s.patchFrameLocal(frame.id, { html: before })
-  s.pushNotice(refusal)
+  noteRefusal(frame.id, refusal)
   return true
 }
 
@@ -200,7 +200,7 @@ export function unlockConfirmed(frameIds: string[]) {
 
 function writeFramesLocked(changed: Frame[], locked: boolean) {
   recordUpdates(changed.map((f) => ({ frameId: f.id, before: { locked: !!f.locked }, after: { locked } })))
-  useLockUi.setState({ error: null })
+  useLockUi.setState({ error: null, refusal: null })
   const store = useStore.getState()
   for (const f of changed) {
     store.patchFrameLocal(f.id, { locked })
@@ -221,7 +221,9 @@ async function failedLock(f: Frame, locked: boolean, err: unknown) {
   }
   if (err instanceof ApiError) {
     rollBack()
-    s.pushNotice(lockedRefusal(err, f) ?? errorMessage(err, `Couldn’t ${locked ? 'lock' : 'unlock'} “${f.name}”`))
+    const refusal = lockedRefusal(err, f)
+    if (refusal) noteRefusal(f.id, refusal)
+    else s.pushNotice(errorMessage(err, `Couldn’t ${locked ? 'lock' : 'unlock'} “${f.name}”`))
     return
   }
   /* the reply was lost: the write may have landed, so no marker is drawn from

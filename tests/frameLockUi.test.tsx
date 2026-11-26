@@ -129,7 +129,7 @@ const inspectorUnlock = () =>
 beforeEach(() => {
   updateFrame.mockReset().mockResolvedValue({})
   getCanvas.mockReset()
-  useLockUi.setState({ confirm: null, error: null, reading: [] })
+  useLockUi.setState({ confirm: null, error: null, refusal: null, reading: [] })
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
@@ -432,6 +432,51 @@ describe('the phone Inspector, which has no Layers panel', () => {
     click(retry())
     await flush()
     expect(updateFrame).toHaveBeenCalledWith('f1', { locked: false })
+  })
+
+  const refusal = () => container.querySelector('[data-testid="inspector-lock-refusal"]')
+  const refuseEdit = () =>
+    updateFrame.mockRejectedValueOnce(
+      new ApiError(
+        423,
+        JSON.stringify({
+          error: 'policy_refused: update_frame: frame is locked',
+          code: 'frame_locked',
+          lockedBy: 'Cheese',
+          lockedAt: LOCKED_AT,
+          reason: 'Direction B not chosen',
+        }),
+      ),
+    )
+
+  it('shows a refused edit inside the sheet: frame, who, when, why and what to do', async () => {
+    mountPhone(locked)
+    expect(refusal()).toBeNull()
+    refuseEdit()
+    saveFrameHtml(current(), '<p>x</p>')
+    await flush()
+    const text = refusal()?.textContent ?? ''
+    expect(text).toContain('Cart · phone is locked')
+    expect(text).toContain('Cheese')
+    expect(text).toContain('13 Nov 2026 16:20 ICT')
+    expect(text).toContain('Direction B not chosen')
+    expect(refusal()?.querySelector('[role="alert"]')).not.toBeNull()
+  })
+
+  it("takes the refusal away once the frame is unlocked, and never shows another frame's", async () => {
+    mountPhone(locked)
+    refuseEdit()
+    saveFrameHtml(current(), '<p>x</p>')
+    await flush()
+    expect(refusal()).not.toBeNull()
+    click(inspectorUnlock())
+    click(button('Unlock'))
+    await flush()
+    expect(current().locked).toBeFalsy()
+    expect(refusal()).toBeNull()
+    useLockUi.setState({ refusal: { frameId: 'other', text: 'x' } })
+    await flush()
+    expect(refusal()).toBeNull()
   })
 
   it('shows an unreadable lock state and a Try again that reads it again', async () => {

@@ -85,21 +85,39 @@ export function LockDetails({ frame }: { frame: Pick<Frame, 'lockedBy' | 'locked
 }
 
 /* The same error and Try again inside the phone's Inspector sheet (A1 at 390),
-   where there is no Layers panel to draw them. Only for this frame's error. */
+   where there is no Layers panel to draw them, and the refusal of an edit,
+   which the sheet would otherwise hide under itself as a toast. Only for this
+   frame's. */
 export function LockErrorNote({ frameId }: { frameId: string }) {
   const t = useT()
   const error = useLockUi((s) => (s.error?.frameIds.includes(frameId) ? s.error : null))
+  const refusal = useLockUi((s) => (s.refusal?.frameId === frameId ? s.refusal : null))
   const connected = useStore((s) => s.connected)
-  if (!error) return null
+  if (!error && !refusal) return null
   return (
-    <div data-testid="inspector-lock-error" className="flex flex-col gap-2">
-      <Callout role="alert" tone="error" className="flex items-start gap-2">
-        <AlertIcon aria-hidden className="mt-0.5 shrink-0" />
-        <span>{lockErrorText(error, t)}</span>
-      </Callout>
-      <Button className="self-start" disabled={!connected} onClick={() => retryLock(error)}>
-        {t('panels.panelStateRetry')}
-      </Button>
+    <div className="flex flex-col gap-2">
+      {refusal && (
+        <div data-testid="inspector-lock-refusal" className="flex flex-col gap-2">
+          <Callout role="alert" tone="error" className="flex items-start gap-2">
+            <AlertIcon aria-hidden className="mt-0.5 shrink-0" />
+            <span>{refusal.text}</span>
+          </Callout>
+          <Button className="self-start" onClick={() => useLockUi.setState({ refusal: null })}>
+            {t('canvas.dismiss')}
+          </Button>
+        </div>
+      )}
+      {error && (
+        <div data-testid="inspector-lock-error" className="flex flex-col gap-2">
+          <Callout role="alert" tone="error" className="flex items-start gap-2">
+            <AlertIcon aria-hidden className="mt-0.5 shrink-0" />
+            <span>{lockErrorText(error, t)}</span>
+          </Callout>
+          <Button className="self-start" disabled={!connected} onClick={() => retryLock(error)}>
+            {t('panels.panelStateRetry')}
+          </Button>
+        </div>
+      )}
     </div>
   )
 }
