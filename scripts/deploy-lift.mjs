@@ -1,5 +1,5 @@
 // The audited lift (CHE-5551, train S3b, plan CHE-5474 C-10.6 and C-10.7): the only way from `suspended:*` or
-// `armed:*` back to `clear:*`. It runs in `cd-lift.yml` on the C00 runner, under the host lock, and refuses unless
+// `armed:*` back to `clear:*`. It runs as the `lift` job of `cd-deploy.yml` (mode lift) on the C00 runner, under the host lock, and refuses unless
 // ONE approved Multica decision of action type doop.deploy_lift, answered by the configured approver (Cheese), names
 // the exact marker that stands now, and C00 is quiescent and healthy. Nothing is parsed from free text.
 //

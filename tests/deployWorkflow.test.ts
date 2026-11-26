@@ -386,8 +386,8 @@ describe('D2 S5: readback delay, confirm, rollback, evidence (CHE-5549, C-9, C-1
     expect(evidence).toMatch(/timeout-minutes: \d+/)
   })
 
-  it('the delay wait is not a C00 job: the lock group and the marker environment stay on the three C00 jobs', () => {
-    expect(d2.match(/group: c00-deploy-doop/g)).toHaveLength(3)
+  it('the delay wait is not a C00 job: the lock group and the marker environment stay on the C00 jobs (the lift job is the fourth)', () => {
+    expect(d2.match(/group: c00-deploy-doop/g)).toHaveLength(4)
     expect(d2.match(/environment: ci-app-token/g)).toHaveLength(3)
   })
 })

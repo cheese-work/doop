@@ -22,7 +22,7 @@
 #   c00.sh guard      refuse (exit 1) while an earlier compat migration's quiescence is unproven; re-proves the three
 #                     facts and clears the guard when they hold. apply, rollback and sweep run it first; the lift
 #                     job calls it. `guard-set run mig db user dbname app` writes it (compat-sandbox.mjs does).
-#   c00.sh lift       the C00 half of cd-lift.yml (CHE-5551, C-10.7): refuse while a compat guard holds, take the host
+#   c00.sh lift       the C00 half of the lift job of cd-deploy.yml (CHE-5551, C-10.7): refuse while a compat guard holds, take the host
 #                     lock, prove migration quiescence, read the running digest, revision label and container
 #                     health, and run scripts/deploy-lift.mjs lift under the same lock with those facts. That script
 #                     decides, re-reads the decision and the marker right before the write, and writes `clear:*`.

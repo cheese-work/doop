@@ -25,11 +25,11 @@ a skip too. This slice approves no deploy: nothing sets the switch to `on`, and 
 
 Repo variable `DOOP_DEPLOY_SUSPENDED` is the one thing that lets a train run. Its value is one of:
 
-| Value                                       | Meaning                                                     |
-| ------------------------------------------- | ----------------------------------------------------------- |
-| `clear:<nonce>:<lift run id or restore>`    | the train may run                                           |
-| `armed:<nonce>:<run id>:<sha>`              | a train run is changing C00                                 |
-| `suspended:<nonce>:<run id>:<sha>:<reason>` | stopped until the audited lift (`cd-lift.yml`) writes clear |
+| Value                                       | Meaning                                                                   |
+| ------------------------------------------- | ------------------------------------------------------------------------- |
+| `clear:<nonce>:<lift run id or restore>`    | the train may run                                                         |
+| `armed:<nonce>:<run id>:<sha>`              | a train run is changing C00                                               |
+| `suspended:<nonce>:<run id>:<sha>:<reason>` | stopped until the audited lift (`cd-deploy.yml` mode `lift`) writes clear |
 
 The nonce is 128 random bits. Absent, unreadable or any other shape reads as suspended; a prefix match is not
 enough. `scripts/deploy-marker.mjs` is the only writer. Every write reads the variable, checks it is the
@@ -54,12 +54,12 @@ value the writer expects, writes, and reads it back; a write it cannot prove fai
   **fails the run red**
   with its HTTP status and message; it is never a skip.
 
-Every failure leaves the marker `armed` or `suspended`, so the train stops until a lift. Lifting is `cd-lift.yml` (below).
+Every failure leaves the marker `armed` or `suspended`, so the train stops until a lift. Lifting is `cd-deploy.yml` mode `lift` (below).
 
-### The audited lift (`cd-lift.yml`, S3b, C-10.6 and C-10.7)
+### The audited lift (`cd-deploy.yml` mode `lift`, S3b, C-10.6 and C-10.7)
 
-The only way from `armed:*` or `suspended:*` back to `clear:*`. Dispatch only, one input: `decision_id`, the id of
-a Multica decision. No step is a human-typed command.
+The only way from `armed:*` or `suspended:*` back to `clear:*`. Dispatch only, with `mode=lift` and one lift input, `decision_id`, the id of
+a Multica decision. It is a job of `cd-deploy.yml`, the one workflow runner group `c00-deploy` allows for doop, and no train job runs in this mode. No step is a human-typed command.
 
 1. The dispatcher and the triggering login must both be in repo variable `DOOP_LIFT_DISPATCHERS` (checked first,
    before any secret is read). The job runs only on `cheese/main`, in environment `doop-lift`, on the C00 runner,

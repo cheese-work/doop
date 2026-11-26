@@ -15,14 +15,17 @@ name: CD deploy
 #                      C00 runs at that moment. The candidate rolls back to the retained predecessor by digest and the
 #                      predecessor is read back; a predecessor or a newer deploy is left alone; then suspend, and the
 #                      job fails
-#   evidence           every run: deploy-evidence.json (artifact) and the run summary (CHE-5549, C-12)
+#   evidence           every train, recovery and drill run: deploy-evidence.json (artifact) and the run summary (CHE-5549, C-12)
+#   lift (C00)         mode lift only (CHE-10091): the audited lift of the suspension marker; no other job runs
 #
 # The suspension marker (repo variable DOOP_DEPLOY_SUSPENDED, CHE-5545, plan C-10) is written only by the three
 # C00 jobs, with scripts/deploy-marker.mjs: a train run arms it before its first change and only a passing
 # confirm of that same run restores it; recovery and drill runs, and a rollback, write `suspended:*` and never
-# `clear:*`. Every failure leaves it armed or suspended, which stops the train. Lifting is cd-lift.yml.
+# `clear:*`. Every failure leaves it armed or suspended, which stops the train. Lifting is the `lift` job (mode lift).
 # The train ships OFF: the repository variable DOOP_DEPLOY_TRAIN is absent or not 'on', so a scheduled run
 # ends at `resolve` as a clean skip.
+# The lift lives here, not in a file of its own: runner group c00-deploy lists the workflow files that may use the
+# C00 runner, and this is the one of doop's that holds C00 jobs. tests/c00RunnerAllowList.test.ts keeps it so.
 # Schedule: 23:17, 07:17 and 15:17 UTC = 06:17, 14:17 and 22:17 ICT.
 on:
   schedule:
@@ -30,12 +33,13 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: train runs the schedule path; recovery and drill need an allowlisted login
+        description: train runs the schedule path; recovery and drill need an allowlisted login; lift writes the audited lift (needs decision_id)
         type: choice
         options:
           - train
           - recovery
           - drill
+          - lift
         default: train
       candidate_sha:
         description: Full commit SHA of the candidate (recovery and drill only)
@@ -49,6 +53,10 @@ on:
         description: Drill fault to inject (used from slice S6)
         type: string
         default: none
+      decision_id:
+        description: Lift only. Id of the approved Multica decision (action doop.deploy_lift) that names the marker to lift
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -57,8 +65,94 @@ permissions:
 # The lock is the group `c00-deploy-doop` on each C00 job below, which is never cancelled.
 
 jobs:
+  # Mode lift (CHE-5551, train S3b, plan CHE-5474 C-10.6 and C-10.7; folded in here by CHE-10091): the audited lift. It
+  # is the only way from `armed:*` or `suspended:*` back to `clear:*`, and nothing but this job writes a lift.
+  #
+  # Dispatch only, with the id of a Multica decision (`decision_id`). The dispatcher (and the login that triggered the
+  # run) must be in vars.DOOP_LIFT_DISPATCHERS. On the C00 runner, under the host lock, scripts/deploy-lift.mjs refuses
+  # unless ALL hold:
+  #   - the decision is action type doop.deploy_lift (v1), state approved, approved by vars.DOOP_LIFT_APPROVER_ID
+  #     (Cheese), and not withdrawn, rejected, revoked or expired;
+  #   - its marker_value param equals the marker that stands now, byte for byte, and its repo param is this repository;
+  #   - migration quiescence is proven (C-8.8), /healthz answers 200, and the running digest and revision label read;
+  #   - right before the write, still under the lock, the decision and the marker are read again and still hold.
+  # Then it writes `clear:<nonce>:<this run id>`, reads it back, and records the lifter, decision, approver, health,
+  # digest, revision and ICT times in the run summary and lift-evidence.json. A refusal leaves the marker unchanged and
+  # fails the run. No step is a human-typed command.
+  #
+  # The decision is read from the Multica server over the tailnet with a scoped read-only token (environment
+  # doop-lift), so the C00 runner must reach that server. The marker is a repository variable that only the GitHub
+  # App can write, so environment doop-lift also holds the App's id and key (DOOP_MARKER_APP_ID, DOOP_MARKER_APP_KEY).
+  # A dispatch from any branch but the default one is skipped: a branch must not run its own lift script.
+  # The train ships OFF and this job does not touch the switch (DOOP_DEPLOY_TRAIN). The train jobs above and the
+  # evidence job do not run in this mode.
+  lift:
+    if: ${{ github.repository == 'cheese-work/doop' && github.event_name == 'workflow_dispatch' && inputs.mode == 'lift' && github.ref == 'refs/heads/cheese/main' }}
+    runs-on: [self-hosted, cheese-c00-deploy]
+    timeout-minutes: 20
+    environment: doop-lift
+    permissions:
+      contents: read
+    # One C00 job at a time, shared with deploy, readback-confirm and rollback; a started lift is never cancelled.
+    concurrency:
+      group: c00-deploy-doop
+      cancel-in-progress: false
+    env:
+      C00_COMPOSE_DIR: ${{ vars.C00_DOOP_COMPOSE_DIR || '/home/congvc/.local/share/doop' }}
+      # Empty: c00.sh finds the compose project's `db` service. Set it to name the live Postgres container.
+      C00_PG_CONTAINER: ${{ vars.C00_DOOP_PG_CONTAINER }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # First, before any secret is read or minted: a login outside the allowlist ends the run here.
+      - name: Admit the dispatcher
+        env:
+          ACTOR: ${{ github.actor }}
+          TRIGGER: ${{ github.triggering_actor }}
+          DISPATCHERS: ${{ vars.DOOP_LIFT_DISPATCHERS }}
+        run: node scripts/deploy-lift.mjs admit
+      # The marker is a repository variable; `github.token` cannot write one, so a GitHub App token does.
+      - name: Mint the marker token
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.DOOP_MARKER_APP_ID }}
+          private-key: ${{ secrets.DOOP_MARKER_APP_KEY }}
+          repositories: doop
+          permission-actions-variables: write
+      # C-5: every C00 job removes the compat sandboxes first. A failed sweep fails the run before the lift.
+      - name: Sweep the compat sandboxes
+        run: bash deploy/cd/c00.sh sweep
+      # One step, all under the C00 flock: quiescence, then digest, revision label and health, then the decision and
+      # the marker read, decided, read again, and written. Anything missing refuses and leaves the marker as it was.
+      - name: Lift on C00
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          LIFTER: ${{ github.triggering_actor }}
+          DECISION_ID: ${{ inputs.decision_id }}
+          APPROVER_ID: ${{ vars.DOOP_LIFT_APPROVER_ID }}
+          MULTICA_SERVER_URL: ${{ secrets.DOOP_LIFT_MULTICA_SERVER_URL }}
+          MULTICA_WORKSPACE_ID: ${{ secrets.DOOP_LIFT_MULTICA_WORKSPACE_ID }}
+          DECISION_READ_TOKEN: ${{ secrets.DOOP_LIFT_DECISION_READ_TOKEN }}
+          # What the app answers on C00 itself; set the variable when the published port is not 4400.
+          HEALTHZ_URL: ${{ vars.C00_DOOP_HEALTHZ_URL || 'http://127.0.0.1:4400/healthz' }}
+        run: bash deploy/cd/c00.sh lift
+      - name: Upload the lift evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: lift-evidence
+          path: lift-evidence.json
+          if-no-files-found: warn
+
   resolve:
-    if: github.repository == 'cheese-work/doop'
+    if: ${{ github.repository == 'cheese-work/doop' && inputs.mode != 'lift' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -408,7 +502,7 @@ jobs:
           VARS_TOKEN: ${{ steps.app.outputs.token }}
         run: bash deploy/cd/c00.sh rollback
       # Whatever the rollback did, even if it failed: this run's armed value becomes suspended (C-10.3). Only a
-      # lift (cd-lift.yml) clears it. Not after a refused check, where the marker is no longer this run's own.
+      # lift (the `lift` job) clears it. Not after a refused check, where the marker is no longer this run's own.
       - name: Suspend the marker
         if: ${{ !cancelled() && steps.rollback.outputs.go == 'true' }}
         env:
@@ -427,10 +521,10 @@ jobs:
           echo "deploy failed after the change started; rollback action: ${ACTION:-none (check refused)}; the marker is suspended or armed"
           exit 1
 
-  # Every run, whatever happened above: deploy-evidence.json and the run summary (C-12). Hosted, read only.
+  # Every train, recovery and drill run, whatever happened above: deploy-evidence.json and the run summary (C-12). Hosted, read only.
   evidence:
     needs: [resolve, admit, deploy, readback-delay, readback-confirm, rollback]
-    if: ${{ always() && github.repository == 'cheese-work/doop' }}
+    if: ${{ always() && github.repository == 'cheese-work/doop' && inputs.mode != 'lift' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
