@@ -144,6 +144,19 @@ describe('Archive and Trash (U2)', () => {
     expect(mocks.unarchiveFrame).toHaveBeenCalledWith('f1', undefined)
   })
 
+  it('Undo on the archive toast is disabled while offline and sends no write', async () => {
+    useStore.getState().setCanvas(canvasWith([live]))
+    useStore.setState({ selectedIds: ['f1'] })
+    mocks.archiveFrames.mockResolvedValue({ pages, frames: [archived] })
+    await mount(<ArchiveTrashPanel />)
+    await click(button('Archive selected'))
+    act(() => useStore.setState({ connected: false }))
+    const undo = button('Undo') as HTMLButtonElement
+    expect(undo.disabled).toBe(true)
+    await click(undo)
+    expect(mocks.unarchiveFrame).not.toHaveBeenCalled()
+  })
+
   it('Restore to a chosen page sends that pageId', async () => {
     useStore.getState().setCanvas(canvasWith([archived]))
     mocks.unarchiveFrame.mockResolvedValue({ frame: { ...live, pageId: 'p2' }, changed: true })

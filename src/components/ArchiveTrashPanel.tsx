@@ -315,7 +315,9 @@ export function ArchiveTrashPanel() {
       {toast && (
         <Toast>
           {t('panels.archiveToast', { count: toast.length })}
-          <ToastAction onClick={() => void undoArchive(toast)}>{t('panels.archiveUndo')}</ToastAction>
+          <ToastAction disabled={!connected} onClick={() => void undoArchive(toast)}>
+            {t('panels.archiveUndo')}
+          </ToastAction>
         </Toast>
       )}
     </div>
