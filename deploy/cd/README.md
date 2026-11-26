@@ -28,11 +28,11 @@ One file on the C00 host is the one thing that lets a train run (CHE-9877; it wa
 `$C00_STATE_DIR/deploy-marker` with `C00_STATE_DIR` defaulting to `/var/lib/doop-deploy`, mode 0600, one line. Its
 value is one of:
 
-| Value                                       | Meaning                                                     |
-| ------------------------------------------- | ----------------------------------------------------------- |
-| `clear:<nonce>:<lift run id or restore>`    | the train may run                                           |
-| `armed:<nonce>:<run id>:<sha>`              | a train run is changing C00                                 |
-| `suspended:<nonce>:<run id>:<sha>:<reason>` | stopped until the audited lift (`cd-lift.yml`) writes clear |
+| Value                                       | Meaning                                                                   |
+| ------------------------------------------- | ------------------------------------------------------------------------- |
+| `clear:<nonce>:<lift run id or restore>`    | the train may run                                                         |
+| `armed:<nonce>:<run id>:<sha>`              | a train run is changing C00                                               |
+| `suspended:<nonce>:<run id>:<sha>:<reason>` | stopped until the audited lift (`cd-deploy.yml` mode `lift`) writes clear |
 
 The nonce is 128 random bits. Absent, unreadable or any other shape reads as suspended; a prefix match is not
 enough. `scripts/deploy-marker.mjs` is the only writer, and only the C00 jobs run it. Every write reads the
@@ -78,12 +78,12 @@ on C00, once; no job creates it.
   (a refusal naming the cause, never a skip), in `rollback` too: there is no token path left that could decide
   without it.
 
-Every failure leaves the marker `armed` or `suspended`, so the train stops until a lift. Lifting is `cd-lift.yml` (below).
+Every failure leaves the marker `armed` or `suspended`, so the train stops until a lift. Lifting is `cd-deploy.yml` mode `lift` (below).
 
-### The audited lift (`cd-lift.yml`, S3b, C-10.6 and C-10.7)
+### The audited lift (`cd-deploy.yml` mode `lift`, S3b, C-10.6 and C-10.7)
 
-The only way from `armed:*` or `suspended:*` back to `clear:*`. Dispatch only, one input: `decision_id`, the id of
-a Multica decision. No step is a human-typed command.
+The only way from `armed:*` or `suspended:*` back to `clear:*`. Dispatch only, with `mode=lift` and one lift input, `decision_id`, the id of
+a Multica decision. It is a job of `cd-deploy.yml`, the one workflow runner group `c00-deploy` allows for doop, and no train job runs in this mode. No step is a human-typed command.
 
 1. The dispatcher and the triggering login must both be in repo variable `DOOP_LIFT_DISPATCHERS` (checked first,
    before any secret is read). The job runs only on `cheese/main`, in environment `doop-lift`, on the C00 runner,
@@ -116,7 +116,7 @@ The lift never reads or writes `DOOP_DEPLOY_TRAIN`: the train stays off until Ch
 
 The file starts absent, which reads as suspended, and nothing creates its directory. Once the directory exists
 (owner action, once, on C00), the first value comes from a recovery run: `suspend --any` writes `suspended:*` over
-the absent marker, and `cd-lift.yml` clears it. For a by-hand write on C00 as the runner's user:
+the absent marker, and the `lift` job of `cd-deploy.yml` (mode lift) clears it. For a by-hand write on C00 as the runner's user:
 
 ```bash
 C00_STATE_DIR=/var/lib/doop-deploy RUN_ID=<run id> SHA=<40 hex> node scripts/deploy-marker.mjs suspend --any --reason migrated

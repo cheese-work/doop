@@ -53,7 +53,7 @@ confirm, and written `suspended:*` (never clear) by recovery, drill and rollback
 the C00 runner; no GitHub App, token or repo variable takes part (CHE-9877). Setup and rules:
 [`deploy/cd/README.md`](../deploy/cd/README.md).
 
-Lifting a suspension is `cd-lift.yml` (S3b): dispatch with the id of an approved Multica decision; it checks the
+Lifting a suspension is mode `lift` of `cd-deploy.yml` (S3b; the `lift` job, so the C00 runner group needs no second workflow entry): dispatch with `mode=lift` and the id of an approved Multica decision; it checks the
 decision against the standing marker, proves quiescence and health on C00, and writes `clear:*` with evidence.
 It never turns the train on.
 
