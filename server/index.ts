@@ -81,12 +81,14 @@ import {
   NoOpenPageError,
   PageLimitError,
   PurgeInProgressError,
+  PurgeRefusedError,
   store,
 } from './store.ts'
 import { parseGuide } from '../shared/guides.ts'
 import { getImage } from './previews.ts'
 import { LayerNotFoundError, layerRefFromQuery, layerSelector } from './layerExport.ts'
 import * as actions from './actions.ts'
+import { runFramePurge, type PurgeReply } from './framePurge.ts'
 import { captureFeature, captureTokenResults } from './featureEvents.ts'
 import { liveActivitiesRouter, logLiveActivityRequests, startLiveActivityDelivery } from './liveActivities.ts'
 import { onCanvasEvent } from './events.ts'
@@ -139,7 +141,7 @@ import { getAsset, reconcileAssetRefs, beginTicketUpload, endTicketUpload, creat
 import * as ingest from './ingest.ts'
 import { configurePins, loadPins } from './framePins.ts'
 import { startPinReconcile } from './pinReconcile.ts'
-import { PolicyRefused, setLockOwners } from './writePolicy.ts'
+import { PolicyRefused, setLockOwners, writeContextFor } from './writePolicy.ts'
 import { PageFinishedError } from './pageState.ts'
 import * as agentKeys from './agentKeys.ts'
 import * as backgrounds from './backgrounds.ts'
@@ -3171,6 +3173,57 @@ app.post('/api/frames/:id/restore', async (req, res) => {
   } catch (e) {
     frameWriteFailed(res, e)
   }
+})
+
+/* "Delete forever" for one Trash frame (CHE-9399 step 4). REST only: the confirmation is a person's, so no MCP tool
+   and no resident path reaches it. The body is the `deletedAt` the person saw in the Trash. Every refusal and
+   timeout leaves every row; an outcome the database has not confirmed keeps the frame held in the Trash. */
+app.post('/api/frames/:id/purge', async (req, res) => {
+  const id = req.params.id
+  const frame = store.getDeletedFrame(id)
+  const canvas = store.getCanvas((frame ?? store.getFrame(id))?.canvasId ?? '')
+  if (!canvas) return res.status(404).json({ error: 'frame not found' })
+  if (!checkRole(req, res, canvas, 'edit')) return // a live frame's existence is shown to an editor only
+  if (!frame) return res.status(409).json({ error: 'the frame is not in the Trash', code: 'not_in_trash' })
+  const deletedAt: unknown = req.body?.deletedAt
+  if (typeof deletedAt !== 'number' || !Number.isFinite(deletedAt))
+    return res.status(400).json({ error: 'deletedAt (the number the Trash shows) is required' })
+  if (frame.deletedAt !== deletedAt)
+    return res
+      .status(409)
+      .json({ error: 'the frame changed since you confirmed', code: 'stale_confirmation', deletedAt: frame.deletedAt })
+  const canvasId = frame.canvasId
+  let reply: PurgeReply
+  try {
+    await store.load(canvasId) // a trashed frame's canvas is not loaded by the frame routes
+    const actor = userActor(req)
+    const hasComments = () => actions.commentsOnFrame(canvasId, id)
+    if (hasComments()) return res.status(409).json({ error: 'the frame has comments', code: 'has_comments' })
+    const userId = req.user!.id
+    /* from here the lease is held and nothing below may throw: an unknown outcome must keep it */
+    const lease = store.beginPurge(writeContextFor(actor, userId), id, deletedAt, hasComments, (event) =>
+      broadcast(canvasId, event),
+    )
+    reply = await runFramePurge({
+      lease,
+      deletedAt,
+      actor,
+      currentDeletedAt: () => store.getDeletedFrame(id)?.deletedAt,
+      stillMayPurge: () => {
+        const now = store.getCanvas(canvasId)
+        const role = now ? canvasRole(userId, now) : null
+        if (!role || !roleAllows(role, 'edit')) return false
+        return hasComments() ? 'has_comments' : true
+      },
+    })
+  } catch (e) {
+    if (e instanceof PurgeRefusedError) {
+      const stale = e.code === 'stale_confirmation' ? { deletedAt: store.getDeletedFrame(id)?.deletedAt } : {}
+      return res.status(409).json({ error: e.message, code: e.code, ...stale })
+    }
+    return frameWriteFailed(res, e)
+  }
+  res.status(reply.status).json(reply.body)
 })
 
 /* Archive: both paths write the frame's origin in the same store call. A repeat of the same request
