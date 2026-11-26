@@ -57,14 +57,18 @@ on C00, once; no job creates it.
   the hosted runner.
 - **Where the reads come from.** `github.token` cannot be granted the Variables permission, so the REST read of a
   variable fails with 403 (CHE-9181). Every job therefore takes `DOOP_DEPLOY_TRAIN` and `MAIN_RED_PAUSED` from
-  env (`${{ vars.X }}`; unset reads as empty, i.e. absent). A job's `vars` are a snapshot taken when GitHub dispatches the job and no
-  token may read them live, so the deploy job counts their age from the job record's `created_at` (Jobs API,
-  `actions: read` on the run's own token; the `snapshot-epoch` step sets `VARS_READ_EPOCH`). That time is before the
-  dispatch, so the age covers the queue wait and the runner start as well as the lock wait. Measured on real C00 deploy
-  jobs (25 Nov 2026): job created to the first step 8 to 10 s. `pre-arm` and `pre-apply` (train and drill) refuse when
+  env (`${{ vars.X }}`; unset reads as empty, i.e. absent). A job's `vars` are a snapshot GitHub takes at a moment it does not publish, and no
+  token may read them live, so the deploy job counts their age from the original workflow run's `created_at` (`GET /repos/{repo}/actions/runs/{run_id}`,
+  `actions: read` on the run's own token; the `snapshot-epoch` step sets `VARS_READ_EPOCH`). GitHub does not say when it takes the
+  snapshot, and the run record is older than every job of the run, so the age cannot be undercounted: it covers `resolve`, `admit`,
+  the queue wait, the runner start and the lock wait. A re-run keeps the original `created_at`, so it is as old as the run and
+  refuses; **a fresh dispatch replaces a re-run** and takes a fresh snapshot. Measured on real C00 deploy runs (24 to 25 Nov
+  2026): the deploy job was created 35 to 52 s after its run, which leaves 128 to 145 s of the bound for the gate's reads.
+  A long quiescence wait (up to 120 s) can push a normal run past the bound; it then refuses, which is the accepted side.
+  `pre-arm` and `pre-apply` (train and drill) refuse when
   the age is above 180 s (`C00_VARS_SNAPSHOT_BOUND_SECONDS` may only tighten it) or unknown (the read failed). A job
   that waited past the bound stops (a skip at `pre-arm`, a refusal at `pre-apply`, which leaves the marker armed for
-  the rollback job), and a rerun is a new job record with a fresh snapshot. The age is read again after the gate's blocking reads (quiescence, which may take up to 120 s, the running image, git, the GitHub merger lookups), right before it opens, so time spent inside the check counts toward the 180 s. Recovery reads
+  the rollback job), and the way past it is a fresh dispatch, not a re-run. The age is read again after the gate's blocking reads (quiescence, which may take up to 120 s, the running image, git, the GitHub merger lookups), right before it opens, so time spent inside the check counts toward the 180 s. Recovery reads
   neither the switch nor the pause, so it is exempt; `confirm` and `rollback` ignore the age. The marker is read
   from the host file, every time, under the same checks.
 - **Control scripts are trusted, the candidate is data.** The three C00 jobs check out this workflow's own revision

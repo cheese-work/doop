@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 // @ts-expect-error plain .mjs script, no type declarations
-import { admit, c00Quiescent, decideRun, jobCreatedEpoch, pickCandidate, recheckOp } from '../scripts/deploy-gate.mjs'
+import { admit, c00Quiescent, decideRun, pickCandidate, recheckOp, runCreatedEpoch } from '../scripts/deploy-gate.mjs'
 // @ts-expect-error plain .mjs script, no type declarations
 import { inventory } from '../scripts/migration-inventory.mjs'
 
@@ -705,42 +705,49 @@ describe('recheckOp: the switch and pause snapshot is bounded in age (CHE-9877 r
   })
 })
 
-describe('jobCreatedEpoch: the snapshot age starts at the job record, before any runner step (CHE-9877)', () => {
-  const job = (over: Record<string, unknown> = {}) => ({
-    name: 'deploy',
+describe('runCreatedEpoch: the snapshot age starts at the original run record (CHE-9877)', () => {
+  const RUN = '2026-11-25T12:28:42Z'
+  const run = (over: Record<string, unknown> = {}) => ({
+    id: 45614119755,
+    created_at: RUN,
+    run_started_at: RUN,
     run_attempt: 1,
-    created_at: '2026-11-25T12:29:34Z',
-    started_at: '2026-11-25T12:29:38Z',
     ...over,
   })
-  it('returns the job created_at in epoch seconds, not started_at (queue time counts toward the age)', () => {
-    expect(jobCreatedEpoch([job()], 'deploy', 1)).toBe(Date.parse('2026-11-25T12:29:34Z') / 1000)
+  const epoch = (t: string) => Date.parse(t) / 1000
+  it('returns the run created_at in epoch seconds', () => {
+    expect(runCreatedEpoch(run(), '45614119755')).toBe(epoch(RUN))
   })
-  it('picks the job of this name and attempt among the run jobs', () => {
-    const jobs = [
-      job({ name: 'resolve', created_at: '2026-11-25T12:00:00Z' }),
-      job({ run_attempt: 2, created_at: '2026-11-25T13:00:00Z' }),
-      job(),
-    ]
-    expect(jobCreatedEpoch(jobs, 'deploy', 1)).toBe(Date.parse('2026-11-25T12:29:34Z') / 1000)
-    expect(jobCreatedEpoch(jobs, 'deploy', 2)).toBe(Date.parse('2026-11-25T13:00:00Z') / 1000)
+  it('a rerun keeps the original epoch: only run_started_at moves, not created_at', () => {
+    const rerun = run({ run_attempt: 2, run_started_at: '2026-11-25T12:43:00Z' })
+    expect(runCreatedEpoch(rerun, '45614119755')).toBe(epoch(RUN))
   })
   it.each([
-    ['no such job', [], 'deploy'],
-    ['two such jobs', [job(), job()], 'deploy'],
-    ['no created_at', [job({ created_at: undefined })], 'deploy'],
-    ['an unparseable created_at', [job({ created_at: 'soon' })], 'deploy'],
-    ['an empty job name', [job()], ''],
-  ])('fails closed on %s', (_n, jobs, name) => {
-    expect(() => jobCreatedEpoch(jobs as never, name, 1)).toThrow(/job/)
+    ['no created_at', { created_at: undefined }],
+    ['an unparseable created_at', { created_at: 'soon' }],
+    ['a numeric created_at', { created_at: 1764073722 }],
+    ['an empty created_at', { created_at: '' }],
+    ['the record of another run', { id: 1 }],
+  ])('fails closed on %s', (_n, over) => {
+    expect(() => runCreatedEpoch(run(over), '45614119755')).toThrow(/run/)
   })
-  it('a job that queued past the bound is refused by pre-apply even though its own steps just started', async () => {
-    const created = Date.parse('2026-11-25T12:00:00Z') / 1000
-    const firstStep = created + 400 // queued 400 s for a busy runner, then the first step ran
-    const age = firstStep + 1 - created
-    const r = await ops({ marker: ARMED })('pre-apply', ARMED, { varsAgeSeconds: age })
+  it('fails closed on no record at all', () => {
+    expect(() => runCreatedEpoch(undefined as never, '1')).toThrow(/run/)
+  })
+  it('a 400 s delay in resolve and admit, then a new deploy job, is refused by pre-apply and skipped by pre-arm', async () => {
+    const created = epoch(RUN)
+    const deployJobCreated = created + 400 // resolve + admit took 400 s; the deploy job record is new and fresh
+    const stepRuns = deployJobCreated + 9 // the deploy job's first step, 9 s after its own record
+    const age = stepRuns + 1 - runCreatedEpoch(run(), '45614119755')
+    expect(age).toBeGreaterThan(180)
+    const r = await ops({ marker: ARMED })('pre-apply', ARMED, { varsAgeSeconds: () => age })
     expect(r).toMatchObject({ go: false, skip: false })
-    expect(r.reason).toMatch(/snapshot/)
+    expect(r.reason).toMatch(/snapshot is 410s old/)
+    expect(await ops()('pre-arm', undefined, { varsAgeSeconds: () => age })).toMatchObject({ go: false, skip: true })
+  })
+  it('a normal run (deploy job 52 s after the run, as measured) has room for the gate reads', async () => {
+    const age = 52 + 9 + 30
+    expect(await ops({ marker: ARMED })('pre-apply', ARMED, { varsAgeSeconds: () => age })).toMatchObject({ go: true })
   })
 })
 

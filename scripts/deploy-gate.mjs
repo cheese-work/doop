@@ -202,15 +202,18 @@ export function pickCandidate(runs) {
 // How old the job-start `vars` snapshot may be before a pre-arm or pre-apply stops on it.
 const VARS_SNAPSHOT_BOUND_SECONDS = 180
 
-// When this job's `vars` snapshot cannot be older than: the job record's `created_at` (epoch seconds). The job exists
-// before GitHub dispatches it to a runner, and the snapshot is taken at dispatch, so the age counted from here covers the
-// queue wait, the runner start and the job setup, not only the time after the first step (CHE-9877). Anything but
-// exactly one job of this name and attempt with a parseable time throws: the caller fails closed.
-export function jobCreatedEpoch(jobs, name, attempt) {
-  const hits = (jobs ?? []).filter((j) => name && j?.name === name && Number(j.run_attempt) === Number(attempt))
-  if (hits.length !== 1) throw new Error(`expected one job '${name}' in attempt ${attempt}, found ${hits.length}`)
-  const ms = Date.parse(hits[0].created_at ?? '')
-  if (!Number.isFinite(ms)) throw new Error(`job '${name}' has no readable created_at`)
+// When this job's `vars` snapshot cannot be older than: the original workflow run's `created_at` (epoch seconds, from
+// `GET repos/{repo}/actions/runs/{run_id}`). The run exists before any of its jobs, so this precedes the snapshot whenever
+// GitHub takes it (run creation, job dispatch or job start), and it counts the resolve and admit jobs as well as the
+// queue wait. A rerun keeps the original run record's `created_at` (only `run_started_at` moves), so a rerun is as old
+// as the run and refuses; a fresh dispatch is the way to take a new snapshot (CHE-9877). A record of another run, or a
+// missing or unparseable time, throws: the caller fails closed.
+export function runCreatedEpoch(run, runId) {
+  if (runId !== undefined && String(run?.id) !== String(runId)) {
+    throw new Error(`the run record is for run ${run?.id}, not ${runId}`)
+  }
+  const ms = typeof run?.created_at === 'string' ? Date.parse(run.created_at) : NaN
+  if (!Number.isFinite(ms)) throw new Error('the workflow run has no readable created_at')
   return Math.floor(ms / 1000)
 }
 
@@ -483,9 +486,9 @@ async function cli(argv, env) {
   }
   if (command === 'snapshot-epoch') {
     // `actions: read` on the run's own `github.token`; no Variables permission is involved.
-    const { jobs } = await gh(`repos/${repo}/actions/runs/${env.RUN_ID}/attempts/${env.RUN_ATTEMPT}/jobs?per_page=100`)
-    const epoch = jobCreatedEpoch(jobs, env.JOB_NAME, env.RUN_ATTEMPT)
-    console.log(`deploy gate: job '${env.JOB_NAME}' created at epoch ${epoch}; vars snapshot age counts from there`)
+    const run = await gh(`repos/${repo}/actions/runs/${env.RUN_ID}`)
+    const epoch = runCreatedEpoch(run, env.RUN_ID)
+    console.log(`deploy gate: run ${env.RUN_ID} created at epoch ${epoch}; vars snapshot age counts from there`)
     if (!env.GITHUB_ENV) throw new Error('GITHUB_ENV is not set')
     appendFileSync(env.GITHUB_ENV, `VARS_READ_EPOCH=${epoch}\n`)
     return
@@ -502,7 +505,7 @@ async function cli(argv, env) {
       ghApi: gh,
       // The switch and the pause as the workflow passed them; the marker is the file on this C00 host.
       vars: env,
-      // Seconds since the job record was created (`snapshot-epoch` sets VARS_READ_EPOCH; unset or garbage is unknown).
+      // Seconds since the workflow run was created (`snapshot-epoch` sets VARS_READ_EPOCH; unset or garbage is unknown).
       // A function, so `recheckOp` re-reads the clock after its blocking reads.
       varsAgeSeconds: () =>
         /^\d+$/.test(env.VARS_READ_EPOCH ?? '') ? Date.now() / 1000 - Number(env.VARS_READ_EPOCH) : NaN,

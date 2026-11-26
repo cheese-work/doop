@@ -184,7 +184,7 @@ describe('D2 C00 jobs: deploy, readback-confirm, rollback', () => {
       // The one allowed exception is the deploy job's snapshot-epoch read: when it fails the epoch stays unset, which
       // train and drill refuse as an unknown age (see the snapshot age test below). Nothing else may swallow a failure.
       const rest =
-        name === 'deploy' ? j.replace(/- name: Read when the job was created\n\s+continue-on-error: true\n/, '') : j
+        name === 'deploy' ? j.replace(/- name: Read when the run was created\n\s+continue-on-error: true\n/, '') : j
       expect(rest).not.toMatch(/continue-on-error|nohup|setsid|disown/)
     }
   })
@@ -230,7 +230,7 @@ describe('D2 C00 jobs run trusted control scripts, not the candidate (CHE-9877 r
     }
   })
 
-  it('the deploy job counts the vars snapshot age from the job record created_at, not from a runner step clock', () => {
+  it('the deploy job counts the vars snapshot age from the original run created_at, not from a job record or a runner step clock', () => {
     const j = job(d2, 'deploy')
     const step = j.indexOf('snapshot-epoch')
     expect(step).toBeGreaterThan(-1)
@@ -241,8 +241,12 @@ describe('D2 C00 jobs run trusted control scripts, not the candidate (CHE-9877 r
     expect(j).toMatch(/run: node control\/scripts\/deploy-gate\.mjs snapshot-epoch/)
     expect(j).toMatch(/permissions:\s*\n\s*contents: read\s*\n\s*actions: read\s*\n\s*packages: read/)
     expect(j).not.toMatch(/variables:/)
+    // The epoch is the run record (RUN_ID only): no job name or attempt picks a job record, which a rerun would renew.
+    const read = j.slice(j.indexOf('- name: Read when the run was created')).split('\n      - ')[0]
+    expect(read).toContain('RUN_ID: ${{ github.run_id }}')
+    expect(read).not.toMatch(/JOB_NAME|RUN_ATTEMPT/)
     // A failed read leaves the epoch unset (train and drill refuse an unknown age); recovery is not blocked by it.
-    const from = j.indexOf('- name: Read when the job was created')
+    const from = j.indexOf('- name: Read when the run was created')
     expect(j.slice(from).split('\n      - ')[0]).toContain('continue-on-error: true')
   })
 })

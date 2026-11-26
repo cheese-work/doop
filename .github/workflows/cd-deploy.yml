@@ -222,17 +222,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # The job's `vars.*` (the switch and the pause) are a snapshot taken when GitHub dispatches the job. The age is counted
-      # from the job record's created_at, which is before that dispatch, so it covers the queue wait and the runner start
-      # as well as the lock wait. The gate refuses a pre-arm or pre-apply past 180 s or when this step fails (CHE-9877).
+      # The job's `vars.*` (the switch and the pause) are a snapshot GitHub takes at an unpublished moment. The age is
+      # counted from the original run's created_at, which precedes every job of the run, so it covers resolve, admit, the
+      # queue wait, the runner start and the lock wait. A rerun keeps the original created_at. The gate refuses a pre-arm
+      # or pre-apply past 180 s or when this step fails (CHE-9877).
       # If the read fails the epoch stays unset, which train and drill refuse as an unknown age, and
       # recovery (which never reads the switch or the pause) is not blocked by it.
-      - name: Read when the job was created
+      - name: Read when the run was created
         continue-on-error: true
         env:
-          JOB_NAME: ${{ github.job }}
           RUN_ID: ${{ github.run_id }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: node control/scripts/deploy-gate.mjs snapshot-epoch
       # Step 1 (C-5): nothing below runs on a skip, and nothing on C00 has changed yet.
       - name: Pre-arm check
