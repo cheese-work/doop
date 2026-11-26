@@ -43,6 +43,7 @@ import { previewDocument } from './componentPreview.ts'
 import { codeSchema, propSchema } from './componentTools.ts'
 import { activeComponents } from '../shared/components.ts'
 import { PRO_UPLOAD_BYTES } from '../shared/billing.ts'
+import { multicaWebBase } from '../shared/multica.ts'
 import { listPageRuns, multicaCommentsSource, multicaRunsSource } from './multicaRuns.ts'
 import { setReconSources, storedReconAssets } from './reconGuard.ts'
 import { isUuid } from '../shared/pageIssue.ts'
@@ -993,6 +994,8 @@ app.get('/api/me', async (req, res) => {
     plan: workspaces.planFor(id),
     /* whether this server sells plans at all: no Upgrade anywhere without it */
     billing: billing.billingEnabled(),
+    /* where Multica issues live, so the comments panel can link a "Moved to Multica" key */
+    multicaWebUrl: multicaWebBase(env.MULTICA_WEB_URL) ?? undefined,
     /* the SPA cannot infer this: impersonation swaps the session cookie
        outright, so everything else on this response describes the person
        being viewed, not the admin doing the viewing */

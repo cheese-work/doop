@@ -7,6 +7,9 @@ import type { Canvas, ElementComment } from '../shared/types'
 vi.mock('../src/lib/posthog', () => ({ posthog: { capture: vi.fn() } }))
 vi.mock('../src/components/TeamAllowance', () => ({ isResidentLimit: () => false }))
 vi.mock('../src/lib/auth', () => ({ authClient: { useSession: () => ({ data: { user: { id: 'u1' } } }) } }))
+/* what GET /api/me answered: the workspace URL the server is configured with (tests/meMulticaUrl.test.ts) */
+const me: { multicaWebUrl?: string } = {}
+vi.mock('../src/lib/me', () => ({ useMe: () => me }))
 
 const { CommentsPanel } = await import('../src/components/CommentsPanel')
 const { useStore } = await import('../src/lib/store')
@@ -28,11 +31,11 @@ beforeEach(() => {
   document.body.append(container)
   root = createRoot(container)
   localStorage.clear()
+  delete me.multicaWebUrl
   resolve = vi.spyOn(api, 'resolveComment').mockResolvedValue({})
 })
 
 afterEach(() => {
-  vi.unstubAllEnvs()
   act(() => root.unmount())
   container.remove()
   vi.restoreAllMocks()
@@ -118,7 +121,7 @@ const question = (over: Partial<ElementComment> = {}) =>
   base({ id: 'ask', parentId: 'root', clientRequestId: 'q:57', text: 'Moved to Multica: CHE-5301', at: 11, ...over })
 
 it('keeps a q: thread open with a working Multica link and offers no Resolve', () => {
-  vi.stubEnv('VITE_MULTICA_WEB_URL', 'https://multica.example/cheese-work/')
+  me.multicaWebUrl = 'https://multica.example/cheese-work'
   show([base({ id: 'root', text: 'Which payment methods can we ship by launch?' }), question()])
   expect(text()).toContain('Open · waits on Multica')
   expect(text()).toContain('Question on CHE-5301')
@@ -130,7 +133,7 @@ it('keeps a q: thread open with a working Multica link and offers no Resolve', (
   expect(button(/^Open\s*1/)).toBeDefined()
 })
 
-it('shows the key as plain text when the build has no Multica URL', () => {
+it('shows the key as plain text when the server has no Multica URL', () => {
   show([base({ id: 'root' }), question()])
   expect(container.querySelector('a')).toBeNull()
   expect(container.querySelector('[data-slot="issue-link"]')?.textContent).toBe('CHE-5301')

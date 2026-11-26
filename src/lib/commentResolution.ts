@@ -1,3 +1,4 @@
+import { multicaWebBase } from '../../shared/multica'
 import type { CommentResolution } from '../../shared/types'
 import { MAX_RESOLUTION_NOTE, MAX_RESOLUTION_REF } from '../../shared/comments'
 import type { CommentThreadGroup } from './comments'
@@ -95,11 +96,9 @@ export function writeReviewAnchor(userId: string, canvasId: string, at: number):
   }
 }
 
-/** A link to a Multica issue, when the build knows the workspace's web URL
- *  (`VITE_MULTICA_WEB_URL`, e.g. `https://multica.example/cheese-work`, the shape
- *  of the server's `MULTICA_WEB_URL`); otherwise null and the key is plain text. */
-export function multicaIssueUrl(key: string): string | null {
-  const base: unknown = import.meta.env.VITE_MULTICA_WEB_URL
-  if (typeof base !== 'string' || !/^https?:\/\//.test(base)) return null
-  return `${base.replace(/\/+$/, '')}/issues/${encodeURIComponent(key)}`
+/** A link to a Multica issue, when the server knows the workspace's web URL
+ *  (`Me.multicaWebUrl`, from `MULTICA_WEB_URL`); otherwise null and the key is plain text. */
+export function multicaIssueUrl(webUrl: string | undefined, key: string): string | null {
+  const base = multicaWebBase(webUrl)
+  return base ? `${base}/issues/${encodeURIComponent(key)}` : null
 }

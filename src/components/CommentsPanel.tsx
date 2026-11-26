@@ -3,6 +3,7 @@ import { colorFor, type CommentResolution } from '../../shared/types'
 import { canCommentOpenCanvas, useStore } from '../lib/store'
 import { api, ApiError } from '../lib/api'
 import { authClient } from '../lib/auth'
+import { useMe } from '../lib/me'
 import { posthog } from '../lib/posthog'
 import { timeAgo } from '../lib/time'
 import { isComposingEnter } from '../lib/keys'
@@ -54,6 +55,7 @@ export function CommentsPanel() {
   const [filter, setFilter] = useState<ThreadState>('open')
   const [, setReviewed] = useState(0)
   const userId = authClient.useSession().data?.user.id ?? ''
+  const webUrl = useMe(userId)?.multicaWebUrl
   const t = useT()
 
   const threads = useMemo(() => pageThreads(comments, canvas, activePageId), [comments, canvas, activePageId])
@@ -97,7 +99,7 @@ export function CommentsPanel() {
         {shown.length === 0 ? (
           <div className={emptyNote}>{t(filter === 'open' ? 'stage.noOpenThreads' : 'stage.noResolvedThreads')}</div>
         ) : (
-          shown.map((thread) => <ThreadRow key={thread.root.id} thread={thread} />)
+          shown.map((thread) => <ThreadRow key={thread.root.id} thread={thread} webUrl={webUrl} />)
         )}
       </PanelState>
     </PanelBody>
@@ -184,7 +186,7 @@ function reportLimit(err: unknown) {
 /** One thread, in the same shape as a task row: who and when on the first
  *  line, the comment under it, then where it is pinned and how many replies.
  *  Open threads carry a reply field and a Resolve action. */
-function ThreadRow({ thread }: { thread: CommentThreadGroup }) {
+function ThreadRow({ thread, webUrl }: { thread: CommentThreadGroup; webUrl: string | undefined }) {
   const { root, frame } = thread
   const resolved = threadState(thread) === 'resolved'
   /* a view link reads threads; it neither replies nor resolves */
@@ -295,7 +297,7 @@ function ThreadRow({ thread }: { thread: CommentThreadGroup }) {
           </span>
         )}
       </div>
-      {resolved && root.resolution && <ResolutionLine root={root} />}
+      {resolved && root.resolution && <ResolutionLine root={root} webUrl={webUrl} />}
       {waitingOn && (
         <div className="flex flex-col gap-1 pr-1.5 pb-1 pl-[28px]">
           <Badge tone="outline" className="self-start">
@@ -304,7 +306,7 @@ function ThreadRow({ thread }: { thread: CommentThreadGroup }) {
           <span className="text-caption text-ink-faint">
             {waitingOn.issueKey && (
               <>
-                {t('stage.questionOn')} <IssueLink issueKey={waitingOn.issueKey} />.{' '}
+                {t('stage.questionOn')} <IssueLink issueKey={waitingOn.issueKey} webUrl={webUrl} />.{' '}
               </>
             )}
             {t('stage.staysOpen')}
@@ -412,8 +414,8 @@ const HINT_KEY = {
 const WHY_KEY = { addressed: 'resolveWhyAddressed', wont_fix: 'resolveWhyWontFix', moved: 'resolveWhyMoved' } as const
 
 /** A Multica issue key, a link when the build knows where Multica lives. */
-function IssueLink({ issueKey }: { issueKey: string }) {
-  const url = multicaIssueUrl(issueKey)
+function IssueLink({ issueKey, webUrl }: { issueKey: string; webUrl: string | undefined }) {
+  const url = multicaIssueUrl(webUrl, issueKey)
   return url ? (
     <a data-slot="issue-link" href={url} target="_blank" rel="noreferrer" className="text-ink underline">
       {issueKey}
@@ -426,7 +428,7 @@ function IssueLink({ issueKey }: { issueKey: string }) {
 }
 
 /** The reason chip of a resolved thread and what it points at. */
-function ResolutionLine({ root }: { root: CommentThreadGroup['root'] }) {
+function ResolutionLine({ root, webUrl }: { root: CommentThreadGroup['root']; webUrl: string | undefined }) {
   const t = useT()
   const { resolution, resolutionRef: ref, resolutionNote: note } = root
   if (!resolution) return null
@@ -435,7 +437,7 @@ function ResolutionLine({ root }: { root: CommentThreadGroup['root'] }) {
       <Badge tone={resolution === 'addressed' ? 'success' : 'outline'}>{t(`stage.${REASON_KEY[resolution]}`)}</Badge>
       <span className="min-w-0 truncate text-caption text-ink-faint">
         {resolution === 'addressed' && ref && t('stage.resolvedIn', { ref })}
-        {resolution === 'moved' && ref && <IssueLink issueKey={ref} />}
+        {resolution === 'moved' && ref && <IssueLink issueKey={ref} webUrl={webUrl} />}
         {resolution === 'wont_fix' && note}
       </span>
     </div>
