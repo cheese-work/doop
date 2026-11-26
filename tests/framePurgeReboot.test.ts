@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import WebSocket from 'ws'
 import type { Canvas, Frame } from '../shared/types.ts'
@@ -7,8 +11,13 @@ import { Client, startServer, type Server } from './harness.ts'
  * CHE-9399 P1d: purge outcomes across a real reboot. Each case drives the real server (a child process on
  * its own PGlite directory) over HTTP, kills it, starts a new process on the same data directory and reads
  * the state again. A purge that left a row, or a later write that brought one back, shows up here and
- * nowhere in the in-process file. Hooks that hold one write in flight need the server's own modules, so the
- * lost-acknowledgement and held-settle cases stay in tests/framePurge.test.ts.
+ * nowhere in the in-process file. The lost-acknowledgement and held-settle cases stay in tests/framePurge.test.ts.
+ *
+ * T9 needs a purge that is held inside the server and then driven to a chosen outcome. The child loads
+ * tests/purgeHold.mjs (NODE_OPTIONS --import), which holds the purge transaction before its first statement
+ * (after the route took its lease and settled the frame's writers) and reports it in a file. The test waits for
+ * that report, so the request has provably reached the server, aborts the client, and then releases the hold as
+ * `commit` or `conflict`.
  */
 
 const EMAIL = 'purge-reboot@test.dev'
@@ -16,16 +25,23 @@ const PASSWORD = 'password12345'
 // longer than the frame write debounce (400 ms) plus a write, so a late write would have landed by the reboot
 const LATE_WRITE_MS = 1500
 
+const HOLD_DIR = mkdtempSync(path.join(tmpdir(), 'doop-purge-hold-'))
+const SERVER_ENV = {
+  NODE_OPTIONS: `--import ${pathToFileURL(path.join(process.cwd(), 'tests', 'purgeHold.mjs')).href}`,
+  DOOP_PURGE_HOLD_DIR: HOLD_DIR,
+}
+
 let server: Server
 let owner: Client
 
 beforeAll(async () => {
-  server = await startServer()
+  server = await startServer(SERVER_ENV)
   owner = await new Client(server).signUp(EMAIL, 'Reboot Owner')
 }, 60_000)
 
 afterAll(() => {
   server?.stop()
+  rmSync(HOLD_DIR, { recursive: true, force: true })
 })
 
 /** kill the child, start a new one on the same data directory, sign the owner in again */
@@ -33,7 +49,7 @@ async function reboot() {
   const dataDir = server.dataDir
   server.stop({ keepData: true })
   await server.stopped
-  server = await startServer({}, dataDir)
+  server = await startServer(SERVER_ENV, dataDir)
   owner = new Client(server)
   const res = await owner.post('/api/auth/sign-in/email', { email: EMAIL, password: PASSWORD })
   expect(res.status).toBe(200)
@@ -275,14 +291,30 @@ describe('T6 no resurrection, across a reboot', () => {
   }, 90_000)
 })
 
+/** poll until `check` is true; a test that waits on the server must not hang forever */
+async function until(what: string, check: () => boolean | Promise<boolean>, ms = 20_000) {
+  const deadline = Date.now() + ms
+  while (!(await check())) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`)
+    await later(25)
+  }
+}
+
 describe('T9 lifecycle, across a reboot', () => {
-  it('(b) the client aborts the purge: the frame ends gone or restorable, and the same after the restart', async () => {
-    const canvas = await newCanvas('t9b')
-    const f = await newFrame(canvas, 't9b')
-    expect((await owner.patch(`/api/frames/${f.id}`, { html: '<p>t9b edited</p>' })).status).toBe(200)
+  /**
+   * Hold the purge inside the server, abort the client once the server confirms the request reached the hold,
+   * force the outcome, wait for the server to finish, then read the state before and after a reboot.
+   */
+  async function abortedPurge(name: string, outcome: 'commit' | 'conflict') {
+    const canvas = await newCanvas(name)
+    const f = await newFrame(canvas, name)
+    expect((await owner.patch(`/api/frames/${f.id}`, { html: `<p>${name} edited</p>` })).status).toBe(200)
     const versionIds = await versionIdsOf(f)
     const inTrash = await trash(canvas, f)
+    await later(LATE_WRITE_MS) // nothing of F's own is left in flight when the hold arms
 
+    for (const file of ['armed', 'reached', 'release']) rmSync(path.join(HOLD_DIR, file), { force: true })
+    writeFileSync(path.join(HOLD_DIR, 'armed'), f.id)
     const ac = new AbortController()
     const sent = owner
       .req(`/api/frames/${f.id}/purge`, {
@@ -290,23 +322,38 @@ describe('T9 lifecycle, across a reboot', () => {
         body: JSON.stringify({ deletedAt: inTrash.deletedAt }),
         signal: ac.signal,
       })
-      .catch(() => undefined)
-    await later(0)
+      .then(
+        () => 'answered',
+        () => 'aborted',
+      )
+    await until('the purge to reach the hold', () => existsSync(path.join(HOLD_DIR, 'reached')))
     ac.abort()
-    await sent
-    await later(LATE_WRITE_MS) // the server finishes or gives up on its own
+    expect(await sent).toBe('aborted')
+    writeFileSync(path.join(HOLD_DIR, 'release'), outcome)
 
-    const stillInTrash = (await trashOf(canvas)).some((x) => x.id === f.id)
-    if (stillInTrash) await expectKept(canvas, inTrash)
-    else await expectGone(canvas, f)
+    // the server finishes the request on its own; its reads wait for the held transaction to end
+    await until('the purge to finish', async () => {
+      const found = (await trashOf(canvas)).find((x) => x.id === f.id)
+      return outcome === 'commit' ? !found : !!found && !('purging' in found)
+    })
+    return { canvas, f, versionIds, inTrash }
+  }
+
+  it('(a) the client aborts, then the transaction conflicts: F stays in the Trash, not purging, restorable, the same after the restart', async () => {
+    const { canvas, f, versionIds, inTrash } = await abortedPurge('t9a', 'conflict')
+    await expectKept(canvas, inTrash)
 
     await reboot()
-    if (stillInTrash) {
-      await expectKept(canvas, inTrash)
-      await expectRestored(canvas, f, versionIds)
-    } else {
-      await expectGone(canvas, f)
-    }
+    await expectKept(canvas, inTrash)
+    await expectRestored(canvas, f, versionIds)
+  }, 90_000)
+
+  it('(b) the client aborts, then the transaction commits: F is gone, and still gone after the restart', async () => {
+    const { canvas, f } = await abortedPurge('t9b', 'commit')
+    await expectGone(canvas, f)
+
+    await reboot()
+    await expectGone(canvas, f)
   }, 90_000)
 })
 
