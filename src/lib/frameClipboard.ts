@@ -1,4 +1,5 @@
 import type { Frame } from '../../shared/types'
+import { framePageId } from '../../shared/pages'
 import { api } from './api'
 import { useStore } from './store'
 import { posthog } from './posthog'
@@ -23,6 +24,13 @@ interface FrameClip {
   frames: ClipFrame[]
 }
 
+/** The page a frame sits on. A legacy frame has no pageId: it belongs to its canvas's first page, which is where its
+ *  authors are recorded. Resolved here so a copy of it still names its source page. */
+function sourcePageId(frame: Frame): string | undefined {
+  const canvas = useStore.getState().canvas
+  return canvas?.id === frame.canvasId ? framePageId(canvas, frame) : frame.pageId
+}
+
 export function copyFrames(frames: Frame[]) {
   if (!frames.length) return
   const left = Math.min(...frames.map((f) => f.x))
@@ -30,7 +38,7 @@ export function copyFrames(frames: Frame[]) {
   const clip: FrameClip = {
     frames: frames.map((f) => ({
       canvasId: f.canvasId,
-      pageId: f.pageId,
+      pageId: sourcePageId(f),
       name: f.name,
       html: f.html,
       x: f.x - left,
@@ -230,7 +238,7 @@ export function duplicateFrames(frames: Frame[]) {
   void createFrames(
     frames.map((frame) => ({
       canvasId: frame.canvasId,
-      from: frame.pageId ? { canvasId: frame.canvasId, pageId: frame.pageId } : undefined,
+      from: sourcePageId(frame) ? { canvasId: frame.canvasId, pageId: sourcePageId(frame)! } : undefined,
       frame: {
         name: `${frame.name} copy`,
         html: frame.html,

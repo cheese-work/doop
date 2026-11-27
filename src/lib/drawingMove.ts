@@ -193,7 +193,7 @@ export function moveDrawing(
             html,
           },
           /* the drawing came out of the source frame: its page's authors come with it */
-          source.pageId ? [{ canvasId: source.canvasId, pageId: source.pageId }] : undefined,
+          [{ canvasId: source.canvasId, pageId }],
         )
     updateLocal(destination)
     let remaining: Frame | null = null
