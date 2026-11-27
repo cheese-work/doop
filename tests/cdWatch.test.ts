@@ -1372,16 +1372,31 @@ globalThis.fetch = async () => ({ json: async () => JSON.parse(process.env.FAKE_
     ...over,
   })
 
-  it('FP-03 behaviour: absent, stale or wrong-revision live evidence alarms a quiet slot at +100 min, fresh evidence does not', () => {
-    const fresh = artifactScenario(handEvidence({}), SLOT + 100 * MIN)
-    expect(fresh.status, fresh.stdout + fresh.stderr).toBe(0)
-    expect(fresh.stdout).toContain('cd-watch freshness: none:')
-    for (const evidence of [null, handEvidence({ observed_at: iso(SLOT - 5 * MIN) }), handEvidence({ revision: B })]) {
-      const r = artifactScenario(evidence, SLOT + 100 * MIN)
+  // One CLI run per test: each spawns the real watcher (about 2 s on a loaded CI runner), so the explicit timeout
+  // keeps a slow shard from failing on vitest's 5 s default instead of on the watcher's decision.
+  const CLI_TIMEOUT = 30_000
+  it(
+    'FP-03 behaviour: fresh live evidence for the slot target does not alarm a quiet slot at +100 min',
+    () => {
+      const r = artifactScenario(handEvidence({}), SLOT + 100 * MIN)
+      expect(r.status, r.stdout + r.stderr).toBe(0)
+      expect(r.stdout).toContain('cd-watch freshness: none:')
+    },
+    CLI_TIMEOUT,
+  )
+  it.each([
+    ['absent', () => null],
+    ['stale', () => handEvidence({ observed_at: iso(SLOT - 5 * MIN) })],
+    ['wrong-revision', () => handEvidence({ revision: B })],
+  ])(
+    'FP-03 behaviour: %s live evidence alarms a quiet slot at +100 min',
+    (_name, evidence) => {
+      const r = artifactScenario(evidence(), SLOT + 100 * MIN)
       expect(r.stdout).toContain('cd-watch freshness: alarm:')
       expect(r.status).toBe(1)
-    }
-  }, 30_000)
+    },
+    CLI_TIMEOUT,
+  )
 
   it('FP-03 positive control: the evidence of run 777.1 for the slot target delivers the quiet slot at +100 min', () => {
     const r = scenario({ liveRunId: 777, liveAttempt: 1, slotSkip: 'current' }, SLOT + 100 * MIN)
