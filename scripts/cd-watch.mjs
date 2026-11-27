@@ -43,7 +43,7 @@ export function lastSlot(nowMs) {
   return Math.max(...slots.filter((s) => s <= nowMs))
 }
 
-// C-7.1. Facts: switch, clock, the qualified candidate (or null), the last successful D2 SHA (or null), how many D2
+// C-7.1. Facts: switch, clock, the qualified candidate (or null; `builtAtMs` is when its D1 run was created), the last successful D2 SHA (or null), how many D2
 // runs were created since the slot, and the newest D1 run (conclusion null while it runs).
 // Result: what to do (`alarm` says the run must fail: an alarm, or a dispatch of a window missed by 90 min or more), why, and
 // whether to rerun the failed D1 build.
@@ -77,6 +77,9 @@ export function freshness({ trainOn, nowMs, candidate, deployed, d2RunsSinceSlot
   }
   const deployedSha = deployed.state === 'known' ? deployed.sha : null
   if (candidate.sha === deployedSha) return idle(`candidate ${short(candidate.sha)} is already deployed`)
+  // A candidate built after the slot, with that slot's D2 already run, belongs to the next slot: nothing was missed.
+  if (d2RunsSinceSlot > 0 && candidate.builtAtMs > lastSlot(nowMs))
+    return idle(`candidate ${short(candidate.sha)} was built after the slot; the next slot deploys it`)
   const behind = `candidate ${short(candidate.sha)} is ahead of the last successful D2 ${short(deployedSha)}`
   if (age >= ALARM_AFTER) {
     const mins = Math.floor(age / MIN)
@@ -341,7 +344,12 @@ async function cli(argv, env) {
     }
     const d1 = (q) =>
       api(repo, `actions/workflows/image.yml/runs?branch=${BRANCH}&event=push&${q}per_page=50`).workflow_runs
-    const candidate = pickCandidate(d1('status=success&'))
+    const built = d1('status=success&')
+    const picked = pickCandidate(built)
+    const candidate = picked && {
+      ...picked,
+      builtAtMs: Date.parse(built.find((r) => r.id === picked.runId).created_at),
+    }
     const newest = d1('')[0]
     const sinceIso = new Date(lastSlot(nowMs)).toISOString().replace(/\.\d{3}Z$/, 'Z')
     const d2 = api(repo, `actions/workflows/cd-deploy.yml/runs?created=>=${sinceIso}&per_page=50`)
