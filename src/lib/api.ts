@@ -640,6 +640,21 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ pages, expectedPages }),
     }),
+  /** Mark a page as the project ledger, or take the mark off (server-owned, L2). */
+  setPageLedger: (canvasId: string, pageId: string, ledger: boolean) =>
+    req<{ pages: import('../../shared/types').CanvasPageInfo[] }>(
+      `/api/canvases/${canvasId}/pages/${encodeURIComponent(pageId)}/ledger`,
+      { method: 'PUT', body: JSON.stringify({ ledger }) },
+    ),
+  /** Move a page to Finished, or restore it. `expectedName` is the name the person saw (L5). */
+  setPageFinished: (canvasId: string, pageId: string, finished: boolean, expectedName: string) =>
+    req<{
+      pages: import('../../shared/types').CanvasPageInfo[]
+      skipped: { frameId: string; reason: string }[]
+    }>(`/api/canvases/${canvasId}/pages/${encodeURIComponent(pageId)}/finished`, {
+      method: 'PUT',
+      body: JSON.stringify({ finished, expectedName }),
+    }),
   setFlowStart: (canvasId: string, pageId: string, frameId: string | null) =>
     req<import('../../shared/types').CanvasPageInfo[]>(
       `/api/canvases/${canvasId}/pages/${encodeURIComponent(pageId)}/flow-start`,
