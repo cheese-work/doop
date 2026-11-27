@@ -1,4 +1,4 @@
-# ci-policy: class=gate
+# ci-policy: class=deploy
 name: CD preflight
 
 # CHE-9957 (CHE-9850 S6). Is the CD pipeline able to run? It answers on every PR that touches a CD file and every 15
