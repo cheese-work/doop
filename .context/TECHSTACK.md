@@ -193,6 +193,9 @@
   page's current Multica issue, or null) to Multica: it sits before the `/api` session gate, wants
   `Authorization: Bearer <DOOP_ATTESTATION_READ_TOKEN>` (compared as SHA-256 digests with `timingSafeEqual`; 401 if
   missing or wrong, 503 while the variable is unset, at least 32 characters), is GET only, and 404s an unknown id.
+  Both routes add `authors` (the distinct `page_authors` writers of the attested page and of every page bound to the same
+  issue: `kind`, `agentId`, `taskId`, `userId`, `provider`, `model`, `sources`) and `provenanceComplete` (false for an empty
+  set, an `unknown` or `system` row, or an agent row without agent and task id; CHE-7084). Tests: `attestationAuthors.test.ts`.
   `extraChecks` is the plug-in point for the requirement ledger. Tests: `designCompleteness.test.ts`,
   `designAttestation.test.ts`.
 

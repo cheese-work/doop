@@ -111,6 +111,68 @@ export interface AttestationView {
   createdBy: string
   /** true while every frame is still at the version the run saw and the ruleset has not moved */
   current: boolean
+  /** who wrote the attested page and every page bound to the same issue (CHE-7064 D1.5) */
+  authors: AttestationAuthor[]
+  /** every writer is a named person or a verified agent task; false for an empty set, `unknown`, `system` */
+  provenanceComplete: boolean
+}
+
+/** One distinct writer in the author set. '' means "none" for that identity field, as in the ledger. */
+export interface AttestationAuthor {
+  kind: 'agent' | 'user' | 'system' | 'unknown'
+  agentId: string
+  taskId: string
+  userId: string
+  provider: string
+  model: string
+  /** how the writer reached the set, from the ledger rows: `write`, `copy` and `legacy` */
+  sources: string[]
+}
+
+const AUTHOR_KINDS: ReadonlySet<string> = new Set(['agent', 'user', 'system', 'unknown'])
+
+/** The author set of an attested page: its own ledger rows plus the rows of every page, on any canvas, whose current
+ *  issue is the same. Rows of one writer fold into one entry that lists each source. */
+async function authorsOf(
+  canvasId: string,
+  pageId: string,
+  canvas: Canvas | undefined,
+): Promise<{ authors: AttestationAuthor[]; provenanceComplete: boolean }> {
+  const pages = [{ canvasId, pageId }]
+  const issueId = resolvePageIssue(canvas && canvasPages(canvas).find((p) => p.id === pageId))
+  if (issueId) {
+    for (const other of store.allCanvases()) {
+      for (const page of canvasPages(other)) {
+        if (resolvePageIssue(page) === issueId && !(other.id === canvasId && page.id === pageId))
+          pages.push({ canvasId: other.id, pageId: page.id })
+      }
+    }
+  }
+  const byWriter = new Map<string, AttestationAuthor>()
+  for (const row of await persist.listPageAuthorsOf(pages)) {
+    const kind = AUTHOR_KINDS.has(row.kind) ? (row.kind as AttestationAuthor['kind']) : 'unknown'
+    const key = [kind, row.agentId, row.taskId, row.userId].join('\u0000')
+    const entry = byWriter.get(key) ?? {
+      kind,
+      agentId: row.agentId,
+      taskId: row.taskId,
+      userId: row.userId,
+      provider: row.provider,
+      model: row.model,
+      sources: [],
+    }
+    entry.provider ||= row.provider
+    entry.model ||= row.model
+    if (!entry.sources.includes(row.source)) entry.sources.push(row.source)
+    byWriter.set(key, entry)
+  }
+  const authors = [...byWriter.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([, entry]) => ({ ...entry, sources: entry.sources.sort() }))
+  const provenanceComplete =
+    authors.length > 0 &&
+    authors.every((a) => (a.kind === 'agent' ? !!a.agentId && !!a.taskId : a.kind === 'user' ? true : false))
+  return { authors, provenanceComplete }
 }
 
 export async function readAttestation(
@@ -128,6 +190,7 @@ export async function readAttestation(
     if (now.kind === 'lines') requirementsNow = { issue: now.issue, hash: now.hash }
   }
   const requirementsHold = requirementsStillHold(head.inputs, requirementsNow)
+  const { authors, provenanceComplete } = await authorsOf(head.canvasId, head.pageId, canvas)
   return {
     id: runId,
     canvasId: head.canvasId,
@@ -143,6 +206,8 @@ export async function readAttestation(
       !!canvas &&
       requirementsHold &&
       currentAttestation(canvas, head.pageId, rows, requirementsNow?.hash ?? null)?.runId === runId,
+    authors,
+    provenanceComplete,
   }
 }
 
