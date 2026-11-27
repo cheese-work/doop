@@ -12,6 +12,7 @@
       import { TooltipProvider } from '/src/components/ui/tooltip.tsx'
       import { pickedSelectors, useStore } from '/src/lib/store.ts'
       import { clearHistory, undo } from '/src/lib/history.ts'
+      useStore.setState({ tool: 'select' }) /* the app opens in Hand; these tests start from Select */
       import '/src/styles.css'
 
       window.canvasClipboardHarness = {

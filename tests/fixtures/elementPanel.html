@@ -15,6 +15,7 @@
       import { layoutZoomFor } from '/src/lib/layoutZoom.ts'
       import { TooltipProvider } from '/src/components/ui/tooltip.tsx'
       import { pickedSelectors, useStore } from '/src/lib/store.ts'
+      useStore.setState({ tool: 'select' }) /* the app opens in Hand; these tests start from Select */
       import { clearHistory, undo, redo } from '/src/lib/history.ts'
       import { editElementGeometry } from '/src/lib/frameBridge.ts'
       import { nudgeSelection } from '/src/lib/layerEdits.ts'

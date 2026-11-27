@@ -16,6 +16,38 @@ import type { Frame } from '../shared/types'
 describe.skipIf(!findBrowserPath())('drawing on the canvas', { timeout: 30_000 }, () => {
   drawingPage()
 
+  it('opens in Hand: a drag over a frame pans without selecting, and Esc returns to Hand from any tool', async () => {
+    await seedFrames([
+      {
+        id: 'hand-frame',
+        updatedBy: 'User',
+        canvasId: 'c',
+        pageId: 'first',
+        name: 'Hand frame',
+        x: 100,
+        y: 100,
+        width: 300,
+        height: 200,
+        createdAt: 0,
+        updatedAt: 0,
+        html: '<body></body>',
+      },
+    ])
+    expect(await page.$eval('[aria-label="Hand"]', (el) => el.getAttribute('aria-pressed'))).toBe('true')
+    const before = await page.evaluate(() => window.drawingHarness.camera())
+    await drag([300, 300], [380, 340])
+    const after = await page.evaluate(() => window.drawingHarness.camera())
+    expect(after.x - before.x).toBeCloseTo(80)
+    expect(after.y - before.y).toBeCloseTo(40)
+    expect(await page.evaluate(() => window.drawingHarness.state().selectedIds)).toEqual([])
+    for (const key of ['v', 'c', 'r'] as const) {
+      await page.keyboard.press(key)
+      expect(await page.evaluate(() => window.drawingHarness.state().tool)).not.toBe('hand')
+      await page.keyboard.press('Escape')
+      expect(await page.evaluate(() => window.drawingHarness.state().tool)).toBe('hand')
+    }
+  })
+
   it('draws a frame with reverse drag at a panned/zoomed viewport, then adds editable shapes inside it', async () => {
     await page.click('[aria-label="Frame"]')
     await drag([700, 500], [200, 200])

@@ -11,6 +11,7 @@
       import { CanvasPage } from '/src/pages/CanvasPage.tsx'
       import { TooltipProvider } from '/src/components/ui/tooltip.tsx'
       import { useStore } from '/src/lib/store.ts'
+      useStore.setState({ tool: 'select' }) /* the app opens in Hand; these tests start from Select */
       import '/src/styles.css'
 
       /* the canvas page as an editor has it open, with all its chrome; the
