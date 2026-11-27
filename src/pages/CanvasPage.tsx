@@ -1,6 +1,6 @@
 import { CAPTURE_PREFIX, pasteWebCapture } from '../lib/webCapture'
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { canEditOpenCanvas, pickedSelectors, roleOf, useStore } from '../lib/store'
+import { canEditActivePage, canEditOpenCanvas, pickedSelectors, roleOf, useStore } from '../lib/store'
 import { followPageInUrl } from '../lib/pageUrl'
 import { MOD_KEY, PRESENT_SHORTCUT_HINT, isControlTarget, isTypingTarget } from '../lib/keys'
 import { enterSelection, exitSelection, selectSibling } from '../lib/selectionKeys'
@@ -128,6 +128,7 @@ import { Note } from '../components/ui/note'
 import { Textarea } from '../components/ui/textarea'
 import { Modal, ModalActions, ModalEyebrow, ModalLede, ModalTitle } from '../components/ui/modal'
 import { createCenteredFrame } from '../lib/framePlacement'
+import { LedgerCaption } from '../components/LedgerCaption'
 import { RULER_PX } from '../components/Rulers'
 import { NO_CANVAS, onViewCommand, syncViewMenu } from '../lib/viewMenu'
 import { AGENTS_MIN, LAYERS_MIN, fitPanelWidths } from '../lib/panelWidths'
@@ -260,6 +261,9 @@ export function CanvasPage({
   /* a guest is read-only from the first paint; anyone else until their role
      arrives with the canvas (roleOf reads a missing canvas as edit) */
   const readOnly = useStore((s) => guest || !canEditOpenCanvas(s))
+  /* a Finished page opens read only: no Inspector, element panel or Page panel to edit it with (the server
+     refuses those writes too) */
+  const pageEditable = useStore((s) => !guest && canEditActivePage(s))
   const editorReady = useStore((s) => !guest && s.canvas?.id === canvasId && canEditOpenCanvas(s))
   const isMobile = useIsMobile()
   const prototypeMode = useStore((s) => s.prototypeMode)
@@ -415,7 +419,7 @@ export function CanvasPage({
          always claimed, deleted something or not: an unhandled Backspace is
          "back" to some engines (WebKitGTK, the Linux desktop app), and a
          canvas must never leave the page for it. */
-      const canEdit = canEditOpenCanvas(useStore.getState())
+      const canEdit = canEditActivePage(useStore.getState())
       if (e.key === 'Delete' || e.key === 'Backspace') {
         e.preventDefault()
         if (canEdit && !e.repeat) deleteSelection()
@@ -472,7 +476,7 @@ export function CanvasPage({
     function onPaste(e: ClipboardEvent) {
       if (isTypingTarget(e.target)) return
       /* every paste lands a frame or a layer */
-      if (!canEditOpenCanvas(useStore.getState())) return
+      if (!canEditActivePage(useStore.getState())) return
       const captureText = e.clipboardData?.getData('text/plain') ?? ''
       if (captureText.startsWith(CAPTURE_PREFIX)) {
         e.preventDefault()
@@ -541,13 +545,13 @@ export function CanvasPage({
     function onDragOver(e: DragEvent) {
       if (!carriesFiles(e) || e.defaultPrevented) return
       e.preventDefault()
-      if (e.dataTransfer) e.dataTransfer.dropEffect = canEditOpenCanvas(useStore.getState()) ? 'copy' : 'none'
+      if (e.dataTransfer) e.dataTransfer.dropEffect = canEditActivePage(useStore.getState()) ? 'copy' : 'none'
     }
     function onDrop(e: DragEvent) {
       endDrag()
       if (!carriesFiles(e) || e.defaultPrevented) return
       e.preventDefault()
-      if (!canEditOpenCanvas(useStore.getState())) return
+      if (!canEditActivePage(useStore.getState())) return
       const componentId = e.dataTransfer?.getData(COMPONENT_DRAG_TYPE)
       if (componentId) {
         void dropComponent(componentId, { x: e.clientX, y: e.clientY })
@@ -727,10 +731,10 @@ export function CanvasPage({
   /* with nothing selected the slot is the page's own settings, once opened
      from the rail, until closed */
   const pagePanelOpen = useStore((s) => s.pagePanelOpen)
-  const pageShown = !readOnly && !selectedFrame && pagePanelOpen && !deferPanel
+  const pageShown = pageEditable && !selectedFrame && pagePanelOpen && !deferPanel
   /* the frame Inspector, the element panel or the Page panel, whichever has the slot */
   const propertiesShown =
-    (!readOnly && !!selectedFrame && !deferPanel && (!!panelElement || inspectorOpen)) || pageShown
+    (pageEditable && !!selectedFrame && !deferPanel && (!!panelElement || inspectorOpen)) || pageShown
   /* ⇧R docks the rulers on the canvas's top and left edges; the bar and the
      floating chrome step in past them (the same test Stage draws them by) */
   const rulers = useStore((s) => s.rulers)
@@ -1071,6 +1075,9 @@ export function CanvasPage({
           {/* the presence pill in the bar already carries each agent's status
               line; this per-agent stack is only for windows too narrow for it */}
           <WorkingNow style={{ left: chrome.left }} className="min-[1180px]:hidden" />
+          {!isMobile && !uiHidden && (
+            <LedgerCaption style={{ left: chrome.left, top: 'calc(var(--chrome-top) + 12px)' }} />
+          )}
           {!readOnly && <Onboarding canvasId={canvasId} />}
           <IosAppPrompt />
           <AccessBanner guest={guest} onSignUp={onSignUp} onSignIn={onSignIn} />
@@ -1102,7 +1109,7 @@ export function CanvasPage({
               }}
             />
           )}
-          {!isMobile && !readOnly && selectedFrame && panelElement && !deferPanel && (
+          {!isMobile && pageEditable && selectedFrame && panelElement && !deferPanel && (
             <ElementPanel
               /* never keyed: picking the next element, in this frame or
                  another, swaps the values in place instead of remounting */
@@ -1112,7 +1119,7 @@ export function CanvasPage({
               style={{ right: chrome.properties }}
             />
           )}
-          {!isMobile && !readOnly && selectedFrame && inspectorOpen && !panelElement && !deferPanel && (
+          {!isMobile && pageEditable && selectedFrame && inspectorOpen && !panelElement && !deferPanel && (
             <Inspector frame={selectedFrame} surface={panelSurface} style={{ right: chrome.properties }} />
           )}
           {!isMobile && pageShown && <PagePanel surface={panelSurface} style={{ right: chrome.properties }} />}
@@ -1140,7 +1147,7 @@ export function CanvasPage({
               agentsOpen={showActivity}
               onToggleAgents={() => setShowActivity((open) => !open)}
               inspectorOpen={propertiesShown}
-              inspectorAvailable={!readOnly}
+              inspectorAvailable={pageEditable}
               inspectTarget={selectedFrame ? 'frame' : 'page'}
               onToggleInspector={() => {
                 const s = useStore.getState()
@@ -1256,7 +1263,7 @@ export function CanvasPage({
               the open state they read from is untouched, so they are back
               as they were when ⌘. restores the chrome */}
           <Sheet
-            open={!readOnly && !!selectedFrame && inspectorOpen && !deferPanel && !uiHidden}
+            open={pageEditable && !!selectedFrame && inspectorOpen && !deferPanel && !uiHidden}
             onOpenChange={(open) => {
               if (!open) select(null)
             }}

@@ -3,7 +3,7 @@ import type { Frame } from '../../shared/types'
 import { ELEMENT_ID_ATTR } from '../../shared/elementId'
 import type { ReorderMove } from './keys'
 import { restack, roomAt, stackOf, type StackWrite } from '../../shared/frameStack'
-import { canEditOpenCanvas, pickedSelectors, useStore } from './store'
+import { canEditActivePage, pickedSelectors, useStore } from './store'
 import { t } from './i18n'
 import { api, ApiError, errorMessage } from './api'
 import { formatElementText, inspectElement, nudgeElements, requestFrame } from './frameBridge'
@@ -61,7 +61,7 @@ function queueRename(frameId: string, edit: (frame: Frame) => Promise<void>) {
   const started = historyEpoch()
   const run = async () => {
     const s = useStore.getState()
-    if (s.canvas?.id !== canvasId || historyEpoch() !== started || !canEditOpenCanvas(s)) return
+    if (s.canvas?.id !== canvasId || historyEpoch() !== started || !canEditActivePage(s)) return
     const frame = s.canvas?.frames.find((f) => f.id === frameId)
     if (frame) await edit(frame)
   }

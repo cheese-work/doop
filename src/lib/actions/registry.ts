@@ -4,7 +4,7 @@
    the registry what only it holds (its modals and panels) as the host. */
 
 import type { PlainMessageKey } from '../i18n'
-import { useStore } from '../store'
+import { canEditOpenCanvas, useStore } from '../store'
 import { currentMe, offersUpgrade } from '../me'
 import { openUpgrade } from '../upgrade'
 import { currentPageCanvas } from '../pages'
@@ -125,8 +125,10 @@ export interface CanvasAction {
   section: number
   /** the first chord bound on this platform is the one menus show */
   keys?: readonly Chord[]
-  /** changes the canvas: only an editor may run it */
+  /** changes the canvas: only an editor may run it, and not on a Finished page */
   edit?: boolean
+  /** with `edit`: still runs on a Finished page, whose frames the server lets an editor lock */
+  onFinished?: boolean
   /** the chords are shown, but another handler owns them (⌫ and Esc, which
    *  the canvas page claims with rules of their own) */
   hintOnly?: boolean
@@ -749,6 +751,7 @@ export const ACTIONS: readonly CanvasAction[] = [
     section: 4,
     keys: [mod('l', { shift: true })],
     edit: true,
+    onFinished: true,
     enabled: hasSelection,
     run: () => toggleLockSelection(),
   },
@@ -1085,7 +1088,7 @@ export const ACTIONS: readonly CanvasAction[] = [
  *  needs to be, and its own test passes. */
 export function isEnabled(action: CanvasAction): boolean {
   if (!host) return false
-  if (action.edit && !canEdit()) return false
+  if (action.edit && !(action.onFinished ? canEditOpenCanvas(useStore.getState()) : canEdit())) return false
   return action.enabled ? action.enabled() : true
 }
 

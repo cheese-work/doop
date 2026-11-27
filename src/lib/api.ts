@@ -1,4 +1,5 @@
 import { useStore } from './store'
+import { t } from './i18n'
 import type { InstanceSettings, InstanceSettingsPatch } from '../../shared/instanceSettings'
 import { beginFrameSave } from './frameSaves'
 import type { StackWrite } from '../../shared/frameStack'
@@ -433,7 +434,14 @@ export async function req<T>(url: string, init?: RequestInit): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     ...init,
   })
-  if (!res.ok) throw new ApiError(res.status, await res.text())
+  if (!res.ok) {
+    const error = new ApiError(res.status, await res.text())
+    /* a write on a Finished page (CHE-9398 L8): every surface that sent one says why it did not land */
+    if (error.status === 409 && error.body.code === 'page_finished') {
+      useStore.getState().pushNotice(t('panels.pageFinishedReadOnly'))
+    }
+    throw error
+  }
   return res.json()
 }
 

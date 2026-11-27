@@ -6,7 +6,7 @@ import { writeCanvasClipboard } from '../lib/canvasClipboard'
 import { copyFramePng } from '../lib/frameExport'
 import { deleteFramesTracked } from '../lib/history'
 import { isStackLocked, setFramesHidden, setFramesLocked } from '../lib/layerEdits'
-import { canEditOpenCanvas, useStore } from '../lib/store'
+import { canEditActivePage, canEditOpenCanvas, useStore } from '../lib/store'
 import { setFramesApproval } from '../lib/frameApproval'
 import { useFrameSaves } from '../lib/frameSaves'
 import { MOD_KEY } from '../lib/keys'
@@ -46,8 +46,10 @@ export function FrameContextMenu({
   const [savingApproval, setSavingApproval] = useState(false)
   /* a right-click inside a multi-selection acts on the whole group */
   const selectedIds = useStore((s) => s.selectedIds)
-  /* a view or comment link keeps the items that only read the frame */
-  const readOnly = useStore((s) => !canEditOpenCanvas(s))
+  /* a view or comment link keeps the items that only read the frame; so does a Finished page, which
+     also keeps Lock (the server lets a lock through) */
+  const readOnly = useStore((s) => !canEditActivePage(s))
+  const canLock = useStore(canEditOpenCanvas)
   const groupIds = selectedIds.includes(frame.id) ? selectedIds : [frame.id]
   const groupSize = groupIds.length
   const pendingSave = useFrameSaves((s) => groupIds.some((id) => !!s.pending[id]))
@@ -162,6 +164,10 @@ export function FrameContextMenu({
               {allReady ? t('stage.moveToDraft') : t('stage.markReadyForDev')}
               {groupSize > 1 && <MenuHint>{t('stage.framesCount', { count: groupSize })}</MenuHint>}
             </ContextMenuItem>
+          </>
+        )}
+        {canLock && (
+          <>
             <ContextMenuSeparator />
             <ContextMenuItem onSelect={() => setFramesLocked(groupFrames(), !allLocked)}>
               {groupSize > 1
@@ -169,6 +175,10 @@ export function FrameContextMenu({
                 : t(allLocked ? 'stage.unlock' : 'stage.lock')}
               <MenuHint>{MOD_KEY}⇧L</MenuHint>
             </ContextMenuItem>
+          </>
+        )}
+        {!readOnly && (
+          <>
             <ContextMenuSeparator />
             <ContextMenuItem tone="danger" disabled={allLocked} onSelect={deleteSelection}>
               {groupSize > 1 ? t('stage.deleteFrames', { count: groupSize }) : t('stage.deleteFrame')}
