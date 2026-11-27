@@ -45,16 +45,22 @@ export function lastSlot(nowMs) {
 
 // C-7.1. Facts: switch, clock, the qualified candidate (or null), the last successful D2 SHA (or null), how many D2
 // runs were created since the slot, and the newest D1 run (conclusion null while it runs).
-// Result: what to do (`alarm: true` on a dispatch also fails the run: the window was missed by 90 min or more), why, and
+// Result: what to do (`alarm` says the run must fail: an alarm, or a dispatch of a window missed by 90 min or more), why, and
 // whether to rerun the failed D1 build.
 export function freshness({ trainOn, nowMs, candidate, deployed, d2RunsSinceSlot, head }) {
-  if (!trainOn) return { action: 'none', rerunD1: false, reason: 'DOOP_DEPLOY_TRAIN is not on: nothing is due' }
+  if (!trainOn)
+    return { action: 'none', alarm: false, rerunD1: false, reason: 'DOOP_DEPLOY_TRAIN is not on: nothing is due' }
   const rerunD1 = head?.conclusion === 'failure' && head?.attempt === 1
   const age = nowMs - lastSlot(nowMs)
-  const idle = (reason) => ({ action: 'none', rerunD1, reason })
+  const idle = (reason) => ({ action: 'none', alarm: false, rerunD1, reason })
   if (!candidate) return idle('no qualified candidate')
   if (deployed.state === 'unknown') {
-    return { action: 'alarm', rerunD1, reason: `the last successful D2 SHA is unknown: ${deployed.reason}` }
+    return {
+      action: 'alarm',
+      alarm: true,
+      rerunD1,
+      reason: `the last successful D2 SHA is unknown: ${deployed.reason}`,
+    }
   }
   if (deployed.state === 'pending') {
     // The run may be the deploy, but a queued or stuck one must not hide a missed window: the 90 min alarm still fires.
@@ -62,6 +68,7 @@ export function freshness({ trainOn, nowMs, candidate, deployed, d2RunsSinceSlot
       const mins = Math.floor(age / MIN)
       return {
         action: 'alarm',
+        alarm: true,
         rerunD1,
         reason: `${deployed.reason}, still unfinished ${mins} min after the slot (limit ${ALARM_AFTER / MIN})`,
       }
@@ -78,11 +85,11 @@ export function freshness({ trainOn, nowMs, candidate, deployed, d2RunsSinceSlot
     // dispatch as well as the alarm. With a D2 run since the slot (a skipped, suspended or forward-only one) it is alarm only.
     if (d2RunsSinceSlot === 0)
       return { action: 'dispatch', alarm: true, rerunD1, reason: `${late}; no D2 run since the slot` }
-    return { action: 'alarm', rerunD1, reason: late }
+    return { action: 'alarm', alarm: true, rerunD1, reason: late }
   }
   if (age < DISPATCH_AFTER) return idle('the slot is not 45 min old yet')
   if (d2RunsSinceSlot > 0) return idle(`${behind}; a D2 run exists since the slot`)
-  return { action: 'dispatch', rerunD1, reason: `${behind}; no D2 run since the slot` }
+  return { action: 'dispatch', alarm: false, rerunD1, reason: `${behind}; no D2 run since the slot` }
 }
 
 // C-7.2. `body` is what /healthz answered (null when it did not answer or was not JSON), `deployed` the last
@@ -366,7 +373,7 @@ async function cli(argv, env) {
       ])
       console.log('sent one schedule_backup dispatch of cd-deploy.yml')
     }
-    if (out.action === 'alarm' || out.alarm) {
+    if (out.alarm) {
       console.log(`::error::D2 is overdue: ${out.reason}`)
       process.exitCode = 1
     }

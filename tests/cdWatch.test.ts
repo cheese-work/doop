@@ -18,7 +18,7 @@ const {
   c00Host: (env: Record<string, string | undefined>) => string
   lastSlot: (nowMs: number) => number
   deployJobsAllSkipped: (jobs: { name: string; conclusion: string | null }[] | undefined) => boolean
-  freshness: (f: Record<string, unknown>) => { action: string; reason: string; rerunD1: boolean }
+  freshness: (f: Record<string, unknown>) => { action: string; alarm: boolean; reason: string; rerunD1: boolean }
   liveVerdict: (f: Record<string, unknown>) => Promise<{ ok: boolean; reason: string }>
   lastDeployed: (h: {
     recorded: { sha: string; runId: number | null; confirmedAt: number } | null
@@ -130,11 +130,11 @@ describe('freshness (C-7.1)', () => {
   it('at 155 min with a D2 run since the slot: alarm only, no second dispatch', () => {
     const out = freshness({ ...base, nowMs: SLOT + 155 * MIN, d2RunsSinceSlot: 1 })
     expect(out.action).toBe('alarm')
-    expect(out.alarm).toBeUndefined()
+    expect(out.alarm).toBe(true)
   })
 
   it('an on-time dispatch (45 to 89 min) does not alarm', () => {
-    expect(freshness({ ...base, nowMs: SLOT + 60 * MIN }).alarm).toBeFalsy()
+    expect(freshness({ ...base, nowMs: SLOT + 60 * MIN }).alarm).toBe(false)
   })
 
   it('names the candidate and the deployed SHA in the alarm reason', () => {
