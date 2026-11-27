@@ -53,21 +53,14 @@ const QUIET_OWNER = { runnerDown: 'c00-hermes-devops', otherwise: 'CD lane' }
 const QUEUE_LIMIT = 10 * MIN
 
 // Which step is at fault, and who owns it (plan r5, S2 diagnosis). The first matching fact wins. Facts that the caller
-// cannot measure are left null and never match.
-export function diagnose({
-  d1Red = false,
-  d1Author = null,
-  c00QueuedMinutes = null,
-  markerSuspended = false,
-  confirmInconclusive = false,
-}) {
+// cannot measure are left null and never match. A confirm that read back `inconclusive` is not here: D2's evidence has no
+// such outcome yet, so there is nothing to measure (it belongs to S4, which adds the confirm read-back result).
+export function diagnose({ d1Red = false, d1Author = null, c00QueuedMinutes = null, markerSuspended = false }) {
   if (d1Red) return { step: 'D1', reason: 'the D1 image build failed', owner: d1Author ?? 'PR author' }
   if (c00QueuedMinutes !== null && c00QueuedMinutes * MIN > QUEUE_LIMIT) {
     return { step: 'C00', reason: `the C00 job has been queued ${c00QueuedMinutes} min`, owner: 'c00-hermes-devops' }
   }
   if (markerSuspended) return { step: 'marker', reason: 'the deploy marker is suspended', owner: 'Cheese' }
-  if (confirmInconclusive)
-    return { step: 'confirm', reason: 'the confirm read-back was inconclusive', owner: 'CD lane' }
   return null
 }
 
@@ -106,6 +99,37 @@ export function quietSlotProof({ evidence, slotMs, sha }) {
   return { delivered: true, reason: `live ${short(sha)} healthy, observed ${evidence.observed_at}${run}` }
 }
 
+// The newest qualified D1 candidate that was on cheese/main at `slotMs` (CHE-9956, FP-05). `runs` is D1's push runs, newest
+// first. A D1 push run is created by the push that put its commit on cheese/main, so `created_at` is the time the commit
+// landed. A commit that landed after the slot is not due until the next one: taking the newest run instead would call
+// every merge between a slot and slot + 90 min overdue.
+// `deployedSha` (optional): when the SHA D2 last confirmed is itself a later candidate (a dispatch delivered it after the
+// slot), that later run is returned, so the older slot candidate is not called undelivered.
+export function slotCandidate(runs, slotMs, deployedSha = null) {
+  const qualified = (r) =>
+    r.event === 'push' && r.conclusion === 'success' && Number.isFinite(Date.parse(r.created_at ?? ''))
+  const delivered = deployedSha && runs.find((r) => qualified(r) && r.head_sha === deployedSha)
+  if (delivered && Date.parse(delivered.created_at) > slotMs) {
+    return { sha: delivered.head_sha, runId: delivered.id, createdMs: Date.parse(delivered.created_at) }
+  }
+  for (const r of runs) {
+    const createdMs = Date.parse(r.created_at ?? '')
+    if (r.event !== 'push' || r.conclusion !== 'success' || !Number.isFinite(createdMs) || createdMs > slotMs) continue
+    return { sha: r.head_sha, runId: r.id, createdMs }
+  }
+  return null
+}
+
+// The longest wait, in whole minutes, of a queued job that asks for the C00 runner; null when none waits. `jobs` are the
+// jobs of one D2 run (GitHub's `status`, `created_at` and `labels`).
+export function c00QueuedMinutes(jobs, nowMs) {
+  const waits = (jobs ?? [])
+    .filter((j) => j.status === 'queued' && (j.labels ?? []).includes('cheese-c00-deploy'))
+    .map((j) => Math.floor((nowMs - Date.parse(j.created_at ?? '')) / MIN))
+    .filter(Number.isFinite)
+  return waits.length ? Math.max(...waits) : null
+}
+
 // C-7.1. Facts: switch, clock, the qualified candidate (or null), the last successful D2 SHA (or null), how many D2
 // runs were created since the slot, and the newest D1 run (conclusion null while it runs).
 // Optional facts (all default to the pre-S2 behaviour):
@@ -113,7 +137,9 @@ export function quietSlotProof({ evidence, slotMs, sha }) {
 //   d2RunActive    a D2 run is still queued or running;
 //   followUpD2     a D2 run was created after the skipped run (the one dispatch after a busy run already went out);
 //   quiet          quietSlotProof for the slot, used only when the candidate is already the deployed SHA;
-//   runnerSeen     a cd-live-revision run exists since the slot (false points the quiet alarm at the X99 runner).
+//   runnerSeen     a cd-live-revision run exists since the slot (false points the quiet alarm at the X99 runner);
+//   c00QueuedMinutes  how long a C00 job of the active D2 run has been queued (names c00-hermes-devops over 10 min).
+// `candidate.createdMs` (FP-05) is when the candidate landed on cheese/main: one that landed after the slot is not due yet.
 // Result: what to do, why, whether to rerun the failed D1 build, and a `diagnosis` on an alarm.
 export function freshness({
   trainOn,
@@ -127,6 +153,7 @@ export function freshness({
   followUpD2 = false,
   quiet = null,
   runnerSeen = true,
+  c00QueuedMinutes = null,
 }) {
   if (!trainOn) return { action: 'none', rerunD1: false, reason: 'DOOP_DEPLOY_TRAIN is not on: nothing is due' }
   const rerunD1 = head?.conclusion === 'failure' && head?.attempt === 1
@@ -139,12 +166,17 @@ export function freshness({
     diagnosis: diagnose({
       d1Red: rerunD1 || head?.conclusion === 'failure',
       markerSuspended: skipReason === 'suspended',
+      c00QueuedMinutes,
       ...facts,
     }),
   })
   if (!candidate) return idle('no qualified candidate')
   if (deployed.state === 'unknown') {
     return alarm(`the last successful D2 SHA is unknown: ${deployed.reason}`)
+  }
+  // FP-05: a candidate that landed after the slot is due at the next slot. No alarm, no dispatch.
+  if (Number.isFinite(candidate.createdMs) && candidate.createdMs > nowMs - age) {
+    return idle(`candidate ${short(candidate.sha)} merged after the slot; due at the next slot`)
   }
   if (deployed.state === 'pending') {
     // The run may be the deploy, but a queued or stuck one must not hide a missed window: the 90 min alarm still fires.
@@ -163,7 +195,6 @@ export function freshness({
       const why = quiet?.reason ?? 'no live evidence since the slot'
       return alarm(
         `candidate ${short(candidate.sha)} is already deployed, but the slot has no fresh live evidence: ${why}; owner ${owner}`,
-        { c00QueuedMinutes: null },
       )
     }
     return idle(`candidate ${short(candidate.sha)} is already deployed; waiting for live evidence`)
@@ -407,6 +438,12 @@ const deployedSha = (repo) =>
     deploySkipped: async (id) => deployJobSkipped(repo, id),
   })
 
+// The picked candidate with the time its D1 run was created (FP-05), or null.
+function withCreated(hit, runs) {
+  const run = hit && runs.find((r) => r.id === hit.runId)
+  return hit && { ...hit, createdMs: Date.parse(run?.created_at ?? '') }
+}
+
 // `gh api -X POST` arguments: a string field goes with -f, a boolean with -F so that GitHub gets a JSON boolean.
 export function ghPostArgs(repo, route, fields) {
   return [
@@ -464,11 +501,17 @@ async function cli(argv, env) {
     }
     const d1 = (q) =>
       api(repo, `actions/workflows/image.yml/runs?branch=${BRANCH}&event=push&${q}per_page=50`).workflow_runs
-    const candidate = pickCandidate(d1('status=success&'))
+    const slotMs = lastSlot(nowMs)
+    const d1Success = d1('status=success&')
     const newest = d1('')[0]
-    const sinceIso = new Date(lastSlot(nowMs)).toISOString().replace(/\.\d{3}Z$/, 'Z')
+    const sinceIso = new Date(slotMs).toISOString().replace(/\.\d{3}Z$/, 'Z')
     const d2 = api(repo, `actions/workflows/cd-deploy.yml/runs?created=>=${sinceIso}&per_page=50`)
     const deployed = await deployedSha(repo)
+    // FP-05: the slot's candidate is the newest one on cheese/main at the slot. With none (a first slot), the newest one
+    // stands, and freshness reads it as merged after the slot.
+    const candidate =
+      slotCandidate(d1Success, slotMs, deployed.state === 'known' ? deployed.sha : null) ??
+      withCreated(pickCandidate(d1Success), d1Success)
     // The newest finished D2 run since the slot is the one that skipped (or deployed); its evidence says why.
     const skipped = d2.workflow_runs.find((r) => r.status === 'completed')
     const skipReason = skipped ? ((await evidenceOf(repo, skipped.id))?.skip_reason ?? null) : null
@@ -482,13 +525,17 @@ async function cli(argv, env) {
       for (const run of live.workflow_runs) {
         const proof = quietSlotProof({
           evidence: await liveEvidenceOf(repo, run.id),
-          slotMs: lastSlot(nowMs),
+          slotMs,
           sha: candidate.sha,
         })
         quiet = proof
         if (proof.delivered) break
       }
     }
+    const active = d2.workflow_runs.find((r) => r.status !== 'completed')
+    const queued = active
+      ? c00QueuedMinutes(api(repo, `actions/runs/${active.id}/jobs?per_page=100`).jobs, nowMs)
+      : null
     const out = freshness({
       trainOn,
       nowMs,
@@ -501,6 +548,7 @@ async function cli(argv, env) {
       followUpD2: Boolean(skipped) && d2.workflow_runs[0]?.id !== skipped.id,
       quiet,
       runnerSeen,
+      c00QueuedMinutes: queued,
     })
     if (out.diagnosis) console.log(`diagnosis: ${JSON.stringify(out.diagnosis)}`)
     console.log(`cd-watch freshness: ${out.action}: ${out.reason}`)

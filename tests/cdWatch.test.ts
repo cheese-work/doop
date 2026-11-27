@@ -21,6 +21,8 @@ const {
   quietSlotProof,
   liveEvidence,
   diagnose,
+  slotCandidate,
+  c00QueuedMinutes,
 } = watch as {
   c00Host: (env: Record<string, string | undefined>) => string
   quietSlotProof: (f: { evidence: Record<string, unknown> | null; slotMs: number; sha: string }) => {
@@ -33,6 +35,12 @@ const {
     runId?: string
     runAttempt?: string
   }) => Record<string, unknown>
+  slotCandidate: (
+    runs: Record<string, unknown>[],
+    slotMs: number,
+    deployedSha?: string | null,
+  ) => { sha: string; runId: number; createdMs: number } | null
+  c00QueuedMinutes: (jobs: Record<string, unknown>[] | undefined, nowMs: number) => number | null
   diagnose: (f: Record<string, unknown>) => { step: string; reason: string; owner: string } | null
   lastSlot: (nowMs: number) => number
   deployJobsAllSkipped: (jobs: { name: string; conclusion: string | null }[] | undefined) => boolean
@@ -946,5 +954,87 @@ describe('FP-02 diagnosis: the step and owner an alarm names', () => {
     })
     expect(diagnose({ markerSuspended: true })?.owner).toBe('Cheese')
     expect(diagnose({})).toBeNull()
+  })
+})
+
+describe('FP-05: the slot candidate is the newest one that was on cheese/main at the slot', () => {
+  const OLD = 'c0'.repeat(20)
+  const run = (sha: string, createdAt: string, id = 1, conclusion = 'success') => ({
+    id,
+    head_sha: sha,
+    event: 'push',
+    conclusion,
+    created_at: createdAt,
+  })
+  // 07:17Z slot; the deployed 0ce3040 was confirmed before it; PR #173 merged at 08:40Z; now is 09:35Z.
+  const at = (candidate: Record<string, unknown>, offsetMin: number) =>
+    freshness({ ...base, nowMs: SLOT + offsetMin * MIN, candidate, deployed: known(OLD) })
+
+  it('FP-05 a candidate merged after the slot is idle until the next slot: no alarm, no dispatch', () => {
+    const d = at({ sha: B, createdMs: Date.UTC(2026, 10, 20, 8, 40) }, 138)
+    expect(d.action).toBe('none')
+    expect(d.reason).toBe(`candidate ${B.slice(0, 7)} merged after the slot; due at the next slot`)
+  })
+
+  it('FP-05 the same candidate created before the slot alarms as before', () => {
+    const d = at({ sha: B, createdMs: Date.UTC(2026, 10, 20, 7, 0) }, 138)
+    expect(d.action).toBe('alarm')
+    expect(d.reason).toContain('138 min after the slot')
+  })
+
+  it('FP-05 a candidate merged after the slot never dispatches, even past 45 min', () => {
+    expect(at({ sha: B, createdMs: SLOT + 50 * MIN }, 60).action).toBe('none')
+  })
+
+  it('FP-05 slotCandidate skips runs created after the slot and takes the newest one before it', () => {
+    const runs = [
+      run(B, '2026-11-20T08:40:00Z', 3),
+      run(A, '2026-11-20T07:16:59Z', 2),
+      run(OLD, '2026-11-20T03:00:00Z', 1),
+    ]
+    expect(slotCandidate(runs, SLOT)).toEqual({ sha: A, runId: 2, createdMs: Date.UTC(2026, 10, 20, 7, 16, 59) })
+    // a run created exactly at the slot instant counts as on main at the slot
+    expect(slotCandidate([run(B, '2026-11-20T07:17:00Z')], SLOT)?.sha).toBe(B)
+  })
+
+  it('FP-05 a later candidate that D2 already deployed is the candidate, so the older slot one is not called undelivered', () => {
+    const runs = [run(B, '2026-11-20T08:40:00Z', 3), run(A, '2026-11-20T07:00:00Z', 2)]
+    const picked = slotCandidate(runs, SLOT, B)
+    expect(picked?.sha).toBe(B)
+    expect(freshness({ ...base, nowMs: SLOT + 100 * MIN, candidate: picked, deployed: known(B) }).action).toBe('none')
+    expect(slotCandidate(runs, SLOT, C)?.sha).toBe(A)
+  })
+
+  it('FP-05 slotCandidate ignores failed and non-push runs, and gives null when none was there at the slot', () => {
+    expect(slotCandidate([run(A, '2026-11-20T06:00:00Z', 1, 'failure')], SLOT)).toBeNull()
+    expect(slotCandidate([{ ...run(A, '2026-11-20T06:00:00Z'), event: 'workflow_dispatch' }], SLOT)).toBeNull()
+    expect(slotCandidate([run(B, '2026-11-20T08:40:00Z')], SLOT)).toBeNull()
+  })
+})
+
+describe('diagnosis: a C00 job queued more than 10 min (plan r5, S2)', () => {
+  const job = (status: string, createdAt: string, labels = ['self-hosted', 'cheese-c00-deploy']) => ({
+    status,
+    created_at: createdAt,
+    labels,
+  })
+  const NOW = Date.UTC(2026, 10, 20, 8, 30)
+  it('measures the longest queue wait of a queued job that asks for the C00 runner', () => {
+    expect(c00QueuedMinutes([job('queued', '2026-11-20T08:15:00Z')], NOW)).toBe(15)
+    expect(c00QueuedMinutes([job('queued', '2026-11-20T08:25:00Z'), job('queued', '2026-11-20T08:10:00Z')], NOW)).toBe(
+      20,
+    )
+  })
+  it('ignores running jobs, hosted jobs and no jobs', () => {
+    expect(c00QueuedMinutes([job('in_progress', '2026-11-20T08:00:00Z')], NOW)).toBeNull()
+    expect(c00QueuedMinutes([job('queued', '2026-11-20T08:00:00Z', ['ubuntu-latest'])], NOW)).toBeNull()
+    expect(c00QueuedMinutes([], NOW)).toBeNull()
+    expect(c00QueuedMinutes(undefined, NOW)).toBeNull()
+  })
+  it('an alarm names c00-hermes-devops when the C00 job queued over 10 min, and nobody at 10', () => {
+    const slow = freshness({ ...base, nowMs: SLOT + 100 * MIN, c00QueuedMinutes: 12 })
+    expect(slow.action).toBe('alarm')
+    expect(slow.diagnosis).toMatchObject({ step: 'C00', owner: 'c00-hermes-devops' })
+    expect(freshness({ ...base, nowMs: SLOT + 100 * MIN, c00QueuedMinutes: 10 }).diagnosis).toBeNull()
   })
 })
