@@ -13,9 +13,11 @@ import type {
   ActivityItem,
   Canvas,
   CanvasMeta,
+  CanvasPageInfo,
   CardScope,
   CommunityCategory,
   CommunityItem,
+  DeletedPage,
   ElementComment,
   Frame,
   FrameVersion,
@@ -796,6 +798,22 @@ export const api = {
     req<Frame[]>(`/api/canvases/${canvasId}/stack`, { method: 'PUT', body: JSON.stringify({ frames }) }),
   deleteFrame: (frameId: string, expectedUpdatedAt?: number) =>
     req('/api/frames/' + frameId, { method: 'DELETE', body: JSON.stringify({ expectedUpdatedAt, actor: actor() }) }),
+  /* Archive (S2): a repeat of the same request changes nothing, so a lost reply may be sent again */
+  archiveFrames: (canvasId: string, frameIds: string[]) =>
+    req<{ pages: CanvasPageInfo[]; frames: Frame[] }>(`/api/canvases/${canvasId}/frames/archive`, {
+      method: 'POST',
+      body: JSON.stringify({ frameIds, actor: actor() }),
+    }),
+  /* to `pageId`, else to the page the frame came from; 409 `origin_missing` when that page is gone */
+  unarchiveFrame: (frameId: string, pageId?: string) =>
+    req<{ frame: Frame; changed: boolean }>(`/api/frames/${frameId}/unarchive`, {
+      method: 'POST',
+      body: JSON.stringify({ pageId, actor: actor() }),
+    }),
+  canvasTrash: (canvasId: string) =>
+    req<{ frames: Array<Frame & { purging?: true }>; pages: DeletedPage[] }>(`/api/canvases/${canvasId}/trash`),
+  restoreFrame: (frameId: string) =>
+    req<Frame>(`/api/frames/${frameId}/restore`, { method: 'POST', body: JSON.stringify({ actor: actor() }) }),
   setFrameApproval: (frameId: string, status: 'ready_for_dev' | 'draft', expectedUpdatedAt: number) =>
     req<Frame>(`/api/frames/${frameId}/approval`, {
       method: 'PUT',

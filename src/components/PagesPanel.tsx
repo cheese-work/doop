@@ -14,7 +14,7 @@ import {
 import { copyPageLink } from '../lib/pageUrl'
 import { api, ApiError } from '../lib/api'
 import { Button } from './ui/button'
-import { BookOpenIcon, ChevronDownIcon, ChevronRightIcon, PageIcon, PlusIcon } from './ui/icons'
+import { ArchiveIcon, BookOpenIcon, ChevronDownIcon, ChevronRightIcon, PageIcon, PlusIcon } from './ui/icons'
 import { cn } from '../lib/utils'
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem } from './ui/context-menu'
 import { PanelState } from './PanelState'
@@ -76,6 +76,8 @@ export function PagesPanel({ fill = false }: { fill?: boolean }) {
   const archivePage = pages.find((page) => page.id === ARCHIVE_PAGE_ID)
   const listedPages = pages.filter((page) => !page.finished && page.id !== ARCHIVE_PAGE_ID)
   const canWrite = !readOnly && connected
+  /* the Archive row shows how many frames it holds */
+  const archivedCount = canvas.frames.filter((f) => f.pageId === ARCHIVE_PAGE_ID).length
   /* the page "Mark … as ledger" offers: Baseline, else the first open page */
   const ledgerCandidate = pages.find((page) => isOpenPage(page) && page.name === 'Baseline') ?? pages.find(isOpenPage)
   const movableIds = canvas.frames.filter((f) => selectedIds.includes(f.id) && !f.locked).map((f) => f.id)
@@ -333,7 +335,7 @@ export function PagesPanel({ fill = false }: { fill?: boolean }) {
                 page.id === activePageId && 'text-ink',
               )}
             >
-              <PageIcon className="size-3.5" />
+              {page.id === ARCHIVE_PAGE_ID ? <ArchiveIcon className="size-3.5" /> : <PageIcon className="size-3.5" />}
             </span>
             {renaming === page.id ? (
               <form
@@ -383,6 +385,15 @@ export function PagesPanel({ fill = false }: { fill?: boolean }) {
               >
                 {page.name}
               </button>
+            )}
+            {page.id === ARCHIVE_PAGE_ID && (
+              <span
+                data-testid="archive-count"
+                aria-label={t('panels.archiveTrashCount', { count: archivedCount })}
+                className="flex-none font-mono text-micro text-ink-faint"
+              >
+                {archivedCount}
+              </span>
             )}
             {page.ledger && renaming !== page.id && ledgerTag}
             {finished && canWrite && (

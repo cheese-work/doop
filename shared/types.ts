@@ -50,6 +50,8 @@ export interface Frame {
   /** set when the frame was deleted: it is kept (with its versions) in the
    *  canvas trash and absent from `Canvas.frames` until restored */
   deletedAt?: number
+  /* Who deleted it. Not yet sent by the server (CHE-10382); `updatedBy` is the last editor, not the deleter. */
+  deletedBy?: string
   /** Where an archived frame came from, so unarchive can put it back. Set by every archive, cleared by
    *  unarchive; a frame that is not archived has none. */
   archiveOrigin?: ArchiveOrigin

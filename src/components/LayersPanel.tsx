@@ -15,6 +15,7 @@ import { canEditOpenCanvas, pickedSelectors, useStore } from '../lib/store'
 import { layerPlacement } from '../lib/frameBridge'
 import { currentPageCanvas, usePageCanvas } from '../lib/pages'
 import { PagesPanel, sectionHeading } from './PagesPanel'
+import { ArchiveTrashPanel } from './ArchiveTrashPanel'
 import { getIdentity } from '../lib/identity'
 import { deleteFramesTracked } from '../lib/history'
 import { renameComponent, rootPartKey } from '../lib/components'
@@ -684,6 +685,7 @@ export function LayersPanel({
               <div aria-hidden className="pointer-events-none mx-1.5 h-0.5 rounded-full bg-brand" />
             )}
           </PanelBody>
+          <ArchiveTrashPanel />
           <PanelSearch value={query} placeholder={t('panels.layersSearch')} onChange={setQuery} />
         </>
       )}
