@@ -61,6 +61,7 @@ import {
 import * as ingest from './ingest.ts'
 import { configurePins, loadPins } from './framePins.ts'
 import { startPinReconcile } from './pinReconcile.ts'
+import { plugTaskAssertions } from './taskAssertion.ts'
 import { PolicyRefused, setLockOwners, VersionChanged } from './writePolicy.ts'
 import * as agentKeys from './agentKeys.ts'
 import * as backgrounds from './backgrounds.ts'
@@ -2318,6 +2319,7 @@ if (env.isProduction) {
 
 /* G2 reads the issue's comments from Multica; without its settings no design frame on an issue page passes */
 setLockOwners(env.DOOP_LOCK_OWNERS)
+plugTaskAssertions(env)
 setReconSources({ assets: storedReconAssets, comments: multicaCommentsSource(env)?.comments })
 
 const server = http.createServer(app)

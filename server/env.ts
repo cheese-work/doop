@@ -179,6 +179,9 @@ const schema = {
   MULTICA_WEB_URL: str({ default: undefined }),
   /* G4: the bearer token Multica sends to GET /api/service/design-attestations/:id; unset = route answers 503 */
   DOOP_ATTESTATION_READ_TOKEN: secret(32)({ default: undefined }),
+  /* G1 identity (CHE-7081): Ed25519 public keys that verify Multica's signed task assertion, JSON {"<kid>": "<base64 key>"}
+     (at most 2). Plugged in only together with MULTICA_API_URL and MULTICA_API_TOKEN; unset = no assertion verifies */
+  DOOP_MULTICA_ASSERTION_KEYS: str({ default: undefined }),
   LINEAR_API_URL: str({ default: 'https://api.linear.app/graphql' }),
   LINEAR_TOKEN_URL: str({ default: 'https://api.linear.app/oauth/token' }),
   SLACK_CLIENT_ID: str({ default: undefined }),

@@ -226,7 +226,7 @@
   `PolicyRefused` (`policy_refused`), distinct from the `undefined` of "not found". A canvas carries a
   server-owned `projectId` (`canvases.project_id`). An agent with an `X-Multica-Task-Id` writes only when
   Multica vouched for the task (`setTaskIdentityVerifier` + `warmTaskIdentity`, cached 5 min; the header alone
-  is never trusted), the canvas is bound to the task's project and the page to its issue. With no verifier
+  is never trusted; with `DOOP_MULTICA_ASSERTION_KEYS`, `MULTICA_API_URL` and `MULTICA_API_TOKEN` set, `server/taskAssertion.ts` plugs the verifier in from Multica's signed `X-Multica-Task-Assertion` (Ed25519 `mta1.` token, D1.6 of CHE-7064; the claims give task, agent, issue, project, provider and model; liveness from `GET /api/issues/{iid}/task-runs`; the bare `X-Multica-Task-Id` then never verifies)), the canvas is bound to the task's project and the page to its issue. With no verifier
   plugged in every such write is refused. An agent with no task may write to unbound canvases only, and once a verifier is plugged in an MCP agent
   without a task is refused everywhere; a design-sync (ingest) key is held to the binding like an agent; no agent binds
   or deletes a canvas. A page copy re-checks the policy inside its database transaction, so one that loses a race rolls back whole; `bind_project` is refused while a copy is in flight. Past the lock rules below, users and the system pass.
