@@ -298,7 +298,10 @@ describe('D2 suspension marker wiring (CHE-5545, C-10.1 to C-10.3)', () => {
     const step = decide.slice(decide.indexOf('- id: decide'), decide.indexOf('- id: pick'))
     for (const name of ['DOOP_DEPLOY_TRAIN', 'MAIN_RED_PAUSED']) expect(step).toContain(`${name}: \${{ vars.${name} }}`)
     expect(step).not.toContain('DOOP_DEPLOY_SUSPENDED')
-    expect(step).not.toContain('github.token')
+    // CHE-9955: the one token decide holds is the run's own `github.token`, for the busy check's list of CD deploy
+    // runs (`actions: read`). It reads no variable and no marker.
+    expect(step).toContain('GH_TOKEN: ${{ github.token }}')
+    expect(step).not.toMatch(/ci-app-token|create-github-app-token|secrets\./)
   })
 
   it('hosted jobs never get the marker token or the environment', () => {

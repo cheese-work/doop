@@ -3,10 +3,14 @@
 // marker is a file on the C00 host (CHE-9877), so only the C00 jobs read it. Every error path fails closed. Results are { go, skip, reason }: a `skip` is a clean "not now"
 // and the run ends green; a result with go=false and skip=false is a refusal, and the CLI exits non-zero so the
 // job fails. The CLI at the bottom reads its inputs from env and writes the result to $GITHUB_OUTPUT.
-//   decideRun   top of a run, hosted: entry rules, the switch, the pause (it cannot see the host marker)
+//   decideRun   top of a run, hosted: entry rules, the switch, the pause, the busy check (it cannot see the host marker)
+//   liftAdmit   the same busy check ahead of the lift job (hosted, so it never joins the C00 group)
 //   admit       pins the candidate: manifest, D1 run, image label and migration inventory
 //   recheckOp   once per C00 operation, on the C00 runner: reads the host marker, checks every fact that can change
 // The marker itself is written only by deploy-marker.mjs.
+// A skip carries `skipReason` (busy, armed, suspended, unreadable, current, off or other; the evidence script keeps the
+// same list), which the CLI writes as the `skip_reason` output and the evidence
+// job stores (CHE-9955); a refusal carries one only when a fact could not be read (`unreadable`).
 import { spawnSync } from 'node:child_process'
 import { appendFileSync, readFileSync } from 'node:fs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -53,8 +57,8 @@ const SHA40 = /^[0-9a-f]{40}$/
 const DIGEST = /^sha256:[0-9a-f]{64}$/
 
 const go = (extra = {}) => ({ go: true, skip: false, reason: 'ok', ...extra })
-const skip = (reason) => ({ go: false, skip: true, reason })
-const refuse = (reason) => ({ go: false, skip: false, reason })
+const skip = (reason, skipReason = 'other') => ({ go: false, skip: true, reason, skipReason })
+const refuse = (reason, skipReason) => ({ go: false, skip: false, reason, ...(skipReason ? { skipReason } : {}) })
 
 // One repo variable: its value, null when it does not exist, undefined when it cannot be read. The reason a
 // read failed (status and message) goes to `errors`, so a refusal can say why (CHE-9181).
@@ -110,16 +114,23 @@ const NAMES = { sw: 'DOOP_DEPLOY_TRAIN', paused: 'MAIN_RED_PAUSED', marker: 'the
 function unreadable(state, need) {
   const bad = need.filter((k) => state[k] === undefined).map((k) => NAMES[k])
   if (!bad.length) return null
-  return refuse(`cannot read ${bad.join(', ')}: ${bad.map((n) => state.errors?.[n] ?? 'unreadable').join('; ')}`)
+  return refuse(
+    `cannot read ${bad.join(', ')}: ${bad.map((n) => state.errors?.[n] ?? 'unreadable').join('; ')}`,
+    'unreadable',
+  )
 }
 
-// The switch and the pause for a mode. Unreadable is never "off", never "clear".
+// The switch and the pause for a mode, as `{ why, tag }` (tag: the skip reason, `off` for the switch, `other` for the
+// pause), or null. Unreadable is never "off", never "clear".
 function switchProblem(mode, { sw, paused }) {
   const want = MODES[mode]
-  if (want.sw !== null && sw !== want.sw)
-    return `DOOP_DEPLOY_TRAIN is ${sw === undefined ? 'unreadable' : `'${sw ?? ''}'`}, ${mode} needs '${want.sw}'`
+  if (want.sw !== null && sw !== want.sw) {
+    const why = `DOOP_DEPLOY_TRAIN is ${sw === undefined ? 'unreadable' : `'${sw ?? ''}'`}, ${mode} needs '${want.sw}'`
+    return { why, tag: 'off' }
+  }
   if (want.pause !== null && paused !== null && paused !== want.pause) {
-    return paused === undefined ? 'MAIN_RED_PAUSED is unreadable' : `MAIN_RED_PAUSED is set: ${paused}`
+    const why = paused === undefined ? 'MAIN_RED_PAUSED is unreadable' : `MAIN_RED_PAUSED is set: ${paused}`
+    return { why, tag: 'other' }
   }
   return null
 }
@@ -149,10 +160,39 @@ function entryOf({ event, actor, trigger, attempt, inputs = {}, extra }) {
   return go({ mode })
 }
 
+// Why a run may not start now: the unfinished runs of this workflow with a smaller id than `runId`, oldest first, as
+// `[{ id, status }]`. A CD deploy run is one unit of work whatever its mode (a train, a recovery or a lift), and one
+// C00 job runs at a time (group `c00-deploy-doop`, which keeps one pending job and cancels the older one), so a run
+// that finds an older one unfinished must not queue behind it. `waiting` counts: a run in its readback delay shows as
+// waiting, and its readback-confirm is still to come. Of two runs the older id goes first, so they never both stand
+// down. Anything that cannot be read throws: the callers refuse, they never read "not busy" from it.
+const CD_DEPLOY = 'cd-deploy.yml'
+const UNFINISHED = ['queued', 'in_progress', 'waiting', 'requested', 'pending']
+async function olderUnfinished({ repo, runId, ghApi }) {
+  const own = /^[1-9]\d*$/.test(String(runId ?? '')) ? Number(runId) : NaN
+  if (!Number.isSafeInteger(own)) throw new Error(`'${runId ?? ''}' is not a run id`)
+  const older = []
+  for (const status of UNFINISHED) {
+    const page = await ghApi(`repos/${repo}/actions/workflows/${CD_DEPLOY}/runs?status=${status}&per_page=100`)
+    const runs = page?.workflow_runs
+    if (!Array.isArray(runs)) throw new Error(`the ${status} list has no workflow_runs`)
+    // More runs than one page holds: the list is cut short, so it cannot say that nothing older is unfinished.
+    if (!(Number(page.total_count) <= runs.length)) throw new Error(`the ${status} list is longer than one page`)
+    for (const r of runs) {
+      if (!Number.isSafeInteger(Number(r?.id))) throw new Error(`a ${status} run has no id`)
+      if (Number(r.id) < own) older.push({ id: Number(r.id), status })
+    }
+  }
+  return older.sort((a, b) => a.id - b.id)
+}
+const busyWords = ({ id, status }) => `CD deploy run ${id} is still ${status.replace('_', ' ')}`
+
 // `vars` (the switches as the workflow passed them in env) is the normal source at the top of a run;
-// `ghApi` is the fallback for a caller that has a token able to read variables. The marker is not read here: this
+// `ghApi` is the fallback for a caller that has a token able to read variables, and reads the unfinished CD deploy
+// runs for the busy check of a train run (CHE-9955). The marker is not read here: this
 // runs hosted, and the marker is a file on C00. A train run that finds it not clear skips at `pre-arm` instead.
-export async function decideRun({ event, actor, trigger, attempt, inputs = {}, extra, repo, ghApi, vars }) {
+// Recovery is a human override and skips the busy check.
+export async function decideRun({ event, actor, trigger, attempt, inputs = {}, extra, repo, ghApi, vars, runId }) {
   const entered = entryOf({ event, actor, trigger, attempt, inputs, extra })
   if (!entered.go) return entered
   const { mode } = entered
@@ -162,8 +202,31 @@ export async function decideRun({ event, actor, trigger, attempt, inputs = {}, e
   const blind = unreadable(state, [...(want.sw !== null ? ['sw'] : []), ...(want.pause !== null ? ['paused'] : [])])
   if (blind) return blind
   const problem = switchProblem(mode, state)
-  if (problem) return skip(problem)
+  if (problem) return skip(problem.why, problem.tag)
+  if (mode === 'train') {
+    let older
+    try {
+      older = await olderUnfinished({ repo, runId, ghApi })
+    } catch (err) {
+      return refuse(`cannot read the unfinished CD deploy runs: ${err?.message ?? err}`, 'unreadable')
+    }
+    if (older[0]) return skip(`${busyWords(older[0])}; this run stands down`, 'busy')
+  }
   return go({ mode })
+}
+
+// The lift's admission (FP-04, CHE-9955), a hosted job ahead of the C00 `lift` job: the same busy check as a train
+// run, but a lift is dispatched by a person who expects it, so it refuses (red) and never skips. The lift job itself
+// joins group `c00-deploy-doop`, which would cancel an older pending deploy or readback-confirm; this runs before it.
+export async function liftAdmit({ repo, runId, ghApi }) {
+  let older
+  try {
+    older = await olderUnfinished({ repo, runId, ghApi })
+  } catch (err) {
+    return refuse(`cannot read the unfinished CD deploy runs: ${err?.message ?? err}`, 'unreadable')
+  }
+  if (older[0]) return refuse(`${busyWords(older[0])}; a lift does not join the C00 group behind it`, 'busy')
+  return go()
 }
 
 const markerWords = (m) =>
@@ -172,6 +235,11 @@ const markerWords = (m) =>
     : m === null
       ? 'the suspension marker is absent'
       : `the marker is ${m.split(':')[0]}, not clear`
+// The skip reason of a marker that is not clear: an absent file reads as suspended.
+const markerTag = (m) => {
+  const word = m === null ? 'suspended' : String(m).split(':')[0]
+  return word === 'armed' || word === 'suspended' ? word : 'other'
+}
 
 // Pins the candidate (C-6): the manifest, the D1 run, the image label and the migration inventory
 // all name the same commit. A red D1 run skips a train run; every other mismatch is a refusal.
@@ -246,7 +314,7 @@ export async function recheckOp({
   if (!(mode in MODES)) throw new Error(`unknown mode '${mode}'`)
   if (!OPS.includes(op)) throw new Error(`unknown operation '${op}'`)
   const armed = op !== 'pre-arm'
-  const no = armed ? refuse : skip
+  const no = (reason, tag) => (armed ? refuse(reason) : skip(reason, tag))
 
   // Before a change, this attempt's own entry facts must pass the entry rules again. Confirm and
   // rollback skip this: they must still run on a rerun to undo or confirm what an earlier attempt did.
@@ -277,7 +345,7 @@ export async function recheckOp({
     if (state.marker !== expect)
       return refuse(`the marker is not this run's own value (${state.marker === null ? 'absent' : 'changed'})`)
   } else if (mode === 'train' && !isClear(state.marker)) {
-    return skip(markerWords(state.marker))
+    return skip(markerWords(state.marker), markerTag(state.marker))
   }
 
   // `vars` is a snapshot taken when the job started; a repo variable cannot be read live without a token that can read
@@ -301,7 +369,7 @@ export async function recheckOp({
 
   if (op === 'pre-arm' || op === 'pre-apply') {
     const problem = switchProblem(mode, state)
-    if (problem) return no(problem)
+    if (problem) return no(problem.why, problem.tag)
   }
 
   const now = await running()
@@ -319,7 +387,7 @@ export async function recheckOp({
 
   // pre-arm and pre-apply: the candidate must be strictly ahead of what C00 runs.
   if (!SHA40.test(now?.label ?? '')) return refuse('the running container has no revision label')
-  if (now.label === candidate.sha) return no('the candidate is already the running revision')
+  if (now.label === candidate.sha) return no('the candidate is already the running revision', 'current')
   if (!(await isAncestor(now.label, candidate.sha)))
     return refuse(`running ${now.label.slice(0, 7)} is not an ancestor of the candidate`)
   if (op === 'pre-arm') {
@@ -379,7 +447,7 @@ export async function dockerRunning(container = process.env.C00_CONTAINER || 'do
 }
 
 // ---------------------------------------------------------------------------------------------
-// CLI for D2: node scripts/deploy-gate.mjs decide | resolve | admit | recheck <mode> --op <op> --expect <v>
+// CLI for D2: node scripts/deploy-gate.mjs decide | resolve | admit | lift-admit | recheck <mode> --op <op> --expect <v>
 // Inputs come from env (never from the command line, never inlined into a workflow script). Results go to
 // $GITHUB_OUTPUT. A skip exits 0 with go=false; a refusal, an unreadable fact or any error exits 1.
 const ghWith = (token) => async (path) => {
@@ -435,10 +503,16 @@ async function cli(argv, env) {
       inputs: { mode: env.INPUT_MODE, schedule_backup: env.INPUT_SCHEDULE_BACKUP },
       extra: env.EXTRA,
       repo,
-      // `github.token` cannot read Actions variables; the workflow passes them as `${{ vars.X }}`.
+      // `github.token` cannot read Actions variables; the workflow passes them as `${{ vars.X }}`. It can list the
+      // workflow's runs (`actions: read`), which the busy check of a train run does with this run's own id.
       vars: env,
+      ghApi: gh,
+      runId: env.RUN_ID,
     })
-    return settle(out, { mode: out.mode ?? '' })
+    return settle(out, { mode: out.mode ?? '', skip_reason: out.skipReason ?? '' })
+  }
+  if (command === 'lift-admit') {
+    return settle(await liftAdmit({ repo, runId: env.RUN_ID, ghApi: gh }), {})
   }
   if (command === 'resolve') {
     const runs = (q) =>
@@ -527,6 +601,7 @@ async function cli(argv, env) {
       quiescent: () => c00Quiescent(),
     })
     return settle(out, {
+      skip_reason: out.skipReason ?? '',
       action: out.action ?? '',
       predecessor_digest: out.predecessorDigest ?? '',
       predecessor_sha: out.predecessorSha ?? '',

@@ -4,7 +4,6 @@ import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-// @ts-expect-error plain .mjs script, no type declarations
 import {
   admit,
   c00Quiescent,
@@ -13,6 +12,7 @@ import {
   pickCandidate,
   recheckOp,
   runCreatedEpoch,
+  // @ts-expect-error plain .mjs script, no type declarations
 } from '../scripts/deploy-gate.mjs'
 // @ts-expect-error plain .mjs script, no type declarations
 import { buildEvidence } from '../scripts/deploy-evidence.mjs'
@@ -337,9 +337,12 @@ describe('recheckOp: the switch and pause come from env, the marker from the hos
 
 describe('deploy-gate CLI decide (CHE-9181)', () => {
   const run = async (env: Record<string, string>, status: number) => {
-    const server = createServer((_req, res) => {
-      res.statusCode = status
+    const server = createServer((req, res) => {
       res.setHeader('content-type', 'application/json')
+      // `github.token` lists the workflow's runs (`actions: read`); only the variables answer `status`.
+      if (req.url?.includes('/actions/workflows/'))
+        return void res.end(JSON.stringify({ total_count: 0, workflow_runs: [] }))
+      res.statusCode = status
       res.end(JSON.stringify({ message: 'Resource not accessible by integration' }))
     })
     await new Promise<void>((ok) => server.listen(0, '127.0.0.1', ok))
@@ -356,6 +359,7 @@ describe('deploy-gate CLI decide (CHE-9181)', () => {
             ACTOR: BOT,
             TRIGGER: BOT,
             ATTEMPT: '1',
+            RUN_ID: '1000',
             ...env,
           },
         })
@@ -1170,7 +1174,8 @@ describe('FP-04: a lift never cancels a pending deploy or readback-confirm (CHE-
     })
 
     it('lift-admit is a hosted job ahead of the C00 lift job: it never joins the C00 group', () => {
-      const admission = jobText('lift-admit')
+      // Comments of the next job trail this one's text.
+      const admission = jobText('lift-admit').replace(/^\s*#.*$/gm, '')
       expect(admission).toMatch(/runs-on: ubuntu-latest/)
       expect(admission).not.toMatch(/concurrency:|c00-deploy-doop|self-hosted|environment:|secrets\./)
       expect(admission).toMatch(/actions: read/)
@@ -1192,12 +1197,14 @@ describe('FP-04: a lift never cancels a pending deploy or readback-confirm (CHE-
 
   describe('path 2: a train run is admitted by decide', () => {
     it('skips behind an older deploy, so its deploy and readback-confirm never join the group behind it', async () => {
-      const r = await decideRun(train({ ghApi: api({}, undefined, [{ id: 1999, status: 'queued' }]) }))
+      const r = await decideRun(train({ runId: '2000', ghApi: api({}, undefined, [{ id: 1999, status: 'queued' }]) }))
       expect(r).toMatchObject({ go: false, skip: true, skipReason: 'busy' })
     })
 
     it('skips behind an older lift (a CD deploy run with mode lift)', async () => {
-      const r = await decideRun(train({ ghApi: api({}, undefined, [{ id: 1999, status: 'in_progress' }]) }))
+      const r = await decideRun(
+        train({ runId: '2000', ghApi: api({}, undefined, [{ id: 1999, status: 'in_progress' }]) }),
+      )
       expect(r).toMatchObject({ go: false, skip: true, skipReason: 'busy' })
     })
 
