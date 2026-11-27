@@ -1070,9 +1070,21 @@ describe('decideRun: busy check across CD deploy and CD lift (CHE-9955)', () => 
     expect(r.reason).toContain('CD deploy')
   })
 
-  it('a list GitHub cut short (total_count above what came back) is unreadable, not "not busy"', async () => {
+  it('a full page (100 runs) whose total_count is larger is cut short: unreadable, not "not busy"', async () => {
+    const full = Array.from({ length: 100 }, (_, i) => ({ id: 1 + i, status: 'completed' }))
     const ghApi = async (path: string) =>
-      path.includes('/runs?') ? { total_count: 250, workflow_runs: [] } : api({})(path)
+      path.includes('/runs?') ? { total_count: 101, workflow_runs: full } : api({})(path)
+    expect(await decideRun(train({ ghApi }))).toMatchObject({ go: false, skip: false, skipReason: 'unreadable' })
+  })
+
+  it('a short page is the complete list, even when total_count says more: not refused (CHE-10505)', async () => {
+    const ghApi = async (path: string) =>
+      path.includes('/runs?') ? { total_count: 1, workflow_runs: [] } : api({})(path)
+    expect(await decideRun(train({ ghApi }))).toMatchObject({ go: true, mode: 'train' })
+  })
+
+  it('a missing workflow_runs list is refused even when total_count is 0', async () => {
+    const ghApi = async (path: string) => (path.includes('/runs?') ? { total_count: 0 } : api({})(path))
     expect(await decideRun(train({ ghApi }))).toMatchObject({ go: false, skip: false, skipReason: 'unreadable' })
   })
 

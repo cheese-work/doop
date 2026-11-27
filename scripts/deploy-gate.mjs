@@ -176,8 +176,10 @@ async function olderUnfinished({ repo, runId, ghApi }) {
     const page = await ghApi(`repos/${repo}/actions/workflows/${CD_DEPLOY}/runs?status=${status}&per_page=100`)
     const runs = page?.workflow_runs
     if (!Array.isArray(runs)) throw new Error(`the ${status} list has no workflow_runs`)
-    // More runs than one page holds: the list is cut short, so it cannot say that nothing older is unfinished.
-    if (!(Number(page.total_count) <= runs.length)) throw new Error(`the ${status} list is longer than one page`)
+    // A page short of per_page is the whole list, whatever total_count says: GitHub's count can run ahead of the
+    // list (CHE-10505, a run counts as queued before the list shows it). Only a full page can be cut short.
+    if (runs.length >= 100 && !(Number(page.total_count) <= runs.length))
+      throw new Error(`the ${status} list is longer than one page`)
     for (const r of runs) {
       if (!Number.isSafeInteger(Number(r?.id))) throw new Error(`a ${status} run has no id`)
       if (Number(r.id) < own) older.push({ id: Number(r.id), status })
