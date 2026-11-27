@@ -249,6 +249,8 @@ The decisions are pure functions in `scripts/cd-watch.mjs`, tested in `tests/cdW
   `mode=train`, `schedule_backup=true`, made with the workflow token (`github-actions[bot]`, the one actor D2 admits
   for it). Once a D2 run exists there is no second dispatch. At 90 min with a candidate still ahead the run fails with
   `::error::`, whether or not a D2 run exists (a skipped, suspended or forward-only run left C00 behind all the same).
+  With no D2 run since the slot, a late run (90 min or more) still sends the one dispatch as well as the alarm, so a
+  missed window does not wait for the next slot (CHE-10498).
   A failed D1 run on `cheese/main` is rerun once (`gh run rerun --failed` while `run_attempt` is 1).
 - `cd-live-revision.yml` (on `cheese-x99-gate`, schedule only, `7,22,37,52 * * * *`): reads
   `https://$DOOP_C00_HOST/healthz` over the tailnet and fails when the revision is behind the last successful D2 SHA.
