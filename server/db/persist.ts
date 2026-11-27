@@ -633,6 +633,23 @@ export async function listPageAuthors(canvasId: string, pageId?: string): Promis
   return db.select().from(t.pageAuthors).where(where).orderBy(t.pageAuthors.firstAt, t.pageAuthors.id)
 }
 
+/** The ledger rows of the given pages, committed ones and the ones still queued with their frame's next save,
+ *  so a writer whose frame has not been saved yet is still named (the author set fails closed, never open).
+ *  Waits for the running saves first: a job that fails puts its rows back, and the snapshot must see them. */
+export async function listPageAuthorsOf(pages: { canvasId: string; pageId: string }[]): Promise<PageAuthorRow[]> {
+  if (!pages.length) return []
+  await frameQueue
+  const wanted = new Set(pages.map((p) => `${p.canvasId}\u0000${p.pageId}`))
+  const queued = ([...pendingAuthors.values()].flat() as PageAuthorRow[]).filter((row) =>
+    wanted.has(`${row.canvasId}\u0000${row.pageId}`),
+  )
+  const committed = await db
+    .select()
+    .from(t.pageAuthors)
+    .where(inArray(t.pageAuthors.canvasId, [...new Set(pages.map((p) => p.canvasId))]))
+  return [...committed.filter((row) => wanted.has(`${row.canvasId}\u0000${row.pageId}`)), ...queued]
+}
+
 export type PageAuthorInput = {
   canvasId: string
   pageId: string
