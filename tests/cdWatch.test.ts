@@ -127,6 +127,19 @@ describe('freshness (C-7.1)', () => {
     })
   })
 
+  // CHE-10558: a merge at 21:14 UTC, after the 15:17 slot's D2 had run, alarmed every 15 min until the 23:17 slot.
+  it('does not alarm on a candidate built after the slot once that slot has a D2 run', () => {
+    const late = {
+      ...base,
+      nowMs: SLOT + 408 * MIN,
+      d2RunsSinceSlot: 1,
+      candidate: { sha: B, builtAtMs: SLOT + 360 * MIN },
+    }
+    expect(freshness(late).action).toBe('none')
+    expect(freshness({ ...late, candidate: { sha: B, builtAtMs: SLOT - MIN } })).toMatchObject({ action: 'alarm' })
+    expect(freshness({ ...late, d2RunsSinceSlot: 0 })).toMatchObject({ action: 'dispatch', alarm: true })
+  })
+
   it('at 155 min with a D2 run since the slot: alarm only, no second dispatch', () => {
     const out = freshness({ ...base, nowMs: SLOT + 155 * MIN, d2RunsSinceSlot: 1 })
     expect(out.action).toBe('alarm')
