@@ -36,7 +36,12 @@ const {
   diagnose: (f: Record<string, unknown>) => { step: string; reason: string; owner: string } | null
   lastSlot: (nowMs: number) => number
   deployJobsAllSkipped: (jobs: { name: string; conclusion: string | null }[] | undefined) => boolean
-  freshness: (f: Record<string, unknown>) => { action: string; reason: string; rerunD1: boolean }
+  freshness: (f: Record<string, unknown>) => {
+    action: string
+    reason: string
+    rerunD1: boolean
+    diagnosis?: { step: string; reason: string; owner: string } | null
+  }
   liveVerdict: (f: Record<string, unknown>) => Promise<{ ok: boolean; reason: string }>
   lastDeployed: (h: {
     recorded: { sha: string; runId: number | null; confirmedAt: number } | null
