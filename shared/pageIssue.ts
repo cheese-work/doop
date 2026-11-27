@@ -3,6 +3,9 @@ import type { CanvasPageInfo } from './types.ts'
 /** Header a Multica agent's doop MCP calls carry: its Multica task (run) id. */
 export const MULTICA_TASK_HEADER = 'x-multica-task-id'
 
+/** Header carrying Multica's signed task assertion (`mta1.<claims>.<signature>`); see `server/taskAssertion.ts`. */
+export const MULTICA_TASK_ASSERTION_HEADER = 'x-multica-task-assertion'
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export const isUuid = (value: unknown): value is string => typeof value === 'string' && UUID.test(value)

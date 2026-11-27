@@ -1,7 +1,6 @@
 import { env } from './env.ts'
 import { canvasPages, framePageId, pageFrames, samePages } from '../shared/pages.ts'
 import { conflicts, freeSpot, FRAME_GAP } from './frameLayout.ts'
-import { MULTICA_TASK_HEADER, parseMulticaTaskId } from '../shared/pageIssue.ts'
 import { prototypeReport, prototypeUrl, setPrototypeStart } from './prototypeTools.ts'
 import { attestPage } from './designAttestations.ts'
 import { sloplintEntries } from './sloplintInput.ts'
@@ -13,7 +12,8 @@ import { z } from 'zod'
 import { store } from './store.ts'
 import * as actions from './actions.ts'
 import { warmReconEvidence } from './reconGuard.ts'
-import { warmTaskIdentity, writeContextFor } from './writePolicy.ts'
+import { resolveRequestTask } from './taskAssertion.ts'
+import { writeContextFor } from './writePolicy.ts'
 import { canvasRole } from './access.ts'
 import { roleAllows, type CanvasRole } from '../shared/canvasRole.ts'
 import { isAgentKeySecret, verifyAgentKey } from './agentKeys.ts'
@@ -2082,9 +2082,8 @@ export async function handleMcpRequest(req: Request, res: Response) {
     }
   }
   const owner = session?.userId ? await getUserName(session.userId) : undefined
-  const multicaTaskId = parseMulticaTaskId(req.headers[MULTICA_TASK_HEADER])
-  /* the header is the client's word: ask Multica now, so the synchronous store can judge the task */
-  if (multicaTaskId) await warmTaskIdentity(multicaTaskId)
+  /* the headers are the client's word: verify the signed assertion and ask Multica now, so the synchronous store can judge the task */
+  const multicaTaskId = await resolveRequestTask(req.headers)
   const server = buildMcpServer(owner, session?.userId ?? undefined, multicaTaskId)
   /* Stateless, and plain JSON rather than an SSE stream per response: no
      tool here sends notifications mid-call, so a stream carries nothing a

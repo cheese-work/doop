@@ -1,6 +1,7 @@
 import { canvasPages, framePageId } from '../shared/pages.ts'
 import { checkReconGate, isReconHtml, reconRefusal } from './reconGuard.ts'
 import type { Actor, Canvas, CanvasPageInfo, Frame } from '../shared/types.ts'
+import type { AssertionClaims } from './taskAssertion.ts'
 
 /**
  * Who is writing, and what Multica has vouched for. Every store mutator takes
@@ -87,8 +88,17 @@ export const systemContext = (): WriteContext => ({ kind: 'system' })
 export const userContext = (userId?: string): WriteContext => ({ kind: 'user', userId })
 
 /** What Multica says about a task (run): live or not, which agent, issue and project. */
-export type TaskIdentity = { running: boolean; agentId?: string; issueId?: string; projectId?: string }
-export type TaskIdentityVerifier = (taskId: string) => Promise<TaskIdentity | undefined>
+export type TaskIdentity = {
+  running: boolean
+  agentId?: string
+  issueId?: string
+  projectId?: string
+  /** the runtime provider and model, known only when the identity comes from a signed task assertion */
+  provider?: string
+  model?: string
+}
+/** `assertion` is the claims of a signed Multica task assertion the caller already verified (`server/taskAssertion.ts`). */
+export type TaskIdentityVerifier = (taskId: string, assertion?: AssertionClaims) => Promise<TaskIdentity | undefined>
 
 /** How long one Multica answer is believed. Short: a task that ended stops writing soon after. */
 export const TASK_IDENTITY_TTL_MS = 5 * 60_000
@@ -106,13 +116,13 @@ export function setTaskIdentityVerifier(next: TaskIdentityVerifier | undefined):
 /** Ask Multica about a task id the client sent, before the request's writes run.
  *  The store is synchronous, so the answer waits in a cache that writeContextFor reads.
  *  Any failure (no verifier, Multica down, unknown task) leaves the task unverified. */
-export async function warmTaskIdentity(taskId: string): Promise<void> {
+export async function warmTaskIdentity(taskId: string, assertion?: AssertionClaims): Promise<void> {
   const hit = verified.get(taskId)
   if (hit && Date.now() - hit.at < TASK_IDENTITY_TTL_MS) return
   verified.delete(taskId)
   if (!verifier) return
   try {
-    const identity = await verifier(taskId)
+    const identity = await verifier(taskId, assertion)
     if (identity) verified.set(taskId, { at: Date.now(), identity })
   } catch {
     /* unverified */
@@ -130,8 +140,17 @@ export function writeContextFor(actor: Actor, userId?: string): WriteContext {
   if (!taskId) return actor.origin === 'mcp' ? { kind: 'agent', origin: 'mcp' } : { kind: 'agent' }
   const hit = verified.get(taskId)
   if (!hit || Date.now() - hit.at >= TASK_IDENTITY_TTL_MS || !hit.identity.running) return { kind: 'agent', taskId }
-  const { agentId, issueId, projectId } = hit.identity
-  return { kind: 'agent', taskId, agentId, issueId, projectId, verified: true }
+  const { agentId, issueId, projectId, provider, model } = hit.identity
+  return {
+    kind: 'agent',
+    taskId,
+    agentId,
+    issueId,
+    projectId,
+    ...(provider !== undefined ? { provider } : {}),
+    ...(model !== undefined ? { model } : {}),
+    verified: true,
+  }
 }
 
 const OPS: ReadonlySet<string> = new Set<WriteOp>([
