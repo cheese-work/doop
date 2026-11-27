@@ -3,11 +3,15 @@
 // nothing and calls no API. Every rule is a pure function of file text, so a fixture can fail each one.
 //
 //   node scripts/cd-preflight.mjs        exit 0: no finding. Exit 1: findings on stdout, one per line.
+//   node scripts/cd-preflight.mjs --ref <rev>   the same over the files at a git revision (a PR head fetched, not checked
+//                                        out: cd-preflight.yml reads it as data). actionlint still uses this tree's config.
 //
 // Rules: actionlint, app-token, token-input, environment, vars, mergers, runner-labels, c00-paths, cron-slots.
 // A rule that cannot read what it needs reports a finding: it never passes by default.
 import { spawnSync } from 'node:child_process'
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const WORKFLOW_DIR = '.github/workflows'
@@ -45,7 +49,7 @@ const finding = (rule, file, message, line) => (line ? { rule, file, line, messa
 export const formatFinding = (f) => `${f.file}${f.line ? `:${f.line}` : ''}: [${f.rule}] ${f.message}`
 
 const isWorkflow = (p) => /^\.github\/workflows\/cd-[^/]+\.ya?ml$/.test(p)
-const workflows = (files) => Object.keys(files).filter(isWorkflow).sort()
+export const workflows = (files) => Object.keys(files).filter(isWorkflow).sort()
 // Full-line comments only (`#` for yaml and shell, `//` for scripts): an inline `#` may sit inside a string.
 export const stripComments = (text) => String(text ?? '').replace(/^[ \t]*(#|\/\/).*$/gm, '')
 const lineOf = (text, index) => text.slice(0, index).split('\n').length
@@ -109,12 +113,8 @@ export function readmeRows(readme) {
   return rows
 }
 
-export function checkEnvironments(files) {
-  const listed = new Set(
-    readmeRows(files[README])
-      .filter((r) => r.kind === 'environment')
-      .map((r) => r.name),
-  )
+// Every `environment:` a CD workflow names: `{ file, line, value, raw }`. `value` is '' when it is not a literal name.
+export function environmentRefs(files) {
   const out = []
   for (const p of workflows(files)) {
     const text = stripComments(files[p])
@@ -134,11 +134,34 @@ export function checkEnvironments(files) {
           }
         }
       }
-      if (!value || value.includes('${{'))
-        out.push(finding('environment', p, `environment is not a literal name: ${m[2] || '(block)'}`, line))
-      else if (!listed.has(value))
-        out.push(finding('environment', p, `environment ${value} is not an Environment row in ${README}`, line))
+      out.push({ file: p, line, value: value.includes('${{') ? '' : value, raw: m[2] || '(block)' })
     }
+  }
+  return out
+}
+
+export function checkEnvironments(files) {
+  const listed = new Set(
+    readmeRows(files[README])
+      .filter((r) => r.kind === 'environment')
+      .map((r) => r.name),
+  )
+  const out = []
+  for (const r of environmentRefs(files)) {
+    if (!r.value) out.push(finding('environment', r.file, `environment is not a literal name: ${r.raw}`, r.line))
+    else if (!listed.has(r.value))
+      out.push(finding('environment', r.file, `environment ${r.value} is not an Environment row in ${README}`, r.line))
+  }
+  return out
+}
+
+// Every `vars.NAME` a CD workflow reads: `{ file, line, name, fallback }`, `fallback` when `||` follows it.
+export function varRefs(files) {
+  const out = []
+  for (const p of workflows(files)) {
+    const text = stripComments(files[p])
+    for (const m of text.matchAll(/\bvars\.([A-Za-z_][A-Za-z0-9_]*)(\s*\|\|)?/g))
+      out.push({ file: p, line: lineOf(text, m.index), name: m[1], fallback: Boolean(m[2]) })
   }
   return out
 }
@@ -151,19 +174,13 @@ export function checkVars(files) {
   )
   const out = []
   const seen = new Set()
-  for (const p of workflows(files)) {
-    const text = stripComments(files[p])
-    for (const m of text.matchAll(/\bvars\.([A-Za-z_][A-Za-z0-9_]*)(\s*\|\|)?/g)) {
-      const name = m[1]
-      const fallback = Boolean(m[2])
-      const line = lineOf(text, m.index)
-      if (!rows.has(name)) {
-        if (!seen.has(`${p}:${name}`))
-          out.push(finding('vars', p, `vars.${name} is not a variable row in ${README}`, line))
-        seen.add(`${p}:${name}`)
-      } else if (fallback && !rows.get(name)) {
-        out.push(finding('vars', p, `vars.${name} has a fallback, so ${README} must mark it optional`, line))
-      }
+  for (const { file: p, line, name, fallback } of varRefs(files)) {
+    if (!rows.has(name)) {
+      if (!seen.has(`${p}:${name}`))
+        out.push(finding('vars', p, `vars.${name} is not a variable row in ${README}`, line))
+      seen.add(`${p}:${name}`)
+    } else if (fallback && !rows.get(name)) {
+      out.push(finding('vars', p, `vars.${name} has a fallback, so ${README} must mark it optional`, line))
     }
   }
   return out
@@ -355,6 +372,22 @@ export function runActionlint(paths, exec, bin = process.env.ACTIONLINT || 'acti
   return out
 }
 
+// The head's `c00-paths.list` read as data: every entry absolute, free of `..`, and under an allowed prefix. A
+// problem is a plain string. The live preflight runs this on C00 (`c00.sh preflight`), so the prefixes are not
+// repeated there.
+export function pathListProblems(text) {
+  const out = []
+  for (const raw of String(text ?? '').split('\n')) {
+    const entry = raw.trim()
+    if (!entry || entry.startsWith('#')) continue
+    if (!entry.startsWith('/') || entry.split('/').includes('..') || /[\s*?[\]{}$`;|&<>\\]/.test(entry))
+      out.push(`${entry}: not a plain absolute path`)
+    else if (!ALLOWED_PATH_PREFIXES.some((a) => underEntry(entry, a)))
+      out.push(`${entry}: not under an allowed prefix (${ALLOWED_PATH_PREFIXES.join(', ')})`)
+  }
+  return out
+}
+
 export function runPreflight(files) {
   return [
     checkNoAppToken,
@@ -381,10 +414,51 @@ export function collect(root = '.') {
   return files
 }
 
-export function main() {
-  const files = collect('.')
+// The same file set read from a git revision, never from the working tree: the live preflight checks a PR head
+// whose objects were fetched but not checked out. `git(args)` returns stdout, or undefined when it fails.
+export function collectFromGit(ref, git) {
+  const files = {}
+  const names = (git(['ls-tree', '--name-only', ref, `${WORKFLOW_DIR}/`]) ?? '').split('\n')
+  for (const n of names.filter((n) => /^\.github\/workflows\/cd-[^/]*\.ya?ml$/.test(n)))
+    files[n] = git(['show', `${ref}:${n}`])
+  for (const p of [...SCRIPT_FILES, README, PATHS_LIST]) {
+    const text = git(['show', `${ref}:${p}`])
+    if (text !== undefined) files[p] = text
+  }
+  return files
+}
+
+export function main(argv = process.argv.slice(2)) {
+  const at = argv.indexOf('--ref')
+  const ref = at >= 0 ? argv[at + 1] : undefined
+  if (at >= 0 && !ref) {
+    console.log('cd-preflight: --ref needs a revision')
+    return 1
+  }
+  const git = (args) => {
+    const r = spawnSync('git', args, { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
+    return r.status === 0 ? r.stdout : undefined
+  }
+  const files = ref ? collectFromGit(ref, git) : collect('.')
   const spawn = (cmd, args) => spawnSync(cmd, args, { encoding: 'utf8' })
-  const findings = [...runActionlint(workflows(files), spawn), ...runPreflight(files)]
+  let lint
+  if (ref) {
+    // actionlint reads files, so the head's workflows are copied out of git; names are mapped back for the report.
+    const dir = mkdtempSync(join(tmpdir(), 'cd-preflight-'))
+    try {
+      const copies = new Map()
+      for (const p of workflows(files)) {
+        mkdirSync(join(dir, WORKFLOW_DIR), { recursive: true })
+        const copy = join(dir, WORKFLOW_DIR, basename(p))
+        writeFileSync(copy, files[p])
+        copies.set(copy, p)
+      }
+      lint = runActionlint([...copies.keys()], spawn).map((f) => ({ ...f, file: copies.get(f.file) ?? f.file }))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  } else lint = runActionlint(workflows(files), spawn)
+  const findings = [...lint, ...runPreflight(files)]
   for (const f of findings) console.log(formatFinding(f))
   console.log(findings.length ? `cd-preflight: ${findings.length} finding(s)` : 'cd-preflight: ok')
   return findings.length ? 1 : 0

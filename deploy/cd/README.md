@@ -340,3 +340,25 @@ holds a failing fixture for each rule and runs every rule except actionlint over
 - C00 jobs run on exactly `[self-hosted, cheese-c00-deploy]`
 - every absolute C00 path the scripts use is in `deploy/cd/c00-paths.list`, which holds only paths under `/var/lib/doop-deploy`, `/var/lib/docker`, `/var/lock/` or `/home/congvc/.local/share/doop`
 - the `cd-deploy.yml` cron equals `SLOT_MINUTES` in `scripts/cd-watch.mjs`; change both together
+
+## Live preflight (`cd-preflight.yml`)
+
+`cd-preflight.yml` (CHE-9957) runs the static preflight and three live checks on every PR and every 15 minutes
+(`workflow_dispatch` too). It has no `merge_group` trigger: the `cheese/main` ruleset has no merge queue.
+
+| Job      | Runs on                            | What it does                                                                                                                                                                                                        |
+| -------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `scope`  | hosted                             | Lists the PR's files. A PR that touches no CD path reports success `n/a`.                                                                                                                                           |
+| `github` | hosted, read-only `github.token`   | `scripts/cd-preflight.mjs --ref <head>`; each `environment:` exists; each `required` variable without a `\|\|` fallback is set; reports the quota, warns below 20%.                                                 |
+| `c00`    | `[self-hosted, cheese-c00-deploy]` | Same-repo heads only. `c00.sh preflight`: path list under the allowed prefixes, marker readable with a valid state word, docker answers, lock file exists. Read only, no `c00-deploy-doop` group, 5 minute timeout. |
+| `report` | hosted                             | `needs: [scope, github]`, never `c00`; `if: always()`; 12 minute timeout. Reads the `c00` job's status itself: not started 10 minutes in is `C00 runner offline`.                                                   |
+
+The head's files are data: the workflow checks out the base SHA, fetches `refs/pull/N/head` and reads it with `git show`.
+It holds no secret, sets `persist-credentials: false` and never runs a head script. A fork head skips `c00`.
+
+**Prerequisite:** runner group `c00-deploy` lists the workflows that may use the C00 runner. An org admin must add
+`cheese-work/doop/.github/workflows/cd-preflight.yml@refs/heads/cheese/main` to it. Until then the `c00` job stays queued and
+`report` fails `C00 runner offline` after 10 minutes.
+
+An unreadable environment list (the token lacks the permission) or variable list is a warning, not a pass and not a
+failure: the names are then not checked. Branch protection may require `report` only.

@@ -1,11 +1,25 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
-import { describe, expect, it } from 'vitest'
+import { spawnSync } from 'node:child_process'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterAll, describe, expect, it } from 'vitest'
 
 /* CHE-9963 (CHE-9850 S3). Static preflight over the CD files. Each rule has a fixture that fails and a
    fixture that passes; the last block runs every rule over the files in this checkout (actionlint is
    stubbed there: CI may not have the binary, `node scripts/cd-preflight.mjs` runs it for real). */
 // @ts-expect-error plain .mjs script, no types
 import * as pf from '../scripts/cd-preflight.mjs'
+// @ts-expect-error plain .mjs script, no types
+import * as live from '../scripts/cd-preflight-ci.mjs'
 
 type Finding = { rule: string; file: string; line?: number; message: string }
 const rules = (f: Finding[]) => [...new Set(f.map((x) => x.rule))].sort()
@@ -389,5 +403,369 @@ describe('the CD files in this checkout', () => {
   it('include the files the rules read', () => {
     expect(files['scripts/cd-watch.mjs']).toContain('SLOT_MINUTES')
     expect(files['.github/workflows/cd-deploy.yml']).toContain('cron:')
+  })
+})
+
+/* CHE-9957 (CHE-9850 S6). The live preflight workflow `cd-preflight.yml`: scope, github, c00, report. The report
+   job must never wait on the C00 runner (FP-01): it has its own clock, and a job that stays queued is a dead runner. */
+const MIN = 60_000
+const WORKFLOW = readFileSync('.github/workflows/cd-preflight.yml', 'utf8')
+
+/** The text of one top-level job (`  name:` under `jobs:`), up to the next job. */
+const jobBlock = (text: string, name: string) => {
+  const start = text.search(new RegExp(`^  ${name}:\\s*$`, 'm'))
+  if (start < 0) return ''
+  const rest = text.slice(start).split('\n').slice(1)
+  const end = rest.findIndex((l) => /^ {2}[A-Za-z0-9_-]+:\s*$/.test(l))
+  return [text.slice(start).split('\n')[0], ...(end < 0 ? rest : rest.slice(0, end))].join('\n')
+}
+const field = (block: string, key: string) => new RegExp(`^    ${key}:[ \\t]*(.*)$`, 'm').exec(block)?.[1]?.trim()
+/** `needs:` as a flow list or a block list. */
+const needsOf = (block: string): string[] => {
+  const inline = field(block, 'needs')
+  if (inline)
+    return inline
+      .replace(/^\[|\]$/g, '')
+      .split(',')
+      .map((x) => x.trim())
+      .filter(Boolean)
+  const m = /^ {4}needs:\s*\n((?: {6}- .*\n?)+)/m.exec(block)
+  return m
+    ? m[1]!
+        .split('\n')
+        .map((l) => l.replace(/^\s*-\s*/, '').trim())
+        .filter(Boolean)
+    : []
+}
+
+type Job = { status: string; conclusion?: string | null }
+const fakeClock = () => {
+  let t = 1_000_000
+  return { now: () => t, sleep: async (ms: number) => void (t += ms), elapsed: () => t - 1_000_000 }
+}
+
+describe('FP-01 report never waits on a dead C00 runner', () => {
+  it('FP-01 unit: c00 stays queued, report fails "C00 runner offline" at 10 min and never reads the conclusion', async () => {
+    const clock = fakeClock()
+    let conclusionReads = 0
+    let calls = 0
+    const queued = {
+      status: 'queued',
+      get conclusion() {
+        conclusionReads++
+        return 'success'
+      },
+    }
+    const out = await live.waitForC00({ observe: async () => (calls++, queued), ...clock })
+    expect(out.ok).toBe(false)
+    expect(out.message).toContain('C00 runner offline')
+    expect(clock.elapsed()).toBe(10 * MIN)
+    expect(conclusionReads).toBe(0)
+    expect(calls).toBeGreaterThan(10)
+  })
+
+  it('FP-01 unit: no c00 job at all is the same as a queued one', async () => {
+    const clock = fakeClock()
+    const out = await live.waitForC00({ observe: async () => null, ...clock })
+    expect(out.message).toContain('C00 runner offline')
+    expect(clock.elapsed()).toBe(10 * MIN)
+  })
+
+  it('FP-01 yaml: report needs scope and github only, times out within 12 min, and always runs', () => {
+    const report = jobBlock(WORKFLOW, 'report')
+    expect(report).not.toBe('')
+    expect(needsOf(report).sort()).toEqual(['github', 'scope'])
+    expect(needsOf(report)).not.toContain('c00')
+    expect(Number(field(report, 'timeout-minutes'))).toBeLessThanOrEqual(12)
+    expect(field(report, 'if')).toBe('always()')
+  })
+})
+
+describe('waitForC00 (after the runner picked the job up)', () => {
+  const run = (seq: Job[], extra: Record<string, number> = {}) => {
+    const clock = fakeClock()
+    let i = 0
+    return live
+      .waitForC00({ observe: async () => seq[Math.min(i++, seq.length - 1)], ...clock, ...extra })
+      .then((out: { ok: boolean; message: string }) => ({ out, elapsed: clock.elapsed() }))
+  }
+
+  it('passes when c00 starts late but inside 10 min and succeeds', async () => {
+    const { out } = await run([
+      { status: 'queued' },
+      { status: 'queued' },
+      { status: 'in_progress' },
+      { status: 'completed', conclusion: 'success' },
+    ])
+    expect(out.ok).toBe(true)
+  })
+
+  it('fails with the conclusion when c00 completes red', async () => {
+    const { out } = await run([{ status: 'completed', conclusion: 'failure' }])
+    expect(out.ok).toBe(false)
+    expect(out.message).toContain('failure')
+  })
+
+  it('treats a skipped c00 as nothing to wait for', async () => {
+    const { out } = await run([{ status: 'completed', conclusion: 'skipped' }])
+    expect(out.ok).toBe(true)
+  })
+
+  it('fails when c00 started but did not finish by the deadline, before the report timeout', async () => {
+    const { out, elapsed } = await run([{ status: 'in_progress' }])
+    expect(out.ok).toBe(false)
+    expect(out.message).toContain('did not finish')
+    expect(elapsed).toBeLessThan(12 * MIN)
+  })
+
+  it('a job that starts at 9 min 59 s is not offline', async () => {
+    const seq: Job[] = Array.from({ length: 39 }, () => ({ status: 'queued' }))
+    seq.push({ status: 'completed', conclusion: 'success' })
+    const { out } = await run(seq)
+    expect(out.ok).toBe(true)
+  })
+
+  it('retries an unreadable job list instead of failing at once', async () => {
+    const clock = fakeClock()
+    let n = 0
+    const out = await live.waitForC00({
+      observe: async () => {
+        if (n++ < 2) throw new Error('HTTP 502')
+        return { status: 'completed', conclusion: 'success' }
+      },
+      ...clock,
+    })
+    expect(out.ok).toBe(true)
+  })
+})
+
+describe('decideReport', () => {
+  const ok = { scope: 'success', github: 'success', cd: 'true', c00: { ok: true, message: 'c00 ok' } }
+  it('passes when every part passed', () => expect(live.decideReport(ok).ok).toBe(true))
+  it('reports n/a for a PR that touches no CD path', () => {
+    const r = live.decideReport({ scope: 'success', github: 'skipped', cd: 'false', c00: null })
+    expect(r.ok).toBe(true)
+    expect(r.lines.join('\n')).toContain('n/a')
+  })
+  it('fails when scope failed, whatever else says', () => {
+    expect(live.decideReport({ ...ok, scope: 'failure' }).ok).toBe(false)
+  })
+  it('fails when github failed or was cancelled', () => {
+    expect(live.decideReport({ ...ok, github: 'failure' }).ok).toBe(false)
+    expect(live.decideReport({ ...ok, github: 'cancelled' }).ok).toBe(false)
+  })
+  it('fails and says why when c00 is offline', () => {
+    const r = live.decideReport({ ...ok, c00: { ok: false, message: 'C00 runner offline' } })
+    expect(r.ok).toBe(false)
+    expect(r.lines.join('\n')).toContain('C00 runner offline')
+  })
+  it('a CD PR with no c00 answer (a fork head) passes on scope and github', () => {
+    expect(live.decideReport({ ...ok, c00: null }).ok).toBe(true)
+  })
+})
+
+describe('scope', () => {
+  it.each([
+    '.github/workflows/cd-deploy.yml',
+    '.github/workflows/cd-preflight.yml',
+    '.github/workflows/image.yml',
+    '.github/actionlint.yaml',
+    'deploy/cd/c00.sh',
+    'deploy/cd/README.md',
+    'scripts/cd-watch.mjs',
+    'scripts/deploy-gate.mjs',
+    'scripts/gh-rate-limit.mjs',
+    'scripts/image-evidence.mjs',
+  ])('%s is a CD path', (p) => expect(live.isCdPath(p)).toBe(true))
+
+  it.each([
+    'src/App.tsx',
+    'server/store.ts',
+    'tests/cdPreflight.test.ts',
+    '.github/workflows/ci.yml',
+    'scripts/doc-lint.mjs',
+  ])('%s is not', (p) => expect(live.isCdPath(p)).toBe(false))
+
+  it('a PR is CD when any one file is', () => {
+    expect(live.touchesCd(['src/a.ts', 'deploy/cd/c00.sh'])).toBe(true)
+    expect(live.touchesCd(['src/a.ts', 'README.md'])).toBe(false)
+    expect(live.touchesCd([])).toBe(false)
+  })
+
+  it('only a same-repo head runs on the C00 runner', () => {
+    expect(live.sameRepo('cheese-work/doop', 'cheese-work/doop')).toBe(true)
+    expect(live.sameRepo('someone/doop', 'cheese-work/doop')).toBe(false)
+    expect(live.sameRepo('', 'cheese-work/doop')).toBe(false)
+    expect(live.sameRepo('Cheese-Work/doop-evil', 'cheese-work/doop')).toBe(false)
+  })
+})
+
+describe('quota', () => {
+  it('warns below 20 percent', () => {
+    expect(live.quotaStatus({ limit: 1000, remaining: 199 }).warn).toBe(true)
+    expect(live.quotaStatus({ limit: 1000, remaining: 200 }).warn).toBe(false)
+    expect(live.quotaStatus({ limit: 1000, remaining: 0 }).warn).toBe(true)
+  })
+  it('names the figures', () => {
+    expect(live.quotaStatus({ limit: 1000, remaining: 150 }).message).toContain('150 of 1000')
+  })
+  it('an unreadable quota is a warning, never a pass of the figure', () => {
+    const q = live.quotaStatus(null)
+    expect(q.warn).toBe(true)
+    expect(q.message).toContain('unreadable')
+  })
+})
+
+describe('live names (environments and variables exist)', () => {
+  const README_REQUIRED = README.replace('`on` or `off`', 'required; `on` or `off`')
+  const files = { '.github/workflows/cd-deploy.yml': DEPLOY }
+  it('passes when every referenced environment and variable exists', () => {
+    expect(
+      live.checkLiveNames(files, {
+        environments: ['c00-readback-delay'],
+        variables: ['DOOP_DEPLOY_TRAIN', 'C00_DOOP_COMPOSE_DIR'],
+      }),
+    ).toEqual([])
+  })
+  it('finds a missing environment (failure class 2)', () => {
+    const f = live.checkLiveNames(files, { environments: [], variables: ['DOOP_DEPLOY_TRAIN', 'C00_DOOP_COMPOSE_DIR'] })
+    expect(f.map((x: Finding) => x.rule)).toEqual(['live-environment'])
+    expect(f[0].message).toContain('c00-readback-delay')
+  })
+  it('finds a missing required variable but not an optional or unmarked one', () => {
+    const f = live.checkLiveNames(files, { environments: ['c00-readback-delay'], variables: [] }, README_REQUIRED)
+    expect(f.map((x: Finding) => x.message).join('\n')).toContain('DOOP_DEPLOY_TRAIN')
+    expect(f.map((x: Finding) => x.message).join('\n')).not.toContain('C00_DOOP_COMPOSE_DIR')
+  })
+  it('an unreadable list is a warning for the caller, not a finding here', () => {
+    expect(live.checkLiveNames(files, { environments: null, variables: null }, README)).toEqual([])
+  })
+})
+
+describe('the preflight workflow file', () => {
+  const triggers = pf.stripComments(WORKFLOW.split(/^jobs:/m)[0]!)
+  const jobs = ['scope', 'github', 'c00', 'report'].map((n) => [n, jobBlock(WORKFLOW, n)] as const)
+
+  it('has the four jobs', () => {
+    for (const [name, block] of jobs) expect(block, name).not.toBe('')
+  })
+  it('fires on pull_request_target, a 15 minute schedule and dispatch, and not on merge_group (no queue rule)', () => {
+    expect(triggers).toMatch(/pull_request_target:\s*\n\s*types: \[opened, synchronize, reopened, ready_for_review\]/)
+    expect(triggers).toMatch(/cron: '\*\/15 \* \* \* \*'|cron: '(\d+,){3}\d+ \* \* \* \*'/)
+    expect(triggers).toContain('workflow_dispatch:')
+    expect(triggers).not.toContain('merge_group')
+  })
+  it('holds no secret, no persisted credential and no head checkout', () => {
+    expect(WORKFLOW).not.toMatch(/\bsecrets\./)
+    expect(WORKFLOW).not.toContain('create-github-app-token')
+    const checkouts = [...WORKFLOW.matchAll(/uses: actions\/checkout@[^\n]*\n((?:\s+(?:with|[a-z-]+):[^\n]*\n)*)/g)]
+    expect(checkouts.length).toBeGreaterThan(0)
+    for (const m of checkouts) {
+      expect(m[1]).toContain('persist-credentials: false')
+      expect(m[1]).not.toMatch(/ref:.*(\.head\.|head_ref|refs\/pull)/)
+      expect(m[1]).toContain('pull_request.base.sha')
+    }
+  })
+  it('never puts event data inside a run script', () => {
+    const runs = [...WORKFLOW.matchAll(/^\s+run: ?([^\n]*(?:\n(?:\s{10,}[^\n]*|)(?=\n|$))*)/gm)].map((m) => m[0])
+    for (const r of runs) expect(r).not.toContain('${{')
+  })
+  it('c00 is read only: exact runner labels, 5 min, no deploy group, same-repo heads', () => {
+    const c00 = jobBlock(WORKFLOW, 'c00')
+    expect(field(c00, 'runs-on')).toBe('[self-hosted, cheese-c00-deploy]')
+    expect(Number(field(c00, 'timeout-minutes'))).toBeLessThanOrEqual(5)
+    expect(c00).not.toContain('concurrency')
+    expect(WORKFLOW).not.toContain('c00-deploy-doop')
+    expect(c00).toContain("c00_expected == 'true'")
+    expect(c00).toContain('c00.sh preflight')
+  })
+  it('only report may be required: the others do not name it', () => {
+    for (const n of ['scope', 'github', 'c00']) expect(needsOf(jobBlock(WORKFLOW, n))).not.toContain('report')
+  })
+  it('the workflow-level permissions are read only', () => {
+    const perms = /^permissions:\n((?:  .*\n)+)/m.exec(WORKFLOW)?.[1] ?? ''
+    expect(perms).not.toMatch(/: write/)
+  })
+})
+
+describe('c00.sh preflight (read only)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'cd-preflight-'))
+  afterAll(() => rmSync(root, { recursive: true, force: true }))
+  const MARKER = `clear:${'a'.repeat(32)}:restore`
+  const prep = (
+    name: string,
+    opts: { marker?: string | null; lock?: boolean; docker?: boolean; list?: string } = {},
+  ) => {
+    const dir = join(root, name)
+    const bin = join(dir, 'bin')
+    mkdirSync(bin, { recursive: true })
+    writeFileSync(
+      join(bin, 'docker'),
+      `#!/bin/sh\n${opts.docker === false ? 'echo cannot connect >&2; exit 1' : 'echo 27.0'}\n`,
+    )
+    chmodSync(join(bin, 'docker'), 0o755)
+    if (opts.marker !== null) writeFileSync(join(dir, 'deploy-marker'), `${opts.marker ?? MARKER}\n`)
+    if (opts.lock !== false) writeFileSync(join(dir, 'lock'), '')
+    writeFileSync(join(dir, 'paths.list'), opts.list ?? '# list\n/var/lib/doop-deploy\n/var/lock/doop-deploy.lock\n')
+    return {
+      dir,
+      run: () =>
+        spawnSync('bash', ['deploy/cd/c00.sh', 'preflight', join(dir, 'paths.list')], {
+          encoding: 'utf8',
+          env: {
+            PATH: `${bin}:${process.env.PATH}`,
+            C00_STATE_DIR: dir,
+            C00_LOCK_FILE: join(dir, 'lock'),
+          },
+        }),
+    }
+  }
+
+  it('passes when every fact holds, and writes nothing', () => {
+    const t = prep('ok')
+    const r = t.run()
+    expect(r.status, r.stderr + r.stdout).toBe(0)
+    expect(readdirSync(t.dir).sort()).toEqual(['bin', 'deploy-marker', 'lock', 'paths.list'])
+    expect(readFileSync(join(t.dir, 'deploy-marker'), 'utf8')).toBe(`${MARKER}\n`)
+  })
+  it('accepts armed and suspended markers as readable states', () => {
+    for (const m of [
+      `armed:${'b'.repeat(32)}:12:${'c'.repeat(40)}`,
+      `suspended:${'b'.repeat(32)}:12:${'c'.repeat(40)}:drill`,
+    ]) {
+      const r = prep(`state-${m.split(':')[0]}`, { marker: m }).run()
+      expect(r.status, r.stderr).toBe(0)
+    }
+  })
+  it('fails on a missing marker', () => {
+    const r = prep('nomarker', { marker: null }).run()
+    expect(r.status).toBe(1)
+    expect(r.stderr + r.stdout).toMatch(/marker/)
+  })
+  it('fails on a marker with no valid state word', () => {
+    const r = prep('badmarker', { marker: 'maybe:soon' }).run()
+    expect(r.status).toBe(1)
+    expect(r.stderr + r.stdout).toMatch(/marker/)
+  })
+  it('fails when docker does not answer', () => {
+    const r = prep('nodocker', { docker: false }).run()
+    expect(r.status).toBe(1)
+    expect(r.stderr + r.stdout).toMatch(/docker/)
+  })
+  it('fails when the lock file is missing, and does not create it', () => {
+    const t = prep('nolock', { lock: false })
+    const r = t.run()
+    expect(r.status).toBe(1)
+    expect(r.stderr + r.stdout).toMatch(/lock/)
+    expect(existsSync(join(t.dir, 'lock'))).toBe(false)
+  })
+  it('fails on a head path outside the allowed prefixes', () => {
+    const r = prep('badpath', { list: '/var/lib/doop-deploy\n/etc/passwd\n' }).run()
+    expect(r.status).toBe(1)
+    expect(r.stderr + r.stdout).toContain('/etc/passwd')
+  })
+  it('fails on a path with .. in it', () => {
+    const r = prep('dotdot', { list: '/var/lib/doop-deploy/../../etc\n' }).run()
+    expect(r.status).toBe(1)
   })
 })
