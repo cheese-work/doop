@@ -18,7 +18,7 @@ const {
   c00Host: (env: Record<string, string | undefined>) => string
   lastSlot: (nowMs: number) => number
   deployJobsAllSkipped: (jobs: { name: string; conclusion: string | null }[] | undefined) => boolean
-  freshness: (f: Record<string, unknown>) => { action: string; reason: string; rerunD1: boolean }
+  freshness: (f: Record<string, unknown>) => { action: string; alarm: boolean; reason: string; rerunD1: boolean }
   liveVerdict: (f: Record<string, unknown>) => Promise<{ ok: boolean; reason: string }>
   lastDeployed: (h: {
     recorded: { sha: string; runId: number | null; confirmedAt: number } | null
@@ -106,10 +106,35 @@ describe('freshness (C-7.1)', () => {
     expect(freshness({ ...base, nowMs: SLOT + 100 * MIN, candidate: null }).action).toBe('none')
   })
 
-  it('alarms at 90 min while a candidate is still ahead, whether or not a D2 run exists (skipped, suspended, forward-only)', () => {
-    expect(freshness({ ...base, nowMs: SLOT + 90 * MIN }).action).toBe('alarm')
-    expect(freshness({ ...base, nowMs: SLOT + 90 * MIN, d2RunsSinceSlot: 2 }).action).toBe('alarm')
+  it('alarms at 90 min while a candidate is still ahead and a D2 run exists since the slot (skipped, suspended, forward-only)', () => {
+    expect(freshness({ ...base, nowMs: SLOT + 90 * MIN, d2RunsSinceSlot: 2 })).toMatchObject({ action: 'alarm' })
+    expect(freshness({ ...base, nowMs: SLOT + 155 * MIN, d2RunsSinceSlot: 1 })).toMatchObject({ action: 'alarm' })
     expect(freshness({ ...base, nowMs: SLOT + 89 * MIN, d2RunsSinceSlot: 2 }).action).toBe('none')
+  })
+
+  // CHE-10498: the 27 Nov 2026 slot was missed and the watch only started 155 min later: it alarmed every 15 min and never
+  // dispatched, so C00 waited 8 h for the next slot.
+  it('at 90 min or later with a candidate ahead and no D2 run since the slot: dispatches once AND alarms', () => {
+    const out = freshness({ ...base, nowMs: SLOT + 155 * MIN, d2RunsSinceSlot: 0 })
+    expect(out.action).toBe('dispatch')
+    expect(out.alarm).toBe(true)
+    expect(out.reason).toContain('155 min after the slot')
+    expect(out.reason).toContain(B.slice(0, 7))
+    expect(out.reason).toContain(A.slice(0, 7))
+    expect(freshness({ ...base, nowMs: SLOT + 90 * MIN, d2RunsSinceSlot: 0 })).toMatchObject({
+      action: 'dispatch',
+      alarm: true,
+    })
+  })
+
+  it('at 155 min with a D2 run since the slot: alarm only, no second dispatch', () => {
+    const out = freshness({ ...base, nowMs: SLOT + 155 * MIN, d2RunsSinceSlot: 1 })
+    expect(out.action).toBe('alarm')
+    expect(out.alarm).toBe(true)
+  })
+
+  it('an on-time dispatch (45 to 89 min) does not alarm', () => {
+    expect(freshness({ ...base, nowMs: SLOT + 60 * MIN }).alarm).toBe(false)
   })
 
   it('names the candidate and the deployed SHA in the alarm reason', () => {
