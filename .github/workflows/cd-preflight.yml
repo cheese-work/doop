@@ -1,0 +1,22 @@
+name: CD preflight
+on:
+  workflow_dispatch:
+jobs:
+  scope:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo scope
+  github:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo github
+  c00:
+    runs-on: [self-hosted, cheese-c00-deploy]
+    steps:
+      - run: echo c00
+  report:
+    needs: [scope, github, c00]
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - run: echo report
