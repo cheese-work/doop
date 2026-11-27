@@ -4,7 +4,8 @@ name: CD freshness watch
 # C-7.1 of the deploy train (CHE-5550, plan CHE-5474). D2 (`cd-deploy.yml`) runs at 06:17, 14:17 and 22:17 ICT; this
 # watcher is its backup. Every 15 minutes it asks, in `scripts/cd-watch.mjs freshness`: is the last D2 slot 45 min
 # old, is a qualified candidate ahead of the last successful D2 SHA, and does no D2 run exist since the slot? Then it
-# sends one `schedule_backup` dispatch. At 90 min it fails this run with `::error::`. A failed D1 build is rerun once.
+# sends one `schedule_backup` dispatch. At 90 min it fails this run with `::error::`, and with no D2 run since the slot it still
+# sends that one dispatch (CHE-10498). A failed D1 build is rerun once.
 # The last successful D2 SHA is read from the deployment record D2 writes after each confirmed deploy (artifacts are the
 # fallback), not from a run conclusion: a skipped D2 ends green. An unreadable history fails this run.
 #

@@ -2,7 +2,7 @@
 // the CLI at the bottom reads facts from GitHub and from C00's /healthz and acts on them.
 //   freshness  (cd-freshness-watch.yml, hosted, every 15 min)  C-7.1: a slot 45 min old with a qualified candidate
 //              ahead of the last successful D2 SHA and no D2 run since: one `schedule_backup` dispatch. At 90 min:
-//              fail the run. A failed D1 build is rerun once.
+//              fail the run, and still send that one dispatch when no D2 run exists since the slot (CHE-10498). A failed D1 build is rerun once.
 //   live       (cd-live-revision.yml, on cheese-x99-gate)      C-7.2: C00's /healthz revision must not be behind
 //              the last successful D2 SHA.
 // "Last successful D2 SHA" has four answers: known (a SHA), pending (a young D2 run may still confirm: the SHA comparison waits, the 90 min alarm and the health check do not), none (a proven first deployment: every D2 run is readable
@@ -155,12 +155,14 @@ export function freshness({
   runnerSeen = true,
   c00QueuedMinutes = null,
 }) {
-  if (!trainOn) return { action: 'none', rerunD1: false, reason: 'DOOP_DEPLOY_TRAIN is not on: nothing is due' }
+  if (!trainOn)
+    return { action: 'none', alarm: false, rerunD1: false, reason: 'DOOP_DEPLOY_TRAIN is not on: nothing is due' }
   const rerunD1 = head?.conclusion === 'failure' && head?.attempt === 1
   const age = nowMs - lastSlot(nowMs)
-  const idle = (reason) => ({ action: 'none', rerunD1, reason })
+  const idle = (reason) => ({ action: 'none', alarm: false, rerunD1, reason })
   const alarm = (reason, facts = {}) => ({
     action: 'alarm',
+    alarm: true,
     rerunD1,
     reason,
     diagnosis: diagnose({
@@ -202,7 +204,11 @@ export function freshness({
   const behind = `candidate ${short(candidate.sha)} is ahead of the last successful D2 ${short(deployedSha)}`
   if (age >= ALARM_AFTER) {
     const mins = Math.floor(age / MIN)
-    return alarm(`${behind}, ${mins} min after the slot (limit ${ALARM_AFTER / MIN})`)
+    const late = `${behind}, ${mins} min after the slot (limit ${ALARM_AFTER / MIN})`
+    // CHE-10498: a missed window must not wait for the next slot. With no D2 run since the slot, send the one backup
+    // dispatch as well as the alarm. With a D2 run since the slot (skipped, suspended or forward-only) it is alarm only.
+    if (d2RunsSinceSlot === 0) return { ...alarm(`${late}; no D2 run since the slot`), action: 'dispatch' }
+    return alarm(late)
   }
   // Suspended or unreadable: Cheese must lift it. Alarm now, dispatch never.
   if (LIFT_SKIPS.includes(skipReason)) {
@@ -222,7 +228,7 @@ export function freshness({
     }
   }
   if (d2RunsSinceSlot > 0) return idle(`${behind}; a D2 run exists since the slot`)
-  return { action: 'dispatch', rerunD1, reason: `${behind}; no D2 run since the slot` }
+  return { action: 'dispatch', alarm: false, rerunD1, reason: `${behind}; no D2 run since the slot` }
 }
 
 // C-7.2. `body` is what /healthz answered (null when it did not answer or was not JSON), `deployed` the last
@@ -571,7 +577,7 @@ async function cli(argv, env) {
       ])
       console.log('sent one schedule_backup dispatch of cd-deploy.yml')
     }
-    if (out.action === 'alarm') {
+    if (out.alarm) {
       console.log(`::error::D2 is overdue: ${out.reason}`)
       process.exitCode = 1
     }
