@@ -13,7 +13,7 @@
 // Both watchers do nothing while DOOP_DEPLOY_TRAIN is not `on`: with the train off nothing is due, so an alarm
 // would only be noise. They are scheduled before the switch can turn on, so that their first runs are already seen.
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -43,38 +43,153 @@ export function lastSlot(nowMs) {
   return Math.max(...slots.filter((s) => s <= nowMs))
 }
 
+// Why D2's gate skipped its newest run (deploy-evidence `skip_reason`). `suspended` and `unreadable` need Cheese to lift
+// the marker, so the watcher alarms and never dispatches. `busy` and `armed` wait for the blocking run, then send one
+// dispatch.
+const LIFT_SKIPS = ['suspended', 'unreadable']
+const WAIT_SKIPS = ['busy', 'armed']
+// The alarm's owner: a quiet slot with no live run at all points at the X99 runner (c00-hermes-devops); otherwise the CD lane.
+const QUIET_OWNER = { runnerDown: 'c00-hermes-devops', otherwise: 'CD lane' }
+const QUEUE_LIMIT = 10 * MIN
+
+// Which step is at fault, and who owns it (plan r5, S2 diagnosis). The first matching fact wins. Facts that the caller
+// cannot measure are left null and never match.
+export function diagnose({
+  d1Red = false,
+  d1Author = null,
+  c00QueuedMinutes = null,
+  markerSuspended = false,
+  confirmInconclusive = false,
+}) {
+  if (d1Red) return { step: 'D1', reason: 'the D1 image build failed', owner: d1Author ?? 'PR author' }
+  if (c00QueuedMinutes !== null && c00QueuedMinutes * MIN > QUEUE_LIMIT) {
+    return { step: 'C00', reason: `the C00 job has been queued ${c00QueuedMinutes} min`, owner: 'c00-hermes-devops' }
+  }
+  if (markerSuspended) return { step: 'marker', reason: 'the deploy marker is suspended', owner: 'Cheese' }
+  if (confirmInconclusive)
+    return { step: 'confirm', reason: 'the confirm read-back was inconclusive', owner: 'CD lane' }
+  return null
+}
+
+// The `live-evidence.json` the live check writes: the full revision C00 served, whether it was healthy, when it was
+// observed, and the run that observed it. `body` is /healthz's answer (null when it did not answer).
+export function liveEvidence({ body, observedMs, runId, runAttempt }) {
+  const revision = typeof body?.revision === 'string' && SHA40.test(body.revision) ? body.revision : null
+  return {
+    schema: 1,
+    revision,
+    ok: body?.ok === true && revision !== null,
+    observed_at: new Date(observedMs).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+    run_id: /^\d+$/.test(String(runId ?? '')) ? Number(runId) : null,
+    run_attempt: /^\d+$/.test(String(runAttempt ?? '')) ? Number(runAttempt) : null,
+  }
+}
+
+// Quiet slot (option A, FP-03): when the candidate already equals the deployed SHA, the slot counts as delivered only with
+// fresh live evidence. `evidence` is one `live-evidence.json` (from `cd-watch live`), `slotMs` the slot's epoch ms, `sha`
+// the candidate. Its observation must be after the slot, name the full target revision, and report healthy. Nothing else
+// (a green workflow, a head SHA) proves it.
+export function quietSlotProof({ evidence, slotMs, sha }) {
+  if (!evidence || evidence.schema !== 1) return { delivered: false, reason: 'no live evidence since the slot' }
+  const observed = Date.parse(evidence.observed_at ?? '')
+  if (!Number.isFinite(observed) || observed <= slotMs) {
+    return { delivered: false, reason: 'the live evidence was observed before the slot' }
+  }
+  if (evidence.revision !== sha) {
+    return {
+      delivered: false,
+      reason: `the live evidence names ${short(evidence.revision)}, not the slot target ${short(sha)}`,
+    }
+  }
+  if (evidence.ok !== true) return { delivered: false, reason: 'the live evidence is not healthy' }
+  const run = evidence.run_id ? ` (live run ${evidence.run_id}.${evidence.run_attempt ?? 1})` : ''
+  return { delivered: true, reason: `live ${short(sha)} healthy, observed ${evidence.observed_at}${run}` }
+}
+
 // C-7.1. Facts: switch, clock, the qualified candidate (or null), the last successful D2 SHA (or null), how many D2
 // runs were created since the slot, and the newest D1 run (conclusion null while it runs).
-// Result: what to do, why, and whether to rerun the failed D1 build.
-export function freshness({ trainOn, nowMs, candidate, deployed, d2RunsSinceSlot, head }) {
+// Optional facts (all default to the pre-S2 behaviour):
+//   skipReason     why the newest completed D2 run skipped (deploy-evidence skip_reason), or null;
+//   d2RunActive    a D2 run is still queued or running;
+//   followUpD2     a D2 run was created after the skipped run (the one dispatch after a busy run already went out);
+//   quiet          quietSlotProof for the slot, used only when the candidate is already the deployed SHA;
+//   runnerSeen     a cd-live-revision run exists since the slot (false points the quiet alarm at the X99 runner).
+// Result: what to do, why, whether to rerun the failed D1 build, and a `diagnosis` on an alarm.
+export function freshness({
+  trainOn,
+  nowMs,
+  candidate,
+  deployed,
+  d2RunsSinceSlot,
+  head,
+  skipReason = null,
+  d2RunActive = false,
+  followUpD2 = false,
+  quiet = null,
+  runnerSeen = true,
+}) {
   if (!trainOn) return { action: 'none', rerunD1: false, reason: 'DOOP_DEPLOY_TRAIN is not on: nothing is due' }
   const rerunD1 = head?.conclusion === 'failure' && head?.attempt === 1
   const age = nowMs - lastSlot(nowMs)
   const idle = (reason) => ({ action: 'none', rerunD1, reason })
+  const alarm = (reason, facts = {}) => ({
+    action: 'alarm',
+    rerunD1,
+    reason,
+    diagnosis: diagnose({
+      d1Red: rerunD1 || head?.conclusion === 'failure',
+      markerSuspended: skipReason === 'suspended',
+      ...facts,
+    }),
+  })
   if (!candidate) return idle('no qualified candidate')
   if (deployed.state === 'unknown') {
-    return { action: 'alarm', rerunD1, reason: `the last successful D2 SHA is unknown: ${deployed.reason}` }
+    return alarm(`the last successful D2 SHA is unknown: ${deployed.reason}`)
   }
   if (deployed.state === 'pending') {
     // The run may be the deploy, but a queued or stuck one must not hide a missed window: the 90 min alarm still fires.
     if (age >= ALARM_AFTER) {
       const mins = Math.floor(age / MIN)
-      return {
-        action: 'alarm',
-        rerunD1,
-        reason: `${deployed.reason}, still unfinished ${mins} min after the slot (limit ${ALARM_AFTER / MIN})`,
-      }
+      return alarm(`${deployed.reason}, still unfinished ${mins} min after the slot (limit ${ALARM_AFTER / MIN})`)
     }
     return idle(deployed.reason)
   }
   const deployedSha = deployed.state === 'known' ? deployed.sha : null
-  if (candidate.sha === deployedSha) return idle(`candidate ${short(candidate.sha)} is already deployed`)
+  if (candidate.sha === deployedSha) {
+    // Quiet slot: nothing to deliver, but the slot is delivered only with fresh live evidence (S2 option A).
+    if (quiet?.delivered) return idle(`candidate ${short(candidate.sha)} is already deployed: ${quiet.reason}`)
+    if (age >= ALARM_AFTER) {
+      const owner = runnerSeen ? QUIET_OWNER.otherwise : QUIET_OWNER.runnerDown
+      const why = quiet?.reason ?? 'no live evidence since the slot'
+      return alarm(
+        `candidate ${short(candidate.sha)} is already deployed, but the slot has no fresh live evidence: ${why}; owner ${owner}`,
+        { c00QueuedMinutes: null },
+      )
+    }
+    return idle(`candidate ${short(candidate.sha)} is already deployed; waiting for live evidence`)
+  }
   const behind = `candidate ${short(candidate.sha)} is ahead of the last successful D2 ${short(deployedSha)}`
   if (age >= ALARM_AFTER) {
     const mins = Math.floor(age / MIN)
-    return { action: 'alarm', rerunD1, reason: `${behind}, ${mins} min after the slot (limit ${ALARM_AFTER / MIN})` }
+    return alarm(`${behind}, ${mins} min after the slot (limit ${ALARM_AFTER / MIN})`)
+  }
+  // Suspended or unreadable: Cheese must lift it. Alarm now, dispatch never.
+  if (LIFT_SKIPS.includes(skipReason)) {
+    return alarm(`${behind}; the D2 gate skipped (${skipReason}): Cheese must lift the marker, no dispatch`, {
+      markerSuspended: skipReason === 'suspended',
+    })
   }
   if (age < DISPATCH_AFTER) return idle('the slot is not 45 min old yet')
+  if (WAIT_SKIPS.includes(skipReason)) {
+    // The skipped run is finished. Wait while another D2 run is active; once it has ended, send exactly one dispatch.
+    if (d2RunActive) return idle(`${behind}; a D2 run is still active (${skipReason} skip)`)
+    if (followUpD2) return idle(`${behind}; the one dispatch after the ${skipReason} skip already went out`)
+    return {
+      action: 'dispatch',
+      rerunD1,
+      reason: `${behind}; the ${skipReason} run has ended and the slot is undelivered`,
+    }
+  }
   if (d2RunsSinceSlot > 0) return idle(`${behind}; a D2 run exists since the slot`)
   return { action: 'dispatch', rerunD1, reason: `${behind}; no D2 run since the slot` }
 }
@@ -243,6 +358,27 @@ export function deployJobsAllSkipped(jobs) {
   return deploys.length > 0 && deploys.every((j) => j.conclusion === 'skipped')
 }
 
+// live-evidence.json of one cd-live-revision run, or null when it has none.
+function liveEvidenceOf(repo, id) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'cd-watch-live-'))
+  try {
+    const r = spawnSync(
+      'gh',
+      ['run', 'download', String(id), '--repo', repo, '--name', 'live-evidence', '--dir', dir],
+      {
+        encoding: 'utf8',
+      },
+    )
+    if (r.status !== 0) {
+      if (/no artifact|not found|expired|no valid artifacts/i.test(r.stderr)) return null
+      throw new Error(`gh run download ${id} (live-evidence) failed: ${r.stderr.trim()}`)
+    }
+    return JSON.parse(readFileSync(path.join(dir, 'live-evidence.json'), 'utf8'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
 function deployJobSkipped(repo, id) {
   const { jobs } = api(repo, `actions/runs/${id}/jobs?per_page=100&filter=all`)
   return deployJobsAllSkipped(jobs)
@@ -332,14 +468,41 @@ async function cli(argv, env) {
     const newest = d1('')[0]
     const sinceIso = new Date(lastSlot(nowMs)).toISOString().replace(/\.\d{3}Z$/, 'Z')
     const d2 = api(repo, `actions/workflows/cd-deploy.yml/runs?created=>=${sinceIso}&per_page=50`)
+    const deployed = await deployedSha(repo)
+    // The newest finished D2 run since the slot is the one that skipped (or deployed); its evidence says why.
+    const skipped = d2.workflow_runs.find((r) => r.status === 'completed')
+    const skipReason = skipped ? ((await evidenceOf(repo, skipped.id))?.skip_reason ?? null) : null
+    // Quiet slot: candidate already deployed. The live check's evidence since the slot is the only proof.
+    let quiet = null
+    let runnerSeen = true
+    if (candidate && deployed.state === 'known' && candidate.sha === deployed.sha) {
+      const live = api(repo, `actions/workflows/cd-live-revision.yml/runs?created=>=${sinceIso}&per_page=10`)
+      runnerSeen = live.workflow_runs.length > 0
+      quiet = { delivered: false, reason: 'no live evidence since the slot' }
+      for (const run of live.workflow_runs) {
+        const proof = quietSlotProof({
+          evidence: await liveEvidenceOf(repo, run.id),
+          slotMs: lastSlot(nowMs),
+          sha: candidate.sha,
+        })
+        quiet = proof
+        if (proof.delivered) break
+      }
+    }
     const out = freshness({
       trainOn,
       nowMs,
       candidate,
-      deployed: await deployedSha(repo),
+      deployed,
       d2RunsSinceSlot: d2.total_count,
       head: newest && { conclusion: newest.conclusion, attempt: newest.run_attempt },
+      skipReason,
+      d2RunActive: d2.workflow_runs.some((r) => r.status !== 'completed'),
+      followUpD2: Boolean(skipped) && d2.workflow_runs[0]?.id !== skipped.id,
+      quiet,
+      runnerSeen,
     })
+    if (out.diagnosis) console.log(`diagnosis: ${JSON.stringify(out.diagnosis)}`)
     console.log(`cd-watch freshness: ${out.action}: ${out.reason}`)
     if (out.rerunD1) {
       console.log(`rerunning the failed D1 run ${newest.id} once`)
@@ -385,8 +548,19 @@ async function cli(argv, env) {
     } finally {
       clearTimeout(timer)
     }
+    const observedMs = Date.now()
     const out = await liveVerdict({ body, deployed: await deployedSha(repo), isAncestor: gitIsAncestor })
     console.log(`cd-watch live: ${out.ok ? 'ok' : 'fail'}: ${out.reason}`)
+    if (env.LIVE_EVIDENCE_OUT) {
+      // Evidence the freshness watcher binds to a quiet slot (quietSlotProof). The full revision as C00 served it.
+      const evidence = liveEvidence({
+        body,
+        observedMs,
+        runId: env.GITHUB_RUN_ID,
+        runAttempt: env.GITHUB_RUN_ATTEMPT,
+      })
+      writeFileSync(env.LIVE_EVIDENCE_OUT, `${JSON.stringify(evidence, null, 2)}\n`)
+    }
     if (!out.ok) {
       console.log(`::error::C00 live revision check failed: ${out.reason}`)
       process.exitCode = 1

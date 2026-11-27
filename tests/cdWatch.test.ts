@@ -1,6 +1,10 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
+import { parse as parseYaml } from 'yaml'
 // @ts-expect-error plain .mjs without types
 import * as watch from '../scripts/cd-watch.mjs'
+// @ts-expect-error plain .mjs without types
+import { buildEvidence } from '../scripts/deploy-evidence.mjs'
 
 /* CHE-5550 (train S7, plan CHE-5474 C-7): the two watchers' decisions as pure functions. The CLI and the
    workflows only feed them facts read from GitHub and from C00's /healthz. */
@@ -14,8 +18,22 @@ const {
   ghPostArgs,
   recordDeployment,
   c00Host,
+  quietSlotProof,
+  liveEvidence,
+  diagnose,
 } = watch as {
   c00Host: (env: Record<string, string | undefined>) => string
+  quietSlotProof: (f: { evidence: Record<string, unknown> | null; slotMs: number; sha: string }) => {
+    delivered: boolean
+    reason: string
+  }
+  liveEvidence: (f: {
+    body: Record<string, unknown> | null
+    observedMs: number
+    runId?: string
+    runAttempt?: string
+  }) => Record<string, unknown>
+  diagnose: (f: Record<string, unknown>) => { step: string; reason: string; owner: string } | null
   lastSlot: (nowMs: number) => number
   deployJobsAllSkipped: (jobs: { name: string; conclusion: string | null }[] | undefined) => boolean
   freshness: (f: Record<string, unknown>) => { action: string; reason: string; rerunD1: boolean }
@@ -82,9 +100,10 @@ describe('freshness (C-7.1)', () => {
     expect(freshness({ ...base, nowMs: SLOT + 60 * MIN, d2RunsSinceSlot: 1 }).action).toBe('none')
   })
 
-  it('does nothing when the candidate is the last successful D2 SHA', () => {
+  it('does nothing when the candidate is the last successful D2 SHA and fresh live evidence delivered the slot', () => {
+    const quiet = { delivered: true, reason: 'live healthy' }
     expect(freshness({ ...base, nowMs: SLOT + 60 * MIN, deployed: known(B) }).action).toBe('none')
-    expect(freshness({ ...base, nowMs: SLOT + 100 * MIN, deployed: known(B) }).action).toBe('none')
+    expect(freshness({ ...base, nowMs: SLOT + 100 * MIN, deployed: known(B), quiet }).action).toBe('none')
   })
 
   it('treats "no successful D2 yet" as behind', () => {
@@ -754,5 +773,173 @@ describe('c00Host: where the live watcher reads the host (CHE-9479)', () => {
 
   it('has no scheme and no path', () => {
     expect(c00Host({})).not.toMatch(/[/]/)
+  })
+})
+
+/* FP-02 and FP-03 (CHE-9956, S2): the skip reason the D2 evidence records reaches the freshness watcher, and a quiet slot
+   is delivered only by fresh live evidence bound to that slot. */
+const D2_WORKFLOW = readFileSync(new URL('../.github/workflows/cd-deploy.yml', import.meta.url), 'utf8')
+
+type Ctx = Record<string, string>
+
+// Evaluate one `${{ a || b }}` the way the runner picks a value: the first operand that is non-empty.
+function evalExpr(raw: string, ctx: Ctx): string {
+  const m = /^\$\{\{\s*(.*?)\s*\}\}$/.exec(raw)
+  if (!m) return raw
+  for (const token of (m[1] ?? '').split('||').map((t) => t.trim())) {
+    const value = ctx[token] ?? ''
+    if (value !== '') return value
+  }
+  return ''
+}
+
+// The env the `Write the evidence` step gives buildEvidence, read from the real workflow file.
+function evidenceEnv(ctx: Ctx): Record<string, string> {
+  const doc = parseYaml(D2_WORKFLOW) as {
+    jobs: Record<string, { steps?: { name?: string; env?: Record<string, string> }[] }>
+  }
+  const step = Object.values(doc.jobs)
+    .flatMap((job) => job.steps ?? [])
+    .find((s) => s.name === 'Write the evidence')
+  if (!step?.env) throw new Error('cd-deploy.yml has no `Write the evidence` step with an env block')
+  return Object.fromEntries(Object.entries(step.env).map(([k, v]) => [k, evalExpr(v, ctx)]))
+}
+
+function evidenceFor(skip: string) {
+  const env = evidenceEnv({
+    'needs.resolve.outputs.skip_reason': skip,
+    'needs.deploy.outputs.skip_reason': '',
+    'github.run_id': '42',
+    'github.run_attempt': '1',
+    'needs.resolve.outputs.mode': 'train',
+    'needs.admit.outputs.candidate': B,
+    'needs.admit.outputs.digest': `sha256:${'d'.repeat(64)}`,
+  })
+  return buildEvidence({ ...env, NOW_EPOCH: String(SLOT / 1000 + 3600) }) as Record<string, unknown>
+}
+
+// Like the CLI: the evidence goes through JSON and its skip reason is what freshness reads.
+const roundTrip = (v: unknown) => JSON.parse(JSON.stringify(v)) as Record<string, unknown>
+const behindAt = (offsetMin: number, extra: Record<string, unknown>) =>
+  freshness({ ...base, nowMs: SLOT + offsetMin * MIN, candidate: { sha: B }, deployed: known(A), ...extra })
+
+describe('FP-02: a skipped D2 gate reaches the freshness watcher through the evidence artifact', () => {
+  it('FP-02 the workflow step writes the skip reason it was given, and the evidence keeps it', () => {
+    expect(roundTrip(evidenceFor('suspended')).skip_reason).toBe('suspended')
+    expect(roundTrip(evidenceFor('unreadable')).skip_reason).toBe('unreadable')
+    expect(roundTrip(evidenceFor('busy')).skip_reason).toBe('busy')
+  })
+
+  it('FP-02 the step reads the resolve skip reason first, then the deploy one', () => {
+    const env = evidenceEnv({
+      'needs.resolve.outputs.skip_reason': '',
+      'needs.deploy.outputs.skip_reason': 'armed',
+    })
+    expect(env.SKIP_REASON).toBe('armed')
+  })
+
+  it('FP-02 suspended and unreadable alarm at once with no dispatch, and a suspended one names Cheese as owner', () => {
+    for (const skip of ['suspended', 'unreadable']) {
+      const skipReason = roundTrip(evidenceFor(skip)).skip_reason as string
+      const d = behindAt(60, { skipReason })
+      expect(d.action).toBe('alarm')
+      expect(d.reason).toContain(skip)
+    }
+    const suspended = behindAt(60, { skipReason: 'suspended' })
+    expect(suspended.diagnosis).toEqual({ step: 'marker', reason: expect.any(String), owner: 'Cheese' })
+  })
+
+  it('FP-02 busy: no dispatch while a D2 run is active, exactly one dispatch after it ends, none after that one', () => {
+    const skipReason = 'busy'
+    expect(behindAt(60, { skipReason, d2RunActive: true }).action).toBe('none')
+    expect(behindAt(60, { skipReason, d2RunActive: false, followUpD2: false }).action).toBe('dispatch')
+    expect(behindAt(60, { skipReason, d2RunActive: false, followUpD2: true }).action).toBe('none')
+  })
+
+  it('FP-02 armed behaves like busy: waits while running, dispatches once after', () => {
+    expect(behindAt(60, { skipReason: 'armed', d2RunActive: true }).action).toBe('none')
+    expect(behindAt(60, { skipReason: 'armed', d2RunActive: false }).action).toBe('dispatch')
+  })
+})
+
+describe('FP-03: a quiet slot is delivered only by fresh live evidence bound to the slot (option A)', () => {
+  const quietAt = (offsetMin: number, quiet: Record<string, unknown> | null, runnerSeen = true) =>
+    freshness({
+      ...base,
+      nowMs: SLOT + offsetMin * MIN,
+      candidate: { sha: A },
+      deployed: known(A),
+      quiet,
+      runnerSeen,
+    })
+
+  it('FP-03 with no live evidence, the quiet slot alarms at slot+90 min and not at 89', () => {
+    const none = quietSlotProof({ evidence: null, slotMs: SLOT, sha: A })
+    expect(none.delivered).toBe(false)
+    expect(quietAt(89, none).action).toBe('none')
+    const alarm = quietAt(90, none)
+    expect(alarm.action).toBe('alarm')
+    expect(alarm.reason).toContain('no fresh live evidence')
+  })
+
+  it('FP-03 stale evidence observed before the slot does not deliver the slot', () => {
+    const stale = liveEvidence({ body: { ok: true, revision: A }, observedMs: SLOT - 5 * MIN })
+    const proof = quietSlotProof({ evidence: roundTrip(stale), slotMs: SLOT, sha: A })
+    expect(proof.delivered).toBe(false)
+    expect(quietAt(90, proof).action).toBe('alarm')
+  })
+
+  it('FP-03 evidence naming another revision does not deliver the slot', () => {
+    const wrong = liveEvidence({ body: { ok: true, revision: B }, observedMs: SLOT + 30 * MIN })
+    const proof = quietSlotProof({ evidence: roundTrip(wrong), slotMs: SLOT, sha: A })
+    expect(proof.delivered).toBe(false)
+    expect(quietAt(90, proof).action).toBe('alarm')
+  })
+
+  it('FP-03 unhealthy evidence for the right revision does not deliver the slot', () => {
+    const sick = liveEvidence({ body: { ok: false, revision: A }, observedMs: SLOT + 30 * MIN })
+    expect(quietSlotProof({ evidence: roundTrip(sick), slotMs: SLOT, sha: A }).delivered).toBe(false)
+  })
+
+  it('FP-03 positive control: fresh healthy evidence for the slot target is idle at slot+100 min', () => {
+    const fresh = liveEvidence({
+      body: { ok: true, revision: A },
+      observedMs: SLOT + 30 * MIN,
+      runId: '123',
+      runAttempt: '1',
+    })
+    const proof = quietSlotProof({ evidence: roundTrip(fresh), slotMs: SLOT, sha: A })
+    expect(proof.delivered).toBe(true)
+    expect(quietAt(100, proof).action).toBe('none')
+  })
+
+  it('FP-03 two slots: evidence between slot 1 and slot 2 does not deliver slot 2; evidence after it does', () => {
+    const SLOT2 = SLOT + 8 * 60 * MIN
+    const at2 = (offsetMin: number, evidence: Record<string, unknown>) => {
+      const proof = quietSlotProof({ evidence, slotMs: SLOT2, sha: A })
+      return freshness({
+        ...base,
+        nowMs: SLOT2 + offsetMin * MIN,
+        candidate: { sha: A },
+        deployed: known(A),
+        quiet: proof,
+      })
+    }
+    const between = roundTrip(liveEvidence({ body: { ok: true, revision: A }, observedMs: SLOT + 60 * MIN }))
+    expect(at2(90, between).action).toBe('alarm')
+    const after = roundTrip(liveEvidence({ body: { ok: true, revision: A }, observedMs: SLOT2 + 30 * MIN }))
+    expect(at2(100, after).action).toBe('none')
+  })
+})
+
+describe('FP-02 diagnosis: the step and owner an alarm names', () => {
+  it('FP-02 a failed D1 build names the PR author, a suspended marker names Cheese, and a clean state names nobody', () => {
+    expect(diagnose({ d1Red: true, d1Author: 'alice' })).toEqual({
+      step: 'D1',
+      reason: 'the D1 image build failed',
+      owner: 'alice',
+    })
+    expect(diagnose({ markerSuspended: true })?.owner).toBe('Cheese')
+    expect(diagnose({})).toBeNull()
   })
 })
