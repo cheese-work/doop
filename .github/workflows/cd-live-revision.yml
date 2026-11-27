@@ -38,4 +38,12 @@ jobs:
           REPO: ${{ github.repository }}
           DOOP_DEPLOY_TRAIN: ${{ vars.DOOP_DEPLOY_TRAIN }}
           DOOP_C00_HOST: ${{ vars.DOOP_C00_HOST }}
+          LIVE_EVIDENCE_OUT: live-evidence.json
         run: node scripts/cd-watch.mjs live
+      # The freshness watcher reads this to tell whether a quiet slot is delivered (S2). Uploaded even when the check fails.
+      - uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        if: always()
+        with:
+          name: live-evidence
+          path: live-evidence.json
+          if-no-files-found: error
