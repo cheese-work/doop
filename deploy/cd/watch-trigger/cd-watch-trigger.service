@@ -1,0 +1,12 @@
+[Unit]
+Description=CHE-10354 dispatch cd-freshness-watch.yml (non-GitHub trigger)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Installed copy, see README. Dispatches only the watch, never cd-deploy.yml.
+ExecStart=%h/.local/share/cd-watch-trigger/cd-watch-trigger.sh
+TimeoutStartSec=2min
+Nice=10
