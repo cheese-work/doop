@@ -469,7 +469,16 @@ data-doop-webfonts>` for the roster families the frame names and does not load i
   gate every frame writer shares and throws `FrameDeletedError` (REST 410). Restore routes: `POST /api/frames/:id/restore`,
   `POST /api/canvases/:id/pages/:pageId/restore` (brings the page's deleted frames), `GET /api/canvases/:id/trash`; MCP `restore_frame`, `restore_page`. `archive_frames` moves
   frames to the per-canvas `Archive` page (`ARCHIVE_PAGE_ID`, always last) and hides them. Nothing in this
-  slice hard-deletes a frame, page or version row (`tests/frameTrashPersist.test.ts` scans for it).
+  slice hard-deletes a frame, page or version row except the one purge route (`tests/frameTrashPersist.test.ts` scans for it).
+  "Delete forever" (CHE-9399): `POST /api/frames/:id/purge` with `{deletedAt}` (REST only: no MCP tool or resident
+  path reaches it; agent keys get 401). Guards, in order: the frame is in the Trash (404/409 `not_in_trash`), an editor
+  (403), `deletedAt` is the Trash's (409 `stale_confirmation`), not a component main frame (409 `component_main`),
+  no comment on it (409 `has_comments`, memory and the database), no other purge open (409 `purge_in_progress`).
+  A frame with any comment is refused, never purged; lifting that refusal is CHE-9450. The transaction
+  (`server/db/purge.ts`, run by `server/framePurge.ts`) waits for the frame's writers (503 `purge_timeout`), removes the
+  frame, versions, write keys and asset refs, and keeps comments, snapshots, activity and the rest. A lost COMMIT
+  reply keeps the frame held in the Trash until the probe answers (503 `purge_outcome_unknown`, or 409
+  `purge_not_applied` when it did not happen). Every refusal and timeout leaves all rows.
 - Page snapshots (CHE-5307, `server/pageSnapshots.ts`, `actions.createPageSnapshot` and friends): a named,
   pinned copy of a whole page. `page_snapshots` holds name, page, author, time and each frame's state
   (name, position, size, hidden, deleted, html hash); the html lives once per canvas in `snapshot_blobs`
