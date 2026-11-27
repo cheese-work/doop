@@ -96,50 +96,75 @@ export function multicaDesignIssueSource(
   return httpDesignIssueSource({ apiUrl: apiUrl.replace(/\/$/, ''), token, workspaceId }, fetchImpl)
 }
 
-/** Seconds a canvas's links count as fresh for the G3 path: an agent that re-runs the check in a loop must not become a Multica read loop. */
+/** How long a canvas's links count as fresh for the G3 path: an agent that re-runs the check in a loop must not become a Multica read loop. */
 const FRESH_MS = 15_000
 const lastRead = new Map<string, number>()
 
 /**
- * Reconcile one canvas's design links. Run before G3 reads the page, so a
- * Design url set a moment ago binds without waiting for the timer. Never
- * throws: a failed read leaves every link as it was.
+ * Every sync (a G3 check's and the timer's) runs one at a time, read and write
+ * together. A read that started earlier then can never apply after a read that
+ * started later, so an old answer cannot overwrite a newer one.
  */
-export async function syncCanvasDesignLinks(
+let queue: Promise<unknown> = Promise.resolve()
+function serialized<T>(job: () => Promise<T>): Promise<T> {
+  const run = queue.then(job)
+  queue = run.catch(() => undefined)
+  return run
+}
+/** a canvas whose sync is queued or running: a second G3 check awaits it instead of skipping it */
+const inFlight = new Map<string, Promise<boolean>>()
+
+/**
+ * Reconcile one canvas's design links. Run before G3 reads the page, so a
+ * Design url set a moment ago binds without waiting for the timer. A caller
+ * that arrives while this canvas's sync is pending gets that same promise, so
+ * it never reads the page before the link is applied. Never throws: a failed
+ * read leaves every link as it was.
+ */
+export function syncCanvasDesignLinks(
   canvasId: string,
   source: DesignIssueSource | undefined = multicaDesignIssueSource(env),
-  now = Date.now(),
+  now?: number,
 ): Promise<boolean> {
-  if (!source) return false
-  if (now - (lastRead.get(canvasId) ?? -Infinity) < FRESH_MS) return false
-  lastRead.set(canvasId, now)
-  try {
-    const issues = await source.issuesNaming(`/c/${canvasId}`)
-    return store.applyDesignLinks(canvasId, issues) !== undefined
-  } catch (error) {
-    lastRead.delete(canvasId)
-    console.warn(`[design-links] ${canvasId} not synced: ${error instanceof Error ? error.message : error}`)
-    return false
-  }
+  if (!source) return Promise.resolve(false)
+  const pending = inFlight.get(canvasId)
+  if (pending) return pending
+  const run = serialized(async () => {
+    const at = now ?? Date.now()
+    if (at - (lastRead.get(canvasId) ?? -Infinity) < FRESH_MS) return false
+    try {
+      const issues = await source.issuesNaming(`/c/${canvasId}`)
+      const applied = store.applyDesignLinks(canvasId, issues) !== undefined
+      lastRead.set(canvasId, at)
+      return applied
+    } catch (error) {
+      console.warn(`[design-links] ${canvasId} not synced: ${error instanceof Error ? error.message : error}`)
+      return false
+    }
+  }).finally(() => inFlight.delete(canvasId))
+  inFlight.set(canvasId, run)
+  return run
 }
 
 /**
  * Reconcile every canvas in one read (the timer). Returns how many canvases it
  * looked at. Never throws; a failed or partial read changes nothing.
  */
-export async function syncAllDesignLinks(
+export function syncAllDesignLinks(
   source: DesignIssueSource | undefined = multicaDesignIssueSource(env),
 ): Promise<number> {
-  if (!source) return 0
-  try {
-    const issues = await source.issuesNaming('/c/')
-    const canvases = store.allCanvases()
-    for (const canvas of canvases) store.applyDesignLinks(canvas.id, issues)
-    return canvases.length
-  } catch (error) {
-    console.warn(`[design-links] timer sync failed: ${error instanceof Error ? error.message : error}`)
-    return 0
-  }
+  if (!source) return Promise.resolve(0)
+  return serialized(async () => {
+    try {
+      const issues = await source.issuesNaming('/c/')
+      const canvases = store.allCanvases()
+      for (const canvas of canvases) store.applyDesignLinks(canvas.id, issues)
+      return canvases.length
+    } catch (error) {
+      console.warn(`[design-links] timer sync failed: ${error instanceof Error ? error.message : error}`)
+      return 0
+    }
+  })
 }
 
 /** Test hook: forget the per-canvas freshness. */

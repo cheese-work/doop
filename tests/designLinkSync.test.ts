@@ -137,6 +137,82 @@ describe('syncCanvasDesignLinks', () => {
   })
 })
 
+/** a source whose answer the test releases by hand */
+function gatedSource(issues: { id: string; designUrl: string | null }[]) {
+  let release: () => void = () => undefined
+  const gate = new Promise<void>((resolve) => (release = resolve))
+  const issuesNaming = vi.fn(async (needle: string) => {
+    await gate
+    return issues.filter((i) => i.designUrl?.includes(needle))
+  })
+  return { source: { issuesNaming } as DesignIssueSource, issuesNaming, release }
+}
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+describe('overlapping syncs (review of CHE-10542)', () => {
+  it('a second G3 check waits for the read already in flight and then sees its link', async () => {
+    const { canvas, first } = twoPages()
+    const { source, issuesNaming, release } = gatedSource([{ id: ISSUE_A, designUrl: url(canvas.id, first.id) }])
+    const one = syncCanvasDesignLinks(canvas.id, source)
+    const two = syncCanvasDesignLinks(canvas.id, source)
+    let twoDone = false
+    void two.then(() => (twoDone = true))
+    await tick()
+    expect(twoDone).toBe(false)
+    expect(issueOf(canvas.id, first.id)).toBeNull()
+    release()
+    await Promise.all([one, two])
+    expect(issuesNaming).toHaveBeenCalledTimes(1)
+    expect(issueOf(canvas.id, first.id)).toBe(ISSUE_A)
+  })
+
+  it('an older timer read cannot overwrite the newer canvas read', async () => {
+    const { canvas, first } = twoPages()
+    /* the timer read started first and saw no issue; the canvas read, started after, sees one */
+    const timer = gatedSource([])
+    const timerRun = syncAllDesignLinks(timer.source)
+    const canvasRun = syncCanvasDesignLinks(canvas.id, sourceOf([{ id: ISSUE_A, designUrl: url(canvas.id, first.id) }]))
+    await tick()
+    timer.release()
+    await Promise.all([timerRun, canvasRun])
+    expect(issueOf(canvas.id, first.id)).toBe(ISSUE_A)
+  })
+
+  it('a G3 check behind a timer read still fails closed on a conflicting link', async () => {
+    const { canvas, first } = twoPages()
+    store.applyDesignLinks(canvas.id, [{ id: ISSUE_A, designUrl: url(canvas.id, first.id) }])
+    const timer = gatedSource([{ id: ISSUE_A, designUrl: url(canvas.id, first.id) }])
+    const timerRun = syncAllDesignLinks(timer.source)
+    /* a second issue now names the page: the check must not attest against the old single link */
+    const canvasRun = syncCanvasDesignLinks(
+      canvas.id,
+      sourceOf([
+        { id: ISSUE_A, designUrl: url(canvas.id, first.id) },
+        { id: ISSUE_B, designUrl: url(canvas.id, first.id) },
+      ]),
+    )
+    timer.release()
+    await Promise.all([timerRun, canvasRun])
+    expect(issueOf(canvas.id, first.id)).toBeNull()
+  })
+
+  it('a failed read does not block the next sync', async () => {
+    const { canvas, first } = twoPages()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const broken: DesignIssueSource = {
+      issuesNaming: async () => {
+        throw new Error('Multica answered 503')
+      },
+    }
+    expect(await syncCanvasDesignLinks(canvas.id, broken)).toBe(false)
+    expect(
+      await syncCanvasDesignLinks(canvas.id, sourceOf([{ id: ISSUE_A, designUrl: url(canvas.id, first.id) }])),
+    ).toBe(true)
+    expect(issueOf(canvas.id, first.id)).toBe(ISSUE_A)
+    warn.mockRestore()
+  })
+})
+
 describe('syncAllDesignLinks', () => {
   it('reconciles every canvas from one read', async () => {
     const one = twoPages()
