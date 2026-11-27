@@ -600,6 +600,13 @@ describe('scope', () => {
   })
 })
 
+describe('log safety', () => {
+  it('no head text can start a workflow command', () => {
+    expect(live.safeLog('::add-mask::x\r\n::error::y')).not.toContain('::')
+    expect(live.safeLog('/var/lib/doop-deploy')).toBe('/var/lib/doop-deploy')
+  })
+})
+
 describe('quota', () => {
   it('warns below 20 percent', () => {
     expect(live.quotaStatus({ limit: 1000, remaining: 199 }).warn).toBe(true)

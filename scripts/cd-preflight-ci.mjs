@@ -170,6 +170,9 @@ export function decideReport({ scope, github, cd, c00 }) {
 
 // ---- command line --------------------------------------------------------------------------------------------
 
+/** Head text printed to the log: a `::command::` at a line start would run as a workflow command, so none survives. */
+export const safeLog = (text) => String(text).replace(/\r/g, '').replace(/::/g, ': :')
+
 const run = (cmd, args) => spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
 const out = (name, value) => {
   if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`)
@@ -242,7 +245,7 @@ function github(env) {
   const quota = quotaStatus(ghJson('rate_limit')?.resources?.core)
   console.log(`${quota.warn ? '::warning::' : ''}${quota.message}`)
   summary([`### CD preflight: github`, quota.message, ...lines.map((l) => `- ${l}`)])
-  for (const l of lines) console.log(l)
+  for (const l of lines) console.log(safeLog(l))
   findings.push(...lines)
   console.log(findings.length ? `github: ${findings.length} finding(s)` : 'github: ok')
   return findings.length ? 1 : 0
@@ -278,7 +281,7 @@ async function report(env) {
 
 function pathList(file) {
   const problems = pathListProblems(readFileSync(file, 'utf8'))
-  for (const p of problems) console.log(`path list: ${p}`)
+  for (const p of problems) console.log(safeLog(`path list: ${p}`))
   return problems.length ? 1 : 0
 }
 
