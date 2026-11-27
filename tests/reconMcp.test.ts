@@ -80,6 +80,7 @@ async function world(opts: { confirm: boolean }) {
     canvas.id,
     { name: 'Recon', pageId: page, html: `<script type="application/json" id="doop-recon">${body}</script>` },
     'x',
+    { kind: 'new' },
   )!
   store.updateFrame(sys, frame.id, { locked: true }, 'x')
   const text = `recon frame ${frame.id}\nrecon-manifest: sha256=${reconManifestHash(body)}\nmain-sha: abc1234\nrecon-images: ${cells.length}`

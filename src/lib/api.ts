@@ -428,13 +428,19 @@ export const api = {
       pages: import('../../shared/types').CanvasPageInfo[]
       frames: Frame[]
     }>(`/api/canvases/${canvasId}/pages/${pageId}/duplicate`, { method: 'POST' }),
-  createFrame: (canvasId: string, input: Partial<Frame> & { name: string }) =>
+  /** `copiedFrom` names the pages the content was copied from (a paste or a duplicate), so the server can carry their authors over */
+  createFrame: (
+    canvasId: string,
+    input: Partial<Frame> & { name: string },
+    copiedFrom?: { canvasId: string; pageId: string }[],
+  ) =>
     req<Frame>(`/api/canvases/${canvasId}/frames`, {
       method: 'POST',
       body: JSON.stringify({
         pageId:
           useStore.getState().canvas?.id === canvasId ? (useStore.getState().activePageId ?? undefined) : undefined,
         ...input,
+        ...(copiedFrom?.length ? { copiedFrom } : {}),
         actor: actor(),
       }),
     }),

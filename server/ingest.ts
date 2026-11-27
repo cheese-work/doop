@@ -379,7 +379,12 @@ export async function handleIngest(req: express.Request, res: express.Response) 
     y = 120
   }
   pageLastWrite.set(marker, Date.now())
-  const frame = actions.createFrame(canvas.id, { name: title.slice(0, 80), x, y, width, height, html: wrapped }, actor)
+  const frame = actions.createFrame(
+    canvas.id,
+    { name: title.slice(0, 80), x, y, width, height, html: wrapped },
+    actor,
+    { kind: 'new' },
+  )
   if (!frame) return res.status(410).json({ error: 'canvas vanished mid-sync' })
   await saveLinks(key.id, page, links)
   res.json({ ok: true, frameId: frame.id, created: true })

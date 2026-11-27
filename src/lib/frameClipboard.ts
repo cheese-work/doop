@@ -8,6 +8,9 @@ import { ELEMENT_CLIP_KEY, FRAME_CLIP_KEY as CLIP_KEY } from './clipboardKeys'
 /** One copied frame, positioned relative to the top-left of the copied group
  *  so a multi-frame paste keeps the frames' layout. */
 interface ClipFrame {
+  /** where it was copied from, so a paste carries the page's authors with it */
+  canvasId?: string
+  pageId?: string
   name: string
   html: string
   x: number
@@ -26,6 +29,8 @@ export function copyFrames(frames: Frame[]) {
   const top = Math.min(...frames.map((f) => f.y))
   const clip: FrameClip = {
     frames: frames.map((f) => ({
+      canvasId: f.canvasId,
+      pageId: f.pageId,
       name: f.name,
       html: f.html,
       x: f.x - left,
@@ -62,8 +67,16 @@ function clipBounds(frames: ClipFrame[]) {
 /** Create several frames at once. The requests are independent, so one
  *  failing must not orphan its siblings: whatever landed is still recorded
  *  in history (undoable as a group) and becomes the selection. */
-async function createFrames(requests: { canvasId: string; frame: Parameters<typeof api.createFrame>[1] }[]) {
-  const results = await Promise.allSettled(requests.map((r) => api.createFrame(r.canvasId, r.frame)))
+async function createFrames(
+  requests: {
+    canvasId: string
+    frame: Parameters<typeof api.createFrame>[1]
+    from?: { canvasId: string; pageId: string }
+  }[],
+) {
+  const results = await Promise.allSettled(
+    requests.map((r) => api.createFrame(r.canvasId, r.frame, r.from ? [r.from] : undefined)),
+  )
   const created = results.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []))
   const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')
   if (failed) console.error(`${requests.length - created.length} of ${requests.length} frame(s) failed`, failed.reason)
@@ -81,6 +94,7 @@ function createFromClip(canvasId: string, x: number, y: number) {
   void createFrames(
     frames.map((f) => ({
       canvasId,
+      from: f.canvasId && f.pageId ? { canvasId: f.canvasId, pageId: f.pageId } : undefined,
       frame: {
         name: f.name,
         html: f.html,
@@ -216,6 +230,7 @@ export function duplicateFrames(frames: Frame[]) {
   void createFrames(
     frames.map((frame) => ({
       canvasId: frame.canvasId,
+      from: frame.pageId ? { canvasId: frame.canvasId, pageId: frame.pageId } : undefined,
       frame: {
         name: `${frame.name} copy`,
         html: frame.html,

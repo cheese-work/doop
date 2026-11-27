@@ -184,12 +184,17 @@ export function moveDrawing(
     const html = serialize(destinationDoc)
     const destination = target
       ? await conditional(target, api.updateFrame(target.id, { html }, target.updatedAt))
-      : await api.createFrame(source.canvasId, {
-          name: el.getAttribute('data-name') ?? 'Drawing',
-          pageId,
-          ...rect,
-          html,
-        })
+      : await api.createFrame(
+          source.canvasId,
+          {
+            name: el.getAttribute('data-name') ?? 'Drawing',
+            pageId,
+            ...rect,
+            html,
+          },
+          /* the drawing came out of the source frame: its page's authors come with it */
+          source.pageId ? [{ canvasId: source.canvasId, pageId: source.pageId }] : undefined,
+        )
     updateLocal(destination)
     let remaining: Frame | null = null
     try {

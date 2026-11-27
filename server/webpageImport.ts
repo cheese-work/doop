@@ -48,6 +48,7 @@ export async function createImportedWebpageFrame(
       html: imported.html,
     },
     input.actor,
+    { kind: 'new' },
   )
   return { imported, frame }
 }

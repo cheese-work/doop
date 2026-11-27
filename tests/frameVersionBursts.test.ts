@@ -37,14 +37,14 @@ describe('frame history bursts', () => {
   })
 
   it('files every explicit replace, however much of the document it keeps', () => {
-    const frame = actions.createFrame(CANVAS.id, { name: 'hero', html: doc('<h1>One</h1>') }, agent)!
+    const frame = actions.createFrame(CANVAS.id, { name: 'hero', html: doc('<h1>One</h1>') }, agent, { kind: 'new' })!
     actions.updateFrame(frame.id, { html: doc('<h1>Two</h1>') }, agent, { replace: true })
     actions.updateFrame(frame.id, { html: doc('<h1>Three</h1>') }, agent, { replace: true })
     expect(filed()).toEqual([doc('<h1>One</h1>'), doc('<h1>Two</h1>')])
   })
 
   it('folds a tweak into the burst of the replace it follows', () => {
-    const frame = actions.createFrame(CANVAS.id, { name: 'hero', html: doc('<h1>One</h1>') }, agent)!
+    const frame = actions.createFrame(CANVAS.id, { name: 'hero', html: doc('<h1>One</h1>') }, agent, { kind: 'new' })!
     actions.updateFrame(frame.id, { html: doc('<h1>Two</h1>') }, agent, { replace: true })
     actions.updateFrame(frame.id, { html: doc('<h1>Two!</h1>') }, agent)
     actions.updateFrame(frame.id, { html: doc('<h1>Two!!</h1>') }, agent)
@@ -52,7 +52,7 @@ describe('frame history bursts', () => {
   })
 
   it('opens a burst when another actor takes over, tweak or not', () => {
-    const frame = actions.createFrame(CANVAS.id, { name: 'hero', html: doc('<h1>One</h1>') }, agent)!
+    const frame = actions.createFrame(CANVAS.id, { name: 'hero', html: doc('<h1>One</h1>') }, agent, { kind: 'new' })!
     const human = actions.resolveActor({ name: 'Vera', kind: 'user' })
     actions.updateFrame(frame.id, { html: doc('<h1>One!</h1>') }, human)
     expect(filed()).toEqual([doc('<h1>One</h1>')])

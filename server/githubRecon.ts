@@ -557,7 +557,9 @@ function placeRepoFrame(
   const canvas = store.getCanvas(canvasId)
   if (!canvas) throw new Error('canvas not found')
   const at = nextRepoFramePosition(canvas.frames, conn.id, width)
-  const frame = actions.createFrame(canvasId, { name: screen.title.slice(0, 80), ...at, width, height, html }, actor)
+  const frame = actions.createFrame(canvasId, { name: screen.title.slice(0, 80), ...at, width, height, html }, actor, {
+    kind: 'new',
+  })
   if (!frame) throw new Error('canvas not found')
   return frame
 }

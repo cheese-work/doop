@@ -73,7 +73,7 @@ describe('addQueuedCard', () => {
   })
 
   it('carries the selected frame and element as the card scope', () => {
-    const frame = store.createFrame(systemContext(), canvasId, { name: 'Home' }, 'kevin')!
+    const frame = store.createFrame(systemContext(), canvasId, { name: 'Home' }, 'kevin', { kind: 'new' })!
     const card = actions.addQueuedCard(canvasId, 'make it bolder', 'kevin', undefined, undefined, undefined, {
       frameId: frame.id,
       selector: 'aside:nth-of-type(1)',
@@ -89,7 +89,7 @@ describe('addQueuedCard', () => {
 
   it('drops a scope whose frame is not on this canvas', () => {
     const other = store.createCanvas('elsewhere', 'kevin').id
-    const foreign = store.createFrame(systemContext(), other, { name: 'Away' }, 'kevin')!
+    const foreign = store.createFrame(systemContext(), other, { name: 'Away' }, 'kevin', { kind: 'new' })!
     const card = actions.addQueuedCard(canvasId, 'tidy up', 'kevin', undefined, undefined, undefined, {
       frameId: foreign.id,
       selector: 'div',

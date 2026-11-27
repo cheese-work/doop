@@ -51,6 +51,7 @@ describe('agent webpage import', () => {
         html: imported.html,
       },
       actor,
+      { kind: 'new' },
     )
     expect(result).toEqual({ imported, frame })
   })

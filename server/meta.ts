@@ -546,6 +546,7 @@ export async function pullCreatives(input: {
         html: creativeHtml(ad, src),
       },
       input.actor,
+      { kind: 'new' },
     )
     if (frame) created.push(frame)
   }

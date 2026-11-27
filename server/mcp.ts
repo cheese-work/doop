@@ -1082,7 +1082,7 @@ export function buildMcpServer(owner?: string, ownerId?: string, multicaTaskId?:
       /* G2 judges the recon in the synchronous store: fetch the images and the issue's comments first */
       const actor = actorFrom(agent_name)
       await warmReconEvidence(target, pageId ?? canvasPages(target)[0]!.id, writeContextFor(actor))
-      const frame = actions.createFrame(canvas_id, { name, pageId, html, x, y, width, height }, actor)
+      const frame = actions.createFrame(canvas_id, { name, pageId, html, x, y, width, height }, actor, { kind: 'new' })
       if (!frame) return noCanvas(canvas_id)
       const moved = actions.wasRelocated(frame)
       const body = {

@@ -45,7 +45,7 @@ beforeEach(() => {
 
 describe('frame lock activity', () => {
   it('logs a lock and an unlock', () => {
-    const frame = actions.createFrame(canvasId, { name: 'Hero' }, user)!
+    const frame = actions.createFrame(canvasId, { name: 'Hero' }, user, { kind: 'new' })!
     actions.updateFrame(frame.id, { locked: true }, user)
     expect(messages()).toContain('locked “Hero”')
     actions.updateFrame(frame.id, { locked: false }, user, { userId: 'kevin' }) // CHE-6626: owners only
@@ -53,7 +53,7 @@ describe('frame lock activity', () => {
   })
 
   it('keeps the lock line when the same update also renames the frame', () => {
-    const frame = actions.createFrame(canvasId, { name: 'Hero' }, user)!
+    const frame = actions.createFrame(canvasId, { name: 'Hero' }, user, { kind: 'new' })!
     /* an agent's update_frame may carry name and locked together */
     actions.updateFrame(frame.id, { name: 'Hero v2', locked: true }, agent)
     expect(messages()).toContain('renamed “Hero” to “Hero v2”')
@@ -67,7 +67,7 @@ describe('frame lock activity', () => {
   })
 
   it('stays quiet when the lock does not change', () => {
-    const frame = actions.createFrame(canvasId, { name: 'Hero' }, user)!
+    const frame = actions.createFrame(canvasId, { name: 'Hero' }, user, { kind: 'new' })!
     actions.updateFrame(frame.id, { locked: false }, user)
     actions.updateFrame(frame.id, { x: 10, locked: false }, user)
     expect(messages().filter((m) => m.includes('locked'))).toEqual([])

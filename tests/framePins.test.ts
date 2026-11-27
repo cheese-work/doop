@@ -95,7 +95,7 @@ async function lockedFrames(count = 1) {
     expect(c).toBeTruthy()
   })
   const frames = Array.from({ length: count }, (_, i) =>
-    store.createFrame(sys, canvas.id, { name: `f${i}`, html: `<p>${i}</p>` }, 'x')!,
+    store.createFrame(sys, canvas.id, { name: `f${i}`, html: `<p>${i}</p>` }, 'x', { kind: 'new' })!,
   )
   for (const f of frames) store.lockIfVersion(agent, f.id, f.updatedAt, `att-${f.id}`)
   await vi.waitFor(async () => {
@@ -439,8 +439,8 @@ describe('pin/durable (B7)', () => {
       const [c] = await dbm.db.select().from(t.canvases).where(eq(t.canvases.id, canvas.id))
       expect(c).toBeTruthy()
     })
-    const f = store.createFrame(sys, canvas.id, { name: 'f', html: '<p>x</p>' }, 'x')!
-    const g = store.createFrame(sys, canvas.id, { name: 'g', html: '<p>y</p>' }, 'x')!
+    const f = store.createFrame(sys, canvas.id, { name: 'f', html: '<p>x</p>' }, 'x', { kind: 'new' })!
+    const g = store.createFrame(sys, canvas.id, { name: 'g', html: '<p>y</p>' }, 'x', { kind: 'new' })!
     await vi.waitFor(async () => expect(await frameRow(g.id)).toBeTruthy())
     const ok = await store.lockIfVersionDurable(agent, f.id, f.updatedAt, 'att-a')
     expect(ok).toMatchObject({ ok: true, epoch: 0 })
@@ -621,8 +621,8 @@ describe('lock_if_version at publish (B7)', () => {
       const [c] = await dbm.db.select().from(t.canvases).where(eq(t.canvases.id, canvas.id))
       expect(c).toBeTruthy()
     })
-    const f = store.createFrame(sys, canvas.id, { name: 'f', html: '<p>x</p>' }, 'x')!
-    const g = store.createFrame(sys, canvas.id, { name: 'g', html: '<p>y</p>' }, 'x')!
+    const f = store.createFrame(sys, canvas.id, { name: 'f', html: '<p>x</p>' }, 'x', { kind: 'new' })!
+    const g = store.createFrame(sys, canvas.id, { name: 'g', html: '<p>y</p>' }, 'x', { kind: 'new' })!
     await vi.waitFor(async () => expect(await frameRow(g.id)).toBeTruthy())
     return { f, g }
   }

@@ -136,6 +136,7 @@ async function play(canvasId: string) {
     canvasId,
     { name: 'Welcome to Doop', x: 120, y: 120, width: 760, height: 560, html: '', demo: true },
     actor,
+    { kind: 'new' },
   )
   if (!frame) return
 

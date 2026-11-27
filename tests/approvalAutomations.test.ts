@@ -85,6 +85,7 @@ beforeEach(async () => {
     canvas.id,
     { name: 'Approved creative', html: '<h1>Spring sale</h1>' },
     owner.name,
+    { kind: 'new' },
   )!
   await db.insert(integrations).values({
     id: 'linear-owner',
@@ -168,8 +169,12 @@ async function rawRun(id: string) {
 
 it('batches only approved designs, posts once, and keeps receipts when run history is removed', async () => {
   const a = await workflow()
-  const second = store.createFrame(systemContext(), canvas.id, { name: 'Second', html: '<p>Sale</p>' }, owner.name)!
-  store.createFrame(systemContext(), canvas.id, { name: 'Unapproved secret', html: '<p>Draft</p>' }, owner.name)
+  const second = store.createFrame(systemContext(), canvas.id, { name: 'Second', html: '<p>Sale</p>' }, owner.name, {
+    kind: 'new',
+  })!
+  store.createFrame(systemContext(), canvas.id, { name: 'Unapproved secret', html: '<p>Draft</p>' }, owner.name, {
+    kind: 'new',
+  })
   approve()
   approve(second)
   await Promise.all([tickWorkflows(), tickWorkflows(), runAutomation(a.id, { approved: true })])
@@ -204,7 +209,9 @@ it('waits for generated drafts, then creates a Linear ticket and posts its link 
   expect(onFeedback).toHaveBeenCalledWith(canvas.id)
   await advanceRun(run.id)
   expect(sent).toHaveLength(0)
-  const output = store.createFrame(systemContext(), canvas.id, { name: 'Square', width: 1080, height: 1080 }, 'Doop')!
+  const output = store.createFrame(systemContext(), canvas.id, { name: 'Square', width: 1080, height: 1080 }, 'Doop', {
+    kind: 'new',
+  })!
   await db.update(tasks).set({ endedAt: Date.now(), frameIds: output.id }).where(eq(tasks.id, card!.id))
   await advanceRun(run.id)
   await advanceRun(run.id)
@@ -379,7 +386,9 @@ it('gives later agents the draft outputs of earlier steps as well as the approve
   approve()
   await tickWorkflows()
   const run = await rawRun(a.id)
-  const output = store.createFrame(systemContext(), canvas.id, { name: 'Square', width: 1080, height: 1080 }, 'Doop')!
+  const output = store.createFrame(systemContext(), canvas.id, { name: 'Square', width: 1080, height: 1080 }, 'Doop', {
+    kind: 'new',
+  })!
   await db.update(tasks).set({ endedAt: Date.now(), frameIds: output.id }).where(eq(tasks.id, run.state!.taskId!))
   await advanceRun(run.id)
   await advanceRun(run.id)
@@ -396,7 +405,7 @@ it('skips handled approval receipts without issuing duplicate inserts', async ()
   const a = await workflow()
   approve()
   for (let i = 0; i < 100; i++) {
-    const frame = store.createFrame(systemContext(), canvas.id, { name: `Handled ${i}` }, owner.name)!
+    const frame = store.createFrame(systemContext(), canvas.id, { name: `Handled ${i}` }, owner.name, { kind: 'new' })!
     frame.approval = { ...source.approval!, approvedFrameUpdatedAt: frame.updatedAt }
   }
   await db

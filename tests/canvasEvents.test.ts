@@ -91,7 +91,7 @@ describe('what is an event', () => {
   })
 
   it('a frame being created', () => {
-    actions.createFrame(CANVAS, { name: 'Hero' }, alice)
+    actions.createFrame(CANVAS, { name: 'Hero' }, alice, { kind: 'new' })
     expect(seen).toEqual([{ canvasId: CANVAS, event: { type: 'frame.created', frame: FRAME, actor: alice } }])
   })
 

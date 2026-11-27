@@ -77,15 +77,17 @@ function bound() {
   store.setPageIssue(canvas.id, first.id, ISSUE_A, 'member')
   store.setPageIssue(canvas.id, 'pb', ISSUE_B, 'member')
   store.bindProject(sys, canvas.id, PROJECT_A)
-  const fa = store.createFrame(sys, canvas.id, { name: 'fa', pageId: first.id, html: '<p>a</p>' }, 'x')!
-  const fb = store.createFrame(sys, canvas.id, { name: 'fb', pageId: 'pb', html: '<p>b</p>' }, 'x')!
+  const fa = store.createFrame(sys, canvas.id, { name: 'fa', pageId: first.id, html: '<p>a</p>' }, 'x', {
+    kind: 'new',
+  })!
+  const fb = store.createFrame(sys, canvas.id, { name: 'fb', pageId: 'pb', html: '<p>b</p>' }, 'x', { kind: 'new' })!
   return { canvas, pa: first.id, pb: 'pb', fa, fb }
 }
 
 /** a plain canvas nobody bound (the test canvas bD8f0BAQRn of CHE-5657) */
 function unbound() {
   const canvas = store.createCanvas('Scratch', 'alice')
-  const frame = store.createFrame(sys, canvas.id, { name: 'f', html: '<p>x</p>' }, 'x')!
+  const frame = store.createFrame(sys, canvas.id, { name: 'f', html: '<p>x</p>' }, 'x', { kind: 'new' })!
   return { canvas, frame }
 }
 
@@ -106,6 +108,7 @@ const PATHS: { name: string; run: (ctx: WriteContext, f: ReturnType<typeof bound
         f.canvas.id,
         { name: 'n', pageId: f.pa, html: '<script type="application/json" id="doop-recon">{}</script>' },
         'a',
+        { kind: 'new' },
       ),
   },
   { name: 'updateFrame (html)', run: (ctx, f) => store.updateFrame(ctx, f.fa.id, { html: '<p>new</p>' }, 'a') },
@@ -162,7 +165,9 @@ describe('N0: every mutation path is judged at the store', () => {
 
   it('refuses the page of another issue even inside the right project', async () => {
     const f = bound()
-    expect(() => store.createFrame(agentA, f.canvas.id, { name: 'n', pageId: f.pb }, 'a')).toThrow(PolicyRefused)
+    expect(() => store.createFrame(agentA, f.canvas.id, { name: 'n', pageId: f.pb }, 'a', { kind: 'new' })).toThrow(
+      PolicyRefused,
+    )
     expect(() => store.updateFrame(agentA, f.fb.id, { html: 'x' }, 'a')).toThrow(PolicyRefused)
     expect(() => store.deleteFrame(agentA, f.fb.id)).toThrow(PolicyRefused)
     await expect(store.duplicatePage(wrongIssue, f.canvas.id, f.pa, 'a')).rejects.toBeInstanceOf(PolicyRefused)
@@ -212,14 +217,14 @@ const assertForTest = (ctx: WriteContext, op: string, f: ReturnType<typeof bound
 describe('G1: binding a canvas to a project', () => {
   it('a Multica-run agent cannot write to a canvas nobody bound (CHE-5657 test canvas)', () => {
     const { canvas, frame } = unbound()
-    expect(() => store.createFrame(agentA, canvas.id, { name: 'n' }, 'a')).toThrow(PolicyRefused)
+    expect(() => store.createFrame(agentA, canvas.id, { name: 'n' }, 'a', { kind: 'new' })).toThrow(PolicyRefused)
     expect(() => store.updateFrame(agentA, frame.id, { html: 'x' }, 'a')).toThrow(PolicyRefused)
     expect(() => store.deleteFrame(agentA, frame.id)).toThrow(PolicyRefused)
   })
 
   it('an agent with no Multica task keeps writing to canvases nobody bound', () => {
     const { canvas, frame } = unbound()
-    expect(store.createFrame(noTask, canvas.id, { name: 'n' }, 'a')).toBeDefined()
+    expect(store.createFrame(noTask, canvas.id, { name: 'n' }, 'a', { kind: 'new' })).toBeDefined()
     expect(store.updateFrame(noTask, frame.id, { html: 'x' }, 'a')).toBeDefined()
   })
 
@@ -356,7 +361,9 @@ describe('G1 through the actions layer and MCP', () => {
 
   it('actions.createFrame, updateFrame, deleteFrame, setCanvasPages, deleteCanvas throw policy_refused for an unvouched task', () => {
     const f = bound()
-    expect(() => actions.createFrame(f.canvas.id, { name: 'n', pageId: f.pa }, actor)).toThrow(PolicyRefused)
+    expect(() => actions.createFrame(f.canvas.id, { name: 'n', pageId: f.pa }, actor, { kind: 'new' })).toThrow(
+      PolicyRefused,
+    )
     expect(() => actions.updateFrame(f.fa.id, { html: 'x' }, actor)).toThrow(PolicyRefused)
     expect(() => actions.deleteFrame(f.fa.id, actor)).toThrow(PolicyRefused)
     expect(() => actions.setCanvasPages(f.canvas.id, [{ id: f.pa, name: 'x' }], actor)).toThrow(PolicyRefused)
@@ -447,7 +454,7 @@ describe('review findings (CHE-6624 round 2)', () => {
     setTaskIdentityVerifier(verifierDown)
     const { canvas, frame } = unbound()
     expect(() => actions.updateFrame(frame.id, { html: '<p>y</p>' }, mcpAgent())).toThrow(/policy_refused/)
-    expect(() => actions.createFrame(canvas.id, { name: 'n' }, mcpAgent())).toThrow(/policy_refused/)
+    expect(() => actions.createFrame(canvas.id, { name: 'n' }, mcpAgent(), { kind: 'new' })).toThrow(/policy_refused/)
     expect(store.getFrame(frame.id)?.html).toBe('<p>x</p>')
   })
 
@@ -478,7 +485,7 @@ describe('review findings (CHE-6624 round 2)', () => {
   it('an ingest (sync key) write to a project-bound canvas is refused, to an unbound one allowed', () => {
     const { canvas, fa } = bound()
     expect(() => actions.updateFrame(fa.id, { html: '<p>sync</p>' }, syncKey())).toThrow(/policy_refused/)
-    expect(() => actions.createFrame(canvas.id, { name: 'n' }, syncKey())).toThrow(/policy_refused/)
+    expect(() => actions.createFrame(canvas.id, { name: 'n' }, syncKey(), { kind: 'new' })).toThrow(/policy_refused/)
     const free = unbound()
     expect(actions.updateFrame(free.frame.id, { html: '<p>sync</p>' }, syncKey())).toBeTruthy()
   })

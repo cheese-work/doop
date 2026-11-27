@@ -267,12 +267,14 @@ describe('design jobs', () => {
       row.canvasId!,
       { name: 'Checkout', html: '<h1>Hi</h1>' },
       'tester',
+      { kind: 'new' },
     )!
     const unrelated = store.createFrame(
       systemContext(),
       row.canvasId!,
       { name: 'Private notes', html: '<p>mine</p>' },
       'tester',
+      { kind: 'new' },
     )!
     actions.getTasks(row.canvasId!).find((task) => task.id === row.taskId)!.frameIds = [frame.id]
     actions.completeCard(row.canvasId!, row.taskId!)
@@ -292,7 +294,9 @@ describe('design jobs', () => {
     await receiveRequest(mention())
     await tickSlack()
     const row = await session()
-    store.createFrame(systemContext(), row.canvasId!, { name: 'Unrelated', html: '<p>mine</p>' }, 'tester')
+    store.createFrame(systemContext(), row.canvasId!, { name: 'Unrelated', html: '<p>mine</p>' }, 'tester', {
+      kind: 'new',
+    })
     actions.completeCard(row.canvasId!, row.taskId!)
     await tickSlack()
     const result = sent.filter((request) => request.method === 'chat.postMessage').at(-1)!

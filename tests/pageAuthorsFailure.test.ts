@@ -49,7 +49,7 @@ const untrap = (userId: string) =>
 function fresh() {
   const canvas = store.createCanvas('Failure', 'alice')
   const pageId = canvasPages(canvas)[0]!.id
-  const frame = store.createFrame(sys, canvas.id, { name: 'f', pageId, html: 'v0' }, 'x')!
+  const frame = store.createFrame(sys, canvas.id, { name: 'f', pageId, html: 'v0' }, 'x', { kind: 'new' })!
   return { canvas, frame }
 }
 

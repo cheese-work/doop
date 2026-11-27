@@ -64,6 +64,23 @@ function recordWriter(ctx: WriteContext, canvasId: string, frameId: string, page
   }
 }
 
+/**
+ * Where a new frame's content comes from (CHE-7064 D1.5). Every `createFrame` caller declares it, so typecheck
+ * finds a caller that forgot. `copy` names the pages the content was copied from: the destination page then
+ * inherits their ledger rows, so a copy never launders its authors.
+ */
+export type FrameOrigin = { kind: 'new' } | { kind: 'copy'; sourcePages: persist.PageRef[] }
+
+/** The copier's own row for a page that a copy created (no frame is written yet, so no frame id). */
+function copierRow(ctx: WriteContext, canvasId: string, pageId: string, frameId?: string): PageAuthorInput {
+  return { ...pageAuthorOf(ctx), canvasId, pageId, frameId, source: 'write' }
+}
+
+/** Queue a `copy` row on `dest` for every row of the source pages, in the same tick as the write that needs them. */
+function inheritRows(sources: persist.PageRef[], dest: persist.PageRef, frameId: string) {
+  for (const row of persist.inheritedAuthors(sources, dest, frameId)) persist.appendPageAuthor(row)
+}
+
 const names = (pages: CanvasPageInfo[]) => pages.map((page) => page.name)
 
 /**
@@ -191,6 +208,7 @@ class Store {
    * not the welcome tour that happened to sit next to it); `workspaceId`
    * files the copy in a workspace (the caller checks membership). */
   async duplicateCanvas(
+    ctx: WriteContext,
     id: string,
     ownerId: string,
     by: string,
@@ -233,7 +251,12 @@ class Store {
       ...(guidelines?.length ? { guidelines } : {}),
       ...(references?.length ? { references } : {}),
     }
-    await persist.saveCanvasCopy(canvas)
+    /* each page of the copy inherits the rows of the page it came from (page ids carry over), and the copier joins */
+    const authors = canvas.pages!.flatMap((page) => [
+      ...persist.inheritedAuthors([{ canvasId: source.id, pageId: page.id }], { canvasId, pageId: page.id }),
+      copierRow(ctx, canvasId, page.id),
+    ])
+    await persist.saveCanvasCopy(canvas, authors)
     this.canvases.set(canvas.id, canvas)
     for (const frame of frames) this.frameIndex.set(frame.id, canvas.id)
     return canvas
@@ -299,6 +322,10 @@ class Store {
       () => {
         if (this.canvases.get(canvasId) === canvas) assertWritable(ctx, 'copy_page', { canvas, pageIds: [pageId] })
       },
+      () => [
+        ...persist.inheritedAuthors([{ canvasId, pageId }], { canvasId, pageId: page.id }),
+        copierRow(ctx, canvasId, page.id),
+      ],
     )
     if (this.canvases.get(canvasId) !== canvas) return undefined
     /* a page save may have landed during the write: slot the copy after the
@@ -723,6 +750,7 @@ class Store {
       locked?: boolean
     },
     by: string,
+    origin: FrameOrigin,
   ): Frame | undefined {
     const c = this.canvases.get(canvasId)
     if (!c) return undefined
@@ -731,6 +759,7 @@ class Store {
     assertWritable(ctx, 'create_frame', { canvas: c, pageIds: [pageId], html: input.html })
     const frameId = nanoid(10)
     recordWriter(ctx, canvasId, frameId, [pageId])
+    if (origin.kind === 'copy') inheritRows(origin.sourcePages, { canvasId, pageId }, frameId)
     const frames = pageFrames(c, pageId)
     const now = Date.now()
     // auto-place: to the right of the right-most frame
@@ -796,14 +825,15 @@ class Store {
       throw new PolicyRefused('unlock_frame', 'pinned: a decision card holds this frame')
     if (expectedUpdatedAt !== undefined && frame.updatedAt !== expectedUpdatedAt)
       throw new VersionChanged(frameId, frame.updatedAt)
-    recordWriter(
-      ctx,
-      frame.canvasId,
-      frame.id,
-      patch.pageId !== undefined
-        ? [framePageId(this.canvases.get(frame.canvasId)!, frame), patch.pageId]
-        : [framePageId(this.canvases.get(frame.canvasId)!, frame)],
-    )
+    const fromPage = framePageId(this.canvases.get(frame.canvasId)!, frame)
+    /* a move carries the source page's history into the destination: read it before the mover joins the source */
+    if (patch.pageId !== undefined && patch.pageId !== fromPage)
+      inheritRows(
+        [{ canvasId: frame.canvasId, pageId: fromPage }],
+        { canvasId: frame.canvasId, pageId: patch.pageId },
+        frame.id,
+      )
+    recordWriter(ctx, frame.canvasId, frame.id, patch.pageId !== undefined ? [fromPage, patch.pageId] : [fromPage])
     if (unlocking) {
       /* the epoch only goes up, so a lock decision made before this unlock can never be replayed after it */
       frame.lockEpoch = (frame.lockEpoch ?? 0) + 1

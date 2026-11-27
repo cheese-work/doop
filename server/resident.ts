@@ -1254,6 +1254,7 @@ async function execTool(
           canvasId,
           createFrameInput({ ...raw, html }, runState.placement, store.getCanvas(canvasId)),
           actor,
+          { kind: 'new' },
         )
         if (!f) return fail('canvas not found')
         runState.mutatedFrames.add(f.id)

@@ -225,7 +225,7 @@ export async function pinWorld() {
       const [c] = await dbm.db.select().from(t.canvases).where(eq(t.canvases.id, canvas.id))
       expect(c).toBeTruthy()
     })
-    const f = store.createFrame(sys, canvas.id, { name: 'f', html: '<p>x</p>' }, 'x')!
+    const f = store.createFrame(sys, canvas.id, { name: 'f', html: '<p>x</p>' }, 'x', { kind: 'new' })!
     await vi.waitFor(async () => expect(await frameRow(f.id)).toBeTruthy())
     const st = {
       p2: { updatedAt: f.updatedAt, epoch: 0 },

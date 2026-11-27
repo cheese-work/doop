@@ -47,15 +47,15 @@ beforeEach(() => {
 describe('task frames', () => {
   it('an announced task remembers the frames edited while it was open', () => {
     actions.setAgentStatus(canvasId, agent, 'Designing the landing page')
-    const hero = actions.createFrame(canvasId, { name: 'Hero', html: '<h1>Hi</h1>' }, agent)!
-    const pricing = actions.createFrame(canvasId, { name: 'Pricing', html: '<p>$9</p>' }, agent)!
+    const hero = actions.createFrame(canvasId, { name: 'Hero', html: '<h1>Hi</h1>' }, agent, { kind: 'new' })!
+    const pricing = actions.createFrame(canvasId, { name: 'Pricing', html: '<p>$9</p>' }, agent, { kind: 'new' })!
     const task = actions.getTasks(canvasId)[0]!
     expect(task.auto).toBeUndefined()
     expect(task.frameIds).toEqual([hero.id, pricing.id])
   })
 
   it('an inferred task starts with the frame that triggered it', () => {
-    const frame = actions.createFrame(canvasId, { name: 'Hero', html: '<h1>Hi</h1>' }, agent)!
+    const frame = actions.createFrame(canvasId, { name: 'Hero', html: '<h1>Hi</h1>' }, agent, { kind: 'new' })!
     const task = actions.getTasks(canvasId)[0]!
     expect(task.auto).toBe(true)
     expect(task.frameIds).toEqual([frame.id])
@@ -63,22 +63,27 @@ describe('task frames', () => {
 
   it('moves a re-edited frame to the end instead of repeating it', () => {
     actions.setAgentStatus(canvasId, agent, 'Polishing')
-    const a = actions.createFrame(canvasId, { name: 'A', html: '<p>a</p>' }, agent)!
-    const b = actions.createFrame(canvasId, { name: 'B', html: '<p>b</p>' }, agent)!
+    const a = actions.createFrame(canvasId, { name: 'A', html: '<p>a</p>' }, agent, { kind: 'new' })!
+    const b = actions.createFrame(canvasId, { name: 'B', html: '<p>b</p>' }, agent, { kind: 'new' })!
     actions.updateFrame(a.id, { html: '<p>a2</p>' }, agent)
     expect(actions.getTasks(canvasId)[0]?.frameIds).toEqual([b.id, a.id])
   })
 
   it('a streamed frame lands on the open task too', () => {
     actions.setAgentStatus(canvasId, agent, 'Streaming')
-    const frame = actions.createFrame(canvasId, { name: 'Stream' }, agent)!
+    const frame = actions.createFrame(canvasId, { name: 'Stream' }, agent, { kind: 'new' })!
     actions.appendFrameHtml(frame.id, '<section>one</section>', agent, { start: true })
     expect(actions.getTasks(canvasId)[0]?.frameIds).toEqual([frame.id])
   })
 
   it('a human editing a frame does not touch the agent task', () => {
     actions.setAgentStatus(canvasId, agent, 'Idle')
-    const frame = actions.createFrame(canvasId, { name: 'Draft' }, { name: 'kevin', kind: 'user', color: '#000' })!
+    const frame = actions.createFrame(
+      canvasId,
+      { name: 'Draft' },
+      { name: 'kevin', kind: 'user', color: '#000' },
+      { kind: 'new' },
+    )!
     actions.updateFrame(frame.id, { html: '<p>x</p>' }, { name: 'kevin', kind: 'user', color: '#000' })
     expect(actions.getTasks(canvasId)[0]?.frameIds).toBeUndefined()
   })
@@ -92,7 +97,7 @@ describe('a claimed card next to a status task', () => {
     const [card] = actions.takeQueuedCardsFor(canvasId, resident.name)
     expect(card?.agentName).toBe(resident.name)
     actions.setAgentStatus(canvasId, resident, 'Working on the hero')
-    const frame = actions.createFrame(canvasId, { name: 'Hero', html: '<h1>Hi</h1>' }, resident)!
+    const frame = actions.createFrame(canvasId, { name: 'Hero', html: '<h1>Hi</h1>' }, resident, { kind: 'new' })!
     const tasks = actions.getTasks(canvasId)
     expect(tasks.find((t) => t.id === card?.id)?.frameIds).toEqual([frame.id])
     expect(tasks.find((t) => !t.queuedBy)?.frameIds).toEqual([frame.id])

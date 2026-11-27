@@ -1,5 +1,6 @@
 import { nanoid } from 'nanoid'
 import { store } from './store.ts'
+import type { FrameOrigin } from './store.ts'
 import * as persist from './db/persist.ts'
 import * as thumbs from './thumbs.ts'
 import { colorFor } from '../shared/types.ts'
@@ -1419,11 +1420,13 @@ export function createFrame(
     locked?: boolean
   },
   actor: Actor,
+  /** where the content comes from: a copy hands its source pages' authors to the new frame's page (D1.5) */
+  origin: FrameOrigin,
 ): Frame | undefined {
   if (input.html !== undefined) input = { ...input, html: repairEscapedHtml(input.html) }
   let moved = false
   if (actor.kind === 'agent') ({ input, moved } = clearOfOverlap(canvasId, input))
-  const frame = store.createFrame(writeContextFor(actor), canvasId, input, actor.name)
+  const frame = store.createFrame(writeContextFor(actor), canvasId, input, actor.name, origin)
   if (!frame) return undefined
   if (moved) relocated.add(frame)
   bursts.set(frame.id, { actor, lastAt: frame.createdAt })
