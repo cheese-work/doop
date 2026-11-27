@@ -45,9 +45,10 @@ export function lastSlot(nowMs) {
 
 // C-7.1. Facts: switch, clock, the qualified candidate (or null), the last successful D2 SHA (or null), how many D2
 // runs were created since the slot, and the newest D1 run (conclusion null while it runs).
+// `candidateAtMs` / `d2LatestMs`: when the candidate's D1 run finished and when the newest D2 run since the slot was created.
 // Result: what to do (`alarm` says the run must fail: an alarm, or a dispatch of a window missed by 90 min or more), why, and
 // whether to rerun the failed D1 build.
-export function freshness({ trainOn, nowMs, candidate, deployed, d2RunsSinceSlot, head }) {
+export function freshness({ trainOn, nowMs, candidate, deployed, d2RunsSinceSlot, head, candidateAtMs, d2LatestMs }) {
   if (!trainOn)
     return { action: 'none', alarm: false, rerunD1: false, reason: 'DOOP_DEPLOY_TRAIN is not on: nothing is due' }
   const rerunD1 = head?.conclusion === 'failure' && head?.attempt === 1
@@ -78,6 +79,9 @@ export function freshness({ trainOn, nowMs, candidate, deployed, d2RunsSinceSlot
   const deployedSha = deployed.state === 'known' ? deployed.sha : null
   if (candidate.sha === deployedSha) return idle(`candidate ${short(candidate.sha)} is already deployed`)
   const behind = `candidate ${short(candidate.sha)} is ahead of the last successful D2 ${short(deployedSha)}`
+  // CHE-10563: a candidate that qualified after the newest D2 run since the slot was not available to that run. It waits for
+  // the next slot, so it is not overdue. Both times must be known; unknown keeps the alarm.
+  if (d2RunsSinceSlot > 0 && candidateAtMs > d2LatestMs) return idle(`${behind}; it qualified after the last D2 run`)
   if (age >= ALARM_AFTER) {
     const mins = Math.floor(age / MIN)
     const late = `${behind}, ${mins} min after the slot (limit ${ALARM_AFTER / MIN})`
@@ -341,13 +345,17 @@ async function cli(argv, env) {
     }
     const d1 = (q) =>
       api(repo, `actions/workflows/image.yml/runs?branch=${BRANCH}&event=push&${q}per_page=50`).workflow_runs
-    const candidate = pickCandidate(d1('status=success&'))
+    const successes = d1('status=success&')
+    const candidate = pickCandidate(successes)
     const newest = d1('')[0]
     const sinceIso = new Date(lastSlot(nowMs)).toISOString().replace(/\.\d{3}Z$/, 'Z')
     const d2 = api(repo, `actions/workflows/cd-deploy.yml/runs?created=>=${sinceIso}&per_page=50`)
+    const candidateRun = successes.find((r) => r.id === candidate?.runId)
     const out = freshness({
       trainOn,
       nowMs,
+      candidateAtMs: Date.parse(candidateRun?.updated_at),
+      d2LatestMs: Date.parse(d2.workflow_runs[0]?.created_at),
       candidate,
       deployed: await deployedSha(repo),
       d2RunsSinceSlot: d2.total_count,

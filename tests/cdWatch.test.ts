@@ -112,6 +112,15 @@ describe('freshness (C-7.1)', () => {
     expect(freshness({ ...base, nowMs: SLOT + 89 * MIN, d2RunsSinceSlot: 2 }).action).toBe('none')
   })
 
+  // CHE-10563: 27 Nov 2026, D2 ran for the 15:17 slot at 17:29 and deployed d108109. A candidate then qualified at 19:05, after
+  // that run, so it belongs to the 23:17 slot. The watch alarmed every 15 min from 16:47 until that slot.
+  it('does not alarm for a candidate that qualified after the newest D2 run since the slot', () => {
+    const late = { ...base, nowMs: SLOT + 155 * MIN, d2RunsSinceSlot: 1, d2LatestMs: SLOT + 60 * MIN }
+    expect(freshness({ ...late, candidateAtMs: SLOT + 100 * MIN })).toMatchObject({ action: 'none', alarm: false })
+    expect(freshness({ ...late, candidateAtMs: SLOT + 30 * MIN })).toMatchObject({ action: 'alarm', alarm: true })
+    expect(freshness({ ...late, candidateAtMs: undefined })).toMatchObject({ action: 'alarm', alarm: true })
+  })
+
   // CHE-10498: the 27 Nov 2026 slot was missed and the watch only started 155 min later: it alarmed every 15 min and never
   // dispatched, so C00 waited 8 h for the next slot.
   it('at 90 min or later with a candidate ahead and no D2 run since the slot: dispatches once AND alarms', () => {
