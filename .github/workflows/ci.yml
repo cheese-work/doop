@@ -5,6 +5,10 @@ on:
   push:
     branches: [cheese/main]
   pull_request:
+    # `edited` fires on a title, body or base change: the title lint and the Changelog line guard read the
+    # live PR text, so an edit must re-run them (a stale green check would outlive it). The other three are
+    # GitHub's default set, listed because naming `types` replaces it.
+    types: [opened, synchronize, reopened, edited]
   # image.yml gates the image build on this exact suite rather than copying it
   workflow_call:
 
@@ -29,6 +33,33 @@ jobs:
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: printf '%s\n' "$PR_TITLE" | bunx --bun commitlint
+      # CHE-10491: a feat/fix/perf PR to cheese/main carries a valid Changelog line. The checker comes from
+      # the PR's base SHA and the head is read only as data (title, body, changed paths). The one exception is
+      # a PR whose base has no checker yet: it runs its own copy and says so in the job summary.
+      # Via env, never inlined into the script: the PR body and title are attacker-controlled text.
+      - name: Changelog line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/changelog-line"
+          mkdir -p "$work"
+          # Live title, body and base: a re-run sees an edited body, which the event payload would not carry.
+          gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '{title, body, baseRef: .base.ref}' > "$work/pr.json"
+          # A rename counts at both ends, so moving a file out of a user-facing path still shows.
+          gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files" --jq '.[] | .filename, (.previous_filename // empty)' > "$work/files.txt"
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          if git cat-file -e "$BASE_SHA:scripts/changelog-line.mjs" 2>/dev/null; then
+            git show "$BASE_SHA:scripts/changelog-line.mjs" > "$work/changelog-line.mjs"
+            echo "Checker: scripts/changelog-line.mjs from the base $BASE_SHA." >> "$GITHUB_STEP_SUMMARY"
+          else
+            cp scripts/changelog-line.mjs "$work/changelog-line.mjs"
+            echo "Checker: this PR's own copy of scripts/changelog-line.mjs, because the base $BASE_SHA has no checker yet." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          node "$work/changelog-line.mjs" --pr "$work/pr.json" --files "$work/files.txt"
 
   # The checks run as parallel jobs so wall-clock is the slowest one, not the
   # sum. Install is ~5s per job (setup-bun restores ~/.bun/install/cache keyed
