@@ -87,6 +87,25 @@ describe('freshness (C-7.1)', () => {
     expect(freshness({ ...base, nowMs: SLOT + 100 * MIN, deployed: known(B) }).action).toBe('none')
   })
 
+  // CHE-10557: a candidate whose D1 build finished after the last slot was never due at that slot. The next slot takes it.
+  it('does not alarm for a candidate whose D1 build finished after the last slot', () => {
+    const late = { sha: B, readyMs: SLOT + 100 * MIN }
+    for (const min of [45, 90, 155, 423]) {
+      for (const d2RunsSinceSlot of [0, 2]) {
+        const out = freshness({ ...base, candidate: late, nowMs: SLOT + min * MIN, d2RunsSinceSlot })
+        expect(out).toMatchObject({ action: 'none', alarm: false })
+      }
+    }
+  })
+
+  it('still alarms for a candidate that was ready before the slot', () => {
+    const early = { sha: B, readyMs: SLOT - 10 * MIN }
+    expect(freshness({ ...base, candidate: early, nowMs: SLOT + 100 * MIN, d2RunsSinceSlot: 1 })).toMatchObject({
+      action: 'alarm',
+      alarm: true,
+    })
+  })
+
   it('treats "no successful D2 yet" as behind', () => {
     expect(freshness({ ...base, nowMs: SLOT + 50 * MIN, deployed: NONE }).action).toBe('dispatch')
   })

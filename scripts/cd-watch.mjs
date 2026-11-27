@@ -77,6 +77,11 @@ export function freshness({ trainOn, nowMs, candidate, deployed, d2RunsSinceSlot
   }
   const deployedSha = deployed.state === 'known' ? deployed.sha : null
   if (candidate.sha === deployedSha) return idle(`candidate ${short(candidate.sha)} is already deployed`)
+  // A candidate whose D1 build finished after the last slot was not due at it (CHE-10557): the next slot takes it, so
+  // neither the dispatch nor the 90 min alarm counts from a slot it missed by arriving late. No `readyMs`: due.
+  if (Number.isFinite(candidate.readyMs) && candidate.readyMs > lastSlot(nowMs)) {
+    return idle(`candidate ${short(candidate.sha)} was built after the last slot; the next slot takes it`)
+  }
   const behind = `candidate ${short(candidate.sha)} is ahead of the last successful D2 ${short(deployedSha)}`
   if (age >= ALARM_AFTER) {
     const mins = Math.floor(age / MIN)
@@ -341,7 +346,13 @@ async function cli(argv, env) {
     }
     const d1 = (q) =>
       api(repo, `actions/workflows/image.yml/runs?branch=${BRANCH}&event=push&${q}per_page=50`).workflow_runs
-    const candidate = pickCandidate(d1('status=success&'))
+    const d1Runs = d1('status=success&')
+    const picked = pickCandidate(d1Runs)
+    // When the candidate's D1 build finished (`updated_at`): a build after the last slot was not due at it.
+    const candidate = picked && {
+      ...picked,
+      readyMs: Date.parse(d1Runs.find((r) => r.id === picked.runId)?.updated_at ?? ''),
+    }
     const newest = d1('')[0]
     const sinceIso = new Date(lastSlot(nowMs)).toISOString().replace(/\.\d{3}Z$/, 'Z')
     const d2 = api(repo, `actions/workflows/cd-deploy.yml/runs?created=>=${sinceIso}&per_page=50`)
