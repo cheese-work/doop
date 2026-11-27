@@ -30,10 +30,11 @@ permissions:
   actions: read
   pull-requests: read
 
-# One group per PR (or per ref for the schedule); a newer push replaces the older run.
+# One group per PR (or per ref for the schedule). A deploy-class workflow never cancels a run in progress (ci-policy R4):
+# a newer push waits its turn, and GitHub keeps only the newest pending run.
 concurrency:
   group: cd-preflight-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   scope:
