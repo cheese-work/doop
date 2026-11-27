@@ -13,6 +13,8 @@ export interface Me {
   plan: 'free' | 'team'
   /** whether this server sells plans; without it nothing offers an upgrade */
   billing: boolean
+  /** the Multica workspace's web URL when the server has one (shared/multica.ts) */
+  multicaWebUrl?: string
   /** set when this session is an admin viewing as someone else. The rest of
    *  this object then describes the person being viewed, not the admin —
    *  impersonation replaces the session cookie outright — so this flag is the

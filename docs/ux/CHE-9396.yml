@@ -1,0 +1,21 @@
+issue: CHE-9396
+design: design/lifecycle-ui/approved/A4-comment-resolution.html @ 572cc77
+# U4 mounts the A4 resolution flow in the Comments tab (src/components/CommentsPanel.tsx).
+# The A4 "Suggested: Addressed" hint waits for CHE-9351 (A3 page versions) and is NOT rendered.
+pages:
+  - id: a4-comment-resolution
+    design: design/lifecycle-ui/approved/A4-comment-resolution.html @ 572cc77
+    url: canvas editor, Comments tab (CommentsPanel); 1440 desktop panel and 390 phone sheet
+    keep:
+      - thread-row: 'author, time, comment text, frame name, "Resolved by" line, reply field'
+      - filter-tabs: 'Open and Resolved pills with counts'
+      - thread-click: 'row click flies to the pin and opens it'
+    change:
+      - resolve-picker: 'the Resolve button becomes a menu "Resolve as": Addressed, Won''t fix, Moved to Multica'
+      - resolve-dialog: 'one-line dialog "Resolve as {reason}"; Resolve stays off until the line is filled'
+      - reason-chip: 'resolved thread shows the reason chip and its ref or note'
+      - waits-on-multica: 'a thread whose newest reply key starts q: shows "Open · waits on Multica", the issue link and no Resolve'
+      - review-summary: '"Since last review" block with counts and a Mark reviewed button'
+      - panel-state: 'loading, empty, offline and inline error with Try again (PanelState copy of A4)'
+    remove:
+      - bare-resolve-button: 'the one-click Resolve with no reason (the server still accepts a body-less resolve)'
