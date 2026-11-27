@@ -129,6 +129,7 @@ import { Textarea } from '../components/ui/textarea'
 import { Modal, ModalActions, ModalEyebrow, ModalLede, ModalTitle } from '../components/ui/modal'
 import { createCenteredFrame } from '../lib/framePlacement'
 import { RULER_PX } from '../components/Rulers'
+import { UnlockFrameDialog } from '../components/UnlockFrameDialog'
 import { NO_CANVAS, onViewCommand, syncViewMenu } from '../lib/viewMenu'
 import { AGENTS_MIN, LAYERS_MIN, fitPanelWidths } from '../lib/panelWidths'
 import { loadCanvasFonts } from '../lib/customFonts'
@@ -1377,6 +1378,7 @@ export function CanvasPage({
           }}
         />
       )}
+      <UnlockFrameDialog />
       {updateReady ? (
         <Toast>
           {t('canvas.appUpdated')}

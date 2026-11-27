@@ -9,6 +9,8 @@ import { fitExportScale, formatExportScale } from '../../shared/exportScale'
 import { ExportOptions } from './ExportOptions'
 import { deleteFrameTracked, recordUpdate, trackSave } from '../lib/history'
 import { setFramesLocked } from '../lib/layerEdits'
+import { lockMarker, useLockUi } from '../lib/frameLock'
+import { LockDetails, LockErrorNote } from './FrameLockPanel'
 import { FrameHistoryModal } from './FrameHistoryModal'
 import { FrameApprovalControl } from './FrameApproval'
 import { cn } from '@/lib/utils'
@@ -53,6 +55,7 @@ export function Inspector({
 }) {
   const t = useT()
   const select = useStore((s) => s.select)
+  const reading = useLockUi((s) => s.reading.includes(frame.id))
   /* the raw HTML editor is a power tool — collapsed by default so the panel
      reads as frame properties, not a code dump; the choice sticks */
   const [showHtml, setShowHtml] = useState(() => localStorage.getItem(HTML_OPEN_KEY) === '1')
@@ -211,21 +214,28 @@ export function Inspector({
         <PanelClose onClick={() => select(null)} />
       </PanelHeader>
       {frame.locked && (
-        <div className="flex items-center justify-between gap-2 border-b border-line-soft bg-sub py-1.5 pr-2 pl-3">
-          <span
-            className="flex min-w-0 items-center gap-1.5 text-[12px] text-ink-soft"
-            title={t('inspector.lockedTitle')}
-          >
-            <LockIcon className="size-3 flex-none" />
-            {t('inspector.locked')}
-          </span>
-          <Button
-            variant="bare"
-            className="h-6 rounded-[6px] bg-surface px-2 text-[12px] font-normal text-ink shadow-ring"
-            onClick={() => setFramesLocked([frame], false)}
-          >
-            {t('inspector.unlock')}
-          </Button>
+        <div
+          data-testid="inspector-lock"
+          className="flex flex-col gap-1.5 border-b border-line-soft bg-sub py-1.5 pr-2 pl-3"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <span
+              className="flex min-w-0 items-center gap-1.5 text-[12px] text-ink-soft"
+              title={t('inspector.lockedTitle')}
+            >
+              <LockIcon className="size-3 flex-none" />
+              {reading ? t('inspector.locked') : lockMarker(frame)}
+            </span>
+            <Button
+              variant="bare"
+              className="h-6 rounded-[6px] bg-surface px-2 text-[12px] font-normal text-ink shadow-ring"
+              onClick={() => setFramesLocked([frame], false)}
+            >
+              {t('inspector.unlock')}
+            </Button>
+          </div>
+          {reading ? null : <LockDetails frame={frame} />}
+          {surface === 'inline' && <LockErrorNote frameId={frame.id} />}
         </div>
       )}
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">

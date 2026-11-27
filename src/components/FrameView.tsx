@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import type { ElementComment, Frame } from '../../shared/types'
 import { canEditOpenCanvas, pickedSelectors, useStore } from '../lib/store'
 import { isCanvasElement } from '../lib/drawing'
-import { isLayerLocked, standaloneSelector } from '../lib/layerEdits'
+import { isLayerLocked, rollBackRefusedHtml, standaloneSelector } from '../lib/layerEdits'
 import { documentRect } from '../lib/frameBleed'
 import { drawingDropFrame, moveDrawing, type DrawingHit } from '../lib/drawingMove'
 import { useElementMove } from './ElementMove'
@@ -64,6 +64,7 @@ import { withWebFontLinks } from '../../shared/webFonts'
 import { withTokenBlock } from '../../shared/designTokens'
 import { canvasFonts } from '../lib/customFonts'
 import { t as translate, useT } from '../lib/i18n'
+import { lockMarker, useLockUi } from '../lib/frameLock'
 
 /** ?comment=<rootId> — the link in a comment email. The thread opens once
  *  Stage has selected the linked frame (deselection closes popovers, and on
@@ -267,6 +268,7 @@ export const FrameView = memo(function FrameView({
   mounted?: boolean
 }) {
   const t = useT()
+  const lockReading = useLockUi((s) => s.reading.includes(frame.id))
   const [menuTarget, setMenuTarget] = useState<
     'frame' | 'loading' | { selector: string | null; html: string; hit?: LiveHit }
   >('frame')
@@ -1607,8 +1609,17 @@ export const FrameView = memo(function FrameView({
       const html = withWebFontLinks(withFontFaces(withTokens, library), library)
       const before = useStore.getState().canvas?.frames.find((f) => f.id === frame.id)?.html
       useStore.getState().patchFrameLocal(frame.id, { html })
-      trackSave(api.updateFrame(frame.id, { html }).catch(console.error))
-      if (before !== undefined) recordUpdate(frame.id, { html: before }, { html }, discrete)
+      /* recorded first: a refusal drops this very step */
+      const entry = before !== undefined ? recordUpdate(frame.id, { html: before }, { html }, discrete) : undefined
+      trackSave(
+        api.updateFrame(frame.id, { html }).catch((err: unknown) => {
+          const named = useStore.getState().canvas?.frames.find((f) => f.id === frame.id)
+          if (!named || before === undefined || !rollBackRefusedHtml(err, named, html, before, entry))
+            return console.error(err)
+          /* the runtime still shows the refused edit: let the post effect send the restored document back in */
+          localHtml.current = null
+        }),
+      )
     }
     saveEditedRef.current = saveEdited
     function onMsg(ev: MessageEvent) {
@@ -1824,6 +1835,14 @@ export const FrameView = memo(function FrameView({
                 </Tooltip>
               )}
               <span className="min-w-0 overflow-hidden text-ellipsis">{frame.name}</span>
+              {frame.locked && !lockReading && (
+                <span
+                  data-testid="frame-lock-marker"
+                  className="inline-flex h-[18px] shrink-0 items-center rounded-tag bg-sub px-1.5 text-caption font-normal text-ink-soft shadow-ring @max-[180px]/title:hidden"
+                >
+                  {lockMarker(frame)}
+                </span>
+              )}
               <FrameApprovalBadge frame={frame} />
               <span className="flex shrink-0 gap-1 @max-[180px]/title:order-first">
                 {stream && (

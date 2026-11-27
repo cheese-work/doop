@@ -1,0 +1,27 @@
+issue: CHE-9395
+design: design/lifecycle-ui/approved/A1-frame-lock.html @ 572cc77
+# U1 mounts A1's lock marker, unlock confirm, refusal toast and panel states on the canvas editor.
+# Element ids: data-testid where the UI has one, else the aria-label or data-slot the DOM carries today.
+pages:
+  - id: canvas-editor-locked-frame
+    design: design/lifecycle-ui/approved/A1-frame-lock.html @ 572cc77
+    url: /c/<canvas id> with one frame locked (Layers panel, Inspector, frame title, Layers lock toggle)
+    keep:
+      - 'aria-label=Lock / Unlock (Layers row lock toggle, one per row, element rows included)'
+      - 'aria-label=Hide / Show (Layers row eye)'
+      - 'data-frame-title (frame title on the stage, with the lock icon and the name)'
+      - 'data-frame-locked (the stage reads it off the press target)'
+    change:
+      - frame-lock-marker: 'new chip "Locked · Cheese · 16:20 ICT" on the Layers row and the frame title; a lock with no actor reads "Locked"'
+      - inspector-lock: 'the locked banner now carries the marker and the By, When and Reason lines (Reason hidden when empty)'
+      - confirm-dialog: 'new "Unlock <frame>?" confirm with "Keep locked" and "Unlock"; every unlock entry point opens it'
+      - frame-lock-panel: 'new section under the Layers tree: "No locked frames" with Lock frame, "Reading lock state…", the refusal alert with Try again, and the offline banner'
+    remove: []
+  - id: canvas-editor-edit-refused
+    design: design/lifecycle-ui/approved/A1-frame-lock.html @ 572cc77
+    url: /c/<canvas id>, an edit to a frame another actor locked (423)
+    keep:
+      - 'notice toast (store.notice, same toast host)'
+    change:
+      - notice: 'text names the frame, who locked it, when (ICT) and the reason; the html edit is put back'
+    remove: []

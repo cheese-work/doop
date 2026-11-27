@@ -369,4 +369,28 @@ export const panels = {
   /* PanelState: the shared loading, empty, error and offline states of a panel */
   panelStateRetry: 'Try again',
   panelStateReconnecting: 'Reconnecting…',
+
+  /* Frame lock (U1): the confirm, the marker's lines, the refusal toast and the panel states */
+  lockedBy: 'Locked by {by}.',
+  lockedByOn: 'Locked by {by} on {when}.',
+  lockConfirmTitle: 'Unlock {name}?',
+  lockConfirmTitleMany: 'Unlock {count} frames?',
+  lockConfirmBody: 'Anyone, agents included, can then edit it.',
+  lockConfirmBodyMany: 'Anyone, agents included, can then edit them.',
+  lockConfirmKeep: 'Keep locked',
+  lockConfirmUnlock: 'Unlock',
+  lockInfoBy: 'By',
+  lockInfoWhen: 'When',
+  lockInfoReason: 'Reason',
+  lockRefusedHead: 'Edit refused: {name} is locked.',
+  lockRefusedReason: 'Reason: {reason}.',
+  lockRefusedTail: 'Unlock it to change its HTML or size. Rename and move still work.',
+  lockPanelLoading: 'Reading lock state…',
+  lockPanelEmptyTitle: 'No locked frames',
+  lockPanelEmptyHint: 'Lock a frame to keep it from edits. Right-click a frame, or press Cmd+Shift+L.',
+  lockPanelEmptyAction: 'Lock frame',
+  lockPanelPickFirst: 'Select a frame to lock it',
+  lockPanelOffline: 'Offline. Lock and unlock are paused. Locked frames stay locked.',
+  lockPanelUnknown: 'Could not confirm the lock state of {name}. Edits stay off until it is read again.',
+  lockPanelError: 'Could not unlock {name} ({status}). It is still locked.',
 } as const
