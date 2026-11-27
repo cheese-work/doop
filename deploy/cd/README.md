@@ -91,6 +91,9 @@ runs the smaller run id goes first.
   refusal (`unreadable`), never "not busy". Recovery is a human override and skips the check. A rerun is refused as before.
 - A **lift** runs the hosted job `lift-admit` first, the same check, but it refuses (red) rather than skips; only then
   does the `lift` job join the C00 group. This closes run 45664851732, where a lift cancelled a pending deploy.
+  A lift is attempt 1 only, as a train run is: `lift-admit` refuses a rerun, and the `lift` job's own `if`
+  (`github.run_attempt == 1`) skips a rerun of failed jobs that reuses an earlier green `lift-admit`. A rerun keeps its
+  run id, so the id order alone cannot tell it from a first attempt. Dispatch a new lift instead.
 - `skip_reason` (`busy`, `armed`, `suspended`, `unreadable`, `current`, `off`, `other`) is written by `decide` and by
   `recheck --op pre-arm`, exposed as a job output of `resolve` and `deploy`, and stored in `deploy-evidence.json`.
 

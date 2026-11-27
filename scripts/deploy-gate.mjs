@@ -218,7 +218,12 @@ export async function decideRun({ event, actor, trigger, attempt, inputs = {}, e
 // The lift's admission (FP-04, CHE-9955), a hosted job ahead of the C00 `lift` job: the same busy check as a train
 // run, but a lift is dispatched by a person who expects it, so it refuses (red) and never skips. The lift job itself
 // joins group `c00-deploy-doop`, which would cancel an older pending deploy or readback-confirm; this runs before it.
-export async function liftAdmit({ repo, runId, ghApi }) {
+//
+// A rerun keeps its run id, so the id order cannot tell an older lift's rerun from its first attempt: it would pass
+// the check and join the group behind a newer deploy or readback-confirm. Only attempt 1 is admitted, before the
+// list is read. A rerun of failed jobs reuses an earlier green lift-admit; the `lift` job's own `if` stops that one.
+export async function liftAdmit({ repo, runId, attempt, ghApi }) {
+  if (Number(attempt) !== 1) return refuse('a lift is never rerun: attempt must be 1; dispatch a new lift')
   let older
   try {
     older = await olderUnfinished({ repo, runId, ghApi })
@@ -512,7 +517,7 @@ async function cli(argv, env) {
     return settle(out, { mode: out.mode ?? '', skip_reason: out.skipReason ?? '' })
   }
   if (command === 'lift-admit') {
-    return settle(await liftAdmit({ repo, runId: env.RUN_ID, ghApi: gh }), {})
+    return settle(await liftAdmit({ repo, runId: env.RUN_ID, attempt: env.ATTEMPT, ghApi: gh }), {})
   }
   if (command === 'resolve') {
     const runs = (q) =>
