@@ -3,7 +3,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   admit,
   c00Quiescent,
@@ -1144,7 +1144,7 @@ function jobText(name: string): string {
 
 describe('FP-04: a lift never cancels a pending deploy or readback-confirm (CHE-9955)', () => {
   const lifting = (runs: Listed[] | Error, over: Record<string, unknown> = {}) =>
-    liftAdmit({ repo: REPO, runId: '2000', ghApi: api({}, undefined, runs), ...over })
+    liftAdmit({ repo: REPO, runId: '2000', attempt: '1', ghApi: api({}, undefined, runs), ...over })
 
   describe('path 1: the lift job is admitted by lift-admit', () => {
     it.each([
@@ -1171,6 +1171,36 @@ describe('FP-04: a lift never cancels a pending deploy or readback-confirm (CHE-
       expect(await lifting(httpError(403))).toMatchObject({ go: false, skip: false })
       expect(await lifting([], { runId: undefined })).toMatchObject({ go: false, skip: false })
       expect(await lifting([], { runId: 'x' })).toMatchObject({ go: false, skip: false })
+    })
+
+    // A rerun keeps its run id, so the id order cannot tell it from the first attempt: an older lift rerun while a newer
+    // deploy or readback-confirm is pending would pass the id check and join the group behind it.
+    it('refuses a rerun (attempt 2) before reading the list, with nothing else unfinished', async () => {
+      const read = vi.fn(async () => ({ workflow_runs: [], total_count: 0 }))
+      for (const attempt of ['2', '3', '0', '', undefined]) {
+        read.mockClear()
+        const r = await liftAdmit({ repo: REPO, runId: '2000', attempt, ghApi: read as never })
+        expect(r).toMatchObject({ go: false, skip: false })
+        expect(r.reason).toMatch(/rerun|attempt/)
+        expect(read).not.toHaveBeenCalled()
+      }
+    })
+
+    it('refuses a rerun of an older lift while a newer deploy is pending (the cancel in run 45664851732)', async () => {
+      const r = await lifting([{ id: 2001, status: 'queued' }], { attempt: '2' })
+      expect(r).toMatchObject({ go: false, skip: false })
+    })
+
+    it('a rerun of failed jobs reuses a green lift-admit, so the lift job itself runs only on attempt 1', () => {
+      const lift = jobText('lift')
+      expect(lift).toMatch(/^ {4}if: .*github\.run_attempt == 1/m)
+      expect(lift).toMatch(/^ {4}if: .*inputs\.mode == 'lift'/m)
+      // It is the job's own `if`, so it is evaluated before the job can join group c00-deploy-doop.
+      expect(lift.indexOf('run_attempt == 1')).toBeLessThan(lift.indexOf('concurrency:'))
+    })
+
+    it('lift-admit tells the gate which attempt it is', () => {
+      expect(jobText('lift-admit')).toMatch(/ATTEMPT: \$\{\{ github\.run_attempt \}\}/)
     })
 
     it('lift-admit is a hosted job ahead of the C00 lift job: it never joins the C00 group', () => {
@@ -1336,5 +1366,11 @@ describe('deploy-gate CLI: skip_reason and RUN_ID reach $GITHUB_OUTPUT (CHE-9955
     const free = await call({ COMMAND: 'lift-admit', RUN_ID: '2000' }, [])
     expect(free.code).toBe(0)
     expect(free.written).toContain('go=true')
+  })
+
+  it('lift-admit exits non-zero on a rerun (ATTEMPT 2) even when nothing else is unfinished', async () => {
+    const rerun = await call({ COMMAND: 'lift-admit', RUN_ID: '2000', ATTEMPT: '2' }, [])
+    expect(rerun.code).not.toBe(0)
+    expect(rerun.written).toContain('go=false')
   })
 })
