@@ -257,6 +257,8 @@ const schema = {
   MULTICA_API_TOKEN: str({ default: undefined }),
   MULTICA_WORKSPACE_ID: str({ default: undefined }),
   MULTICA_WEB_URL: str({ default: undefined }),
+  /* The Multica agent id the design watcher posts as; landing reads only its records. Unset = landing refuses (CHE-9448 S3a). */
+  DOOP_LANDING_WATCHER_ID: str({ default: undefined }),
   LINEAR_API_URL: str({ default: 'https://api.linear.app/graphql' }),
   LINEAR_TOKEN_URL: str({ default: 'https://api.linear.app/oauth/token' }),
   SLACK_CLIENT_ID: str({ default: undefined }),

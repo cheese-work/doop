@@ -1,0 +1,15 @@
+=== link
+design-link:doop:TgQKWNP_e3/lifecycle-ui
+json: {"issue": "CHE-5478", "canvas": "TgQKWNP_e3", "topic": "lifecycle-ui", "screens": ["Dx0dkXCQdJ", "ihyEfz5eKc", "i42zJDTQ6k", "ozJA_LNVyn", "oQjlN1W4mM", "TWLkRxuIds"], "role_map": {}, "allowed_user_ids": [], "agent_user_ids": [], "baseline_comment_ids": []}
+=== checklist
+design-checklist:1:0123456789ab
+digest: 0123456789ab
+decision: 60bc2630-6d17-4ef6-afb5-f19694cd827b
+text: "Sub-issues:\n- none\nLinked PRs:\n- none"
+pin: Lock pin: repo=cheese-work/doop pr=39 sha=572cc77a350a7eab9562ed40e272e69444b38c2f path=design/lifecycle-ui/approved/LOCK.json manifest=ec47cb36bcfd5ac930b1d38454f14d0ee9e1d6a60d4ae7f8b6fa4d7954c01e1d canvas=TgQKWNP_e3 page=che-5478
+=== decision-text
+Copy the approved frames of lifecycle-ui to Baseline now?
+
+Lock pin: repo=cheese-work/doop pr=39 sha=572cc77a350a7eab9562ed40e272e69444b38c2f path=design/lifecycle-ui/approved/LOCK.json manifest=ec47cb36bcfd5ac930b1d38454f14d0ee9e1d6a60d4ae7f8b6fa4d7954c01e1d canvas=TgQKWNP_e3 page=che-5478
+=== watcher-id
+5029c4e4-f11c-4d16-9936-934b5666ddcd
