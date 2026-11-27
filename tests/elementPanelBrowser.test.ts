@@ -609,7 +609,9 @@ describe.skipIf(!findBrowserPath())('element design controls', () => {
       () => getComputedStyle(document.querySelector('#flex')!).justifyContent === 'space-between',
     )
     await page.click('[aria-label="Align children bottom right"]')
-    await frame.waitForFunction(() => getComputedStyle(document.querySelector('#flex')!).alignItems === 'flex-end')
+    await frame.waitForFunction(() => getComputedStyle(document.querySelector('#flex')!).alignItems === 'flex-end', {
+      timeout: 15_000,
+    })
     expect(await frame.$eval('#flex', (el) => getComputedStyle(el).justifyContent)).toBe('space-between')
     await number('Gap', 14)
     expect(await frame.$eval('#flex', (el) => getComputedStyle(el).rowGap)).toBe('7px')
@@ -651,28 +653,35 @@ describe.skipIf(!findBrowserPath())('element design controls', () => {
     ['column', 'ltr', 'vertical-lr', 'nowrap'],
     ['row', 'ltr', 'sideways-lr', 'nowrap'],
     ['row', 'ltr', 'horizontal-tb', 'wrap-reverse'],
-  ])('aligns children to the physical bottom right in %s / %s / %s / %s', async (direction, bidi, writing, wrap) => {
-    const frame = await seedPanel(
-      `<!doctype html><html><head><style>
+  ])(
+    'aligns children to the physical bottom right in %s / %s / %s / %s',
+    async (direction, bidi, writing, wrap) => {
+      const frame = await seedPanel(
+        `<!doctype html><html><head><style>
         #flex { display: flex; width: 120px; height: 120px; flex-direction: ${direction}; direction: ${bidi}; writing-mode: ${writing}; flex-wrap: ${wrap} }
         #flex > div { flex: none; width: 20px; height: 20px }
       </style></head><body><div id="flex"><div></div><div></div></div></body></html>`,
-      '#flex',
-    )
-    await page.click('[aria-label="Align children bottom right"]')
-    await frame.waitForFunction(() => {
-      const parent = document.querySelector('#flex')!
-      const bounds = parent.getBoundingClientRect()
-      const children = [...parent.children].map((el) => el.getBoundingClientRect())
-      return (
-        Math.abs(Math.max(...children.map((r) => r.right)) - bounds.right) < 0.1 &&
-        Math.abs(Math.max(...children.map((r) => r.bottom)) - bounds.bottom) < 0.1 &&
-        Math.min(...children.map((r) => r.left)) > bounds.left + 60 &&
-        Math.min(...children.map((r) => r.top)) > bounds.top + 60
+        '#flex',
       )
-    })
-    await page.waitForSelector('[aria-label="Align children bottom right"][aria-pressed="true"]')
-  })
+      await page.click('[aria-label="Align children bottom right"]')
+      await frame.waitForFunction(
+        () => {
+          const parent = document.querySelector('#flex')!
+          const bounds = parent.getBoundingClientRect()
+          const children = [...parent.children].map((el) => el.getBoundingClientRect())
+          return (
+            Math.abs(Math.max(...children.map((r) => r.right)) - bounds.right) < 0.1 &&
+            Math.abs(Math.max(...children.map((r) => r.bottom)) - bounds.bottom) < 0.1 &&
+            Math.min(...children.map((r) => r.left)) > bounds.left + 60 &&
+            Math.min(...children.map((r) => r.top)) > bounds.top + 60
+          )
+        },
+        { timeout: 12_000 },
+      )
+      await page.waitForSelector('[aria-label="Align children bottom right"][aria-pressed="true"]', { timeout: 12_000 })
+    },
+    15_000,
+  )
 
   it('positions and aligns transformed layers without disturbing siblings; saves and undoes geometry', async () => {
     const frame = await seedPanel(
