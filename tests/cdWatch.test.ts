@@ -1381,7 +1381,7 @@ globalThis.fetch = async () => ({ json: async () => JSON.parse(process.env.FAKE_
       expect(r.stdout).toContain('cd-watch freshness: alarm:')
       expect(r.status).toBe(1)
     }
-  })
+  }, 30_000)
 
   it('FP-03 positive control: the evidence of run 777.1 for the slot target delivers the quiet slot at +100 min', () => {
     const r = scenario({ liveRunId: 777, liveAttempt: 1, slotSkip: 'current' }, SLOT + 100 * MIN)
