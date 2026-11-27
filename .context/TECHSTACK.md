@@ -1151,7 +1151,11 @@ data-doop-webfonts>` for the roster families the frame names and does not load i
 - Multica links (`shared/pageIssue.ts`, `server/multicaRuns.ts`): a page's `issueId` is server-owned like
   `startFrameId` (`setPages` and copies drop client values) and is written only by a member's
   `PUT /api/canvases/:id/pages/:pageId/issue` or the Design-property derivation (`store.applyDesignLinks`,
-  fail closed on a missing or conflicting link); MCP has no tool for it. An MCP call's `X-Multica-Task-Id` header
+  fail closed on a missing or conflicting link); MCP has no tool for it. The derivation's runtime caller is
+  `server/designLinkSync.ts` (CHE-10542): it reads the issues whose `Design` url names a canvas through the Multica read link
+  (`GET /api/issues` filtered on the property) and reconciles, from a boot-plus-10-minute timer over every canvas and before
+  each `check_design_completeness` for its canvas (at most once per 15 s per canvas). Multica unset, unreadable or a list too
+  long to read whole changes nothing. Tests: `designLinkSync.test.ts`, `pageIssueStore.test.ts`. An MCP call's `X-Multica-Task-Id` header
   is stored on the agent task (`tasks.multica_task_id`). `GET /api/canvases/:id/pages/:pageId/runs` lists the
   bound issue's runs from Multica (`MULTICA_API_URL`, `MULTICA_API_TOKEN`, `MULTICA_WORKSPACE_ID`,
   `MULTICA_WEB_URL`; 503 when unset), each with a hop-in URL.
