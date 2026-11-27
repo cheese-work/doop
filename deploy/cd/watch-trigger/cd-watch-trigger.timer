@@ -1,0 +1,10 @@
+[Unit]
+Description=CHE-10354 dispatch the CD freshness watch every 15 minutes
+
+[Timer]
+# :05 :20 :35 :50, between GitHub's own cron slots (:12 :27 :42 :57).
+OnCalendar=*:05/15
+Persistent=true
+
+[Install]
+WantedBy=timers.target
