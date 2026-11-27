@@ -443,6 +443,16 @@ describe('D2 S5: readback delay, confirm, rollback, evidence (CHE-5549, C-9, C-1
     for (const line of evidence.split('\n').filter((l) => /^\s+run:/.test(l))) expect(line).not.toContain('${{')
   })
 
+  // CHE-9955: the gate's skip reason travels step output -> job output -> evidence env.
+  it('skip_reason: decide and pre-arm write it, resolve and deploy expose it, evidence reads either', () => {
+    expect(job(d2, 'resolve')).toMatch(/outputs:[\s\S]*skip_reason: \$\{\{ steps\.decide\.outputs\.skip_reason \}\}/)
+    expect(deploy).toMatch(/outputs:[\s\S]*skip_reason: \$\{\{ steps\.prearm\.outputs\.skip_reason \}\}/)
+    expect(evidence).toMatch(
+      /SKIP_REASON: \$\{\{ needs\.resolve\.outputs\.skip_reason \|\| needs\.deploy\.outputs\.skip_reason \}\}/,
+    )
+    for (const line of evidence.split('\n').filter((l) => /^\s+run:/.test(l))) expect(line).not.toContain('${{')
+  })
+
   it('evidence does not decide a run it did not see: it never fails the run itself', () => {
     expect(evidence).not.toMatch(/continue-on-error/)
     expect(evidence).toMatch(/timeout-minutes: \d+/)
