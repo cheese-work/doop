@@ -78,6 +78,20 @@ export function liveEvidence({ body, observedMs, runId, runAttempt }) {
   }
 }
 
+// A deployment of the slot's target since the slot (P1a): a D2 run's `deploy-evidence.json` that confirmed `sha` after the
+// slot. A normal slot that deploys, and a busy slot recovered by the one dispatch, are delivered by this fact, not by the
+// quiet-slot proof (they have no `current` skip). `evidences` are the evidence of the D2 runs created since the slot.
+// Needs outcome `confirmed`, the full `candidate_sha` equal to `sha`, and a confirmation time after the slot.
+export function confirmedSinceSlot({ evidences, slotMs, sha }) {
+  for (const e of evidences ?? []) {
+    if (!e || e.schema !== 1 || e.outcome !== 'confirmed' || e.candidate_sha !== sha) continue
+    const at = Date.parse(e.times?.confirmed?.utc ?? '')
+    if (!Number.isFinite(at) || at <= slotMs) continue
+    return { delivered: true, reason: `D2 run ${e.run_id ?? '?'} confirmed ${short(sha)} at ${e.times.confirmed.utc}` }
+  }
+  return { delivered: false, reason: 'no D2 run since the slot confirmed the candidate' }
+}
+
 // Quiet slot (option A, FP-03): when the candidate already equals the deployed SHA, the slot counts as delivered only with
 // fresh live evidence. `evidence` is one `live-evidence.json` (from `cd-watch live`), `slotMs` the slot's epoch ms, `sha`
 // the candidate. Its observation must be after the slot, name the full target revision, and report healthy. It must also
@@ -155,7 +169,8 @@ export function c00QueuedMinutes(jobs, nowMs) {
 //   skipReason     why the newest completed D2 run skipped (deploy-evidence skip_reason), or null;
 //   d2RunActive    a D2 run is still queued or running;
 //   followUpD2     a D2 run was created after the skipped run (the one dispatch after a busy run already went out);
-//   quiet          quietSlotProof for the slot, used only when the candidate is already the deployed SHA;
+//   confirmed      confirmedSinceSlot: a D2 run since the slot confirmed the candidate (a real deployment, delivered);
+//   quiet          quietSlotProof for the slot, used only when the candidate is already deployed and nothing confirmed it;
 //   runnerSeen     a cd-live-revision run exists since the slot (false points the quiet alarm at the X99 runner);
 //   c00QueuedMinutes  how long a C00 job of the active D2 run has been queued (names c00-hermes-devops over 10 min).
 // `candidate.createdMs` (FP-05) is when the candidate landed on cheese/main: one that landed after the slot is not due yet.
@@ -170,6 +185,7 @@ export function freshness({
   skipReason = null,
   d2RunActive = false,
   followUpD2 = false,
+  confirmed = null,
   quiet = null,
   runnerSeen = true,
   c00QueuedMinutes = null,
@@ -209,6 +225,9 @@ export function freshness({
       return alarm(`${deployed.reason}, still unfinished ${mins} min after the slot (limit ${ALARM_AFTER / MIN})`)
     }
     return idle(deployed.reason)
+  }
+  if (isDeployed && confirmed?.delivered) {
+    return idle(`candidate ${short(candidate.sha)} is deployed: ${confirmed.reason}`)
   }
   if (isDeployed) {
     // Quiet slot: nothing to deliver, but the slot is delivered only with fresh live evidence (S2 option A).
@@ -557,10 +576,19 @@ async function cli(argv, env) {
         : slotRun
           ? ((await evidenceOf(repo, slotRun.id))?.skip_reason ?? null)
           : null
-    // Quiet slot: candidate already deployed. The live check's evidence since the slot is the only proof.
+    // Candidate already deployed: either a D2 run since the slot confirmed it (delivered), or this is a quiet slot.
+    const isDeployed = Boolean(candidate) && deployed.state === 'known' && candidate.sha === deployed.sha
+    let confirmed = null
+    if (isDeployed) {
+      const evidences = []
+      for (const r of d2.workflow_runs.filter((r) => r.status === 'completed'))
+        evidences.push(await evidenceOf(repo, r.id))
+      confirmed = confirmedSinceSlot({ evidences, slotMs, sha: candidate.sha })
+    }
+    // Quiet slot: the live check's evidence since the slot is the only proof.
     let quiet = null
     let runnerSeen = true
-    if (candidate && deployed.state === 'known' && candidate.sha === deployed.sha) {
+    if (isDeployed && !confirmed.delivered) {
       const live = api(repo, `actions/workflows/cd-live-revision.yml/runs?created=>=${sinceIso}&per_page=10`)
       runnerSeen = live.workflow_runs.length > 0
       quiet = { delivered: false, reason: 'no live evidence since the slot' }
@@ -590,6 +618,7 @@ async function cli(argv, env) {
       skipReason,
       d2RunActive: d2.workflow_runs.some((r) => r.status !== 'completed'),
       followUpD2: Boolean(skipped) && d2.workflow_runs[0]?.id !== skipped.id,
+      confirmed,
       quiet,
       runnerSeen,
       c00QueuedMinutes: queued,
