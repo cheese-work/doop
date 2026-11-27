@@ -11,10 +11,11 @@ import {
 } from 'react'
 import type { Frame } from '../../shared/types'
 import type { ComponentDef } from '../../shared/components'
-import { canEditOpenCanvas, pickedSelectors, useStore } from '../lib/store'
+import { canEditActivePage, canEditOpenCanvas, pickedSelectors, useStore } from '../lib/store'
 import { layerPlacement } from '../lib/frameBridge'
 import { currentPageCanvas, usePageCanvas } from '../lib/pages'
 import { PagesPanel, sectionHeading } from './PagesPanel'
+import { LedgerCaption } from './LedgerCaption'
 import { getIdentity } from '../lib/identity'
 import { deleteFramesTracked } from '../lib/history'
 import { renameComponent, rootPartKey } from '../lib/components'
@@ -242,7 +243,7 @@ export function LayersPanel({
   const tab = useStore((s) => s.layersTab)
   const setTab = useStore((s) => s.setLayersTab)
   /* view and comment links browse the tree; nothing in it moves or changes */
-  const readOnly = useStore((s) => !canEditOpenCanvas(s))
+  const readOnly = useStore((s) => !canEditActivePage(s))
   /* the Components tab wears a dot while its library waits on someone: changes
      not yet published, or published updates not yet taken */
   const libraryStatus = useLibraryStatus(useStore((s) => s.canvas?.id))
@@ -603,6 +604,7 @@ export function LayersPanel({
         <>
           {/* Figma's order: the pages at the top, the frames of the active page
           under them, the search at the bottom within thumb's reach */}
+          {surface === 'inline' && <LedgerCaption variant="box" />}
           <PagesPanel />
           <div className={cn('mt-1.5 flex h-6 flex-none items-center justify-between pr-2.5 pl-3.5', sectionHeading)}>
             <span data-slot="frame-section-heading" className={sectionHeading}>
@@ -830,7 +832,9 @@ function FrameRow({
   onPointerDown: (e: ReactPointerEvent<HTMLDivElement>) => void
 }) {
   const { frame } = row
-  const readOnly = useStore((s) => !canEditOpenCanvas(s))
+  const readOnly = useStore((s) => !canEditActivePage(s))
+  /* a Finished page keeps the lock: the server lets it through, and so does its menu */
+  const canLock = useStore(canEditOpenCanvas)
   const { label, startRename } = useItemRename(frame.name, !readOnly && !frame.locked, (value) =>
     renameFrame(frame.id, value),
   )
@@ -846,8 +850,8 @@ function FrameRow({
   return (
     <>
       <ContextMenu>
-        {/* every item in the frame menu is an edit */}
-        <ContextMenuTrigger asChild disabled={readOnly}>
+        {/* a viewer has no item in the frame menu worth opening; a Finished page keeps the reading items and Lock */}
+        <ContextMenuTrigger asChild disabled={!canLock}>
           <Row
             data-row-key={row.key}
             depth={0}
@@ -864,7 +868,7 @@ function FrameRow({
             dimmed={!!frame.hidden}
             onToggleHidden={readOnly ? undefined : () => setFrameHidden(frame, !frame.hidden)}
             locked={!!frame.locked}
-            onToggleLocked={readOnly ? undefined : () => setFramesLocked([frame], !frame.locked)}
+            onToggleLocked={canLock ? () => setFramesLocked([frame], !frame.locked) : undefined}
             onClick={onActivate}
             onDoubleClick={startRename}
             onContextMenu={() => {
@@ -935,7 +939,7 @@ function NodeRow({
   onPointerDown: (e: ReactPointerEvent<HTMLDivElement>) => void
 }) {
   const { frame, node } = row
-  const readOnly = useStore((s) => !canEditOpenCanvas(s))
+  const readOnly = useStore((s) => !canEditActivePage(s))
   const hasChildren = node.children.length > 0
   const component = useStore((s) =>
     node.componentId ? s.canvas?.components?.find((def) => def.id === node.componentId) : undefined,

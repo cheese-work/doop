@@ -1,0 +1,43 @@
+issue: CHE-9470
+design: design/lifecycle-ui/approved/A5-project-ledger.html @ 572cc77
+# L8 (CHE-9398 plan r5): the ledger caption, the read-only Finished canvas and the phone 390 A5
+# column. Every row of "What the lock asks for" that is not marked CHE-9448 is named once below:
+# under `keep` when this slice leaves it as it is (it belongs to L5 or L7), under `change` when
+# this slice draws it. The two landing rows are delivered by CHE-9448 and are not drawn here.
+# The phone state rows cite U0 (CHE-9390, docs/ux/CHE-9390.yml), the shared PanelState, which L7
+# already mounts in the Pages list: this slice draws the same four states inside the phone sheet.
+pages:
+  - id: a5-ledger-canvas-desktop
+    design: design/lifecycle-ui/approved/A5-project-ledger.html @ 572cc77
+    url: doop page che-5478, the canvas stage with the ledger page and a Finished page open (reference frame), 1440 and 390
+    keep:
+      - pages-list: 'the Pages list, its Ledger tag, Finished group, row menus and Restore button are L7 (CHE-9469) and are not touched here'
+      - activity-row-finished: '"CHE-5162 · checkout moved to Finished" is written by the server (L5); the Activity feed is not touched here'
+      - lock-toggle: 'Lock and Unlock on a frame stay allowed on a Finished page; the server keeps them open and the client keeps its own rule (canEditOpenCanvas)'
+      - restore-page: 'Restore on a Finished page works from the Pages list; the canvas read-only rule does not cover it'
+      - copy-frame: 'Copy stays in the frame menu on a Finished page; it reads the frame and writes nothing'
+      - viewer-rules: 'a view-role visitor is read only as before; the guest and role rules are unchanged'
+    change:
+      - ledger-caption: 'a white pill under the top bar, left of the stage, with a brand book icon and the line "Ledger page. The latest approved designs. It changes only when a locked proposal lands."; the lead "Ledger page." is bold; shown on the ledger page only'
+      - finished-read-only: 'a Finished page opens read only: frame press and drag, the move gesture, delete, paste, drop, rename, hide, duplicate, mark ready and version restore are off, on the canvas, in the Layers panel and in the ⌘K and shortcut actions; the Inspector, the element panel and the Page panel are not offered'
+      - finished-layers: 'on a Finished page the Layers panel drops the New frame button, the Hide eye and the edit items of the frame menu; the Lock button and Copy stay'
+      - finished-notice: 'a 409 page_finished refusal shows the notice "Finished pages are read only. Restore the page to edit it." once, then the call still fails as before'
+      - activity-row-landing: 'delivered by CHE-9448'
+      - phone-landing-line: 'delivered by CHE-9448'
+    remove:
+      - finished-frame-edits: 'every frame edit entry point on a Finished page (listed under finished-read-only); the server already refuses them, the client no longer offers them'
+  - id: a5-ledger-phone-390
+    design: design/lifecycle-ui/approved/A-phone-390-all-five.html @ 572cc77
+    url: doop page che-5478, the Layers sheet on a phone (reference frame), 390
+    keep:
+      - phone-tabs: 'the Layers, Tokens, Components and Comments tabs of the sheet are not touched'
+      - pages-list-phone: 'the Pages list inside the sheet is L7; its rows, Finished group and menus are as shipped there'
+      - state-loading: 'PanelState loading, "Reading pages…" (U0 state-loading), drawn by L7 and shown here in the phone sheet'
+      - state-empty: 'PanelState empty, "No ledger page", the hint and its action (U0 state-empty), drawn by L7'
+      - state-error: 'PanelState error with one retry, "Could not move to Finished (409). The page changed." and Reload pages (U0 state-error), drawn by L7'
+      - state-offline: 'PanelState offline banner, "Offline. Pages are read only until it reconnects." (U0 state-offline), drawn by L7'
+    change:
+      - phone-ledger-caption: 'a grey box at the top of the Layers sheet, above Pages, with the same line as the desktop pill; shown only while the ledger page is open'
+      - phone-finished-read-only: 'the sheet lists a Finished page read only, as on the desktop'
+      - phone-landing-line: 'delivered by CHE-9448'
+    remove: []

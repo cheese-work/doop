@@ -1,7 +1,7 @@
 import { memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { ElementComment, Frame } from '../../shared/types'
-import { canEditOpenCanvas, pickedSelectors, useStore } from '../lib/store'
+import { canEditActivePage, pickedSelectors, useStore } from '../lib/store'
 import { isCanvasElement } from '../lib/drawing'
 import { isLayerLocked, standaloneSelector } from '../lib/layerEdits'
 import { documentRect } from '../lib/frameBleed'
@@ -291,9 +291,9 @@ export const FrameView = memo(function FrameView({
   /* the canvas tool: Hand lets presses fall through to the Stage, Comment
      turns a click on the surface into a comment on the element under it */
   const tool = useStore((s) => s.tool)
-  /* a view or comment link: the frame can be selected and looked at, never
+  /* a view or comment link, or a Finished page: the frame can be selected and looked at, never
      moved, resized or edited — the server refuses those writes anyway */
-  const readOnly = useStore((s) => !canEditOpenCanvas(s))
+  const readOnly = useStore((s) => !canEditActivePage(s))
   const select = useStore((s) => s.select)
   const flash = useStore((s) => s.flashes[frame.id])
   const stream = useStore((s) => s.streams[frame.id])
@@ -389,7 +389,7 @@ export const FrameView = memo(function FrameView({
     /* a locked frame is not the stage's to select, move or resize: the press
        falls through to the Stage, which treats it as empty canvas */
     if (action !== 'frame-drag' || frame.locked) return
-    if (!canEditOpenCanvas(s)) {
+    if (!canEditActivePage(s)) {
       e.stopPropagation()
       if (!s.selectedIds.includes(frame.id)) select(frame.id)
       return
@@ -723,7 +723,7 @@ export const FrameView = memo(function FrameView({
       pointerType: e.pointerType,
       spaceHeld: s.panMode,
     })
-    if (action !== 'frame-drag' || frame.locked || !canEditOpenCanvas(s)) return
+    if (action !== 'frame-drag' || frame.locked || !canEditActivePage(s)) return
     e.stopPropagation()
     e.preventDefault()
     if (!s.selectedIds.includes(frame.id)) select(frame.id)

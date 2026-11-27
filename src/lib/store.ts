@@ -10,6 +10,7 @@ import type {
   AgentTask,
   Canvas,
   CanvasGuide,
+  CanvasPageInfo,
   DesignDecision,
   ElementComment,
   Frame,
@@ -833,6 +834,20 @@ export function roleOf(s: Pick<State, 'canvas'>): CanvasRole {
 /** May the caller change the open canvas? View and comment links may not. */
 export function canEditOpenCanvas(s: Pick<State, 'canvas'>): boolean {
   return roleAllows(roleOf(s), 'edit')
+}
+
+/** The page the caller is on: the saved one, else the first. */
+export function activePageOf(s: Pick<State, 'canvas' | 'activePageId'>): CanvasPageInfo | undefined {
+  if (!s.canvas) return undefined
+  const pages = canvasPages(s.canvas)
+  return pages.find((page) => page.id === s.activePageId) ?? pages[0]
+}
+
+/** May the caller edit the frames on the page they are on? A Finished page is read only (CHE-9398 L8):
+ *  the server refuses every frame write on it (409 `page_finished`), so the editor never offers one.
+ *  Locking, Restore and the page-agnostic panels keep `canEditOpenCanvas`. */
+export function canEditActivePage(s: Pick<State, 'canvas' | 'activePageId'>): boolean {
+  return canEditOpenCanvas(s) && !activePageOf(s)?.finished
 }
 
 /** May the caller comment on the open canvas? */

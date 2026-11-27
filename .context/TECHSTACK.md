@@ -748,6 +748,12 @@ data-doop-webfonts>` for the roster families the frame names and does not load i
   400 `ledger_page`, the Archive 400 `archive_page`, unknown page 404, view role 403. A page-list save (REST and
   `set_canvas_pages`, MCP and resident) that renames or drops a Finished page is refused 400 `page_finished`; a plain
   `{ id, name }` save keeps the flags. Tests: `pageFinished.test.ts` (including the restore-race cases FP-01 and FP-03).
+  The client side (CHE-9470, L8): a Finished page opens read only. `canEditActivePage` (`src/lib/store.ts`) is
+  `canEditOpenCanvas` and the active page not Finished, and every frame-edit entry point reads it (frame press and drag,
+  Layers rows and menus, delete, paste, drop, rename, ⌘K and shortcut actions, version restore, and the Inspector, element
+  and Page panels). Lock and Unlock and Restore keep `canEditOpenCanvas` (the server leaves them open). `req()` shows the
+  notice "Finished pages are read only. Restore the page to edit it." on a 409 `page_finished`. The ledger page shows
+  `LedgerCaption` (a floating bar on desktop, a box at the top of the phone Layers sheet). Tests: `ledgerCanvasUi.test.tsx`.
 - Frame write keys (`frame_write_keys`, migration 0045; `actions.writeFrameHtmlOnce`): MCP `set_frame_html` /
   `edit_frame_html` / `append_frame_html` and REST `PATCH /api/frames/:id` (html only) and
   `POST /api/frames/:id/append` take `idempotency_key` and an optional `version_name`. The key row,

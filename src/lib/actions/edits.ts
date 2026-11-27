@@ -10,7 +10,7 @@ import { readingOrder } from '../../../shared/frameOrder'
 import { normalizeRotation } from '../../../shared/frameRotation'
 import { api } from '../api'
 import { t } from '../i18n'
-import { canEditOpenCanvas, pickedSelectors, useStore } from '../store'
+import { canEditActivePage, pickedSelectors, useStore } from '../store'
 import { currentPageCanvas } from '../pages'
 import { LAYER_TEXT_PROPERTIES } from '../richText'
 import { recordUpdates, trackSave } from '../history'
@@ -86,7 +86,8 @@ export function selectedFrames(): Frame[] {
   return frames.filter((f) => s.selectedIds.includes(f.id))
 }
 
-export const canEdit = () => canEditOpenCanvas(useStore.getState())
+/** Frame edits on the page in view: false for a viewer and on a Finished page. */
+export const canEdit = () => canEditActivePage(useStore.getState())
 const notice = (text: string) => useStore.getState().pushNotice(text)
 
 /* ---- frames: moved, turned, rounded as one undo step ---- */
