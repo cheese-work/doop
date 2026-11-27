@@ -73,8 +73,12 @@ function fixture() {
     { id: pa, name: 'A' },
     { id: 'pb', name: 'B' },
   ])
-  const f = { ...store.createFrame(sys, canvas.id, { name: 'f', pageId: pa, html: '<p>v1</p>' }, 'x')! }
-  const g = { ...store.createFrame(sys, canvas.id, { name: 'g', pageId: 'pb', html: '<p>g</p>' }, 'x')! }
+  const f = {
+    ...store.createFrame(sys, canvas.id, { name: 'f', pageId: pa, html: '<p>v1</p>' }, 'x', { kind: 'new' })!,
+  }
+  const g = {
+    ...store.createFrame(sys, canvas.id, { name: 'g', pageId: 'pb', html: '<p>g</p>' }, 'x', { kind: 'new' })!,
+  }
   return { canvas, pa, pb: 'pb', f, g }
 }
 
@@ -508,7 +512,7 @@ describe('the publish lifecycle: attest -> lock every frame -> card', () => {
 
   it('(j) between the first and the last lock, the frames already locked refuse every write', () => {
     const f = fixture()
-    const g2 = store.createFrame(sys, f.canvas.id, { name: 'h', pageId: f.pa, html: '<p>h</p>' }, 'x')!
+    const g2 = store.createFrame(sys, f.canvas.id, { name: 'h', pageId: f.pa, html: '<p>h</p>' }, 'x', { kind: 'new' })!
     expect(store.lockIfVersion(agent, f.f.id, f.f.updatedAt, 'att-1')).toMatchObject({ ok: true })
     /* before the card exists, a writer hits the frame that is already locked */
     expect(() => store.updateFrame(agent, f.f.id, { html: '<p>x</p>' }, 'a')).toThrow(PolicyRefused)

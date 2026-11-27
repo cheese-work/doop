@@ -70,10 +70,16 @@ communityRouter.post('/:id/copy', async (req, res) => {
   const source = store.getCanvas(req.params.id)
   if (!source || source.publishedAt === undefined) return res.status(404).json({ error: 'not in the gallery' })
   try {
-    const copy = await store.duplicateCanvas(source.id, req.user!.id, req.user!.name, {
-      name: source.name,
-      dropDemo: true,
-    })
+    const copy = await store.duplicateCanvas(
+      { kind: 'user', userId: req.user!.id },
+      source.id,
+      req.user!.id,
+      req.user!.name,
+      {
+        name: source.name,
+        dropDemo: true,
+      },
+    )
     if (!copy) return res.status(404).json({ error: 'not in the gallery' })
     store.recordCommunityCopy(source.id)
     res.json(copy)

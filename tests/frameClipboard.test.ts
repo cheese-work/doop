@@ -6,12 +6,14 @@ import type { Canvas, Frame } from '../shared/types'
    be exercised on its own */
 let nextId = 0
 const api = {
-  createFrame: vi.fn(async (canvasId: string, rest: Partial<Frame>) => ({
-    ...frame('x'),
-    ...rest,
-    canvasId,
-    id: `new${++nextId}`,
-  })),
+  createFrame: vi.fn(
+    async (canvasId: string, rest: Partial<Frame>, _copiedFrom?: { canvasId: string; pageId: string }[]) => ({
+      ...frame('x'),
+      ...rest,
+      canvasId,
+      id: `new${++nextId}`,
+    }),
+  ),
   updateFrame: vi.fn(async () => ({})),
   deleteFrame: vi.fn(async () => ({})),
 }
@@ -135,5 +137,29 @@ describe('multi-frame copy and paste', () => {
     expect(api.createFrame.mock.calls[0]![1]).toMatchObject({ name: 'a copy', x: 140, y: 140 })
     expect(api.createFrame.mock.calls[1]![1]).toMatchObject({ name: 'b copy', x: 340, y: 190 })
     expect(useStore.getState().selectedIds).toEqual(['new1', 'new2'])
+  })
+})
+
+/* CHE-7083: a copy names the page its content came from, so the new page inherits the authors. A legacy frame has
+   no pageId of its own: it sits on the canvas first page, and that page is the source. */
+describe('copies name their source page', () => {
+  it('paste sends the first page for a legacy frame with no pageId', async () => {
+    clipboard.copyFrames([frame('a', 100, 100)])
+    clipboard.pasteFrameCentered('c1')
+    await flush()
+    expect(api.createFrame.mock.calls[0]![2]).toEqual([{ canvasId: 'c1', pageId: 'c1:page1' }])
+  })
+
+  it('paste sends the frame own page when it has one', async () => {
+    clipboard.copyFrames([{ ...frame('a', 100, 100), pageId: 'p2' }])
+    clipboard.pasteFrameCentered('c1')
+    await flush()
+    expect(api.createFrame.mock.calls[0]![2]).toEqual([{ canvasId: 'c1', pageId: 'p2' }])
+  })
+
+  it('duplicate sends the first page for a legacy frame with no pageId', async () => {
+    clipboard.duplicateFrames([frame('a', 100, 100)])
+    await flush()
+    expect(api.createFrame.mock.calls[0]![2]).toEqual([{ canvasId: 'c1', pageId: 'c1:page1' }])
   })
 })

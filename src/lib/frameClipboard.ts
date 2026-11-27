@@ -1,4 +1,5 @@
 import type { Frame } from '../../shared/types'
+import { framePageId } from '../../shared/pages'
 import { api } from './api'
 import { useStore } from './store'
 import { posthog } from './posthog'
@@ -8,6 +9,9 @@ import { ELEMENT_CLIP_KEY, FRAME_CLIP_KEY as CLIP_KEY } from './clipboardKeys'
 /** One copied frame, positioned relative to the top-left of the copied group
  *  so a multi-frame paste keeps the frames' layout. */
 interface ClipFrame {
+  /** where it was copied from, so a paste carries the page's authors with it */
+  canvasId?: string
+  pageId?: string
   name: string
   html: string
   x: number
@@ -20,12 +24,21 @@ interface FrameClip {
   frames: ClipFrame[]
 }
 
+/** The page a frame sits on. A legacy frame has no pageId: it belongs to its canvas's first page, which is where its
+ *  authors are recorded. Resolved here so a copy of it still names its source page. */
+function sourcePageId(frame: Frame): string | undefined {
+  const canvas = useStore.getState().canvas
+  return canvas?.id === frame.canvasId ? framePageId(canvas, frame) : frame.pageId
+}
+
 export function copyFrames(frames: Frame[]) {
   if (!frames.length) return
   const left = Math.min(...frames.map((f) => f.x))
   const top = Math.min(...frames.map((f) => f.y))
   const clip: FrameClip = {
     frames: frames.map((f) => ({
+      canvasId: f.canvasId,
+      pageId: sourcePageId(f),
       name: f.name,
       html: f.html,
       x: f.x - left,
@@ -62,8 +75,16 @@ function clipBounds(frames: ClipFrame[]) {
 /** Create several frames at once. The requests are independent, so one
  *  failing must not orphan its siblings: whatever landed is still recorded
  *  in history (undoable as a group) and becomes the selection. */
-async function createFrames(requests: { canvasId: string; frame: Parameters<typeof api.createFrame>[1] }[]) {
-  const results = await Promise.allSettled(requests.map((r) => api.createFrame(r.canvasId, r.frame)))
+async function createFrames(
+  requests: {
+    canvasId: string
+    frame: Parameters<typeof api.createFrame>[1]
+    from?: { canvasId: string; pageId: string }
+  }[],
+) {
+  const results = await Promise.allSettled(
+    requests.map((r) => api.createFrame(r.canvasId, r.frame, r.from ? [r.from] : undefined)),
+  )
   const created = results.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []))
   const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')
   if (failed) console.error(`${requests.length - created.length} of ${requests.length} frame(s) failed`, failed.reason)
@@ -81,6 +102,7 @@ function createFromClip(canvasId: string, x: number, y: number) {
   void createFrames(
     frames.map((f) => ({
       canvasId,
+      from: f.canvasId && f.pageId ? { canvasId: f.canvasId, pageId: f.pageId } : undefined,
       frame: {
         name: f.name,
         html: f.html,
@@ -216,6 +238,7 @@ export function duplicateFrames(frames: Frame[]) {
   void createFrames(
     frames.map((frame) => ({
       canvasId: frame.canvasId,
+      from: sourcePageId(frame) ? { canvasId: frame.canvasId, pageId: sourcePageId(frame)! } : undefined,
       frame: {
         name: `${frame.name} copy`,
         html: frame.html,

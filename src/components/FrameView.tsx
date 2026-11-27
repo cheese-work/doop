@@ -27,6 +27,7 @@ import { ElementContextMenu } from './ElementContextMenu'
 import { CodePanel } from './CodePanel'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from './ui/context-menu'
 import { DEFAULT_ROLE_ID } from '../../shared/agents'
+import { framePageId } from '../../shared/pages'
 import { posthog } from '../lib/posthog'
 import { isResidentLimit } from './TeamAllowance'
 import { CommentComposer, CommentPin, CommentThread } from './CommentPopovers'
@@ -390,8 +391,15 @@ export const FrameView = memo(function FrameView({
         for (const g of group) {
           const src = frames.find((f) => f.id === g.id)
           if (!src) continue
+          const canvas = useStore.getState().canvas
+          const sourcePage = canvas ? framePageId(canvas, src) : src.pageId
           api
-            .createFrame(src.canvasId, { name: src.name, html: src.html, ...g.orig })
+            .createFrame(
+              src.canvasId,
+              { name: src.name, html: src.html, ...g.orig },
+              /* an Alt-drag copy: the new frame's page inherits the authors of the page it was copied from */
+              sourcePage ? [{ canvasId: src.canvasId, pageId: sourcePage }] : undefined,
+            )
             .then((f) => {
               posthog.capture('frame_duplicated', { via: 'drag' })
               recordCreate(f)

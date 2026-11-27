@@ -67,7 +67,9 @@ beforeEach(() => {
 describe('one row per writer on every frame mutator', () => {
   it('createFrame appends the writer to the frame page', async () => {
     const { canvas, pa } = bound()
-    const frame = store.createFrame(agentA, canvas.id, { name: 'f', pageId: pa, html: RECON_HTML }, 'agent')!
+    const frame = store.createFrame(agentA, canvas.id, { name: 'f', pageId: pa, html: RECON_HTML }, 'agent', {
+      kind: 'new',
+    })!
     expect(brief(await rows(canvas.id, pa))).toEqual([
       { kind: 'agent', agentId: 'agent-1', taskId: 'task-a', userId: '', source: 'write' },
     ])
@@ -81,7 +83,7 @@ describe('one row per writer on every frame mutator', () => {
   it('updateFrame appends the writer, for any field', async () => {
     const c = store.createCanvas('Ledger', 'alice')
     const page = canvasPages(c)[0]!.id
-    const frame = store.createFrame(sys, c.id, { name: 'f', html: '<p/>' }, 'x')!
+    const frame = store.createFrame(sys, c.id, { name: 'f', html: '<p/>' }, 'x', { kind: 'new' })!
     store.updateFrame(user, frame.id, { name: 'renamed' }, 'cheese')
     expect(brief(await rows(c.id, page))).toEqual([
       { kind: 'system', agentId: '', taskId: '', userId: '', source: 'write' },
@@ -92,7 +94,7 @@ describe('one row per writer on every frame mutator', () => {
   it('deleteFrame appends the writer to the page the frame was on', async () => {
     const c = store.createCanvas('Ledger', 'alice')
     const page = canvasPages(c)[0]!.id
-    const frame = store.createFrame(sys, c.id, { name: 'f', html: '<p/>' }, 'x')!
+    const frame = store.createFrame(sys, c.id, { name: 'f', html: '<p/>' }, 'x', { kind: 'new' })!
     store.deleteFrame(user, frame.id)
     expect(brief(await rows(c.id, page)).map((r) => r.kind)).toEqual(['system', 'user'])
   })
@@ -101,15 +103,18 @@ describe('one row per writer on every frame mutator', () => {
     const c = store.createCanvas('Ledger', 'alice')
     store.setPages(sys, c.id, [canvasPages(c)[0]!, { id: 'p2', name: 'P2' }])
     const page = canvasPages(c)[0]!.id
-    const frame = store.createFrame(sys, c.id, { name: 'f', html: '<p/>' }, 'x')!
+    const frame = store.createFrame(sys, c.id, { name: 'f', html: '<p/>' }, 'x', { kind: 'new' })!
     store.updateFrame(user, frame.id, { pageId: 'p2' }, 'cheese')
     expect((await rows(c.id, page)).map((r) => r.kind)).toEqual(['system', 'user'])
-    expect((await rows(c.id, 'p2')).map((r) => r.kind)).toEqual(['user'])
+    /* S4: the destination also inherits the source page's rows, as copies (CHE-7083) */
+    expect((await rows(c.id, 'p2')).map((r) => r.kind)).toEqual(['system', 'user'])
   })
 
   it('the same writer twice is one row; a second task is a second row', async () => {
     const { canvas, pa } = bound()
-    const frame = store.createFrame(agentA, canvas.id, { name: 'f', pageId: pa, html: RECON_HTML }, 'agent')!
+    const frame = store.createFrame(agentA, canvas.id, { name: 'f', pageId: pa, html: RECON_HTML }, 'agent', {
+      kind: 'new',
+    })!
     store.updateFrame(agentA, frame.id, { html: '<p>2</p>' }, 'agent')
     store.updateFrame({ ...agentA, taskId: 'task-a2' }, frame.id, { html: '<p>3</p>' }, 'agent')
     expect((await rows(canvas.id, pa)).map((r) => r.taskId)).toEqual(['task-a', 'task-a2'])
@@ -118,15 +123,17 @@ describe('one row per writer on every frame mutator', () => {
   it('an agent that only claims a task id is refused and leaves no row', async () => {
     const c = store.createCanvas('Ledger', 'alice')
     const claimed: WriteContext = { kind: 'agent', taskId: 'claimed-task', agentId: 'claimed-agent' }
-    expect(() => store.createFrame(claimed, c.id, { name: 'f', html: RECON_HTML }, 'agent')).toThrow(PolicyRefused)
+    expect(() => store.createFrame(claimed, c.id, { name: 'f', html: RECON_HTML }, 'agent', { kind: 'new' })).toThrow(
+      PolicyRefused,
+    )
     expect(await rows(c.id)).toEqual([])
   })
 
   it('a refused write leaves no row', async () => {
     const { canvas, pb } = bound()
-    expect(() => store.createFrame(agentA, canvas.id, { name: 'f', pageId: pb, html: '<p/>' }, 'agent')).toThrow(
-      PolicyRefused,
-    )
+    expect(() =>
+      store.createFrame(agentA, canvas.id, { name: 'f', pageId: pb, html: '<p/>' }, 'agent', { kind: 'new' }),
+    ).toThrow(PolicyRefused)
     expect(await rows(canvas.id)).toEqual([])
   })
 })
@@ -156,7 +163,7 @@ describe('the kind comes from the write context, never from the client', () => {
         store.setPageIssue(c.id, page, ISSUE_A, 'member')
         store.bindProject(sys, c.id, 'proj-a')
       }
-      store.createFrame(ctx, c.id, { name: 'f', html: RECON_HTML }, 'x')
+      store.createFrame(ctx, c.id, { name: 'f', html: RECON_HTML }, 'x', { kind: 'new' })
       expect(brief(await rows(c.id, page))).toEqual([{ ...want, source: 'write' }])
     })
   }
@@ -165,7 +172,7 @@ describe('the kind comes from the write context, never from the client', () => {
 describe('the row is persisted no later than the frame', () => {
   it('createFrame: the moment the frame row is readable, the ledger row is', async () => {
     const c = store.createCanvas('Ledger', 'alice')
-    const frame = store.createFrame(user, c.id, { name: 'f', html: '<p/>' }, 'cheese')!
+    const frame = store.createFrame(user, c.id, { name: 'f', html: '<p/>' }, 'cheese', { kind: 'new' })!
     for (let i = 0; i < 200; i++) {
       const [row] = await dbm.db.select().from(t.frames).where(eq(t.frames.id, frame.id))
       if (row) break
@@ -177,7 +184,7 @@ describe('the row is persisted no later than the frame', () => {
 
   it('updateFrame: a flush writes the frame and its ledger row', async () => {
     const c = store.createCanvas('Ledger', 'alice')
-    const frame = store.createFrame(sys, c.id, { name: 'f', html: '<p/>' }, 'x')!
+    const frame = store.createFrame(sys, c.id, { name: 'f', html: '<p/>' }, 'x', { kind: 'new' })!
     store.updateFrame(user, frame.id, { html: '<p>edited</p>' }, 'cheese')
     await persist.flush((id) => store.getFrame(id))
     const [saved] = await dbm.db.select().from(t.frames).where(eq(t.frames.id, frame.id))
@@ -192,8 +199,8 @@ describe('boot backfill', () => {
     const c = store.createCanvas('Legacy', 'alice')
     store.setPages(sys, c.id, [canvasPages(c)[0]!, { id: 'p2', name: 'P2' }, { id: 'p3', name: 'P3' }])
     const [p1] = canvasPages(c)
-    store.createFrame(sys, c.id, { name: 'a', pageId: p1!.id, html: '<p/>' }, 'x')
-    store.createFrame(sys, c.id, { name: 'b', pageId: 'p2', html: '<p/>' }, 'x')
+    store.createFrame(sys, c.id, { name: 'a', pageId: p1!.id, html: '<p/>' }, 'x', { kind: 'new' })
+    store.createFrame(sys, c.id, { name: 'b', pageId: 'p2', html: '<p/>' }, 'x', { kind: 'new' })
     await persist.flush((id) => store.getFrame(id))
     // the pre-ledger state: p1 has no row, p2 keeps its own, p3 is empty
     await dbm.db.delete(t.pageAuthors).where(eq(t.pageAuthors.pageId, p1!.id))
@@ -211,7 +218,7 @@ describe('boot backfill', () => {
 
   it('a frame with no page id counts for the first page', async () => {
     const c = store.createCanvas('Legacy', 'alice')
-    const frame = store.createFrame(sys, c.id, { name: 'a', html: '<p/>' }, 'x')!
+    const frame = store.createFrame(sys, c.id, { name: 'a', html: '<p/>' }, 'x', { kind: 'new' })!
     await persist.flush((id) => store.getFrame(id))
     await dbm.db.delete(t.pageAuthors).where(eq(t.pageAuthors.canvasId, c.id))
     delete (frame as { pageId?: string }).pageId

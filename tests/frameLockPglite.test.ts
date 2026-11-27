@@ -32,7 +32,7 @@ async function row(frameId: string) {
 
 async function frameOnDisk() {
   const canvas = store.createCanvas('Lock db', 'alice')
-  const frame = store.createFrame(sys, canvas.id, { name: 'f', html: '<p>v1</p>' }, 'x')!
+  const frame = store.createFrame(sys, canvas.id, { name: 'f', html: '<p>v1</p>' }, 'x', { kind: 'new' })!
   /* the canvas row is written fire-and-forget; the frame row needs it */
   await vi.waitFor(async () => {
     const [c] = await dbm.db.select().from(t.canvases).where(eq(t.canvases.id, canvas.id))

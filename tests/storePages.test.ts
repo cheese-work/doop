@@ -81,7 +81,7 @@ it('advances a frame version when multiple writes share the same timestamp', () 
   const now = vi.spyOn(Date, 'now').mockReturnValue(100)
   try {
     const canvas = store.createCanvas('Versions', 'alice')
-    const frame = store.createFrame(systemContext(), canvas.id, { name: 'Path' }, 'alice')!
+    const frame = store.createFrame(systemContext(), canvas.id, { name: 'Path' }, 'alice', { kind: 'new' })!
     const first = frame.updatedAt
     const second = store.updateFrame(systemContext(), frame.id, { html: '<p>Second</p>' }, 'alice')!.updatedAt
     const third = store.updateFrame(systemContext(), frame.id, { html: '<p>Third</p>' }, 'alice')!.updatedAt

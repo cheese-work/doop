@@ -69,9 +69,10 @@ export function saveCanvas(c: Canvas) {
 
 /** Persist a newly duplicated canvas as one unit. Unlike ordinary live edits,
  * duplication must not report success until every copied row is durable. */
-export async function saveCanvasCopy(c: Canvas): Promise<void> {
+export async function saveCanvasCopy(c: Canvas, authors: PageAuthorInput[] = []): Promise<void> {
   await db.transaction(async (tx) => {
     await tx.insert(t.canvases).values({ id: c.id, ...canvasColumns(c), createdAt: c.createdAt })
+    await insertAuthors(tx, authors)
 
     if (c.frames.length) {
       await tx.insert(t.frames).values(
@@ -133,6 +134,7 @@ export async function saveCanvasCopy(c: Canvas): Promise<void> {
     )
     if (refs.length) await tx.insert(t.assetRefs).values(refs)
   })
+  rememberAuthors(authors)
 }
 
 export function saveMember(canvasId: string, userId: string, addedBy: string, addedAt: number) {
@@ -291,9 +293,18 @@ const FRAME_DEBOUNCE_MS = 400
 /** Persist a duplicated page as one unit: the canvas's new page list and
  * every copied frame land together or not at all, so a copy is never half
  * there after a crash. Like saveCanvasCopy, success means durable. */
-export async function savePageCopy(c: Canvas, frames: Frame[], beforeCommit?: () => void): Promise<void> {
+export async function savePageCopy(
+  c: Canvas,
+  frames: Frame[],
+  beforeCommit?: () => void,
+  /** the ledger rows of the copy, read at the commit so a writer that landed meanwhile is inherited too */
+  authors: () => PageAuthorInput[] = () => [],
+): Promise<void> {
+  let written: PageAuthorInput[] = []
   await db.transaction(async (tx) => {
     await tx.update(t.canvases).set(canvasColumns(c)).where(eq(t.canvases.id, c.id))
+    written = authors()
+    await insertAuthors(tx, written)
     if (!frames.length) return beforeCommit?.()
     await tx.insert(t.frames).values(
       frames.map((frame) => ({
@@ -323,6 +334,7 @@ export async function savePageCopy(c: Canvas, frames: Frame[], beforeCommit?: ()
     /* the last word before the rows become durable: a throw here rolls the whole copy back */
     beforeCommit?.()
   })
+  rememberAuthors(written)
 }
 
 export function saveFrame(f: Frame, immediate = false) {
@@ -648,6 +660,47 @@ export type PageAuthorInput = {
   sourcePageId?: string
 }
 
+/* In-memory mirror of the ledger, so a copy can read the rows of its source page in the same tick as the write
+   (the store is synchronous). It holds the same rows as the table plus the ones still queued, keyed like the
+   table's unique index; the boot backfill loads it. Append-only like the table: nothing leaves it except a reload. */
+export type PageRef = { canvasId: string; pageId: string }
+const ledger = new Map<string, Map<string, PageAuthorInput>>()
+const pageKey = (ref: PageRef) => `${ref.canvasId}\u0000${ref.pageId}`
+const writerKey = (a: PageAuthorInput) =>
+  [a.kind, a.agentId ?? '', a.taskId ?? '', a.userId ?? '', a.source, a.sourcePageId ?? ''].join('\u0000')
+
+function rememberAuthors(inputs: PageAuthorInput[]) {
+  for (const input of inputs) {
+    const key = pageKey(input)
+    const page = ledger.get(key) ?? new Map<string, PageAuthorInput>()
+    if (!page.has(writerKey(input))) page.set(writerKey(input), input)
+    ledger.set(key, page)
+  }
+}
+
+/** The rows of `sources` as `copy` rows for `dest`: the same writers, source `copy`, pointing at the page they came from. */
+export function inheritedAuthors(sources: PageRef[], dest: PageRef, frameId?: string): PageAuthorInput[] {
+  const out: PageAuthorInput[] = []
+  for (const source of sources) {
+    if (pageKey(source) === pageKey(dest)) continue
+    for (const row of ledger.get(pageKey(source))?.values() ?? []) {
+      out.push({ ...row, ...dest, frameId, source: 'copy', sourcePageId: source.pageId })
+    }
+  }
+  return out
+}
+
+async function insertAuthors(tx: Tx, inputs: PageAuthorInput[]) {
+  if (!inputs.length) return
+  const now = Date.now()
+  for (let i = 0; i < inputs.length; i += 500) {
+    await tx
+      .insert(t.pageAuthors)
+      .values(inputs.slice(i, i + 500).map((input) => pageAuthorValues(input, now)))
+      .onConflictDoNothing()
+  }
+}
+
 function pageAuthorValues(input: PageAuthorInput, firstAt: number): typeof t.pageAuthors.$inferInsert {
   return {
     id: nanoid(),
@@ -670,6 +723,7 @@ function pageAuthorValues(input: PageAuthorInput, firstAt: number): typeof t.pag
  *  row commits with that frame's next save, delete or flush. Append-only: this module has no update or
  *  delete of page_authors. The unique key makes a repeat of the same writer a no-op. */
 export function appendPageAuthor(input: PageAuthorInput) {
+  rememberAuthors([input])
   const key = input.frameId ?? ''
   pendingAuthors.set(key, [...(pendingAuthors.get(key) ?? []), pageAuthorValues(input, Date.now())])
 }
@@ -678,11 +732,33 @@ export function appendPageAuthor(input: PageAuthorInput) {
  *  Idempotent: a page with any row, and a page the first run already filled, is skipped. */
 export async function backfillPageAuthors(canvases: Canvas[]): Promise<number> {
   await frameQueue
-  const have = new Set(
-    (
-      await db.selectDistinct({ canvasId: t.pageAuthors.canvasId, pageId: t.pageAuthors.pageId }).from(t.pageAuthors)
-    ).map((row) => `${row.canvasId}\u0000${row.pageId}`),
+  /* the mirror is the table plus what is still queued: reload it before anything copies from it */
+  const stored = await db.select().from(t.pageAuthors)
+  ledger.clear()
+  rememberAuthors(
+    stored.map((row) => ({
+      canvasId: row.canvasId,
+      pageId: row.pageId,
+      kind: row.kind as PageAuthorInput['kind'],
+      agentId: row.agentId,
+      taskId: row.taskId,
+      provider: row.provider,
+      model: row.model,
+      userId: row.userId,
+      source: row.source as PageAuthorInput['source'],
+      sourcePageId: row.sourcePageId,
+    })),
   )
+  for (const rows of pendingAuthors.values()) {
+    rememberAuthors(
+      rows.map((row) => ({
+        ...row,
+        kind: row.kind as PageAuthorInput['kind'],
+        source: row.source as PageAuthorInput['source'],
+      })),
+    )
+  }
+  const have = new Set(stored.map((row) => pageKey(row)))
   const missing: PageAuthorInput[] = []
   for (const canvas of canvases) {
     for (const pageId of new Set(canvas.frames.map((frame) => framePageId(canvas, frame)))) {
@@ -701,6 +777,7 @@ export async function backfillPageAuthors(canvases: Canvas[]): Promise<number> {
       .returning({ id: t.pageAuthors.id })
     written += inserted.length
   }
+  rememberAuthors(missing)
   return written
 }
 

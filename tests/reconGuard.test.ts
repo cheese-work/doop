@@ -103,7 +103,7 @@ async function setup(opts: Opts = {}) {
   const body = JSON.stringify(recon)
   const html = `<script type="application/json" id="doop-recon">${body}</script>`
   /* the recon frame itself is allowed before any recon exists */
-  const frame = store.createFrame(agent, canvas.id, { name: 'Recon', pageId: page, html }, 'agent-1')!
+  const frame = store.createFrame(agent, canvas.id, { name: 'Recon', pageId: page, html }, 'agent-1', { kind: 'new' })!
   if (opts.lock !== false) store.updateFrame(sys, frame.id, { locked: true }, 'x')
 
   const facts = new Map<string, AssetFacts>()
@@ -138,7 +138,9 @@ async function setup(opts: Opts = {}) {
 }
 
 const draw = (f: { canvas: { id: string }; page: string }, ctx: WriteContext = agent) =>
-  store.createFrame(ctx, f.canvas.id, { name: 'Design', pageId: f.page, html: '<p>design</p>' }, 'agent-1')
+  store.createFrame(ctx, f.canvas.id, { name: 'Design', pageId: f.page, html: '<p>design</p>' }, 'agent-1', {
+    kind: 'new',
+  })
 const refused = (f: Awaited<ReturnType<typeof setup>>, pattern: RegExp) =>
   expect(() => draw(f)).toThrow(
     expect.objectContaining({ code: 'policy_refused', message: expect.stringMatching(pattern) }),
@@ -256,7 +258,7 @@ describe('G2 recon guard', () => {
     expect(draw(f, { kind: 'user', userId: 'cheese' })).toBeTruthy()
     expect(draw(f, sys)).toBeTruthy()
     const plain = store.createCanvas('Scratch', 'alice')
-    expect(store.createFrame({ kind: 'agent' }, plain.id, { name: 'x' }, 'a')).toBeTruthy()
+    expect(store.createFrame({ kind: 'agent' }, plain.id, { name: 'x' }, 'a', { kind: 'new' })).toBeTruthy()
   })
 
   it('PolicyRefused is the error type', async () => {
@@ -274,7 +276,7 @@ describe('G2 recon guard', () => {
     await warmReconEvidence(canvas, page, agent)
     const RECON = '<script type="application/json" id="doop-recon">{}</script>'
     const make = (html: string) => () =>
-      store.createFrame(agent, canvas.id, { name: 'x', pageId: page, html }, 'agent-1')
+      store.createFrame(agent, canvas.id, { name: 'x', pageId: page, html }, 'agent-1', { kind: 'new' })
     for (const html of [
       `<div>design</div>${RECON}`,
       `${RECON}<section><h1>Pricing</h1></section>`,

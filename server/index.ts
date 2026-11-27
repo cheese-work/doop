@@ -17,7 +17,7 @@ import { eq, inArray } from 'drizzle-orm'
 import { toNodeHandler, fromNodeHeaders } from 'better-auth/node'
 import { oAuthDiscoveryMetadata } from 'better-auth/plugins'
 import { WebSocketServer, WebSocket } from 'ws'
-import { GuideLimitError, PageLimitError, store } from './store.ts'
+import { GuideLimitError, PageLimitError, store, type FrameOrigin } from './store.ts'
 import { parseGuide } from '../shared/guides.ts'
 import { getImage } from './previews.ts'
 import * as actions from './actions.ts'
@@ -1143,7 +1143,13 @@ app.post('/api/canvases/:id/duplicate', async (req, res) => {
       ? sourceWs.id
       : undefined
   try {
-    const copy = await store.duplicateCanvas(source.id, req.user!.id, req.user!.name, { workspaceId })
+    const copy = await store.duplicateCanvas(
+      { kind: 'user', userId: req.user!.id },
+      source.id,
+      req.user!.id,
+      req.user!.name,
+      { workspaceId },
+    )
     res.json(copy)
   } catch (error) {
     console.error('[canvas] duplicate failed', error)
@@ -1777,9 +1783,12 @@ app.post('/api/canvases/:id/pages/:pageId/duplicate', async (req, res) => {
 
 app.post('/api/canvases/:id/frames', (req, res) => {
   if (!requireCanvas(req, res, req.params.id, 'edit')) return
-  const { name, pageId, x, y, width, height, html, hidden, locked } = req.body ?? {}
+  const { name, pageId, x, y, width, height, html, hidden, locked, copiedFrom } = req.body ?? {}
   if (pageId !== undefined && !store.getCanvas(req.params.id)?.pages?.some((p) => p.id === pageId))
     return res.status(400).json({ error: 'page not found' })
+  /* a paste or a duplicate names the pages its content came from, and the new page inherits their authors (D1.5) */
+  const origin = copyOrigin(req, res, copiedFrom)
+  if (!origin) return
   const actor = actions.resolveActor({ name: req.user!.name, kind: 'user' })
   /* `hidden` and `locked` let undo bring a deleted frame back as it was */
   const frame = actions.createFrame(
@@ -1796,10 +1805,33 @@ app.post('/api/canvases/:id/frames', (req, res) => {
       locked: locked === true,
     },
     actor,
+    origin,
   )
   if (!frame) return res.status(404).json({ error: 'canvas not found' })
   res.json(frame)
 })
+
+/** The origin of a frame the client posts: `new`, or `copy` of the pages it names. The caller must be able to read
+ *  each source canvas (a page of a canvas they cannot see is never inherited from). Answers the refusal itself
+ *  and returns null. */
+function copyOrigin(req: express.Request, res: express.Response, raw: unknown): FrameOrigin | null {
+  if (raw === undefined) return { kind: 'new' }
+  const refs = Array.isArray(raw) ? raw : []
+  const valid = (r: unknown): r is { canvasId: string; pageId: string } =>
+    typeof (r as { canvasId?: unknown })?.canvasId === 'string' &&
+    typeof (r as { pageId?: unknown })?.pageId === 'string'
+  if (!Array.isArray(raw) || raw.length > 100 || !refs.every(valid)) {
+    res.status(400).json({ error: 'copiedFrom must list at most 100 { canvasId, pageId } pages' })
+    return null
+  }
+  const pages = new Map(refs.map((r) => [`${r.canvasId}\u0000${r.pageId}`, { canvasId: r.canvasId, pageId: r.pageId }]))
+  for (const canvasId of new Set(refs.map((r) => r.canvasId))) {
+    const source = store.getCanvas(canvasId)
+    /* a canvas that is gone has nothing to inherit from */
+    if (source && !checkRole(req, res, source, 'view')) return null
+  }
+  return pages.size ? { kind: 'copy', sourcePages: [...pages.values()] } : { kind: 'new' }
+}
 
 app.patch('/api/frames/:id', (req, res, next) => {
   patchFrame(req, res).catch(next)
@@ -2110,6 +2142,7 @@ app.post('/api/canvases/:id/import', async (req, res) => {
             html: imported.html,
           },
           actor,
+          { kind: 'new' },
         )
         if (!frame) {
           failures.push({ url: capture.url, error: 'canvas not found' })
@@ -2137,6 +2170,7 @@ app.post('/api/canvases/:id/import', async (req, res) => {
       canvas.id,
       { name: imported.title.slice(0, 80), width: imported.width, height: imported.height, html: imported.html },
       actor,
+      { kind: 'new' },
     )
     if (!frame) return res.status(404).json({ error: 'canvas not found' })
     res.json(frame)

@@ -12,6 +12,7 @@ vi.mock('../server/db/persist.ts', () => {
     saveCanvasCopy: noop,
     saveFrame: noop,
     appendPageAuthor: noop,
+    inheritedAuthors: () => [],
     saveGuideline: noop,
     savePageCopy: noop,
     saveMember: noop,
@@ -78,7 +79,7 @@ it('a duplicated page and a copied canvas start unbound', async () => {
   store.setPageIssue(canvas.id, first.id, ISSUE_A, 'member')
   const dup = await store.duplicatePage(systemContext(), canvas.id, first.id, 'alice')
   expect(issueOf(canvas.id, dup!.page.id)).toBeNull()
-  const copy = await store.duplicateCanvas(canvas.id, 'alice', 'alice')
+  const copy = await store.duplicateCanvas(systemContext(), canvas.id, 'alice', 'alice')
   for (const page of canvasPages(copy!)) expect(resolvePageIssue(page)).toBeNull()
   expect(issueOf(canvas.id, first.id)).toBe(ISSUE_A)
 })

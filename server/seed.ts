@@ -37,6 +37,7 @@ export function seed() {
 </body></html>`,
     },
     'seed',
+    { kind: 'new' },
   )
 
   store.createFrame(
@@ -75,6 +76,7 @@ export function seed() {
 </body></html>`,
     },
     'seed',
+    { kind: 'new' },
   )
 
   console.log(`⟡ seeded demo canvas ${canvas.id}`)
