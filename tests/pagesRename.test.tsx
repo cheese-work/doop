@@ -82,6 +82,8 @@ const settle = () =>
 describe('PagesPanel rename', () => {
   beforeEach(() => {
     savePages.mockClear()
+    /* page writes pause while disconnected (CHE-9469), so the room is up */
+    useStore.getState().setConnected(true)
     useStore.getState().setCanvas({
       id: 'c1',
       name: 'Canvas',

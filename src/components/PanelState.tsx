@@ -28,6 +28,7 @@ function PanelState({
   empty,
   error,
   onRetry,
+  retryLabel,
   offline,
   children,
 }: {
@@ -40,6 +41,8 @@ function PanelState({
   error?: string
   /** error: the Try again action; left out, the banner has none */
   onRetry?: () => void
+  /** error: the retry button's words when "Try again" is not what it does ("Reload pages") */
+  retryLabel?: string
   /** disconnected: what is paused, "Offline. Restore and delete forever are paused." */
   offline?: string
   /** ready: the panel's own content */
@@ -86,7 +89,7 @@ function PanelState({
           </Callout>
           {onRetry ? (
             <Button className="self-start" disabled={!connected} onClick={onRetry}>
-              {t('panels.panelStateRetry')}
+              {retryLabel ?? t('panels.panelStateRetry')}
             </Button>
           ) : null}
         </div>
