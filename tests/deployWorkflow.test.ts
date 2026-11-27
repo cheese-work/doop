@@ -298,7 +298,10 @@ describe('D2 suspension marker wiring (CHE-5545, C-10.1 to C-10.3)', () => {
     const step = decide.slice(decide.indexOf('- id: decide'), decide.indexOf('- id: pick'))
     for (const name of ['DOOP_DEPLOY_TRAIN', 'MAIN_RED_PAUSED']) expect(step).toContain(`${name}: \${{ vars.${name} }}`)
     expect(step).not.toContain('DOOP_DEPLOY_SUSPENDED')
-    expect(step).not.toContain('github.token')
+    // CHE-9955: the one token decide holds is the run's own `github.token`, for the busy check's list of CD deploy
+    // runs (`actions: read`). It reads no variable and no marker.
+    expect(step).toContain('GH_TOKEN: ${{ github.token }}')
+    expect(step).not.toMatch(/ci-app-token|create-github-app-token|secrets\./)
   })
 
   it('hosted jobs never get the marker token or the environment', () => {
@@ -440,6 +443,16 @@ describe('D2 S5: readback delay, confirm, rollback, evidence (CHE-5549, C-9, C-1
     expect(evidence).toContain('name: deploy-evidence')
     for (const need of ['deploy', 'readback-delay', 'readback-confirm', 'rollback'])
       expect(evidence).toContain(`needs.${need}.result`)
+    for (const line of evidence.split('\n').filter((l) => /^\s+run:/.test(l))) expect(line).not.toContain('${{')
+  })
+
+  // CHE-9955: the gate's skip reason travels step output -> job output -> evidence env.
+  it('skip_reason: decide and pre-arm write it, resolve and deploy expose it, evidence reads either', () => {
+    expect(job(d2, 'resolve')).toMatch(/outputs:[\s\S]*skip_reason: \$\{\{ steps\.decide\.outputs\.skip_reason \}\}/)
+    expect(deploy).toMatch(/outputs:[\s\S]*skip_reason: \$\{\{ steps\.prearm\.outputs\.skip_reason \}\}/)
+    expect(evidence).toMatch(
+      /SKIP_REASON: \$\{\{ needs\.resolve\.outputs\.skip_reason \|\| needs\.deploy\.outputs\.skip_reason \}\}/,
+    )
     for (const line of evidence.split('\n').filter((l) => /^\s+run:/.test(l))) expect(line).not.toContain('${{')
   })
 

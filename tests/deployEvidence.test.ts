@@ -147,6 +147,41 @@ describe('buildEvidence (C-12)', () => {
   })
 })
 
+/* CHE-9955. Why a run did not deploy, from the gate's `skip_reason` (decide or pre-arm): one of a fixed set, else `other`. */
+describe('skip_reason in the evidence', () => {
+  it.each(['busy', 'armed', 'suspended', 'unreadable', 'current', 'off', 'other'])('keeps %s', (reason) => {
+    expect(buildEvidence({ ...base, SKIP_REASON: reason }).skip_reason).toBe(reason)
+  })
+  it.each(['Busy', 'busy\nforged: 1', 'maintenance', '<script>', ' busy', 'x'.repeat(300)])(
+    'turns the value %j, which is not one of the set, into other',
+    (reason) => {
+      expect(buildEvidence({ ...base, SKIP_REASON: reason }).skip_reason).toBe('other')
+    },
+  )
+  it('is null when the run skipped nothing (no value, or an empty one)', () => {
+    expect(buildEvidence(base).skip_reason).toBeNull()
+    expect(buildEvidence({ ...base, SKIP_REASON: '' }).skip_reason).toBeNull()
+  })
+  it('the run summary shows it', () => {
+    expect(summaryOf(buildEvidence({ ...base, SKIP_REASON: 'busy' }))).toContain('| Skip reason | `busy` |')
+    expect(summaryOf(buildEvidence(base))).toContain('| Skip reason | `n/a` |')
+  })
+  it('the CLI writes it into deploy-evidence.json', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'evidence-skip-'))
+    try {
+      const out = join(dir, 'deploy-evidence.json')
+      const r = spawnSync('node', [resolve('scripts/deploy-evidence.mjs'), out], {
+        env: { PATH: process.env.PATH ?? '', ...base, SKIP_REASON: 'current' },
+        encoding: 'utf8',
+      })
+      expect(r.status).toBe(0)
+      expect(JSON.parse(readFileSync(out, 'utf8')).skip_reason).toBe('current')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('summaryOf and the CLI', () => {
   it('the run summary lists the read-back values, with ICT first and UTC beside it, for CHE-2752', () => {
     const md = summaryOf(buildEvidence(base))

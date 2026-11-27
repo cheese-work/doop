@@ -12,9 +12,12 @@ const SHA40 = /^[0-9a-f]{40}$/
 const DIGEST = /^sha256:[0-9a-f]{64}$/
 const RESULTS = ['success', 'failure', 'cancelled', 'skipped']
 const MODES = ['train', 'recovery', 'drill']
+// Why the gate skipped (decide or pre-arm); the same list as scripts/deploy-gate.mjs. Anything else reads as `other`.
+const SKIP_REASONS = ['busy', 'armed', 'suspended', 'unreadable', 'current', 'off', 'other']
 
 const pick = (re, v) => (typeof v === 'string' && re.test(v) ? v : null)
 const num = (v) => (typeof v === 'string' && /^\d{1,12}$/.test(v) ? Number(v) : null)
+const skipReason = (v) => (typeof v !== 'string' || v === '' ? null : SKIP_REASONS.includes(v) ? v : 'other')
 const result = (v) => (RESULTS.includes(v) ? v : 'skipped')
 const pad = (n) => String(n).padStart(2, '0')
 
@@ -56,6 +59,7 @@ export function buildEvidence(env) {
     run_id: pick(/^\d+$/, env.RUN_ID),
     run_attempt: pick(/^\d+$/, env.RUN_ATTEMPT),
     mode: MODES.includes(env.MODE) ? env.MODE : null,
+    skip_reason: skipReason(env.SKIP_REASON),
     outcome: outcomeOf(
       { deploy: jobs.deploy, confirm: jobs.confirm, rollback: jobs.rollback },
       action,
@@ -85,6 +89,7 @@ export function summaryOf(e) {
   const rows = [
     ['Outcome', e.outcome],
     ['Mode', val(e.mode)],
+    ['Skip reason', val(e.skip_reason)],
     ['Candidate SHA', val(e.candidate_sha)],
     ['Image digest', val(e.digest)],
     ['Predecessor', `${val(e.predecessor_sha)} ${val(e.predecessor_digest)}`],

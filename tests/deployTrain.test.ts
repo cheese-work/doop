@@ -1,11 +1,21 @@
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import {
+  admit,
+  c00Quiescent,
+  decideRun,
+  liftAdmit,
+  pickCandidate,
+  recheckOp,
+  runCreatedEpoch,
+  // @ts-expect-error plain .mjs script, no type declarations
+} from '../scripts/deploy-gate.mjs'
 // @ts-expect-error plain .mjs script, no type declarations
-import { admit, c00Quiescent, decideRun, pickCandidate, recheckOp, runCreatedEpoch } from '../scripts/deploy-gate.mjs'
+import { buildEvidence } from '../scripts/deploy-evidence.mjs'
 // @ts-expect-error plain .mjs script, no type declarations
 import { inventory } from '../scripts/migration-inventory.mjs'
 
@@ -35,13 +45,26 @@ const val = (v: string | null | Error | undefined, dflt: string | null) => () =>
   if (x === null) throw httpError(404)
   return { value: x }
 }
+/* CHE-9955. The CD deploy runs that are not finished, as the gate lists them: one read per status. `runs` is the
+   list GitHub answers with (an Error is a read that fails); a run shows under the status it has. */
+type Listed = { id: number; status: string; run_attempt?: number; display_title?: string }
+const BUSY_STATUSES = ['queued', 'in_progress', 'waiting', 'requested', 'pending']
+const runsPath = (status: string) => `repos/${REPO}/actions/workflows/cd-deploy.yml/runs?status=${status}&per_page=100`
 function api(
   vars: Vars,
   mergers: Record<string, string | null> = { [MID]: 'congvc-dev', [CAND]: 'congvc-bot-x99[bot]' },
+  runs: Listed[] | Error = [],
 ) {
   const routes: Record<string, unknown> = {
     [`repos/${REPO}/actions/variables/DOOP_DEPLOY_TRAIN`]: () => val(vars.sw, 'on')(),
     [`repos/${REPO}/actions/variables/MAIN_RED_PAUSED`]: () => val(vars.paused, null)(),
+  }
+  for (const status of BUSY_STATUSES) {
+    routes[runsPath(status)] = () => {
+      if (runs instanceof Error) throw runs
+      const hit = runs.filter((r) => r.status === status)
+      return { total_count: hit.length, workflow_runs: hit }
+    }
   }
   let n = 10
   for (const [sha, login] of Object.entries(mergers)) {
@@ -63,6 +86,7 @@ function api(
 }
 
 const entry = (over: Record<string, unknown> = {}) => ({
+  runId: '1000',
   event: 'schedule',
   actor: BOT,
   trigger: BOT,
@@ -190,21 +214,27 @@ const forbidden = async () => {
   throw httpError(403)
 }
 const ENV_VARS = { DOOP_DEPLOY_TRAIN: 'on', MAIN_RED_PAUSED: '' }
+// The variables API answers 403 (as `github.token` gets); the run list (`actions: read`) still answers.
+const runsOnly = (runs: Listed[] = []) => {
+  const inner = api({}, undefined, runs)
+  return async (path: string) => (path.includes('/actions/variables/') ? forbidden() : inner(path))
+}
 
 describe('decideRun: switches come from env, not the variables API (CHE-9181)', () => {
   it('DOOP_DEPLOY_TRAIN=on in env is a go while the variables API answers 403', async () => {
-    const r = await decideRun(entry({ ghApi: forbidden, vars: ENV_VARS }))
+    const r = await decideRun(entry({ ghApi: runsOnly(), vars: ENV_VARS }))
     expect(r).toMatchObject({ go: true, mode: 'train' })
   })
 
   it('does not call the variables API at all when env supplies the switches', async () => {
     const reads: string[] = []
+    const inner = runsOnly()
     const ghApi = async (path: string) => {
       reads.push(path)
-      throw httpError(403)
+      return inner(path)
     }
     await decideRun(entry({ ghApi, vars: ENV_VARS }))
-    expect(reads).toEqual([])
+    expect(reads.filter((p) => p.includes('/actions/variables/'))).toEqual([])
   })
 
   it.each([
@@ -307,9 +337,12 @@ describe('recheckOp: the switch and pause come from env, the marker from the hos
 
 describe('deploy-gate CLI decide (CHE-9181)', () => {
   const run = async (env: Record<string, string>, status: number) => {
-    const server = createServer((_req, res) => {
-      res.statusCode = status
+    const server = createServer((req, res) => {
       res.setHeader('content-type', 'application/json')
+      // `github.token` lists the workflow's runs (`actions: read`); only the variables answer `status`.
+      if (req.url?.includes('/actions/workflows/'))
+        return void res.end(JSON.stringify({ total_count: 0, workflow_runs: [] }))
+      res.statusCode = status
       res.end(JSON.stringify({ message: 'Resource not accessible by integration' }))
     })
     await new Promise<void>((ok) => server.listen(0, '127.0.0.1', ok))
@@ -326,6 +359,7 @@ describe('deploy-gate CLI decide (CHE-9181)', () => {
             ACTOR: BOT,
             TRIGGER: BOT,
             ATTEMPT: '1',
+            RUN_ID: '1000',
             ...env,
           },
         })
@@ -372,7 +406,9 @@ describe('train reads the marker only, no run history (C-10.4, S3a)', () => {
     }
   })
 
-  it('a train run never reads a workflow run to decide', async () => {
+  // CHE-9955: the one run read is the busy check's list of unfinished CD deploy runs, in `decideRun`. No run of D1 or
+  // of an earlier D2 decides anything, and `recheckOp` reads no run at all.
+  it('a train run reads no run history to decide, only the unfinished CD deploy runs', async () => {
     const reads: string[] = []
     const inner = api({})
     const ghApi = async (path: string) => {
@@ -380,8 +416,11 @@ describe('train reads the marker only, no run history (C-10.4, S3a)', () => {
       return inner(path)
     }
     expect(await decideRun(entry({ ghApi }))).toMatchObject({ go: true })
+    const decided = reads.splice(0)
     expect(await ops({}, { ghApi })('pre-arm')).toMatchObject({ go: true })
-    expect(reads.filter((p) => p.includes('/actions/runs'))).toEqual([])
+    expect(reads.filter((p) => p.includes('/runs'))).toEqual([])
+    expect(decided.filter((p) => p.includes('/runs'))).toEqual(BUSY_STATUSES.map(runsPath))
+    expect(decided.filter((p) => p.includes('/actions/runs'))).toEqual([])
   })
 })
 
@@ -966,5 +1005,372 @@ describe('deploy-gate CLI', () => {
       env: { PATH: process.env.PATH },
     })
     expect(r.status).not.toBe(0)
+  })
+})
+
+/* CHE-9955 (CHE-9850 S1). One C00 job runs at a time, and a CD deploy run is one unit of work: a train, a recovery or
+   a lift (a run with mode lift). `decideRun` skips a train run while an older CD deploy run is unfinished, so the
+   later run never joins the C00 group behind it; `liftAdmit` is the same check for a lift. The order is the run id:
+   of two runs, the older goes first, so the two never wait on each other. A list that cannot be read is a refusal,
+   never "not busy". A rerun is refused as before (attempt must be 1), before any list is read. */
+const train = (over: Record<string, unknown> = {}) => entry({ vars: ENV_VARS, ...over })
+const reading = (runs: Listed[] | Error) => {
+  const reads: string[] = []
+  const inner = api({}, undefined, runs)
+  const ghApi = async (path: string) => {
+    reads.push(path)
+    return inner(path)
+  }
+  return { ghApi, reads }
+}
+
+describe('decideRun: busy check across CD deploy and CD lift (CHE-9955)', () => {
+  it.each(BUSY_STATUSES)('skips as busy while an older CD deploy run is %s', async (status) => {
+    const r = await decideRun(train({ ghApi: api({}, undefined, [{ id: 900, status }]) }))
+    expect(r).toMatchObject({ go: false, skip: true, skipReason: 'busy' })
+    expect(r.reason).toContain('900')
+  })
+
+  it('an older run still in its readback delay is busy (the environment wait shows as waiting)', async () => {
+    const r = await decideRun(train({ ghApi: api({}, undefined, [{ id: 999, status: 'waiting' }]) }))
+    expect(r).toMatchObject({ go: false, skip: true, skipReason: 'busy' })
+  })
+
+  it('an older CD deploy run with mode lift, queued or running, is busy too', async () => {
+    for (const status of ['queued', 'in_progress']) {
+      const lift = { id: 950, status, run_attempt: 1, display_title: 'CD deploy' }
+      const r = await decideRun(train({ ghApi: api({}, undefined, [lift]) }))
+      expect(r).toMatchObject({ go: false, skip: true, skipReason: 'busy' })
+    }
+  })
+
+  it('goes when nothing older is unfinished: no run, this run itself, and only newer runs', async () => {
+    expect(await decideRun(train({ ghApi: api({}) }))).toMatchObject({ go: true, mode: 'train' })
+    const self = { id: 1000, status: 'in_progress' }
+    expect(await decideRun(train({ ghApi: api({}, undefined, [self]) }))).toMatchObject({ go: true })
+    const newer = [
+      { id: 1001, status: 'queued' },
+      { id: 1100, status: 'in_progress' },
+    ]
+    expect(await decideRun(train({ ghApi: api({}, undefined, [self, ...newer]) }))).toMatchObject({ go: true })
+  })
+
+  it('compares run ids as numbers, not as text (9 < 10)', async () => {
+    const r = await decideRun(train({ runId: '10', ghApi: api({}, undefined, [{ id: 9, status: 'queued' }]) }))
+    expect(r).toMatchObject({ go: false, skip: true, skipReason: 'busy' })
+  })
+
+  it.each([
+    ['a read that fails', new Error('boom')],
+    ['a 403', httpError(403)],
+    ['a 500', httpError(500)],
+  ])('an unreadable list (%s) is a refusal, never "not busy"', async (_n, err) => {
+    const r = await decideRun(train({ ghApi: api({}, undefined, err) }))
+    expect(r).toMatchObject({ go: false, skip: false, skipReason: 'unreadable' })
+    expect(r.reason).toContain('CD deploy')
+  })
+
+  it('a list GitHub cut short (total_count above what came back) is unreadable, not "not busy"', async () => {
+    const ghApi = async (path: string) =>
+      path.includes('/runs?') ? { total_count: 250, workflow_runs: [] } : api({})(path)
+    expect(await decideRun(train({ ghApi }))).toMatchObject({ go: false, skip: false, skipReason: 'unreadable' })
+  })
+
+  it.each([undefined, '', 'abc', '0', '-3'])(
+    'a run id of %j cannot be compared: refused as unreadable',
+    async (runId) => {
+      const r = await decideRun(train({ runId }))
+      expect(r).toMatchObject({ go: false, skip: false, skipReason: 'unreadable' })
+    },
+  )
+
+  it('a rerun stays refused, and no list is read for it', async () => {
+    const { ghApi, reads } = reading([])
+    const r = await decideRun(train({ attempt: '2', ghApi }))
+    expect(r).toMatchObject({ go: false, skip: false })
+    expect(r.reason).toContain('never rerun')
+    expect(reads).toEqual([])
+  })
+
+  it('the switch and the pause come first: an off train skips as off, busy or not, without reading the list', async () => {
+    const { ghApi, reads } = reading([{ id: 900, status: 'queued' }])
+    const r = await decideRun(train({ ghApi, vars: { ...ENV_VARS, DOOP_DEPLOY_TRAIN: 'off' } }))
+    expect(r).toMatchObject({ go: false, skip: true, skipReason: 'off' })
+    expect(reads).toEqual([])
+  })
+
+  describe('entry rules unchanged: schedule, backup and recovery', () => {
+    const busy = [{ id: 900, status: 'in_progress' }]
+    it('a schedule run is checked', async () => {
+      expect(await decideRun(train({ ghApi: api({}, undefined, busy) }))).toMatchObject({ skipReason: 'busy' })
+      expect(await decideRun(train({ ghApi: api({}) }))).toMatchObject({ go: true, mode: 'train' })
+    })
+    it('a schedule backup dispatch (train by github-actions[bot]) is checked the same way', async () => {
+      const backup = { event: 'workflow_dispatch', inputs: { mode: 'train', schedule_backup: 'true' } }
+      expect(await decideRun(train({ ...backup, ghApi: api({}, undefined, busy) }))).toMatchObject({
+        skipReason: 'busy',
+      })
+      expect(await decideRun(train({ ...backup, ghApi: api({}) }))).toMatchObject({ go: true, mode: 'train' })
+    })
+    it('a train dispatch by a human is still refused', async () => {
+      const r = await decideRun(
+        train({ event: 'workflow_dispatch', inputs: { mode: 'train' }, actor: 'congvc-dev', trigger: 'congvc-dev' }),
+      )
+      expect(r).toMatchObject({ go: false, skip: false })
+    })
+    it('recovery is a human override: busy or not, it goes and reads no list', async () => {
+      const { ghApi, reads } = reading(busy)
+      const r = await decideRun(train({ ...dispatched('recovery'), ghApi }))
+      expect(r).toMatchObject({ go: true, mode: 'recovery' })
+      expect(reads).toEqual([])
+    })
+    it('recovery by a stranger is still refused', async () => {
+      const r = await decideRun(train({ ...dispatched('recovery'), actor: 'someone', trigger: 'someone' }))
+      expect(r).toMatchObject({ go: false, skip: false })
+    })
+  })
+})
+
+/* FP-04 (P1, CHE-9850). Run 45664851732: a lift joined group `c00-deploy-doop` while a deploy was pending, and the
+   group, which keeps one pending job, cancelled the deploy; its readback-confirm was skipped. Both admission paths
+   must close it: a train run does not enter behind an older run (`decide`), and a lift does not enter while an older
+   CD deploy run is unfinished (`lift-admit`, a hosted job ahead of the C00 `lift` job, so it never joins the group). */
+const wf = readFileSync('.github/workflows/cd-deploy.yml', 'utf8')
+function jobText(name: string): string {
+  const m = new RegExp(`^  ${name}:\\n([\\s\\S]*?)(?=^  [a-z][a-z0-9-]*:\\n|(?![\\s\\S]))`, 'm').exec(wf)
+  if (!m?.[1]) throw new Error(`no job ${name}`)
+  return m[1]
+}
+
+describe('FP-04: a lift never cancels a pending deploy or readback-confirm (CHE-9955)', () => {
+  const lifting = (runs: Listed[] | Error, over: Record<string, unknown> = {}) =>
+    liftAdmit({ repo: REPO, runId: '2000', attempt: '1', ghApi: api({}, undefined, runs), ...over })
+
+  describe('path 1: the lift job is admitted by lift-admit', () => {
+    it.each([
+      ['a train deploy queued', 'queued'],
+      ['a train deploy running', 'in_progress'],
+      ['a train in its readback delay, readback-confirm still to come', 'waiting'],
+    ])('refuses while %s', async (_n, status) => {
+      const r = await lifting([{ id: 1999, status }])
+      expect(r).toMatchObject({ go: false, skip: false })
+      expect(r.reason).toContain('1999')
+    })
+
+    it('refuses while an older lift is unfinished too (two lifts never queue behind each other)', async () => {
+      expect(await lifting([{ id: 1500, status: 'in_progress' }])).toMatchObject({ go: false, skip: false })
+    })
+
+    it('goes with no unfinished CD deploy run, and with only newer ones (they skip behind this lift)', async () => {
+      expect(await lifting([])).toMatchObject({ go: true })
+      expect(await lifting([{ id: 2000, status: 'in_progress' }])).toMatchObject({ go: true })
+      expect(await lifting([{ id: 2001, status: 'queued' }])).toMatchObject({ go: true })
+    })
+
+    it('an unreadable list refuses, never admits', async () => {
+      expect(await lifting(httpError(403))).toMatchObject({ go: false, skip: false })
+      expect(await lifting([], { runId: undefined })).toMatchObject({ go: false, skip: false })
+      expect(await lifting([], { runId: 'x' })).toMatchObject({ go: false, skip: false })
+    })
+
+    // A rerun keeps its run id, so the id order cannot tell it from the first attempt: an older lift rerun while a newer
+    // deploy or readback-confirm is pending would pass the id check and join the group behind it.
+    it('refuses a rerun (attempt 2) before reading the list, with nothing else unfinished', async () => {
+      const read = vi.fn(async () => ({ workflow_runs: [], total_count: 0 }))
+      for (const attempt of ['2', '3', '0', '', undefined]) {
+        read.mockClear()
+        const r = await liftAdmit({ repo: REPO, runId: '2000', attempt, ghApi: read as never })
+        expect(r).toMatchObject({ go: false, skip: false })
+        expect(r.reason).toMatch(/rerun|attempt/)
+        expect(read).not.toHaveBeenCalled()
+      }
+    })
+
+    it('refuses a rerun of an older lift while a newer deploy is pending (the cancel in run 45664851732)', async () => {
+      const r = await lifting([{ id: 2001, status: 'queued' }], { attempt: '2' })
+      expect(r).toMatchObject({ go: false, skip: false })
+    })
+
+    it('a rerun of failed jobs reuses a green lift-admit, so the lift job itself runs only on attempt 1', () => {
+      const lift = jobText('lift')
+      expect(lift).toMatch(/^ {4}if: .*github\.run_attempt == 1/m)
+      expect(lift).toMatch(/^ {4}if: .*inputs\.mode == 'lift'/m)
+      // It is the job's own `if`, so it is evaluated before the job can join group c00-deploy-doop.
+      expect(lift.indexOf('run_attempt == 1')).toBeLessThan(lift.indexOf('concurrency:'))
+    })
+
+    it('lift-admit tells the gate which attempt it is', () => {
+      expect(jobText('lift-admit')).toMatch(/ATTEMPT: \$\{\{ github\.run_attempt \}\}/)
+    })
+
+    it('lift-admit is a hosted job ahead of the C00 lift job: it never joins the C00 group', () => {
+      // Comments of the next job trail this one's text.
+      const admission = jobText('lift-admit').replace(/^\s*#.*$/gm, '')
+      expect(admission).toMatch(/runs-on: ubuntu-latest/)
+      expect(admission).not.toMatch(/concurrency:|c00-deploy-doop|self-hosted|environment:|secrets\./)
+      expect(admission).toMatch(/actions: read/)
+      expect(admission).toContain('node scripts/deploy-gate.mjs lift-admit')
+      expect(admission).toMatch(/RUN_ID: \$\{\{ github\.run_id \}\}/)
+      expect(admission).toMatch(/^ {4}if: .*inputs\.mode == 'lift'/m)
+      expect(jobText('lift')).toMatch(/^ {4}needs: lift-admit$/m)
+    })
+
+    it('the lift keeps its own gates: group, environment, dispatcher admission, no token, no marker bypass', () => {
+      const lift = jobText('lift')
+      expect(lift).toMatch(/group: c00-deploy-doop\n\s+cancel-in-progress: false/)
+      expect(lift).toMatch(/environment: doop-lift/)
+      expect(lift).toContain('node scripts/deploy-lift.mjs admit')
+      expect(lift).not.toMatch(/GH_TOKEN|github\.token/)
+      expect(lift).not.toMatch(/deploy-marker/)
+    })
+  })
+
+  describe('path 2: a train run is admitted by decide', () => {
+    it('skips behind an older deploy, so its deploy and readback-confirm never join the group behind it', async () => {
+      const r = await decideRun(train({ runId: '2000', ghApi: api({}, undefined, [{ id: 1999, status: 'queued' }]) }))
+      expect(r).toMatchObject({ go: false, skip: true, skipReason: 'busy' })
+    })
+
+    it('skips behind an older lift (a CD deploy run with mode lift)', async () => {
+      const r = await decideRun(
+        train({ runId: '2000', ghApi: api({}, undefined, [{ id: 1999, status: 'in_progress' }]) }),
+      )
+      expect(r).toMatchObject({ go: false, skip: true, skipReason: 'busy' })
+    })
+
+    it('the resolve job gives decide a token that reads Actions and this run id', () => {
+      const resolve = jobText('resolve')
+      const decide = /- id: decide\n([\s\S]*?)(?=\n {6}- id: pick)/.exec(resolve)?.[1] ?? ''
+      expect(decide).toMatch(/GH_TOKEN: \$\{\{ github\.token \}\}/)
+      expect(decide).toMatch(/RUN_ID: \$\{\{ github\.run_id \}\}/)
+      expect(resolve).toMatch(/permissions:\n\s+contents: read\n\s+actions: read/)
+    })
+  })
+})
+
+/* The skip reason: `busy`, `armed`, `suspended`, `unreadable`, `current`, `off`, `other`. It is a step output of
+   `decide` and of `recheck --op pre-arm`, a job output of `resolve` and `deploy`, and a field of the evidence JSON. */
+describe('skip_reason: each reason from the gate to the evidence JSON (CHE-9955)', () => {
+  const evidenceOf = (out: { skipReason?: string }) => buildEvidence({ SKIP_REASON: out.skipReason ?? '' })
+  const busyRun = [{ id: 900, status: 'queued' }]
+  const cases: [string, () => Promise<{ skipReason?: string }>][] = [
+    ['busy', () => decideRun(train({ ghApi: api({}, undefined, busyRun) }))],
+    ['off', () => decideRun(train({ ghApi: api({}), vars: { ...ENV_VARS, DOOP_DEPLOY_TRAIN: 'off' } }))],
+    ['other', () => decideRun(train({ ghApi: api({}), vars: { ...ENV_VARS, MAIN_RED_PAUSED: 'red' } }))],
+    ['unreadable', () => decideRun(train({ ghApi: api({}, undefined, httpError(500)) }))],
+    ['armed', () => ops({ marker: 'armed:n2:1:' + CAND })('pre-arm')],
+    ['suspended', () => ops({ marker: 'suspended:n2:1:' + CAND + ':x' })('pre-arm')],
+    ['suspended', () => ops({ marker: null })('pre-arm')],
+    ['unreadable', () => ops({ marker: new Error('EACCES') })('pre-arm')],
+    ['current', () => ops()('pre-arm', undefined, { running: async () => ({ digest: D_CAND, label: CAND }) })],
+    ['off', () => ops({ sw: 'off' })('pre-arm')],
+    ['other', () => ops({ paused: 'red' })('pre-arm')],
+    ['other', () => ops({}, { ghApi: api({}, { [MID]: 'stranger', [CAND]: 'congvc-dev' }) })('pre-arm')],
+    ['other', () => ops({}, { varsAgeSeconds: 900 })('pre-arm')],
+    ['other', () => ops({ marker: 'garbage' })('pre-arm')],
+  ]
+  it.each(cases.map((c, i) => [`${c[0]} (#${i + 1})`, ...c] as const))('%s', async (_n, reason, run) => {
+    const out = await run()
+    expect(out.skipReason).toBe(reason)
+    expect(evidenceOf(out).skip_reason).toBe(reason)
+  })
+
+  it('a go carries no skip reason, and the evidence of a run that did not skip has none', async () => {
+    expect(((await ops()('pre-arm')) as { skipReason?: string }).skipReason ?? '').toBe('')
+    expect(((await decideRun(train({ ghApi: api({}) }))) as { skipReason?: string }).skipReason ?? '').toBe('')
+    expect(buildEvidence({}).skip_reason).toBeNull()
+  })
+
+  it('a refusal that is not about an unreadable fact carries no reason', async () => {
+    const r = (await ops()('pre-arm', undefined, { isAncestor: async () => false })) as { skipReason?: string }
+    expect(r.skipReason ?? '').toBe('')
+  })
+})
+
+describe('deploy-gate CLI: skip_reason and RUN_ID reach $GITHUB_OUTPUT (CHE-9955)', () => {
+  const call = async (env: Record<string, string>, runs: Listed[] | number) => {
+    const server = createServer((req, res) => {
+      res.setHeader('content-type', 'application/json')
+      if (typeof runs === 'number') {
+        res.statusCode = runs
+        res.end(JSON.stringify({ message: 'nope' }))
+        return
+      }
+      const status = new URL(req.url ?? '', 'http://x').searchParams.get('status')
+      const hit = runs.filter((r) => r.status === status)
+      res.end(JSON.stringify({ total_count: hit.length, workflow_runs: hit }))
+    })
+    await new Promise<void>((ok) => server.listen(0, '127.0.0.1', ok))
+    const { port } = server.address() as { port: number }
+    const dir = mkdtempSync(join(tmpdir(), 'gate-out-'))
+    const output = join(dir, 'out')
+    writeFileSync(output, '')
+    try {
+      const command = env.COMMAND ?? 'decide'
+      const code = await new Promise<number | null>((done) => {
+        const child = spawn('node', ['scripts/deploy-gate.mjs', command], {
+          env: {
+            PATH: process.env.PATH ?? '',
+            GITHUB_API_URL: `http://127.0.0.1:${port}`,
+            GITHUB_OUTPUT: output,
+            GH_TOKEN: 'actions-read-token',
+            REPO,
+            EVENT: 'schedule',
+            ACTOR: BOT,
+            TRIGGER: BOT,
+            ATTEMPT: '1',
+            RUN_ID: '1000',
+            ...ENV_VARS,
+            ...env,
+          },
+        })
+        child.on('close', done)
+      })
+      return { code, written: readFileSync(output, 'utf8') }
+    } finally {
+      server.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  it('a busy decide exits 0 (a clean skip) and writes skip_reason=busy', async () => {
+    const r = await call({}, [{ id: 900, status: 'queued' }])
+    expect(r.code).toBe(0)
+    expect(r.written).toContain('go=false')
+    expect(r.written).toContain('skip=true')
+    expect(r.written).toContain('skip_reason=busy')
+  })
+
+  it('a decide that goes writes an empty skip_reason', async () => {
+    const r = await call({}, [])
+    expect(r.code).toBe(0)
+    expect(r.written).toContain('go=true')
+    expect(r.written).toMatch(/^skip_reason=$/m)
+  })
+
+  it('an unreadable list exits non-zero and writes skip_reason=unreadable', async () => {
+    const r = await call({}, 500)
+    expect(r.code).not.toBe(0)
+    expect(r.written).toContain('skip_reason=unreadable')
+  })
+
+  it('a missing RUN_ID exits non-zero', async () => {
+    const r = await call({ RUN_ID: '' }, [])
+    expect(r.code).not.toBe(0)
+  })
+
+  it('lift-admit exits non-zero while an older CD deploy run is unfinished, and 0 when none is', async () => {
+    const busy = await call({ COMMAND: 'lift-admit', RUN_ID: '2000' }, [{ id: 1999, status: 'queued' }])
+    expect(busy.code).not.toBe(0)
+    expect(busy.written).toContain('go=false')
+    const free = await call({ COMMAND: 'lift-admit', RUN_ID: '2000' }, [])
+    expect(free.code).toBe(0)
+    expect(free.written).toContain('go=true')
+  })
+
+  it('lift-admit exits non-zero on a rerun (ATTEMPT 2) even when nothing else is unfinished', async () => {
+    const rerun = await call({ COMMAND: 'lift-admit', RUN_ID: '2000', ATTEMPT: '2' }, [])
+    expect(rerun.code).not.toBe(0)
+    expect(rerun.written).toContain('go=false')
   })
 })

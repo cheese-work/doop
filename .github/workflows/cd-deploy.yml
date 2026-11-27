@@ -16,7 +16,13 @@ name: CD deploy
 #                      predecessor is read back; a predecessor or a newer deploy is left alone; then suspend, and the
 #                      job fails
 #   evidence           every train, recovery and drill run: deploy-evidence.json (artifact) and the run summary (CHE-5549, C-12)
+#   lift-admit         mode lift only (CHE-9955): hosted; refuses while an older CD deploy run is unfinished
 #   lift (C00)         mode lift only (CHE-10091): the audited lift of the suspension marker; no other job runs
+#
+# Busy check (CHE-9955, FP-04): the C00 jobs share one group, which keeps one pending job and cancels the older one, so a
+# run must not join it behind another. A CD deploy run is one unit of work, whatever its mode: a train run skips at
+# `resolve` (skip_reason busy) and a lift refuses at `lift-admit` while an older CD deploy run is queued, running or in
+# its readback delay. The older run id goes first. Recovery is a human override and skips the check.
 #
 # The suspension marker (CHE-5545, plan C-10) is one file on the C00 host, written only by the three C00 jobs,
 # with scripts/deploy-marker.mjs: a train run arms it before its first change and only a passing confirm of that
@@ -66,6 +72,33 @@ permissions:
 # The lock is the group `c00-deploy-doop` on each C00 job below, which is never cancelled.
 
 jobs:
+  # FP-04 (CHE-9955): the lift's admission. Hosted, so it never joins group c00-deploy-doop: a lift that joined it while
+  # a deploy or a readback-confirm was pending would cancel that job (run 45664851732). It refuses while an older
+  # CD deploy run (a train, a recovery or another lift) is queued, in progress or in its readback delay. The run list
+  # needs `actions: read` and no secret. It also refuses a rerun (attempt other than 1), which keeps its run id and so
+  # passes the id order. It does not replace the dispatcher admission or any check of the `lift` job.
+  lift-admit:
+    if: ${{ github.repository == 'cheese-work/doop' && github.event_name == 'workflow_dispatch' && inputs.mode == 'lift' && github.ref == 'refs/heads/cheese/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Refuse while an older CD deploy run is unfinished
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
+        run: node scripts/deploy-gate.mjs lift-admit
+
   # Mode lift (CHE-5551, train S3b, plan CHE-5474 C-10.6 and C-10.7; folded in here by CHE-10091): the audited lift. It
   # is the only way from `armed:*` or `suspended:*` back to `clear:*`, and nothing but this job writes a lift.
   #
@@ -88,7 +121,11 @@ jobs:
   # The train ships OFF and this job does not touch the switch (DOOP_DEPLOY_TRAIN). The train jobs above and the
   # evidence job do not run in this mode.
   lift:
-    if: ${{ github.repository == 'cheese-work/doop' && github.event_name == 'workflow_dispatch' && inputs.mode == 'lift' && github.ref == 'refs/heads/cheese/main' }}
+    needs: lift-admit
+    # Attempt 1 only (FP-04): a rerun of failed jobs reuses an earlier green lift-admit, and a rerun keeps its run id, so
+    # it could join group c00-deploy-doop behind a newer deploy or readback-confirm and cancel it. This `if` is
+    # evaluated before the job can join the group; a lift is dispatched anew instead.
+    if: ${{ github.repository == 'cheese-work/doop' && github.event_name == 'workflow_dispatch' && inputs.mode == 'lift' && github.ref == 'refs/heads/cheese/main' && github.run_attempt == 1 }}
     runs-on: [self-hosted, cheese-c00-deploy]
     timeout-minutes: 20
     environment: doop-lift
@@ -152,6 +189,8 @@ jobs:
     outputs:
       go: ${{ steps.pick.outputs.go || 'false' }}
       mode: ${{ steps.decide.outputs.mode }}
+      # Why the gate skipped (busy, armed, suspended, unreadable, current, off or other); the evidence job records it.
+      skip_reason: ${{ steps.decide.outputs.skip_reason }}
       candidate: ${{ steps.pick.outputs.candidate }}
       run_id: ${{ steps.pick.outputs.run_id }}
       manifest: ${{ steps.manifest.outputs.json }}
@@ -163,9 +202,12 @@ jobs:
       # The switch and the pause come from `vars`: `github.token` cannot be given the Variables permission, so
       # reading them through the REST API failed and every run skipped green (CHE-9181). A variable that is not
       # set reads as an empty string, which the gate treats as absent. The marker is on C00 and is checked there,
-      # by the pre-arm check (CHE-9877).
+      # by the pre-arm check (CHE-9877). The busy check (CHE-9955) lists the unfinished CD deploy runs with this run's
+      # `github.token` (`actions: read`) and compares their ids with RUN_ID.
       - id: decide
         env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
           DOOP_DEPLOY_TRAIN: ${{ vars.DOOP_DEPLOY_TRAIN }}
           MAIN_RED_PAUSED: ${{ vars.MAIN_RED_PAUSED }}
           REPO: ${{ github.repository }}
@@ -253,6 +295,7 @@ jobs:
       cancel-in-progress: false
     outputs:
       go: ${{ steps.prearm.outputs.go }}
+      skip_reason: ${{ steps.prearm.outputs.skip_reason }}
       predecessor_digest: ${{ steps.prearm.outputs.predecessor_digest }}
       predecessor_sha: ${{ steps.prearm.outputs.predecessor_sha }}
       attempted: ${{ steps.apply.outputs.attempted }}
@@ -539,6 +582,7 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           MODE: ${{ needs.resolve.outputs.mode }}
+          SKIP_REASON: ${{ needs.resolve.outputs.skip_reason || needs.deploy.outputs.skip_reason }}
           CANDIDATE: ${{ needs.admit.outputs.candidate }}
           DIGEST: ${{ needs.admit.outputs.digest }}
           PREDECESSOR_SHA: ${{ needs.deploy.outputs.predecessor_sha }}

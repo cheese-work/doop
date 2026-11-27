@@ -80,6 +80,23 @@ on C00, once; no job creates it.
 
 Every failure leaves the marker `armed` or `suspended`, so the train stops until a lift. Lifting is `cd-deploy.yml` mode `lift` (below).
 
+### One CD deploy run at a time (busy check, CHE-9955)
+
+The C00 jobs share group `c00-deploy-doop`, which keeps one pending job and cancels the older one. So a run never
+joins it behind another: a CD deploy run is one unit of work whatever its mode (train, recovery or lift). Of two
+runs the smaller run id goes first.
+
+- A **train** run (schedule or schedule backup) lists the CD deploy runs that are queued, in progress, waiting (the
+  readback delay) or pending, and skips with `skip_reason=busy` if one has a smaller id. A list it cannot read is a
+  refusal (`unreadable`), never "not busy". Recovery is a human override and skips the check. A rerun is refused as before.
+- A **lift** runs the hosted job `lift-admit` first, the same check, but it refuses (red) rather than skips; only then
+  does the `lift` job join the C00 group. This closes run 45664851732, where a lift cancelled a pending deploy.
+  A lift is attempt 1 only, as a train run is: `lift-admit` refuses a rerun, and the `lift` job's own `if`
+  (`github.run_attempt == 1`) skips a rerun of failed jobs that reuses an earlier green `lift-admit`. A rerun keeps its
+  run id, so the id order alone cannot tell it from a first attempt. Dispatch a new lift instead.
+- `skip_reason` (`busy`, `armed`, `suspended`, `unreadable`, `current`, `off`, `other`) is written by `decide` and by
+  `recheck --op pre-arm`, exposed as a job output of `resolve` and `deploy`, and stored in `deploy-evidence.json`.
+
 ### The audited lift (`cd-deploy.yml` mode `lift`, S3b, C-10.6 and C-10.7)
 
 The only way from `armed:*` or `suspended:*` back to `clear:*`. Dispatch only, with `mode=lift` and one lift input, `decision_id`, the id of
