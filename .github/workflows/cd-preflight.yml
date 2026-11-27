@@ -1,0 +1,157 @@
+# ci-policy: class=deploy
+name: CD preflight
+
+# CHE-9957 (CHE-9850 S6). Is the CD pipeline able to run? It answers on every PR that touches a CD file and every 15
+# minutes, so a broken deploy file or a dead C00 runner shows up before a deploy slot, not in it.
+#
+#   scope   which files the PR touches. A PR with no CD path reports success "n/a".
+#   github  the static preflight (scripts/cd-preflight.mjs) over the head's files, the environments and variables they
+#           name exist, and how much `github.token` quota is left (a warning below 20%).
+#   c00     READ ONLY, on the C00 runner, same-repo heads only: `c00.sh preflight` (path list, marker, docker, lock file).
+#   report  the one result. It needs scope and github, NEVER c00: a job on a dead self-hosted runner stays queued, so
+#           `report` reads the c00 job's status itself and, if the job has not started 10 minutes in, fails "C00 runner
+#           offline" instead of waiting (FP-01).
+#
+# SECURITY — `pull_request_target`, the same boundary as ci-policy.yml. Every job checks out the BASE sha and only FETCHES
+# head objects, which scripts read with `git show` as data. Do not add a head checkout, a head `run:`, a secret, or
+# `persist-credentials: true`. Event data reaches scripts through `env:`, never inside a `run:` body. The c00 job holds
+# the read-only token, takes no deploy group and writes nothing on the host.
+# No `merge_group` trigger: the cheese/main ruleset has no merge queue. Add one with the queue.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  # GitHub's cron skips slots (CHE-9479); a missed slot only delays the next answer by 15 minutes.
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+# One group per PR (or per ref for the schedule). A deploy-class workflow never cancels a run in progress (ci-policy R4):
+# a newer push waits its turn, and GitHub keeps only the newest pending run.
+concurrency:
+  group: cd-preflight-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  scope:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      cd: ${{ steps.scope.outputs.cd }}
+      same_repo: ${{ steps.scope.outputs.same_repo }}
+      c00_expected: ${{ steps.scope.outputs.c00_expected }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          persist-credentials: false
+      - id: scope
+        name: Which files does the PR touch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: node scripts/cd-preflight-ci.mjs scope
+
+  github:
+    needs: scope
+    if: needs.scope.outputs.cd == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Fetch the head objects without checking them out
+        if: github.event_name == 'pull_request_target'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            fetch --quiet --no-tags --depth=1 origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pull/head"
+          test "$(git rev-parse refs/remotes/pull/head)" = "$HEAD_SHA"
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: '1.7.7'
+          ACTIONLINT_SHA256: 023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
+        run: |
+          dir="$RUNNER_TEMP/actionlint"
+          mkdir -p "$dir"
+          curl -fsSL -o "$dir/a.tgz" "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  $dir/a.tgz" | sha256sum -c -
+          tar -xzf "$dir/a.tgz" -C "$dir" actionlint
+          echo "ACTIONLINT=$dir/actionlint" >> "$GITHUB_ENV"
+      - name: Check the head's CD files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          VARS_JSON: ${{ toJSON(vars) }}
+        run: node scripts/cd-preflight-ci.mjs github
+
+  c00:
+    needs: scope
+    if: needs.scope.outputs.c00_expected == 'true'
+    runs-on: [self-hosted, cheese-c00-deploy]
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Read the head's path list as data
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT_NAME" = pull_request_target ]; then
+            auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+            git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+              fetch --quiet --no-tags --depth=1 origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pull/head"
+            test "$(git rev-parse refs/remotes/pull/head)" = "$HEAD_SHA"
+            git show "$HEAD_SHA:deploy/cd/c00-paths.list" > "$RUNNER_TEMP/c00-paths.list"
+          else
+            cp deploy/cd/c00-paths.list "$RUNNER_TEMP/c00-paths.list"
+          fi
+      - name: C00 preflight (read only)
+        run: bash deploy/cd/c00.sh preflight "$RUNNER_TEMP/c00-paths.list"
+
+  report:
+    needs: [scope, github]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          persist-credentials: false
+      - name: Report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          SCOPE_RESULT: ${{ needs.scope.result }}
+          GH_RESULT: ${{ needs.github.result }}
+          CD: ${{ needs.scope.outputs.cd }}
+          C00_EXPECTED: ${{ needs.scope.outputs.c00_expected }}
+        run: node scripts/cd-preflight-ci.mjs report

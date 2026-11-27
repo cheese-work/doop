@@ -4,8 +4,11 @@ import { describe, expect, it } from 'vitest'
 /* CHE-10091: the C00 runner group `c00-deploy` lists the workflow files that may use it. A workflow that asks for
    `cheese-c00-deploy` and is not on the list sits pending forever (CHE-9808: the separate `cd-lift.yml` did). Doop's
    entries are `cd-deploy.yml` and `image.yml`; only `cd-deploy.yml` holds C00 jobs (D1 holds none). The group is not
-   edited from here, so a new C00 workflow must be folded into `cd-deploy.yml`. */
-const ALLOWED = ['cd-deploy.yml', 'image.yml']
+   edited from here, so a new C00 workflow must be folded into `cd-deploy.yml`.
+   CHE-9957: `cd-preflight.yml` is the one exception. Its read-only `c00` job needs the group to list
+   `cheese-work/doop/.github/workflows/cd-preflight.yml@refs/heads/cheese/main` (an org admin adds it before the merge).
+   Until then the job stays queued and the report fails "C00 runner offline" at 10 minutes, by design (FP-01). */
+const ALLOWED = ['cd-deploy.yml', 'cd-preflight.yml', 'image.yml']
 const dir = '.github/workflows'
 const code = (f: string) =>
   readFileSync(`${dir}/${f}`, 'utf8')
@@ -20,8 +23,11 @@ describe('the C00 runner label stays inside the runner group allow-list', () => 
     expect(offenders).toEqual([])
   })
 
-  it('cd-deploy.yml is the one workflow with C00 jobs, and the lift is among them', () => {
-    expect(workflows.filter((f) => code(f).includes('cheese-c00-deploy'))).toEqual(['cd-deploy.yml'])
+  it('cd-deploy.yml and cd-preflight.yml are the only workflows with C00 jobs, and the lift is in cd-deploy.yml', () => {
+    expect(workflows.filter((f) => code(f).includes('cheese-c00-deploy'))).toEqual([
+      'cd-deploy.yml',
+      'cd-preflight.yml',
+    ])
     expect(code('cd-deploy.yml')).toMatch(/^ {2}lift:\n/m)
   })
 

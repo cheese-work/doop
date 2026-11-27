@@ -27,6 +27,10 @@
 #                     health, and run scripts/deploy-lift.mjs lift under the same lock with those facts. That script
 #                     decides, re-reads the decision and the marker right before the write, and writes `clear:*`.
 #                     Unproven quiescence does not stop here: the script is told and records the refusal.
+#   c00.sh preflight <paths list>   READ ONLY, takes no lock (CHE-9957, cd-preflight.yml): every entry of the list (the PR
+#                     head's deploy/cd/c00-paths.list, read as data) is under an allowed path prefix, the suspension marker
+#                     is readable with a valid state word, docker answers, and the lock file exists. It reports every
+#                     failure, then exits 1. It starts, writes and creates nothing.
 #   c00.sh sweep      remove every doop.compat.run resource (containers, networks, volumes), read back
 #                     zero, print df before and after. Needs no compose dir and no deploy ref (CHE-5474 C-8.5d).
 #
@@ -316,6 +320,27 @@ case $cmd in
     echo "guard written: $guard_file"
     ;;
 
+  preflight)
+    # Read only: no lock, no mkdir, no write. node checks the pieces that need the marker and path rules.
+    list=${2:-}
+    [ -n "$list" ] && [ -r "$list" ] || die "usage: c00.sh preflight <paths list file>"
+    ci="$here/../../scripts/cd-preflight-ci.mjs"
+    failed=0
+    node "$ci" path-list "$list" || failed=1
+    node "$ci" marker || failed=1
+    if ! docker info --format '{{.ServerVersion}}' >/dev/null 2>&1; then
+      echo "docker: does not answer"
+      failed=1
+    fi
+    lock=${C00_LOCK_FILE:-/var/lock/doop-deploy.lock}
+    if [ ! -e "$lock" ]; then
+      echo "lock: $lock does not exist"
+      failed=1
+    fi
+    [ "$failed" -eq 0 ] || die "preflight failed"
+    echo "preflight: ok"
+    ;;
+
   apply)
     guard_check
     ref=${DEPLOY_REF:-}
@@ -477,5 +502,5 @@ case $cmd in
     echo "sweep ok: containers=0 networks=0 volumes=0"
     ;;
 
-  *) die "usage: c00.sh apply|readback|confirm|rollback|quiescence|lift|sweep|guard|guard-set" ;;
+  *) die "usage: c00.sh apply|readback|confirm|rollback|quiescence|lift|sweep|guard|guard-set|preflight" ;;
 esac
