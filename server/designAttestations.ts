@@ -9,6 +9,7 @@ import {
   type RequirementLine,
   type RequirementsNow,
 } from './requirementLedger.ts'
+import { syncCanvasDesignLinks } from './designLinkSync.ts'
 import { multicaRequirementSource, type RequirementSource } from './requirementSource.ts'
 import { store } from './store.ts'
 import {
@@ -73,6 +74,8 @@ export async function attestPage(
   source: RequirementSource | undefined = multicaRequirementSource(env),
   sloplint: SloplintEntry[] = [],
 ): Promise<AttestedReport> {
+  /* a Design url set a moment ago binds before the page is read (CHE-10542); the sync never throws and never writes a member link */
+  await syncCanvasDesignLinks(canvas.id)
   const requirements = await readRequirements(canvas, pageId, source)
   let ledger: ReturnType<typeof ledgerReport> | undefined
   const report = checkPageCompleteness(canvas, pageId, {

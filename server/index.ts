@@ -133,6 +133,7 @@ import { encryptionConfigured } from './secretBox.ts'
 import * as authSchema from './db/auth-schema.ts'
 import * as persist from './db/persist.ts'
 import { readAttestation } from './designAttestations.ts'
+import { syncAllDesignLinks } from './designLinkSync.ts'
 import { handleMcpRequest } from './mcp.ts'
 import { RendererBusyError } from './renderBrowser.ts'
 import { getAsset, reconcileAssetRefs, beginTicketUpload, endTicketUpload, createAsset } from './assets.ts'
@@ -4013,6 +4014,10 @@ server.listen(PORT, () => {
     (canvasId) =>
       room(canvasId).length > 0 || (agentPresences.get(canvasId)?.size ?? 0) > 0 || actions.isCanvasStreaming(canvasId),
   )
+  /* page-to-issue links follow the issues' Design url (CHE-10542); G3 also syncs its own canvas before it reads the page */
+  const syncLinks = () => void syncAllDesignLinks()
+  setTimeout(syncLinks, 15_000).unref()
+  setInterval(syncLinks, 10 * 60_000).unref()
   setInterval(
     () => {
       const dropped = store.evictIdle(env.CANVAS_IDLE_MS)
