@@ -404,6 +404,14 @@ describe('commit-message job in ci.yml', () => {
   const ci = readFileSync(new URL('.github/workflows/ci.yml', ROOT), 'utf8')
   const job = ci.slice(ci.indexOf('\n  commit-message:'), ci.indexOf('\n  typecheck:'))
 
+  it('re-runs when the PR title or body is edited, so a stale green check cannot outlive an edit', () => {
+    const trigger = /^ {2}pull_request:\n(?: {4}#[^\n]*\n)* {4}types: \[([^\]]*)\]/m.exec(ci)
+    expect(trigger, 'pull_request must list its activity types').not.toBeNull()
+    const types = trigger[1].split(',').map((type) => type.trim())
+    // `edited` is the one that fires on a title, body or base change; the rest keep the default set
+    expect(types.sort()).toEqual(['edited', 'opened', 'reopened', 'synchronize'])
+  })
+
   it('has the guard step with no continue-on-error', () => {
     expect(job).toContain('changelog-line.mjs')
     expect(job).not.toMatch(/continue-on-error/)

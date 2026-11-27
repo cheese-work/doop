@@ -5,6 +5,10 @@ on:
   push:
     branches: [cheese/main]
   pull_request:
+    # `edited` fires on a title, body or base change: the title lint and the Changelog line guard read the
+    # live PR text, so an edit must re-run them (a stale green check would outlive it). The other three are
+    # GitHub's default set, listed because naming `types` replaces it.
+    types: [opened, synchronize, reopened, edited]
   # image.yml gates the image build on this exact suite rather than copying it
   workflow_call:
 
