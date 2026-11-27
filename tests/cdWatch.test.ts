@@ -1,5 +1,8 @@
-import { readFileSync } from 'node:fs'
-import { describe, expect, it } from 'vitest'
+import { spawnSync } from 'node:child_process'
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
 import { parse as parseYaml } from 'yaml'
 // @ts-expect-error plain .mjs without types
 import * as watch from '../scripts/cd-watch.mjs'
@@ -25,7 +28,13 @@ const {
   c00QueuedMinutes,
 } = watch as {
   c00Host: (env: Record<string, string | undefined>) => string
-  quietSlotProof: (f: { evidence: Record<string, unknown> | null; slotMs: number; sha: string }) => {
+  quietSlotProof: (f: {
+    evidence: Record<string, unknown> | null
+    slotMs: number
+    sha: string
+    run?: { id: number; attempt: number } | null
+    slotSkip?: string | null
+  }) => {
     delivered: boolean
     reason: string
   }
@@ -889,19 +898,44 @@ describe('FP-02: a skipped D2 gate reaches the freshness watcher through the evi
   })
 
   it('FP-02 busy: no dispatch while a D2 run is active, exactly one dispatch after it ends, none after that one', () => {
-    const skipReason = 'busy'
+    const skipReason = roundTrip(evidenceFor('busy')).skip_reason as string
+    expect(skipReason).toBe('busy')
     expect(behindAt(60, { skipReason, d2RunActive: true }).action).toBe('none')
     expect(behindAt(60, { skipReason, d2RunActive: false, followUpD2: false }).action).toBe('dispatch')
     expect(behindAt(60, { skipReason, d2RunActive: false, followUpD2: true }).action).toBe('none')
   })
 
   it('FP-02 armed behaves like busy: waits while running, dispatches once after', () => {
-    expect(behindAt(60, { skipReason: 'armed', d2RunActive: true }).action).toBe('none')
-    expect(behindAt(60, { skipReason: 'armed', d2RunActive: false }).action).toBe('dispatch')
+    const skipReason = roundTrip(evidenceFor('armed')).skip_reason as string
+    expect(behindAt(60, { skipReason, d2RunActive: true }).action).toBe('none')
+    expect(behindAt(60, { skipReason, d2RunActive: false }).action).toBe('dispatch')
+  })
+
+  it('FP-02 a busy or armed run that ends after slot+90 min still gets its one dispatch, with the alarm', () => {
+    for (const skip of ['busy', 'armed']) {
+      const skipReason = roundTrip(evidenceFor(skip)).skip_reason as string
+      // The skipped run is finished, so a D2 run exists since the slot; the 90 min alarm must not swallow the dispatch.
+      const late = behindAt(120, { skipReason, d2RunsSinceSlot: 1, d2RunActive: false, followUpD2: false })
+      expect(late.action).toBe('dispatch')
+      expect(late.alarm).toBe(true)
+      expect(late.reason).toContain(`the ${skip} run has ended`)
+      // Still active at +120: no dispatch yet, alarm only.
+      const active = behindAt(120, { skipReason, d2RunsSinceSlot: 2, d2RunActive: true })
+      expect([active.action, active.alarm]).toEqual(['alarm', true])
+      // The one dispatch already went out: never a second one, the alarm stays.
+      const sent = behindAt(120, { skipReason, d2RunsSinceSlot: 2, followUpD2: true })
+      expect([sent.action, sent.alarm]).toEqual(['alarm', true])
+      // Just before 90 min the dispatch carries no alarm.
+      const early = behindAt(89, { skipReason, d2RunsSinceSlot: 1 })
+      expect([early.action, early.alarm]).toEqual(['dispatch', false])
+    }
   })
 })
 
 describe('FP-03: a quiet slot is delivered only by fresh live evidence bound to the slot (option A)', () => {
+  // The live run the artifact came from, and the slot's D2 run that skipped with `current`.
+  const RUN = { id: 123, attempt: 1 }
+  const bound = { run: RUN, slotSkip: 'current' }
   const quietAt = (offsetMin: number, quiet: Record<string, unknown> | null, runnerSeen = true) =>
     freshness({
       ...base,
@@ -913,7 +947,7 @@ describe('FP-03: a quiet slot is delivered only by fresh live evidence bound to 
     })
 
   it('FP-03 with no live evidence, the quiet slot alarms at slot+90 min and not at 89', () => {
-    const none = quietSlotProof({ evidence: null, slotMs: SLOT, sha: A })
+    const none = quietSlotProof({ evidence: null, slotMs: SLOT, sha: A, ...bound })
     expect(none.delivered).toBe(false)
     expect(quietAt(89, none).action).toBe('none')
     const alarm = quietAt(90, none)
@@ -923,21 +957,21 @@ describe('FP-03: a quiet slot is delivered only by fresh live evidence bound to 
 
   it('FP-03 stale evidence observed before the slot does not deliver the slot', () => {
     const stale = liveEvidence({ body: { ok: true, revision: A }, observedMs: SLOT - 5 * MIN })
-    const proof = quietSlotProof({ evidence: roundTrip(stale), slotMs: SLOT, sha: A })
+    const proof = quietSlotProof({ evidence: roundTrip(stale), slotMs: SLOT, sha: A, ...bound })
     expect(proof.delivered).toBe(false)
     expect(quietAt(90, proof).action).toBe('alarm')
   })
 
   it('FP-03 evidence naming another revision does not deliver the slot', () => {
     const wrong = liveEvidence({ body: { ok: true, revision: B }, observedMs: SLOT + 30 * MIN })
-    const proof = quietSlotProof({ evidence: roundTrip(wrong), slotMs: SLOT, sha: A })
+    const proof = quietSlotProof({ evidence: roundTrip(wrong), slotMs: SLOT, sha: A, ...bound })
     expect(proof.delivered).toBe(false)
     expect(quietAt(90, proof).action).toBe('alarm')
   })
 
   it('FP-03 unhealthy evidence for the right revision does not deliver the slot', () => {
     const sick = liveEvidence({ body: { ok: false, revision: A }, observedMs: SLOT + 30 * MIN })
-    expect(quietSlotProof({ evidence: roundTrip(sick), slotMs: SLOT, sha: A }).delivered).toBe(false)
+    expect(quietSlotProof({ evidence: roundTrip(sick), slotMs: SLOT, sha: A, ...bound }).delivered).toBe(false)
   })
 
   it('FP-03 positive control: fresh healthy evidence for the slot target is idle at slot+100 min', () => {
@@ -947,15 +981,40 @@ describe('FP-03: a quiet slot is delivered only by fresh live evidence bound to 
       runId: '123',
       runAttempt: '1',
     })
-    const proof = quietSlotProof({ evidence: roundTrip(fresh), slotMs: SLOT, sha: A })
+    const proof = quietSlotProof({ evidence: roundTrip(fresh), slotMs: SLOT, sha: A, ...bound })
     expect(proof.delivered).toBe(true)
     expect(quietAt(100, proof).action).toBe('none')
+  })
+
+  const freshEvidence = (runId?: string, runAttempt?: string) =>
+    roundTrip(liveEvidence({ body: { ok: true, revision: A }, observedMs: SLOT + 30 * MIN, runId, runAttempt }))
+
+  it('FP-03 evidence that names no run, or another run or attempt than the one it came from, does not deliver the slot', () => {
+    const noRun = quietSlotProof({ evidence: freshEvidence(), slotMs: SLOT, sha: A, ...bound })
+    expect(noRun.delivered).toBe(false)
+    expect(noRun.reason).toContain('does not name the run')
+    const otherRun = quietSlotProof({ evidence: freshEvidence('999', '1'), slotMs: SLOT, sha: A, ...bound })
+    expect(otherRun.delivered).toBe(false)
+    const otherAttempt = quietSlotProof({ evidence: freshEvidence('123', '2'), slotMs: SLOT, sha: A, ...bound })
+    expect(otherAttempt.delivered).toBe(false)
+    const unbound = quietSlotProof({ evidence: freshEvidence('123', '1'), slotMs: SLOT, sha: A, slotSkip: 'current' })
+    expect(unbound.delivered).toBe(false)
+    for (const p of [noRun, otherRun, otherAttempt, unbound]) expect(quietAt(90, p).action).toBe('alarm')
+  })
+
+  it('FP-03 the slot D2 run must have skipped with `current`: any other skip, or none, does not deliver the slot', () => {
+    for (const slotSkip of [null, 'busy', 'armed', 'suspended', 'unreadable', 'off', 'other']) {
+      const proof = quietSlotProof({ evidence: freshEvidence('123', '1'), slotMs: SLOT, sha: A, run: RUN, slotSkip })
+      expect(proof.delivered).toBe(false)
+      expect(proof.reason).toContain('`current`')
+      expect(quietAt(90, proof).action).toBe('alarm')
+    }
   })
 
   it('FP-03 two slots: evidence between slot 1 and slot 2 does not deliver slot 2; evidence after it does', () => {
     const SLOT2 = SLOT + 8 * 60 * MIN
     const at2 = (offsetMin: number, evidence: Record<string, unknown>) => {
-      const proof = quietSlotProof({ evidence, slotMs: SLOT2, sha: A })
+      const proof = quietSlotProof({ evidence, slotMs: SLOT2, sha: A, ...bound })
       return freshness({
         ...base,
         nowMs: SLOT2 + offsetMin * MIN,
@@ -964,9 +1023,11 @@ describe('FP-03: a quiet slot is delivered only by fresh live evidence bound to 
         quiet: proof,
       })
     }
-    const between = roundTrip(liveEvidence({ body: { ok: true, revision: A }, observedMs: SLOT + 60 * MIN }))
+    const live = (observedMs: number) =>
+      roundTrip(liveEvidence({ body: { ok: true, revision: A }, observedMs, runId: '123', runAttempt: '1' }))
+    const between = live(SLOT + 60 * MIN)
     expect(at2(90, between).action).toBe('alarm')
-    const after = roundTrip(liveEvidence({ body: { ok: true, revision: A }, observedMs: SLOT2 + 30 * MIN }))
+    const after = live(SLOT2 + 30 * MIN)
     expect(at2(100, after).action).toBe('none')
   })
 })
@@ -1029,8 +1090,33 @@ describe('FP-05: the slot candidate is the newest one that was on cheese/main at
     const runs = [run(B, '2026-11-20T08:40:00Z', 3), run(A, '2026-11-20T07:00:00Z', 2)]
     const picked = slotCandidate(runs, SLOT, B)
     expect(picked?.sha).toBe(B)
-    expect(freshness({ ...base, nowMs: SLOT + 100 * MIN, candidate: picked, deployed: known(B) }).action).toBe('none')
     expect(slotCandidate(runs, SLOT, C)?.sha).toBe(A)
+  })
+
+  it('FP-03 a later candidate that D2 deployed is delivered only by live evidence: absent alarms at +90, fresh is idle', () => {
+    const runs = [run(B, '2026-11-20T08:40:00Z', 3), run(A, '2026-11-20T07:00:00Z', 2)]
+    const picked = slotCandidate(runs, SLOT, B)
+    const later = (offsetMin: number, quiet: unknown) =>
+      freshness({ ...base, nowMs: SLOT + offsetMin * MIN, candidate: picked, deployed: known(B), quiet })
+    const bound = { run: { id: 7, attempt: 1 }, slotSkip: 'current' }
+    const none = quietSlotProof({ evidence: null, slotMs: SLOT, sha: B, ...bound })
+    expect(later(89, none).action).toBe('none')
+    const missing = later(100, none)
+    expect([missing.action, missing.alarm]).toEqual(['alarm', true])
+    expect(missing.reason).toContain('no fresh live evidence')
+    const fresh = roundTrip(
+      liveEvidence({ body: { ok: true, revision: B }, observedMs: SLOT + 95 * MIN, runId: '7', runAttempt: '1' }),
+    )
+    const proof = quietSlotProof({ evidence: fresh, slotMs: SLOT, sha: B, ...bound })
+    expect(later(100, proof).action).toBe('none')
+    // evidence for the older slot candidate does not deliver the later one
+    const old = roundTrip(
+      liveEvidence({ body: { ok: true, revision: A }, observedMs: SLOT + 95 * MIN, runId: '7', runAttempt: '1' }),
+    )
+    expect(later(100, quietSlotProof({ evidence: old, slotMs: SLOT, sha: B, ...bound })).action).toBe('alarm')
+    // a merged-after-slot candidate that D2 has NOT deployed is still not due
+    const undeployed = freshness({ ...base, nowMs: SLOT + 100 * MIN, candidate: picked, deployed: known(A) })
+    expect(undeployed.action).toBe('none')
   })
 
   it('FP-05 slotCandidate ignores failed and non-push runs, and gives null when none was there at the slot', () => {
@@ -1064,5 +1150,164 @@ describe('diagnosis: a C00 job queued more than 10 min (plan r5, S2)', () => {
     expect(slow.alarm).toBe(true)
     expect(slow.diagnosis).toMatchObject({ step: 'C00', owner: 'c00-hermes-devops' })
     expect(freshness({ ...base, nowMs: SLOT + 100 * MIN, c00QueuedMinutes: 10 }).diagnosis).toBeNull()
+  })
+})
+
+/* FP-03 through the real CLI: `cd-watch live` writes the evidence file, the file travels as an artifact, and `cd-watch
+   freshness` reads it back. Only the edges are faked: a `gh` on PATH that serves the GitHub facts and artifacts, and a
+   preload that fixes the clock and /healthz. */
+describe('FP-03: the real live CLI evidence reaches the real freshness CLI through the artifact', () => {
+  const CLI = path.resolve(import.meta.dirname, '../scripts/cd-watch.mjs')
+  const dirs: string[] = []
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
+  })
+
+  const FAKE_GH = `#!/usr/bin/env node
+const fs = require('node:fs')
+const fx = JSON.parse(fs.readFileSync(process.env.FAKE_FIXTURE, 'utf8'))
+const args = process.argv.slice(2)
+if (args[0] === 'api' && !args.includes('-X')) {
+  const route = args[1]
+  const hit = fx.routes.find(([needle]) => route.includes(needle))
+  if (!hit) { console.error('fake gh: no route for ' + route); process.exit(1) }
+  process.stdout.write(JSON.stringify(hit[1]))
+} else if (args[0] === 'run' && args[1] === 'download') {
+  const key = args[2] + ':' + args[args.indexOf('--name') + 1]
+  const file = fx.artifacts[key]
+  if (!file) { console.error('no valid artifacts found to download'); process.exit(1) }
+  fs.copyFileSync(file.from, require('node:path').join(args[args.indexOf('--dir') + 1], file.as))
+} else {
+  fs.appendFileSync(fx.log, args.join(' ') + '\\n')
+  process.stdout.write('{}')
+}
+`
+  const PRELOAD = `
+const now = Number(process.env.FAKE_NOW)
+Date.now = () => now
+globalThis.fetch = async () => ({ json: async () => JSON.parse(process.env.FAKE_HEALTHZ) })
+`
+
+  function box() {
+    const dir = mkdtempSync(path.join(tmpdir(), 'cd-watch-cli-'))
+    dirs.push(dir)
+    writeFileSync(path.join(dir, 'gh'), FAKE_GH)
+    chmodSync(path.join(dir, 'gh'), 0o755)
+    writeFileSync(path.join(dir, 'preload.mjs'), PRELOAD)
+    return dir
+  }
+  function run(dir: string, args: string[], env: Record<string, string>) {
+    return spawnSync(process.execPath, ['--import', path.join(dir, 'preload.mjs'), CLI, ...args], {
+      encoding: 'utf8',
+      env: {
+        PATH: `${dir}:${process.env.PATH ?? ''}`,
+        FAKE_FIXTURE: path.join(dir, 'fixture.json'),
+        REPO: 'o/r',
+        DOOP_DEPLOY_TRAIN: 'on',
+        ...env,
+      },
+    })
+  }
+  const iso = (ms: number) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z')
+
+  // One quiet slot: A is on main since before the slot, D2 confirmed A before it, and the slot's D2 run skipped.
+  function fixture(dir: string, opts: { liveRunId: number; liveAttempt: number; slotSkip: string | null }) {
+    const evidenceFile = path.join(dir, 'live-evidence.json')
+    const d2Evidence = path.join(dir, 'deploy-evidence.json')
+    writeFileSync(d2Evidence, JSON.stringify({ skip_reason: opts.slotSkip, outcome: 'skipped' }))
+    const d1 = { id: 1, head_sha: A, event: 'push', conclusion: 'success', created_at: iso(SLOT - 4 * 60 * MIN) }
+    const record = { id: 5, sha: A, description: `D2 run 1, confirmed ${iso(SLOT - 5 * 60 * MIN)}` }
+    const fx = {
+      log: path.join(dir, 'gh.log'),
+      routes: [
+        ['workflows/image.yml/runs', { workflow_runs: [d1] }],
+        [
+          'workflows/cd-deploy.yml/runs?created',
+          {
+            total_count: 1,
+            workflow_runs: [{ id: 50, status: 'completed', conclusion: 'success', created_at: iso(SLOT + MIN) }],
+          },
+        ],
+        ['workflows/cd-deploy.yml/runs?per_page=100', { workflow_runs: [] }],
+        ['deployments/5/statuses', [{ state: 'success' }]],
+        ['deployments?environment', [record]],
+        [
+          'workflows/cd-live-revision.yml/runs',
+          {
+            workflow_runs: [
+              {
+                id: opts.liveRunId,
+                run_attempt: opts.liveAttempt,
+                status: 'completed',
+                created_at: iso(SLOT + 30 * MIN),
+              },
+            ],
+          },
+        ],
+      ],
+      artifacts: {
+        '50:deploy-evidence': { from: d2Evidence, as: 'deploy-evidence.json' },
+        [`${opts.liveRunId}:live-evidence`]: { from: evidenceFile, as: 'live-evidence.json' },
+      },
+    }
+    writeFileSync(path.join(dir, 'fixture.json'), JSON.stringify(fx))
+    return evidenceFile
+  }
+
+  // `cd-watch live` at slot+30 min as run 777 attempt 1, then `cd-watch freshness` at `freshAt`.
+  function scenario(
+    opts: { liveRunId: number; liveAttempt: number; slotSkip: string | null; healthz?: object },
+    freshAt: number,
+  ) {
+    const dir = box()
+    const evidenceFile = fixture(dir, opts)
+    const live = run(dir, ['live'], {
+      LIVE_EVIDENCE_OUT: evidenceFile,
+      GITHUB_RUN_ID: '777',
+      GITHUB_RUN_ATTEMPT: '1',
+      FAKE_NOW: String(SLOT + 30 * MIN),
+      FAKE_HEALTHZ: JSON.stringify(opts.healthz ?? { ok: true, revision: A }),
+    })
+    const fresh = run(dir, ['freshness'], { FAKE_NOW: String(freshAt), FAKE_HEALTHZ: '{}' })
+    return { live, fresh, evidence: JSON.parse(readFileSync(evidenceFile, 'utf8')) as Record<string, unknown> }
+  }
+
+  it('FP-03 positive control: the evidence of run 777.1 for the slot target delivers the quiet slot at +100 min', () => {
+    const r = scenario({ liveRunId: 777, liveAttempt: 1, slotSkip: 'current' }, SLOT + 100 * MIN)
+    expect(r.live.status, r.live.stderr + r.live.stdout).toBe(0)
+    expect(r.evidence).toMatchObject({ schema: 1, revision: A, ok: true, run_id: 777, run_attempt: 1 })
+    expect(r.fresh.status, r.fresh.stdout + r.fresh.stderr).toBe(0)
+    expect(r.fresh.stdout).toContain('cd-watch freshness: none:')
+    expect(r.fresh.stdout).toContain('live run 777.1')
+  })
+
+  it('FP-03 evidence from another run than the live run it was downloaded from alarms at +100 min', () => {
+    const r = scenario({ liveRunId: 888, liveAttempt: 1, slotSkip: 'current' }, SLOT + 100 * MIN)
+    expect(r.fresh.status).toBe(1)
+    expect(r.fresh.stdout).toContain('cd-watch freshness: alarm:')
+    expect(r.fresh.stdout).toContain('not the live run it came from')
+  })
+
+  it('FP-03 evidence of another attempt than the live run attempt alarms at +100 min', () => {
+    const r = scenario({ liveRunId: 777, liveAttempt: 2, slotSkip: 'current' }, SLOT + 100 * MIN)
+    expect(r.fresh.status).toBe(1)
+    expect(r.fresh.stdout).toContain('not the live run it came from')
+  })
+
+  it('FP-03 a slot whose D2 run did not skip with `current` is not delivered by that evidence', () => {
+    const r = scenario({ liveRunId: 777, liveAttempt: 1, slotSkip: 'busy' }, SLOT + 100 * MIN)
+    expect(r.fresh.status).toBe(1)
+    expect(r.fresh.stdout).toContain('did not skip with `current`')
+  })
+
+  it('FP-03 unhealthy live evidence from the real CLI alarms at +100 min and idles before +90', () => {
+    const sick = scenario(
+      { liveRunId: 777, liveAttempt: 1, slotSkip: 'current', healthz: { ok: false, revision: A } },
+      SLOT + 100 * MIN,
+    )
+    expect(sick.evidence.ok).toBe(false)
+    expect(sick.fresh.status).toBe(1)
+    const early = scenario({ liveRunId: 777, liveAttempt: 1, slotSkip: 'busy' }, SLOT + 80 * MIN)
+    expect(early.fresh.status).toBe(0)
   })
 })

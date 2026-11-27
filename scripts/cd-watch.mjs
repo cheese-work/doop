@@ -80,9 +80,11 @@ export function liveEvidence({ body, observedMs, runId, runAttempt }) {
 
 // Quiet slot (option A, FP-03): when the candidate already equals the deployed SHA, the slot counts as delivered only with
 // fresh live evidence. `evidence` is one `live-evidence.json` (from `cd-watch live`), `slotMs` the slot's epoch ms, `sha`
-// the candidate. Its observation must be after the slot, name the full target revision, and report healthy. Nothing else
-// (a green workflow, a head SHA) proves it.
-export function quietSlotProof({ evidence, slotMs, sha }) {
+// the candidate. Its observation must be after the slot, name the full target revision, and report healthy. It must also
+// be bound: `run` is the live run (`{ id, attempt }`) the artifact was downloaded from, and the evidence must name that
+// run and attempt; `slotSkip` is the skip reason of the slot's own D2 run, which must be `current` (the gate found
+// nothing to deploy). Nothing else (a green workflow, a head SHA) proves it. Missing facts fail closed.
+export function quietSlotProof({ evidence, slotMs, sha, run = null, slotSkip = null }) {
   if (!evidence || evidence.schema !== 1) return { delivered: false, reason: 'no live evidence since the slot' }
   const observed = Date.parse(evidence.observed_at ?? '')
   if (!Number.isFinite(observed) || observed <= slotMs) {
@@ -95,8 +97,25 @@ export function quietSlotProof({ evidence, slotMs, sha }) {
     }
   }
   if (evidence.ok !== true) return { delivered: false, reason: 'the live evidence is not healthy' }
-  const run = evidence.run_id ? ` (live run ${evidence.run_id}.${evidence.run_attempt ?? 1})` : ''
-  return { delivered: true, reason: `live ${short(sha)} healthy, observed ${evidence.observed_at}${run}` }
+  if (!Number.isInteger(evidence.run_id) || !Number.isInteger(evidence.run_attempt)) {
+    return { delivered: false, reason: 'the live evidence does not name the run and attempt that observed it' }
+  }
+  if (!run || evidence.run_id !== run.id || evidence.run_attempt !== run.attempt) {
+    return {
+      delivered: false,
+      reason: `the live evidence names run ${evidence.run_id}.${evidence.run_attempt}, not the live run it came from`,
+    }
+  }
+  if (slotSkip !== 'current') {
+    return {
+      delivered: false,
+      reason: `the slot's D2 run did not skip with \`current\` (${slotSkip ?? 'no finished D2 run since the slot'})`,
+    }
+  }
+  return {
+    delivered: true,
+    reason: `live ${short(sha)} healthy, observed ${evidence.observed_at} (live run ${evidence.run_id}.${evidence.run_attempt})`,
+  }
 }
 
 // The newest qualified D1 candidate that was on cheese/main at `slotMs` (CHE-9956, FP-05). `runs` is D1's push runs, newest
@@ -176,8 +195,11 @@ export function freshness({
   if (deployed.state === 'unknown') {
     return alarm(`the last successful D2 SHA is unknown: ${deployed.reason}`)
   }
-  // FP-05: a candidate that landed after the slot is due at the next slot. No alarm, no dispatch.
-  if (Number.isFinite(candidate.createdMs) && candidate.createdMs > nowMs - age) {
+  const deployedSha = deployed.state === 'known' ? deployed.sha : null
+  const isDeployed = candidate.sha === deployedSha
+  // FP-05: a candidate that landed after the slot is due at the next slot. No alarm, no dispatch. One that D2 already
+  // deployed is not "not due": its delivery is checked below like any quiet slot.
+  if (!isDeployed && Number.isFinite(candidate.createdMs) && candidate.createdMs > nowMs - age) {
     return idle(`candidate ${short(candidate.sha)} merged after the slot; due at the next slot`)
   }
   if (deployed.state === 'pending') {
@@ -188,8 +210,7 @@ export function freshness({
     }
     return idle(deployed.reason)
   }
-  const deployedSha = deployed.state === 'known' ? deployed.sha : null
-  if (candidate.sha === deployedSha) {
+  if (isDeployed) {
     // Quiet slot: nothing to deliver, but the slot is delivered only with fresh live evidence (S2 option A).
     if (quiet?.delivered) return idle(`candidate ${short(candidate.sha)} is already deployed: ${quiet.reason}`)
     if (age >= ALARM_AFTER) {
@@ -202,30 +223,37 @@ export function freshness({
     return idle(`candidate ${short(candidate.sha)} is already deployed; waiting for live evidence`)
   }
   const behind = `candidate ${short(candidate.sha)} is ahead of the last successful D2 ${short(deployedSha)}`
-  if (age >= ALARM_AFTER) {
-    const mins = Math.floor(age / MIN)
-    const late = `${behind}, ${mins} min after the slot (limit ${ALARM_AFTER / MIN})`
-    // CHE-10498: a missed window must not wait for the next slot. With no D2 run since the slot, send the one backup
-    // dispatch as well as the alarm. With a D2 run since the slot (skipped, suspended or forward-only) it is alarm only.
-    if (d2RunsSinceSlot === 0) return { ...alarm(`${late}; no D2 run since the slot`), action: 'dispatch' }
-    return alarm(late)
-  }
+  const late = age >= ALARM_AFTER
+  const lateText = `${behind}, ${Math.floor(age / MIN)} min after the slot (limit ${ALARM_AFTER / MIN})`
   // Suspended or unreadable: Cheese must lift it. Alarm now, dispatch never.
   if (LIFT_SKIPS.includes(skipReason)) {
-    return alarm(`${behind}; the D2 gate skipped (${skipReason}): Cheese must lift the marker, no dispatch`, {
-      markerSuspended: skipReason === 'suspended',
-    })
+    return alarm(
+      `${late ? lateText : behind}; the D2 gate skipped (${skipReason}): Cheese must lift the marker, no dispatch`,
+      {
+        markerSuspended: skipReason === 'suspended',
+      },
+    )
   }
   if (age < DISPATCH_AFTER) return idle('the slot is not 45 min old yet')
   if (WAIT_SKIPS.includes(skipReason)) {
-    // The skipped run is finished. Wait while another D2 run is active; once it has ended, send exactly one dispatch.
-    if (d2RunActive) return idle(`${behind}; a D2 run is still active (${skipReason} skip)`)
-    if (followUpD2) return idle(`${behind}; the one dispatch after the ${skipReason} skip already went out`)
-    return {
-      action: 'dispatch',
-      rerunD1,
-      reason: `${behind}; the ${skipReason} run has ended and the slot is undelivered`,
+    // The skipped run is finished. Wait while another D2 run is active; once it has ended, send exactly one dispatch,
+    // at any age: past 90 min the same tick also alarms, but the dispatch is not lost.
+    if (d2RunActive) {
+      const why = `${late ? lateText : behind}; a D2 run is still active (${skipReason} skip)`
+      return late ? alarm(why) : idle(why)
     }
+    if (followUpD2) {
+      const why = `${late ? lateText : behind}; the one dispatch after the ${skipReason} skip already went out`
+      return late ? alarm(why) : idle(why)
+    }
+    const why = `${late ? lateText : behind}; the ${skipReason} run has ended and the slot is undelivered`
+    return late ? { ...alarm(why), action: 'dispatch' } : { action: 'dispatch', alarm: false, rerunD1, reason: why }
+  }
+  if (late) {
+    // CHE-10498: a missed window must not wait for the next slot. With no D2 run since the slot, send the one backup
+    // dispatch as well as the alarm. With a D2 run since the slot (skipped, suspended or forward-only) it is alarm only.
+    if (d2RunsSinceSlot === 0) return { ...alarm(`${lateText}; no D2 run since the slot`), action: 'dispatch' }
+    return alarm(lateText)
   }
   if (d2RunsSinceSlot > 0) return idle(`${behind}; a D2 run exists since the slot`)
   return { action: 'dispatch', alarm: false, rerunD1, reason: `${behind}; no D2 run since the slot` }
@@ -521,6 +549,14 @@ async function cli(argv, env) {
     // The newest finished D2 run since the slot is the one that skipped (or deployed); its evidence says why.
     const skipped = d2.workflow_runs.find((r) => r.status === 'completed')
     const skipReason = skipped ? ((await evidenceOf(repo, skipped.id))?.skip_reason ?? null) : null
+    // The slot's own D2 run is the first one created since the slot (the list is newest first).
+    const slotRun = [...d2.workflow_runs].reverse().find((r) => r.status === 'completed')
+    const slotSkip =
+      slotRun && slotRun.id === skipped?.id
+        ? skipReason
+        : slotRun
+          ? ((await evidenceOf(repo, slotRun.id))?.skip_reason ?? null)
+          : null
     // Quiet slot: candidate already deployed. The live check's evidence since the slot is the only proof.
     let quiet = null
     let runnerSeen = true
@@ -533,6 +569,8 @@ async function cli(argv, env) {
           evidence: await liveEvidenceOf(repo, run.id),
           slotMs,
           sha: candidate.sha,
+          run: { id: run.id, attempt: run.run_attempt },
+          slotSkip,
         })
         quiet = proof
         if (proof.delivered) break
