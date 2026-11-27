@@ -47,7 +47,7 @@ export function lastSlot(nowMs) {
 // runs were created since the slot, and the newest D1 run (conclusion null while it runs).
 // Result: what to do (`alarm` says the run must fail: an alarm, or a dispatch of a window missed by 90 min or more), why, and
 // whether to rerun the failed D1 build.
-export function freshness({ trainOn, nowMs, candidate, deployed, d2RunsSinceSlot, head }) {
+export function freshness({ trainOn, nowMs, candidate, deployed, d2RunsSinceSlot, head, candidateAtMs, newestD2AtMs }) {
   if (!trainOn)
     return { action: 'none', alarm: false, rerunD1: false, reason: 'DOOP_DEPLOY_TRAIN is not on: nothing is due' }
   const rerunD1 = head?.conclusion === 'failure' && head?.attempt === 1
@@ -85,6 +85,10 @@ export function freshness({ trainOn, nowMs, candidate, deployed, d2RunsSinceSlot
     // dispatch as well as the alarm. With a D2 run since the slot (a skipped, suspended or forward-only one) it is alarm only.
     if (d2RunsSinceSlot === 0)
       return { action: 'dispatch', alarm: true, rerunD1, reason: `${late}; no D2 run since the slot` }
+    // CHE-10559: a candidate whose D1 finished after the newest D2 run since the slot was never in that run's reach.
+    // It is not overdue: it waits for the next slot, whose own 45 and 90 min marks apply to it.
+    if (candidateAtMs > newestD2AtMs)
+      return idle(`${behind}; it qualified after the last D2 run, so it waits for the next slot`)
     return { action: 'alarm', alarm: true, rerunD1, reason: late }
   }
   if (age < DISPATCH_AFTER) return idle('the slot is not 45 min old yet')
@@ -341,7 +345,8 @@ async function cli(argv, env) {
     }
     const d1 = (q) =>
       api(repo, `actions/workflows/image.yml/runs?branch=${BRANCH}&event=push&${q}per_page=50`).workflow_runs
-    const candidate = pickCandidate(d1('status=success&'))
+    const d1Success = d1('status=success&')
+    const candidate = pickCandidate(d1Success)
     const newest = d1('')[0]
     const sinceIso = new Date(lastSlot(nowMs)).toISOString().replace(/\.\d{3}Z$/, 'Z')
     const d2 = api(repo, `actions/workflows/cd-deploy.yml/runs?created=>=${sinceIso}&per_page=50`)
@@ -351,6 +356,8 @@ async function cli(argv, env) {
       candidate,
       deployed: await deployedSha(repo),
       d2RunsSinceSlot: d2.total_count,
+      candidateAtMs: Date.parse(d1Success.find((r) => r.id === candidate?.runId)?.updated_at ?? ''),
+      newestD2AtMs: Math.max(...d2.workflow_runs.map((r) => Date.parse(r.created_at)), NaN),
       head: newest && { conclusion: newest.conclusion, attempt: newest.run_attempt },
     })
     console.log(`cd-watch freshness: ${out.action}: ${out.reason}`)
