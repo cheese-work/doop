@@ -132,6 +132,10 @@ describe('freshness (C-7.1)', () => {
     const late = { ...base, nowMs: SLOT + 155 * MIN, d2RunsSinceSlot: 1, newestD2AtMs: SLOT + 60 * MIN }
     expect(freshness({ ...late, candidateAtMs: SLOT + 100 * MIN })).toMatchObject({ action: 'none', alarm: false })
     expect(freshness({ ...late, candidateAtMs: SLOT + 30 * MIN })).toMatchObject({ action: 'alarm', alarm: true })
+    // The interval the P1 review named: D1 ended after the D2 run was created but before it finished (`newestD2AtMs` is
+    // the run's last activity), so D2's resolve may have picked it. A due alarm must not be suppressed.
+    expect(freshness({ ...late, candidateAtMs: SLOT + 59 * MIN })).toMatchObject({ action: 'alarm', alarm: true })
+    expect(freshness({ ...late, candidateAtMs: SLOT + 60 * MIN })).toMatchObject({ action: 'alarm', alarm: true })
     expect(freshness({ ...late, candidateAtMs: NaN })).toMatchObject({ action: 'alarm', alarm: true })
   })
 

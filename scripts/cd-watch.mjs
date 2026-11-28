@@ -85,8 +85,11 @@ export function freshness({ trainOn, nowMs, candidate, deployed, d2RunsSinceSlot
     // dispatch as well as the alarm. With a D2 run since the slot (a skipped, suspended or forward-only one) it is alarm only.
     if (d2RunsSinceSlot === 0)
       return { action: 'dispatch', alarm: true, rerunD1, reason: `${late}; no D2 run since the slot` }
-    // CHE-10559: a candidate whose D1 finished after the newest D2 run since the slot was never in that run's reach.
-    // It is not overdue: it waits for the next slot, whose own 45 and 90 min marks apply to it.
+    // CHE-10559: a candidate whose D1 finished after the newest D2 run since the slot FINISHED was never in that run's
+    // reach: D2 picks its candidate (`resolve`) somewhere between its creation and its end, so only a D1 that ended
+    // after the run's last activity is certainly out of reach. One that ended inside that interval may have been
+    // picked or not, so it keeps the alarm. A candidate out of reach is not overdue: it waits for the next slot,
+    // whose own 45 and 90 min marks apply to it.
     if (candidateAtMs > newestD2AtMs)
       return idle(`${behind}; it qualified after the last D2 run, so it waits for the next slot`)
     return { action: 'alarm', alarm: true, rerunD1, reason: late }
@@ -357,7 +360,7 @@ async function cli(argv, env) {
       deployed: await deployedSha(repo),
       d2RunsSinceSlot: d2.total_count,
       candidateAtMs: Date.parse(d1Success.find((r) => r.id === candidate?.runId)?.updated_at ?? ''),
-      newestD2AtMs: Math.max(...d2.workflow_runs.map((r) => Date.parse(r.created_at)), NaN),
+      newestD2AtMs: Math.max(...d2.workflow_runs.map((r) => Date.parse(r.updated_at)), NaN),
       head: newest && { conclusion: newest.conclusion, attempt: newest.run_attempt },
     })
     console.log(`cd-watch freshness: ${out.action}: ${out.reason}`)
